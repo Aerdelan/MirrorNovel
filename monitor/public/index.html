@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Status</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, system-ui, sans-serif; background: #0d1117; color: #c9d1d9; padding: 20px; }
+h1 { font-size: 20px; margin-bottom: 16px; color: #58a6ff; }
+.stats { display: flex; gap: 16px; margin-bottom: 16px; }
+.stat { background: #161b22; padding: 12px 20px; border-radius: 8px; border: 1px solid #30363d; }
+.stat-num { font-size: 24px; font-weight: 700; color: #58a6ff; }
+.stat-label { font-size: 12px; color: #8b949e; margin-top: 2px; }
+table { width: 100%; border-collapse: collapse; background: #161b22; border-radius: 8px; overflow: hidden; border: 1px solid #30363d; }
+th { background: #21262d; padding: 10px 12px; text-align: left; font-size: 12px; color: #8b949e; font-weight: 600; text-transform: uppercase; border-bottom: 1px solid #30363d; }
+td { padding: 10px 12px; font-size: 13px; border-bottom: 1px solid #21262d; }
+tr:hover td { background: #1c2128; }
+.ip { color: #58a6ff; font-family: monospace; font-weight: 600; }
+.host { color: #c9d1d9; }
+.time { color: #8b949e; font-size: 12px; font-family: monospace; }
+.count { color: #d2a8ff; font-weight: 600; }
+.online { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.online.yes { background: #3fb950; }
+.online.no { background: #f85149; }
+.ua { color: #8b949e; font-size: 11px; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.footer { margin-top: 16px; font-size: 12px; color: #484f58; text-align: center; }
+</style>
+</head>
+<body>
+<h1>📡 节点状态</h1>
+<div class="stats" id="stats"></div>
+<table>
+  <thead><tr>
+    <th>IP</th>
+    <th>主机</th>
+    <th>端口</th>
+    <th>平台</th>
+    <th>上报</th>
+    <th>首次</th>
+    <th>最近</th>
+    <th>UA</th>
+  </tr></thead>
+  <tbody id="tbody"></tbody>
+</table>
+<div class="footer" id="footer"></div>
+<script>
+function fmt(ts) { if (!ts) return '-'; const d = new Date(ts); const now = Date.now(); const diff = now - ts; if (diff < 60000) return '刚刚'; if (diff < 3600000) return Math.floor(diff/60000)+'分钟前'; if (diff < 86400000) return Math.floor(diff/3600000)+'小时前'; return d.toLocaleDateString()+' '+d.toLocaleTimeString(); }
+function isOnline(ts) { return Date.now() - ts < 86400000; }
+async function load() {
+  try {
+    const r = await fetch('/api/v2/telemetry/status'); const j = await r.json();
+    const data = j.data || [];
+    document.getElementById('stats').innerHTML = '<div class=stat><div class=stat-num>'+data.length+'</div><div class=stat-label>节点</div></div><div class=stat><div class=stat-num>'+data.filter(d=>isOnline(d.lastSeen)).length+'</div><div class=stat-label>在线</div></div><div class=stat><div class=stat-num>'+data.reduce((s,d)=>s+(d.count||1),0)+'</div><div class=stat-label>总上报</div></div>';
+    document.getElementById('tbody').innerHTML = data.map(d => '<tr><td><span class="online '+(isOnline(d.lastSeen)?'yes':'no')+'"></span><span class="ip">'+d.ip+'</span></td><td class="host">'+(d.hostname||'-')+'</td><td>'+(d.port||'-')+'</td><td>'+(d.platform||'-')+'</td><td class="count">'+(d.count||1)+'</td><td class="time">'+fmt(d.firstSeen)+'</td><td class="time">'+fmt(d.lastSeen)+'</td><td class="ua" title="'+d.ua+'">'+(d.ua||'-')+'</td></tr>').join('');
+  } catch(e) { document.getElementById('tbody').innerHTML = '<tr><td colspan="8" style="text-align:center;color:#f85149;">加载失败</td></tr>'; }
+}
+load(); setInterval(load, 15000);
+</script>
+</body>
+</html>
