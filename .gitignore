@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+*.log
+.DS_Store
+*.woff2
+fanqie_cookie.txt
+fanqie_auth.json
+fanqie_render_*
+.codebuddy/
+test_fanqie/
+skills/
