@@ -10,5 +10,4 @@ fanqie_render_*
 .codebuddy/
 test_fanqie/
 skills/
-monitor/data.json
-monitor/node_modules/
+monitor/
