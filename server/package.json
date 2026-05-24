@@ -1,7 +1,7 @@
 {
   "name": "mirrornovel-server",
   "version": "1.0.0",
-  "description": "红薯小说生成后端服务",
+  "description": "MirrorNovel生成后端服务",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",

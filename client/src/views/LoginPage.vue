@@ -3,7 +3,7 @@
     <div class="auth-container">
       <div class="auth-header">
         <div class="auth-icon">📚</div>
-        <h1>红薯小说生成</h1>
+        <h1>MirrorNovel生成</h1>
         <p>登录后继续使用</p>
       </div>
       <div class="card auth-form">

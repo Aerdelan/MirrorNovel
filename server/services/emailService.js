@@ -22,13 +22,13 @@ const transporter = nodemailer.createTransport({
  */
 const sendVerificationCode = async (to, code, type = 'register') => {
   const subject = type === 'register' 
-    ? '【红薯小说生成】注册验证码' 
-    : '【红薯小说生成】密码重置验证码';
+    ? '【MirrorNovel生成】注册验证码' 
+    : '【MirrorNovel生成】密码重置验证码';
   
   const html = `
     <div style="max-width:600px;margin:0 auto;padding:20px;background:#fff;border-radius:10px;">
       <div style="text-align:center;padding:20px 0;">
-        <h1 style="color:#FF6B35;margin:0;">📚 红薯小说生成</h1>
+        <h1 style="color:#FF6B35;margin:0;">📚 MirrorNovel生成</h1>
       </div>
       <div style="padding:20px;background:#f9f9f9;border-radius:8px;">
         <p style="font-size:16px;color:#333;">您好！</p>
@@ -45,7 +45,7 @@ const sendVerificationCode = async (to, code, type = 'register') => {
   `;
 
   const mailOptions = {
-    from: `"红薯小说生成" <${process.env.EMAIL_USERNAME}>`,
+    from: `"MirrorNovel生成" <${process.env.EMAIL_USERNAME}>`,
     to,
     subject,
     html,

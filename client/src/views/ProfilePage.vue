@@ -50,7 +50,7 @@
           <div v-if="showGroupInfo" class="group-info-card">
             <div class="group-info-text">Token 用完或需要更多 Token，请加 QQ 群联系群主购买：</div>
             <div class="group-qq">群号：1019601998</div>
-            <div class="group-hint">加群时请备注"红薯小说"</div>
+            <div class="group-hint">加群时请备注"MirrorNovel"</div>
           </div>
         </div>
 

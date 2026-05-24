@@ -3,7 +3,7 @@
     <div class="login-box">
       <div class="logo">⚙️</div>
       <h1>管理后台</h1>
-      <p class="sub">红薯小说生成系统</p>
+      <p class="sub">MirrorNovel生成系统</p>
       <div class="form-group">
         <input v-model="email" class="input" placeholder="管理员邮箱" @keyup.enter="login" />
       </div>

@@ -14,7 +14,7 @@
     <Teleport to="body">
       <div v-if="showAnnouncement" class="announcement-overlay" @click.self="closeAnnouncement">
         <div class="announcement-modal">
-          <div class="modal-header">🎉 欢迎使用红薯小说生成</div>
+          <div class="modal-header">🎉 欢迎使用MirrorNovel生成</div>
           <div class="modal-body">
             <div class="gift-icon">🎁</div>
             <div class="announce-text">
