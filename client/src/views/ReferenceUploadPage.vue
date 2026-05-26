@@ -1,45 +1,42 @@
 <template>
   <div class="page-container ref-upload-page">
     <div class="page-header">
-      <span>📚 风格参考库</span>
+      <span>{{ $t('distill.title') }}</span>
       <button class="btn btn-sm btn-outline header-btn" @click="$router.push('/reference-list')">
-        📖 我的库
+        {{ $t('distill.myLib') }}
       </button>
     </div>
 
     <div class="upload-content">
       <!-- === 小说类型切换 === -->
       <div class="card ln-toggle-card">
-        <div class="section-title">① 选择蒸馏类型</div>
+        <div class="section-title">① {{ $t('distill.stepDistillType') }}</div>
         <div class="novel-type-toggle">
           <button class="toggle-btn" :class="{ active: novelType === 'normal' }" @click="novelType='normal'">
-            📖 普通小说
+            {{ $t('distill.normalNovel') }}
           </button>
           <button class="toggle-btn" :class="{ active: novelType === 'lightnovel' }" @click="novelType='lightnovel'">
-            🌸 轻小说
+            {{ $t('distill.lightNovel') }}
           </button>
         </div>
         <div v-if="novelType === 'lightnovel'" class="ln-type-hint">
-          日式ACGN风格小说提取，分析角色萌属性、对话风格、动画感描写等
+          {{ $t('distill.lnHint') }}
         </div>
       </div>
 
-      <!-- === Step 2: 选择分类 === -->
       <div class="card">
-        <div class="section-title">② 选择{{ novelType === 'lightnovel' ? '轻小说' : '小说' }}类型</div>
+        <div class="section-title">② {{ $t('distill.stepCategory', { type: novelType === 'lightnovel' ? '轻小说' : '小说' }) }}</div>
 
-        <!-- 普通小说：男频/女频切换 -->
         <template v-if="novelType === 'normal'">
           <div class="gender-tabs">
-            <button :class="{ active: gender === 'male' }" @click="gender='male'">🚹 男频</button>
-            <button :class="{ active: gender === 'female' }" @click="gender='female'">🚺 女频</button>
+            <button :class="{ active: gender === 'male' }" @click="gender='male'">{{ $t('generate.maleFreq') }}</button>
+            <button :class="{ active: gender === 'female' }" @click="gender='female'">{{ $t('generate.femaleFreq') }}</button>
           </div>
         </template>
 
-        <!-- 搜索框 -->
         <div class="search-box">
           <span class="search-icon">🔍</span>
-          <input v-model="searchQuery" class="input" placeholder="搜索分类或标签..." />
+          <input v-model="searchQuery" class="input" :placeholder="$t('distill.searchPlaceholder')" />
           <button v-if="searchQuery" class="search-clear" @click="searchQuery=''">✕</button>
         </div>
 
@@ -53,27 +50,26 @@
             @click="selectMain(cat)"
           >
             <span class="main-cat-icon">{{ cat.icon }}</span>
-            <span class="main-cat-name">{{ cat.name }}</span>
+            <span class="main-cat-name">{{ $tn(cat.name) }}</span>
           </button>
         </div>
 
-        <!-- 二级题材（可选） -->
         <div v-if="currentChildren.length > 0" class="sub-categories">
-          <div class="sub-label">二级题材（可选）</div>
+          <div class="sub-label">{{ $t('distill.subCategory') }}</div>
           <div class="sub-chips">
             <span
               v-for="sub in currentChildren"
               :key="sub"
               class="chip"
-              :class="{ active: subCategory === sub }"
-              @click="subCategory = subCategory === sub ? '' : sub"
-            >{{ sub }}</span>
+            :class="{ active: subCategory === sub }"
+            @click="subCategory = subCategory === sub ? '' : sub"
+            >{{ $tn(sub) }}</span>
           </div>
         </div>
 
         <!-- 共用标签 -->
         <div v-if="commonTags.length > 0" class="tag-section">
-          <div class="sub-label">标签（可选）</div>
+          <div class="sub-label">{{ $t('distill.tags') }}</div>
           <div class="sub-chips">
             <span
               v-for="tag in filteredTags"
@@ -81,7 +77,7 @@
               class="chip tag-chip"
               :class="{ active: selectedTags.includes(tag) }"
               @click="toggleTag(tag)"
-            >{{ tag }}</span>
+            >{{ $tt(tag) }}</span>
           </div>
         </div>
 
@@ -213,10 +209,12 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useReferenceStore } from '../stores/reference'
+import { useI18n } from '../composables/useI18n'
 
 const router = useRouter()
 const authStore = useAuthStore()
 const refStore = useReferenceStore()
+const { $t } = useI18n()
 
 const fileInput = ref(null)
 const novelType = ref('normal') // 'normal' | 'lightnovel'

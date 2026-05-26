@@ -35,10 +35,25 @@ export function useI18n() {
     return text
   }
 
+  // 翻译类型/子类型名称：中文 → 当前语言
+  function $tn(name) {
+    if (!name) return name
+    const cur = locales[locale.value]
+    const zh = locales['zh']
+    return cur?.typeNames?.[name] || cur?.tagNames?.[name] || zh?.typeNames?.[name] || zh?.tagNames?.[name] || name
+  }
+
+  // 翻译标签名
+  function $tt(name) {
+    if (!name) return name
+    const map = locales[locale.value]?.tagNames || {}
+    return map[name] || locales['zh']?.tagNames?.[name] || name
+  }
+
   const currentLocale = computed(() => locale.value)
   const isZh = computed(() => locale.value === 'zh')
 
-  return { locale: currentLocale, isZh, setLocale, $t, t: $t }
+  return { locale: currentLocale, isZh, setLocale, $t, t: $t, $tn, $tt }
 }
 
 // 单例，所有组件共享同一状态

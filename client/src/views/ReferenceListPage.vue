@@ -1,9 +1,9 @@
 <template>
   <div class="page-container ref-list-page">
     <div class="page-header">
-      <span>📖 风格参考库</span>
+      <span>{{ $t('refList.title') }}</span>
       <button class="btn btn-sm btn-primary header-btn" @click="$router.push('/reference-upload')">
-        ➕ 上传
+        {{ $t('refList.upload') }}
       </button>
     </div>
 
@@ -17,17 +17,17 @@
       <!-- 空状态 -->
       <div v-else-if="refStore.referenceList.length === 0" class="empty-state">
         <div class="empty-icon">📚</div>
-        <div class="empty-text">还没有上传参考小说</div>
+        <div class="empty-text">{{ $t('refList.noData') }}</div>
         <button class="btn btn-primary btn-sm" style="margin-top:12px;" @click="$router.push('/reference-upload')">
-          📄 上传第一部
+          {{ $t('refList.uploadFirst') }}
         </button>
       </div>
 
       <!-- 列表（含统计） -->
       <template v-else>
         <div class="stats-bar">
-          <span>共 {{ refStore.referenceList.length }} 部</span>
-          <span>已分析 {{ analyzedCount }} 部</span>
+          <span>{{ $t('refList.total', { count: refStore.referenceList.length }) }}</span>
+          <span>{{ $t('refList.analyzed', { count: analyzedCount }) }}</span>
         </div>
         <div class="novel-list">
         <div
@@ -43,17 +43,17 @@
                 {{ novel.title }}
                 <span v-if="novel.novelType === 'lightnovel'" class="ln-badge">轻小说</span>
               </div>
-              <div class="novel-category">{{ novel.mainCategory }} / {{ novel.subCategory || '通用' }}</div>
+              <div class="novel-category">{{ $tn(novel.mainCategory) }} / {{ $tn(novel.subCategory) || $t('refList.general') }}</div>
             </div>
             <div class="header-right">
-              <span v-if="novel.aiProcessed" class="status-badge completed">已分析</span>
-              <span v-else class="status-badge paused">未分析</span>
+              <span v-if="novel.aiProcessed" class="status-badge completed">{{ $t('refList.analyzedBadge') }}</span>
+              <span v-else class="status-badge paused">{{ $t('refList.notAnalyzed') }}</span>
               <span class="quality-badge" :class="scoreClass(novel.qualityScore)">{{ novel.qualityScore || '-' }}</span>
             </div>
           </div>
           <div class="novel-meta">
             <span>📝 {{ (novel.originalLength || 0).toLocaleString() }} 字</span>
-            <span>🏷️ {{ (novel.tags || []).join(', ') || '无标签' }}</span>
+            <span>🏷️ {{ (novel.tags || []).map(t => $tt(t)).join(', ') || '无标签' }}</span>
           </div>
           <div class="novel-meta" v-if="novel.gender">
             <span>{{ novel.gender === 'male' ? '🚹 男频' : '🚺 女频' }}</span>
@@ -76,10 +76,10 @@
         <div class="detail-modal">
           <h3>📖 {{ detailNovel.title }}</h3>
           <div class="detail-info">
-            <div><strong>分类：</strong>{{ detailNovel.mainCategory }} / {{ detailNovel.subCategory || '通用' }}</div>
-            <div><strong>性别：</strong>{{ detailNovel.gender === 'male' ? '男频' : '女频' }}</div>
-            <div><strong>字数：</strong>{{ (detailNovel.originalLength || 0).toLocaleString() }}</div>
-            <div v-if="detailNovel.tags?.length"><strong>标签：</strong>{{ detailNovel.tags.join(', ') }}</div>
+            <div>{{ $t('refList.detailCategory', { cat: $tn(detailNovel.mainCategory), sub: $tn(detailNovel.subCategory) || $t('refList.general') }) }}</div>
+            <div>{{ $t('refList.detailGender', { gender: detailNovel.gender === 'male' ? $t('refList.genderMale') : $t('refList.genderFemale') }) }}</div>
+            <div>{{ $t('refList.detailWords', { count: (detailNovel.originalLength || 0).toLocaleString() }) }}</div>
+            <div v-if="detailNovel.tags?.length">{{ $t('refList.detailTags', { tags: detailNovel.tags.map(t => $tt(t)).join(', ') }) }}</div>
             <div><strong>质量评分：</strong><span class="quality-badge" :class="scoreClass(detailNovel.qualityScore)">{{ detailNovel.qualityScore || '未评估' }}</span></div>
           </div>
 
@@ -125,10 +125,12 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useReferenceStore } from '../stores/reference'
+import { useI18n } from '../composables/useI18n'
 
 const router = useRouter()
 const authStore = useAuthStore()
 const refStore = useReferenceStore()
+const { $t } = useI18n()
 const detailNovel = ref(null)
 const loading = ref(true)
 

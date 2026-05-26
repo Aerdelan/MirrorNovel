@@ -2,218 +2,187 @@
   <div class="page-container generate-page">
     <!-- Tab 切换 -->
     <div class="tabs">
-      <button class="tab" :class="{ active: activeTab === 'generate' }" @click="activeTab='generate'">✍️ 生成小说</button>
-      <button class="tab" :class="{ active: activeTab === 'lightnovel' }" @click="activeTab='lightnovel'">🌸 轻小说</button>
+      <button class="tab" :class="{ active: activeTab === 'generate' }" @click="activeTab='generate'">{{ $t('generate.tabGen') }}</button>
+      <button class="tab" :class="{ active: activeTab === 'lightnovel' }" @click="activeTab='lightnovel'">{{ $t('generate.tabLN') }}</button>
     </div>
 
     <!-- ==================== 生成 Tab ==================== -->
     <template v-if="activeTab === 'generate'">
-      <!-- 类型选择（带性别切换，对齐蒸馏页） -->
       <div class="card">
-        <div class="section-title">① 选择小说类型</div>
+        <div class="section-title">① {{ $t('generate.stepType') }}</div>
         <div class="gender-tabs">
-          <button :class="{ active: gender === 'male' }" @click="gender='male'">🚹 男频</button>
-          <button :class="{ active: gender === 'female' }" @click="gender='female'">🚺 女频</button>
+          <button :class="{ active: gender === 'male' }" @click="gender='male'">{{ $t('generate.maleFreq') }}</button>
+          <button :class="{ active: gender === 'female' }" @click="gender='female'">{{ $t('generate.femaleFreq') }}</button>
         </div>
         <div class="type-grid">
           <div v-for="cat in currentCats" :key="cat.name" class="type-card" :class="{ selected: selectedType === cat.name }" @click="selectedType = cat.name">
             <span class="type-icon">{{ cat.icon }}</span>
-            <span class="type-name">{{ cat.name }}</span>
+            <span class="type-name">{{ $tn(cat.name) }}</span>
           </div>
         </div>
-        <div v-if="selectedType" class="type-info">✅ 已选择：{{ selectedType }}</div>
+        <div v-if="selectedType" class="type-info">{{ $t('generate.selectedType', { name: $tn(selectedType) }) }}</div>
       </div>
 
-      <!-- 主角设定 -->
       <div class="card">
-        <div class="section-title">② 主角设定</div>
-        <input v-model="protagonistName" class="input" placeholder="故事主角名字" maxlength="20" />
+        <div class="section-title">② {{ $t('generate.stepChar') }}</div>
+        <input v-model="protagonistName" class="input" :placeholder="$t('generate.placeholderName')" maxlength="20" />
       </div>
 
-      <!-- 世界观设定 -->
       <div class="card">
-        <div class="section-title">③ 世界观设定</div>
-        <textarea v-model="worldSetting" class="textarea" placeholder="描述故事的世界观、背景设定、特殊规则等（可选）" rows="4"></textarea>
+        <div class="section-title">③ {{ $t('generate.stepWorld') }}</div>
+        <textarea v-model="worldSetting" class="textarea" :placeholder="$t('generate.placeholderWorld')" rows="4"></textarea>
       </div>
 
-      <!-- 大纲输入 -->
       <div v-if="genMode === 'book'" class="card">
-        <div class="section-title">📋 创作大纲</div>
+        <div class="section-title">📋 {{ $t('generate.stepOutline') }}</div>
         <div v-if="generating && outlineStreamingText" class="outline-streaming">
           <div class="outline-loading">
             <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-            <span>AI 正在生成大纲...</span>
+            <span>AI {{ $t('generate.statusGenerating') }}</span>
           </div>
           <div class="outline-preview">{{ generatedOutline || outline }}</div>
         </div>
-        <textarea v-model="outline" class="textarea" rows="4"
-          placeholder="可选，不填则由AI自动生成大纲"></textarea>
+        <textarea v-model="outline" class="textarea" rows="4" :placeholder="$t('generate.placeholderOutline')"></textarea>
       </div>
 
-      <!-- 参考风格匹配（自动匹配蒸馏库中对应类型的参考） -->
       <div v-if="authStore.user?.role === 'admin' && genRefsLoaded" class="card gen-ref-card">
-        <div class="section-title">📖 参考风格匹配</div>
+        <div class="section-title">{{ $t('generate.refMatch') }}</div>
         <div v-if="genFilteredRefs.length === 0" class="ln-ref-empty">
-          <template v-if="selectedType">蒸馏库中暂无匹配「{{ selectedType }}」的参考数据</template>
-          <template v-else>请先选择小说类型，系统将自动匹配蒸馏库中的参考风格</template>
+          <template v-if="selectedType">{{ $t('generate.refEmpty', { type: selectedType }) }}</template>
+          <template v-else>{{ $t('generate.refSelectType') }}</template>
         </div>
         <div v-else>
-          <div class="ln-ref-desc">已自动匹配 {{ genFilteredRefs.length }} 部「{{ selectedType }}」风格参考</div>
+          <div class="ln-ref-desc">{{ $t('generate.refAutoMatched', { count: genFilteredRefs.length, type: $tn(selectedType) }) }}</div>
           <div class="ln-ref-list">
-            <div
-              v-for="ref in genFilteredRefs"
-              :key="ref._id"
-              class="ln-ref-item"
-              :class="{ selected: genSelectedRefs.includes(ref._id) }"
-              @click="toggleGenRef(ref._id)"
-            >
+            <div v-for="ref in genFilteredRefs" :key="ref._id" class="ln-ref-item" :class="{ selected: genSelectedRefs.includes(ref._id) }" @click="toggleGenRef(ref._id)">
               <div class="ref-check">{{ genSelectedRefs.includes(ref._id) ? '☑️' : '⬜' }}</div>
               <div class="ref-info">
                 <div class="ref-title">{{ ref.title }}</div>
-                <div class="ref-meta">{{ ref.mainCategory }} · 质量分 {{ ref.qualityScore || '-' }}</div>
+                <div class="ref-meta">{{ ref.mainCategory }} · {{ $t('refList.qualityScore') }} {{ ref.qualityScore || '-' }}</div>
               </div>
             </div>
           </div>
-          <div v-if="genSelectedRefs.length > 0" class="ref-count">已选 {{ genSelectedRefs.length }} 部</div>
+          <div v-if="genSelectedRefs.length > 0" class="ref-count">{{ $t('generate.refSelected', { count: genSelectedRefs.length }) }}</div>
         </div>
       </div>
 
-      <!-- 模式选择 -->
       <div class="card">
-        <div class="section-title">④ 生成模式 & 字数设定</div>
+        <div class="section-title">④ {{ $t('generate.stepMode') }}</div>
         <div class="mode-radio-group">
           <label class="mode-radio" :class="{ active: genMode === 'book' }">
             <input type="radio" v-model="genMode" value="book" />
-            <span class="mode-icon">📚</span><span class="mode-label">生成整本</span>
+            <span class="mode-icon">📚</span><span class="mode-label">{{ $t('generate.modeBook') }}</span>
           </label>
           <label class="mode-radio" :class="{ active: genMode === 'chapter' }">
             <input type="radio" v-model="genMode" value="chapter" />
-            <span class="mode-icon">📄</span><span class="mode-label">生成一章</span>
+            <span class="mode-icon">📄</span><span class="mode-label">{{ $t('generate.modeChapter') }}</span>
           </label>
         </div>
         <div class="word-count-input" style="margin-top:12px;">
           <input v-model.number="targetWordCount" class="input" type="number" :min="genMode==='chapter'?500:1000" :max="genMode==='chapter'?20000:10000000" step="500" />
-          <span class="unit">字</span>
+          <span class="unit">{{ $t('generate.wordShort') }}</span>
         </div>
         <div class="word-count-presets">
           <span v-for="p in activePresets" :key="p.value" class="preset-btn" :class="{ active: targetWordCount === p.value }" @click="targetWordCount = p.value">{{ p.label }}</span>
         </div>
       </div>
 
-      <!-- 生成按钮 -->
       <button class="btn btn-primary btn-block btn-lg" :disabled="generating || !selectedType" @click="startGen">
-        {{ generating ? '⏳ 生成中...' : '🚀 开始创作' }}
+        {{ generating ? $t('generate.btnGenerating') : $t('generate.btnGenerate') }}
       </button>
 
-      <!-- 大纲生成进度 -->
       <div v-if="generating && outlineStreamingText" class="card outline-stream-card">
-        <div class="section-title">📋 大纲生成中...</div>
+        <div class="section-title">📋 {{ $t('generate.statusGenerating') }}</div>
         <div class="outline-stream-text">{{ outlineStreamingText }}</div>
       </div>
 
-      <!-- 生成状态 -->
       <div v-if="genStatus" class="gen-status" :class="{ ok: genOk }">{{ genStatus }}</div>
 
-      <!-- 流式输出 -->
       <div v-if="streamingText" class="card stream-card">
-        <div class="section-title">📝 生成内容</div>
+        <div class="section-title">📝 {{ $t('generate.modeBook') }}</div>
         <div class="stream-content" ref="streamRef">{{ streamingText }}</div>
       </div>
     </template>
 
     <!-- ==================== 轻小说 Tab ==================== -->
     <template v-if="activeTab === 'lightnovel'">
-      <!-- 类型选择 -->
       <div class="card">
-        <div class="section-title">① 选择轻小说类型</div>
+        <div class="section-title">① {{ $t('generate.lnStepType') }}</div>
         <div class="type-grid ln-grid">
           <div v-for="t in lnTypes" :key="t.id" class="type-card" :class="{ selected: lnSelectedType === t.id }" @click="lnSelectedType = t.id">
             <span class="type-icon">{{ t.icon }}</span>
-            <span class="type-name">{{ t.name }}</span>
+            <span class="type-name">{{ $tn(t.name) }}</span>
           </div>
         </div>
-        <div v-if="lnSelectedType" class="type-info">✅ 已选择：{{ lnTypes.find(t=>t.id===lnSelectedType)?.name }}</div>
+        <div v-if="lnSelectedType" class="type-info">{{ $t('generate.selectedType', { name: $tn(lnTypes.find(t=>t.id===lnSelectedType)?.name) }) }}</div>
       </div>
 
-      <!-- 角色设定 -->
       <div class="card">
-        <div class="section-title">② 角色设定</div>
-        <input v-model="lnCharName" class="input" placeholder="主角名字（日式风格，如：佐藤悠真）" maxlength="20" />
+        <div class="section-title">② {{ $t('generate.lnStepChar') }}</div>
+        <input v-model="lnCharName" class="input" :placeholder="$t('generate.lnPlaceholderName')" maxlength="20" />
         <div class="ln-trait-section" style="margin-top:10px;">
-          <div class="label-sm">角色属性</div>
+          <div class="label-sm">{{ $t('generate.lnCharTrait') }}</div>
           <div class="ln-traits">
-            <span v-for="trait in lnTraits" :key="trait" class="preset-btn" :class="{ active: lnCharTrait === trait }" @click="lnCharTrait = (lnCharTrait === trait ? '' : trait)">{{ trait }}</span>
+            <span v-for="trait in lnTraits" :key="trait" class="preset-btn" :class="{ active: lnCharTrait === trait }" @click="lnCharTrait = (lnCharTrait === trait ? '' : trait)">{{ $tt(trait) }}</span>
           </div>
         </div>
       </div>
 
-      <!-- 世界观设定 -->
       <div class="card">
-        <div class="section-title">③ 世界观 / 背景设定</div>
-        <textarea v-model="lnWorldSetting" class="textarea" rows="4" placeholder="描述故事发生的世界背景，如：剑与魔法的异世界、现代学园都市、近未来科幻都市等（可选）"></textarea>
+        <div class="section-title">③ {{ $t('generate.lnStepWorld') }}</div>
+        <textarea v-model="lnWorldSetting" class="textarea" rows="4" :placeholder="$t('generate.lnPlaceholderWorld')"></textarea>
       </div>
 
-      <!-- 参考风格匹配（自动匹配蒸馏库中对应类型的参考） -->
       <div v-if="authStore.user?.role === 'admin' && lnRefsLoaded" class="card ln-ref-card">
-        <div class="section-title">📖 参考风格匹配</div>
+        <div class="section-title">{{ $t('generate.refMatch') }}</div>
         <div v-if="lnFilteredRefs.length === 0" class="ln-ref-empty">
-          <template v-if="lnSelectedType">蒸馏库中暂无匹配「{{ lnTypes.find(t=>t.id===lnSelectedType)?.name }}」的参考轻小说</template>
-          <template v-else>请先选择轻小说类型，系统将自动匹配蒸馏库中的参考风格</template>
+          <template v-if="lnSelectedType">{{ $t('generate.refEmpty', { type: $tn(lnTypes.find(t=>t.id===lnSelectedType)?.name) }) }}</template>
+          <template v-else>{{ $t('generate.refSelectType') }}</template>
         </div>
         <div v-else>
-          <div class="ln-ref-desc">已自动匹配 {{ lnFilteredRefs.length }} 部「{{ lnTypes.find(t=>t.id===lnSelectedType)?.name }}」风格参考</div>
+          <div class="ln-ref-desc">{{ $t('generate.refAutoMatched', { count: lnFilteredRefs.length, type: $tn(lnTypes.find(t=>t.id===lnSelectedType)?.name) }) }}</div>
           <div class="ln-ref-list">
-            <div
-              v-for="ref in lnFilteredRefs"
-              :key="ref._id"
-              class="ln-ref-item"
-              :class="{ selected: lnSelectedRefs.includes(ref._id) }"
-              @click="toggleRef(ref._id)"
-            >
+            <div v-for="ref in lnFilteredRefs" :key="ref._id" class="ln-ref-item" :class="{ selected: lnSelectedRefs.includes(ref._id) }" @click="toggleRef(ref._id)">
               <div class="ref-check">{{ lnSelectedRefs.includes(ref._id) ? '☑️' : '⬜' }}</div>
               <div class="ref-info">
                 <div class="ref-title">{{ ref.title }}</div>
-                <div class="ref-meta">{{ ref.mainCategory }} · 质量分 {{ ref.qualityScore || '-' }}</div>
+                <div class="ref-meta">{{ ref.mainCategory }} · {{ $t('refList.qualityScore') }} {{ ref.qualityScore || '-' }}</div>
               </div>
             </div>
           </div>
-          <div v-if="lnSelectedRefs.length > 0" class="ref-count">已选 {{ lnSelectedRefs.length }} 部</div>
+          <div v-if="lnSelectedRefs.length > 0" class="ref-count">{{ $t('generate.refSelected', { count: lnSelectedRefs.length }) }}</div>
         </div>
       </div>
 
-      <!-- 模式选择 -->
       <div class="card">
-        <div class="section-title">④ 生成模式 & 字数设定</div>
+        <div class="section-title">④ {{ $t('generate.lnStepMode') }}</div>
         <div class="mode-radio-group">
           <label class="mode-radio" :class="{ active: lnGenMode === 'book' }">
             <input type="radio" v-model="lnGenMode" value="book" />
-            <span>📚 生成整本</span>
+            <span>{{ $t('generate.modeBook') }}</span>
           </label>
           <label class="mode-radio" :class="{ active: lnGenMode === 'chapter' }">
             <input type="radio" v-model="lnGenMode" value="chapter" />
-            <span>📄 生成一章</span>
+            <span>{{ $t('generate.modeChapter') }}</span>
           </label>
         </div>
         <div class="word-count-input" style="margin-top:12px;">
           <input v-model.number="lnTargetWordCount" class="input" type="number" :min="lnGenMode==='chapter'?500:1000" :max="lnGenMode==='chapter'?20000:10000000" step="500" />
-          <span class="unit">字</span>
+          <span class="unit">{{ $t('generate.wordShort') }}</span>
         </div>
         <div class="word-count-presets">
           <span v-for="p in lnActivePresets" :key="p.value" class="preset-btn" :class="{ active: lnTargetWordCount === p.value }" @click="lnTargetWordCount = p.value">{{ p.label }}</span>
         </div>
       </div>
 
-      <!-- 生成按钮 -->
       <button class="btn btn-primary btn-block btn-lg" :disabled="lnGenerating || !lnSelectedType" @click="startLNGen">
-        {{ lnGenerating ? '⏳ 生成中...' : '🌸 开始创作轻小说' }}
+        {{ lnGenerating ? $t('generate.btnGenerating') : $t('generate.lnBtnGenerate') }}
       </button>
 
-      <!-- 生成状态 -->
       <div v-if="lnStatus" class="gen-status" :class="{ ok: lnOk }">{{ lnStatus }}</div>
 
-      <!-- 流式输出 -->
       <div v-if="lnStreamingText" class="card stream-card">
-        <div class="section-title">📝 生成内容</div>
+        <div class="section-title">📝 {{ $t('generate.lnBtnGenerate') }}</div>
         <div class="stream-content" ref="lnStreamRef">{{ lnStreamingText }}</div>
       </div>
     </template>
