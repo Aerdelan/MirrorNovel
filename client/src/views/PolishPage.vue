@@ -89,8 +89,10 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useNovelStore } from '../stores/novel'
+import { useI18n } from '../composables/useI18n'
 
 const novelStore = useNovelStore()
+const { $t } = useI18n()
 
 // ---- 润色 ----
 const polishMode = ref('text')

@@ -1,100 +1,88 @@
 <template>
   <div class="novel-detail-page">
     <div class="detail-header">
-      <button class="back-btn" @click="goBack">← 返回</button>
+      <button class="back-btn" @click="goBack">← {{ $t('common.close') }}</button>
       <h2 class="detail-title">{{ novel?.title || '小说详情' }}</h2>
     </div>
-
     <div class="detail-content">
-      <!-- 概要 -->
       <div class="card summary-card">
-        <div class="summary-row"><span class="summary-label">类型</span><span>{{ novel?.novelTypeName }}</span></div>
-        <div class="summary-row"><span class="summary-label">主角</span><span>{{ novel?.protagonistName||'未设定' }}</span></div>
-        <div class="summary-row"><span class="summary-label">进度</span><span>{{ novel?.currentWordCount }} / {{ novel?.targetWordCount }} 字</span></div>
-        <div class="summary-row"><span class="summary-label">章节</span><span>{{ novel?.currentChapterIndex||0 }} 章</span></div>
+        <div class="summary-row"><span class="summary-label">{{ $t('novelDetail.chapter') }}</span><span>{{ novel?.novelTypeName }}</span></div>
+        <div class="summary-row"><span class="summary-label">{{ $t('generate.stepChar') }}</span><span>{{ novel?.protagonistName|| $t('novelDetail.unknown') }}</span></div>
+        <div class="summary-row"><span class="summary-label">{{ $t('bookshelf.progress') }}</span><span>{{ $t('novelDetail.outOf', { current: novel?.currentWordCount, target: novel?.targetWordCount }) }}</span></div>
+        <div class="summary-row"><span class="summary-label">{{ $t('bookshelf.chapter') }}</span><span>{{ novel?.currentChapterIndex||0 }} {{ $t('novelDetail.chapter') }}</span></div>
         <div class="summary-row"><span class="summary-label">状态</span><span class="status-badge" :class="novel?.status">{{ statusMap[novel?.status] }}</span></div>
       </div>
 
-      <!-- 生成设置弹窗 -->
       <Teleport to="body">
         <div v-if="showGenSettings" class="gen-overlay" @click.self="showGenSettings=false">
           <div class="gen-modal">
             <h3>⚙️ 生成设置</h3>
-            <div class="gf"><label>生成字数</label>
+            <div class="gf"><label>{{ $t('continue.wordCount') }}</label>
               <input v-model.number="genWordCount" class="input" type="number" min="500" max="8000" step="500" />
             </div>
             <div class="gf"><label>生成备注</label>
               <textarea v-model="genNotes" class="textarea" rows="3" placeholder="描述接下来要写的内容方向（选填）"></textarea>
             </div>
             <div class="gf-acts">
-              <button class="btn btn-outline" @click="showGenSettings=false">取消</button>
+              <button class="btn btn-outline" @click="showGenSettings=false">{{ $t('common.cancel') }}</button>
               <button class="btn btn-primary" @click="confirmGenSettings">开始生成</button>
             </div>
           </div>
         </div>
       </Teleport>
 
-      <!-- 编辑章节弹窗 -->
       <Teleport to="body">
         <div v-if="showEditModal" class="gen-overlay" @click.self="showEditModal=false">
           <div class="gen-modal edit-modal">
-            <h3>✏️ 编辑第{{ editingChapter?.chapterNumber }}章</h3>
+            <h3>{{ $t('novelDetail.editChapter', { num: editingChapter?.chapterNumber }) }}</h3>
             <textarea v-model="editContent" class="textarea" rows="12"></textarea>
             <div class="gf-acts">
-              <button class="btn btn-outline" @click="showEditModal=false">取消</button>
-              <button class="btn btn-primary" @click="saveEdit">保存</button>
+              <button class="btn btn-outline" @click="showEditModal=false">{{ $t('common.cancel') }}</button>
+              <button class="btn btn-primary" @click="saveEdit">{{ $t('common.save') }}</button>
             </div>
           </div>
         </div>
       </Teleport>
 
-      <!-- 是否未完成的最后章节 -->
       <div v-if="isLastChapterUnfinished" class="card action-card">
-        <button class="btn btn-primary btn-block" @click="openGenSettings(lastChapterNum)">
-          ▶ 继续生成第{{ lastChapterNum }}章
-        </button>
+        <button class="btn btn-primary btn-block" @click="openGenSettings(lastChapterNum)">▶ 继续生成第{{ lastChapterNum }}章</button>
       </div>
 
-      <!-- 实时续写内容 -->
       <div v-if="isContinuing" class="card streaming-card">
         <div class="streaming-header">
-          <span class="section-title">📝 续写中...（第{{ continuingChapter }}章）</span>
+          <span class="section-title">📝 {{ $t('bookshelf.aiWriting') }}（第{{ continuingChapter }}章）</span>
           <span class="generating-indicator"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
         </div>
         <div class="streaming-content" ref="streamingRef">
           <div class="content-text">{{ chapterStreamingText }}</div>
           <div class="cursor-blink">|</div>
         </div>
-        <button class="btn btn-outline btn-sm" style="margin-top:8px;" @click="stopChapterGen">⏸ 暂停</button>
+        <button class="btn btn-outline btn-sm" style="margin-top:8px;" @click="stopChapterGen">{{ $t('bookshelf.pause') }}</button>
       </div>
 
-      <!-- 章节列表 -->
       <div class="card">
         <div class="section-title">📖 章节列表</div>
         <div v-if="!novel?.chapters?.length" class="empty-chapters">暂无章节内容</div>
         <div v-for="(chapter, index) in novel?.chapters" :key="chapter.chapterNumber" class="chapter-item">
           <div class="chapter-header" @click="toggleChapter(index)">
             <span class="chapter-num">第{{ chapter.chapterNumber }}章</span>
-            <span class="chapter-words">{{ chapter.wordCount }}字</span>
+            <span class="chapter-words">{{ chapter.wordCount }}{{ $t('generate.wordShort') }}</span>
             <span class="expand-icon">{{ expandedChapter===index?'▼':'▶' }}</span>
           </div>
           <div v-show="expandedChapter===index" class="chapter-body">
             <div class="chapter-content">{{ chapter.content||'内容生成中...' }}</div>
             <div class="chapter-actions">
-              <button class="btn-ch action-edit" @click="openEdit(chapter)">✏️ 编辑</button>
-              <button class="btn-ch action-del" @click="confirmDeleteChapter(chapter)">🗑 删除</button>
+              <button class="btn-ch action-edit" @click="openEdit(chapter)">{{ $t('novelDetail.btnEdit') }}</button>
+              <button class="btn-ch action-del" @click="confirmDeleteChapter(chapter)">🗑 {{ $t('common.delete') }}</button>
               <button class="btn-ch action-deslop" @click="deslopChapter(chapter)">✨ 去AI味</button>
-              <button v-if="isLastUnfinished(index)" class="btn-ch action-gen" @click="openGenSettings(chapter.chapterNumber)">▶ 继续生成</button>
+              <button v-if="isLastUnfinished(index)" class="btn-ch action-gen" @click="openGenSettings(chapter.chapterNumber)">{{ $t('novelDetail.btnContinue') }}</button>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- 新章节（当所有章节完整时） -->
       <div v-if="allChaptersComplete" class="card">
-        <button class="btn btn-primary btn-block" @click="openGenSettings(nextChapterNum)">
-          ➕ 生成第{{ nextChapterNum }}章
-        </button>
+        <button class="btn btn-primary btn-block" @click="openGenSettings(nextChapterNum)">➕ 生成第{{ nextChapterNum }}章</button>
       </div>
     </div>
     <div style="height:20px;"></div>
@@ -105,11 +93,13 @@
 import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useNovelStore } from '../stores/novel'
+import { useI18n } from '../composables/useI18n'
 import api from '../api'
 
 const route = useRoute()
 const router = useRouter()
 const novelStore = useNovelStore()
+const { $t } = useI18n()
 
 const novel = ref(null)
 const expandedChapter = ref(null)
@@ -117,74 +107,41 @@ const isContinuing = ref(false)
 const continuingChapter = ref(0)
 const chapterStreamingText = ref('')
 const streamingRef = ref(null)
-
-// 生成设置
 const showGenSettings = ref(false)
 const genWordCount = ref(2000)
 const genNotes = ref('')
 const genTargetChapter = ref(0)
-
-// 编辑
 const showEditModal = ref(false)
 const editingChapter = ref(null)
 const editContent = ref('')
 
-const statusMap = { generating:'生成中', paused:'已暂停', completed:'已完成', error:'出错了' }
+const statusMap = { generating: $t('novelDetail.generating'), paused: $t('novelDetail.paused'), completed: $t('novelDetail.completed'), error: $t('bookshelf.statusError') }
 
 const lastChapterNum = computed(() => novel.value?.chapters?.length || 0)
 const nextChapterNum = computed(() => lastChapterNum.value + 1)
-const isLastChapterUnfinished = computed(() => {
-  if (!novel.value || novel.value.status !== 'paused') return false
-  const chs = novel.value.chapters
-  if (chs.length === 0) return false
-  return true // paused 状态说明最后章节可能不完整
-})
-const allChaptersComplete = computed(() => {
-  if (!novel.value) return false
-  return novel.value.status === 'completed' || novel.value.status === 'paused'
-})
-function isLastUnfinished(index) {
-  if (!novel.value || novel.value.status !== 'paused') return false
-  return index === novel.value.chapters.length - 1
-}
+const isLastChapterUnfinished = computed(() => { if (!novel.value || novel.value.status !== 'paused') return false; return novel.value.chapters.length > 0 })
+const allChaptersComplete = computed(() => { if (!novel.value) return false; return novel.value.status === 'completed' || novel.value.status === 'paused' })
+function isLastUnfinished(index) { if (!novel.value || novel.value.status !== 'paused') return false; return index === novel.value.chapters.length - 1 }
 
 onMounted(async () => {
-  const novelId = route.params.id
-  try {
-    const data = await novelStore.fetchNovelDetail(novelId)
-    novel.value = data
-  } catch { alert('获取失败'); router.push('/bookshelf') }
+  try { novel.value = await novelStore.fetchNovelDetail(route.params.id) }
+  catch { alert($t('error.unknown')); router.push('/bookshelf') }
 })
 
 watch(chapterStreamingText, async () => { await nextTick(); if (streamingRef.value) streamingRef.value.scrollTop = streamingRef.value.scrollHeight })
 
 function toggleChapter(idx) { expandedChapter.value = expandedChapter.value === idx ? null : idx }
+function openGenSettings(chapterNum) { genTargetChapter.value = chapterNum; genWordCount.value = 2000; genNotes.value = ''; showGenSettings.value = true }
+async function confirmGenSettings() { showGenSettings.value = false; await startChapterGen(genTargetChapter.value, genWordCount.value, genNotes.value) }
 
-// ---- 生成设置弹窗 ----
-function openGenSettings(chapterNum) {
-  genTargetChapter.value = chapterNum
-  genWordCount.value = 2000
-  genNotes.value = ''
-  showGenSettings.value = true
-}
-async function confirmGenSettings() {
-  showGenSettings.value = false
-  await startChapterGen(genTargetChapter.value, genWordCount.value, genNotes.value)
-}
-
-// ---- 继续生成指定章节 ----
 async function startChapterGen(chapterNum, wc, notes) {
-  isContinuing.value = true
-  continuingChapter.value = chapterNum
-  chapterStreamingText.value = ''
+  isContinuing.value = true; continuingChapter.value = chapterNum; chapterStreamingText.value = ''
   const token = localStorage.getItem('token')
-
   const xhr = new XMLHttpRequest()
   xhr.open('POST', `/api/novel/${route.params.id}/continue-chapter/${chapterNum}`)
   xhr.setRequestHeader('Authorization', `Bearer ${token}`)
   xhr.setRequestHeader('Content-Type', 'application/json')
   xhr.setRequestHeader('Accept', 'text/event-stream')
-
   let lastIdx = 0
   xhr.onprogress = () => {
     const newData = xhr.responseText.slice(lastIdx); lastIdx = xhr.responseText.length
@@ -193,10 +150,8 @@ async function startChapterGen(chapterNum, wc, notes) {
       try {
         const d = JSON.parse(line.slice(6))
         if (d.type === 'content') chapterStreamingText.value += d.content
-        else if (d.type === 'completed' || d.type === 'chapter_continued' || d.type === 'paused') {
-          isContinuing.value = false
-          refreshNovel()
-        } else if (d.type === 'error') { isContinuing.value = false; alert('生成失败:'+d.message) }
+        else if (d.type === 'completed' || d.type === 'chapter_continued' || d.type === 'paused') { isContinuing.value = false; refreshNovel() }
+        else if (d.type === 'error') { isContinuing.value = false; alert('生成失败:'+d.message) }
       } catch {}
     }
   }
@@ -205,70 +160,39 @@ async function startChapterGen(chapterNum, wc, notes) {
   xhr.send(JSON.stringify({ wordCount: wc, notes }))
   window.__chapterGenXHR = xhr
 }
-function stopChapterGen() {
-  if (window.__chapterGenXHR) { window.__chapterGenXHR.abort(); window.__chapterGenXHR = null }
-  isContinuing.value = false
-}
+function stopChapterGen() { if (window.__chapterGenXHR) { window.__chapterGenXHR.abort(); window.__chapterGenXHR = null }; isContinuing.value = false }
 
-// ---- 编辑章节 ----
-function openEdit(chapter) {
-  editingChapter.value = chapter
-  editContent.value = chapter.content || ''
-  showEditModal.value = true
-}
+function openEdit(chapter) { editingChapter.value = chapter; editContent.value = chapter.content || ''; showEditModal.value = true }
 async function saveEdit() {
-  try {
-    await api.put(`/api/novel/${route.params.id}/chapter/${editingChapter.value.chapterNumber}`, { content: editContent.value })
-    showEditModal.value = false
-    refreshNovel()
-  } catch (e) { alert('保存失败:'+(e.response?.data?.message||e.message)) }
+  try { await api.put(`/api/novel/${route.params.id}/chapter/${editingChapter.value.chapterNumber}`, { content: editContent.value }); showEditModal.value = false; refreshNovel() }
+  catch (e) { alert('保存失败:'+(e.response?.data?.message||e.message)) }
 }
 
-// ---- 删除章节 ----
-function confirmDeleteChapter(ch) {
-  if (!confirm(`确定删除第${ch.chapterNumber}章吗？`)) return
-  api.delete(`/api/novel/${route.params.id}/chapter/${ch.chapterNumber}`).then(() => {
-    refreshNovel()
-  }).catch(e => { alert('删除失败') })
-}
+function confirmDeleteChapter(ch) { if (!confirm(`确定删除第${ch.chapterNumber}章吗？`)) return; api.delete(`/api/novel/${route.params.id}/chapter/${ch.chapterNumber}`).then(() => refreshNovel()).catch(e => { alert('删除失败') }) }
 
 async function deslopChapter(chapter) {
   if (!confirm(`对第${chapter.chapterNumber}章进行去AI味处理？`)) return
   try {
     const res = await api.post('/novel/deslop', { text: chapter.content || '' })
-    if (res.data.processed) {
-      await api.put(`/novel/${route.params.id}/chapter/${chapter.chapterNumber}`, { content: res.data.processed })
-      refreshNovel()
-      alert('✅ 去AI味完成！')
-    }
+    if (res.data.processed) { await api.put(`/novel/${route.params.id}/chapter/${chapter.chapterNumber}`, { content: res.data.processed }); refreshNovel(); alert('✅ 去AI味完成！') }
   } catch (e) { alert('处理失败:'+(e.response?.data?.message||e.message)) }
 }
 
-async function refreshNovel() {
-  try { const data = await novelStore.fetchNovelDetail(route.params.id); novel.value = data }
-  catch {}
-}
-
+async function refreshNovel() { try { novel.value = await novelStore.fetchNovelDetail(route.params.id) } catch {} }
 function goBack() { router.push('/bookshelf') }
 </script>
 
 <style scoped>
 .novel-detail-page { height:100%; display:flex; flex-direction:column; }
-.detail-header {
-  display:flex; align-items:center; gap:12px; padding:12px 16px;
-  background:var(--card-bg); border-bottom:1px solid var(--border-color); flex-shrink:0;
-}
+.detail-header { display:flex; align-items:center; gap:12px; padding:12px 16px; background:var(--card-bg); border-bottom:1px solid var(--border-color); flex-shrink:0; }
 .back-btn { background:none; border:none; font-size:16px; color:var(--primary-color); cursor:pointer; padding:4px 8px; }
 .detail-title { font-size:16px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .detail-content { flex:1; overflow-y:auto; }
-
 .summary-card { display:flex; flex-direction:column; gap:8px; }
 .summary-row { display:flex; justify-content:space-between; align-items:center; }
 .summary-label { font-size:13px; color:var(--text-light); }
-
 .section-title { font-size:15px; font-weight:600; margin-bottom:12px; }
 .empty-chapters { text-align:center; padding:20px; color:var(--text-light); font-size:14px; }
-
 .chapter-item { border-bottom:1px solid var(--border-color); }
 .chapter-header { display:flex; align-items:center; gap:8px; padding:12px 0; cursor:pointer; user-select:none; }
 .chapter-num { flex:1; font-size:14px; font-weight:500; color:var(--text-primary); }
@@ -282,12 +206,7 @@ function goBack() { router.push('/bookshelf') }
 .action-del { color:#ff4d4f; border-color:#ff4d4f; }
 .action-gen { color:#52c41a; border-color:#52c41a; }
 .action-deslop { color:#FF6B35; border-color:#FF6B35; }
-
-/* 弹窗 */
-:global(.gen-overlay) {
-  position:fixed; top:0;left:0;right:0;bottom:0; background:rgba(0,0,0,0.5);
-  display:flex; align-items:center; justify-content:center; z-index:9999; padding:20px;
-}
+:global(.gen-overlay) { position:fixed; top:0;left:0;right:0;bottom:0; background:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; z-index:9999; padding:20px; }
 :global(.gen-modal) { background:white; border-radius:12px; padding:24px; max-width:420px; width:100%; }
 :global(.gen-modal h3) { margin-bottom:16px; }
 :global(.edit-modal) { max-width:600px; }
@@ -297,14 +216,11 @@ function goBack() { router.push('/bookshelf') }
 .gf .textarea { min-height:60px; font-family:inherit; }
 .gf-acts { display:flex; gap:8px; margin-top:12px; }
 .gf-acts button { flex:1; padding:10px; border:none; border-radius:8px; font-size:14px; cursor:pointer; }
-
-/* 流式框 */
 .streaming-card { max-height:350px; display:flex; flex-direction:column; }
 .streaming-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
 .streaming-content { flex:1; overflow-y:auto; max-height:260px; background:#f9f9f9; border-radius:8px; padding:12px; line-height:1.8; font-size:14px; white-space:pre-wrap; word-wrap:break-word; }
 .content-text { display:inline; }
 .cursor-blink { display:inline; animation:blink .8s step-end infinite; color:var(--primary-color); font-weight:bold; }
 @keyframes blink { 50%{opacity:0} }
-
 .action-card { text-align:center; }
 </style>
