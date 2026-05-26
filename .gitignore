@@ -12,3 +12,7 @@ test_fanqie/
 skills/
 monitor/
 CHANGELOG.md
+RELEASE_NOTES.md
+DEPLOY.md
+deploy.sh
+server/scripts/
