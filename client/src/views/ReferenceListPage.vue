@@ -39,7 +39,10 @@
           <div class="card-header">
             <div class="novel-icon">{{ getGenderIcon(novel.gender) }}{{ getMainIcon(novel.mainCategory) }}</div>
             <div class="novel-info">
-              <div class="novel-title">{{ novel.title }}</div>
+              <div class="novel-title">
+                {{ novel.title }}
+                <span v-if="novel.novelType === 'lightnovel'" class="ln-badge">轻小说</span>
+              </div>
               <div class="novel-category">{{ novel.mainCategory }} / {{ novel.subCategory || '通用' }}</div>
             </div>
             <div class="header-right">
@@ -192,7 +195,8 @@ onMounted(async () => {
 .card-header { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 6px; }
 .novel-icon { font-size: 24px; }
 .novel-info { flex: 1; min-width: 0; }
-.novel-title { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+.novel-title { font-size: 15px; font-weight: 600; color: var(--text-primary); display: flex; align-items: center; gap: 6px; }
+.ln-badge { font-size: 10px; background: #fff7e6; color: #fa8c16; padding: 1px 6px; border-radius: 8px; font-weight: 500; white-space: nowrap; }
 .novel-category { font-size: 12px; color: var(--text-light); margin-top: 2px; }
 .header-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
 

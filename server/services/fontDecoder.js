@@ -69,7 +69,7 @@ function decodeText(text, charMap) {
  * 解析 base64 字体数据 data:font/woff;base64,XXXX
  */
 function parseDataUri(src) {
-  const m = src.match(/data:font\\/[^;]+;base64,([a-zA-Z0-9+/=]+)/)
+  const m = src.match(/data:font\/[^;]+;base64,([a-zA-Z0-9+/=]+)/)
   if (m) {
     try {
       return Buffer.from(m[1], 'base64')

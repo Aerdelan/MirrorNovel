@@ -26,6 +26,7 @@ const currentRoute = computed(() => route.path)
 
 const tabs = [
   { name: 'generate', path: '/generate', icon: '✍️', label: '生成', roles: ['user', 'admin', 'importer'] },
+  { name: 'polish', path: '/polish', icon: '✨', label: '润色', roles: ['user', 'admin', 'importer'] },
   { name: 'profile', path: '/profile', icon: '👤', label: '我的', roles: ['user', 'admin', 'importer'] },
   { name: 'bookshelf', path: '/bookshelf', icon: '📖', label: '书架', roles: ['user', 'admin', 'importer'] },
   { name: 'distill', path: '/reference-upload', icon: '🧪', label: '蒸馏', roles: ['admin'] },

@@ -3,6 +3,7 @@ const mongoose = require('mongoose')
 const referenceNovelSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   title: { type: String, required: true },
+  novelType: { type: String, enum: ['normal', 'lightnovel'], default: 'normal' }, // normal=国产网文, lightnovel=轻小说
   // 分类路径：gender → mainCategory → subCategory → tags
   gender: { type: String, enum: ['male', 'female', 'unisex'], default: 'male' },
   mainCategory: { type: String, default: '' },

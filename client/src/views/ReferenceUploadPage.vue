@@ -8,15 +8,33 @@
     </div>
 
     <div class="upload-content">
-      <!-- === Step 1: 选择分类 === -->
-      <div class="card">
-        <div class="section-title">① 选择小说类型</div>
-
-        <!-- 性别切换 -->
-        <div class="gender-tabs">
-          <button :class="{ active: gender === 'male' }" @click="gender='male'">🚹 男频</button>
-          <button :class="{ active: gender === 'female' }" @click="gender='female'">🚺 女频</button>
+      <!-- === 小说类型切换 === -->
+      <div class="card ln-toggle-card">
+        <div class="section-title">① 选择蒸馏类型</div>
+        <div class="novel-type-toggle">
+          <button class="toggle-btn" :class="{ active: novelType === 'normal' }" @click="novelType='normal'">
+            📖 普通小说
+          </button>
+          <button class="toggle-btn" :class="{ active: novelType === 'lightnovel' }" @click="novelType='lightnovel'">
+            🌸 轻小说
+          </button>
         </div>
+        <div v-if="novelType === 'lightnovel'" class="ln-type-hint">
+          日式ACGN风格小说提取，分析角色萌属性、对话风格、动画感描写等
+        </div>
+      </div>
+
+      <!-- === Step 2: 选择分类 === -->
+      <div class="card">
+        <div class="section-title">② 选择{{ novelType === 'lightnovel' ? '轻小说' : '小说' }}类型</div>
+
+        <!-- 普通小说：男频/女频切换 -->
+        <template v-if="novelType === 'normal'">
+          <div class="gender-tabs">
+            <button :class="{ active: gender === 'male' }" @click="gender='male'">🚹 男频</button>
+            <button :class="{ active: gender === 'female' }" @click="gender='female'">🚺 女频</button>
+          </div>
+        </template>
 
         <!-- 搜索框 -->
         <div class="search-box">
@@ -25,7 +43,7 @@
           <button v-if="searchQuery" class="search-clear" @click="searchQuery=''">✕</button>
         </div>
 
-        <!-- 主分类（水平滚动标签） -->
+        <!-- 主分类 -->
         <div class="main-categories" ref="mainCatRef">
           <button
             v-for="cat in filteredMainCats"
@@ -191,7 +209,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useReferenceStore } from '../stores/reference'
@@ -201,11 +219,22 @@ const authStore = useAuthStore()
 const refStore = useReferenceStore()
 
 const fileInput = ref(null)
+const novelType = ref('normal') // 'normal' | 'lightnovel'
 const gender = ref('male')
 const searchQuery = ref('')
 const mainCategory = ref('')
 const subCategory = ref('')
 const selectedTags = ref([])
+
+// 轻小说类型列表（当 novelType === 'lightnovel' 时使用）
+const lnFullTypes = [
+  { name: '异世界转生', icon: '🌍', children: ['穿越异世界 / 转生', '迷宫探索 / 冒险者', '魔王 / 勇者', '龙族 / 精灵'] },
+  { name: '校园恋爱', icon: '🏫', children: ['青梅竹马 / 天降', '学生会 / 社团', '学园祭 / 修学旅行', '转校生 / 同桌'] },
+  { name: '奇幻冒险', icon: '⚔️', children: ['剑与魔法', '魔法学院', '骑士 / 王国', '精灵 / 矮人 / 兽人'] },
+  { name: '日常系', icon: '☕', children: ['治愈日常', '小镇生活', '美食 / 咖啡', '猫与书店'] },
+  { name: '战斗异能', icon: '💥', children: ['能力觉醒', '学园战斗', '排名赛', '异能组织'] },
+  { name: '科幻未来', icon: '🤖', children: ['未来都市 / 赛博', 'AI / 机器人', '星际 / 宇宙', '虚拟现实'] },
+]
 const selectedFile = ref(null)
 const novelTitle = ref('')
 const uploading = ref(false)
@@ -231,6 +260,14 @@ const cookieSaving = ref(false)
 const showCookieHelp = ref(false)
 const cookieStatusRef = computed(() => refStore.cookieStatus)
 
+// 切换小说类型时重置分类选择
+watch(novelType, () => {
+  mainCategory.value = ''
+  subCategory.value = ''
+  selectedTags.value = []
+  searchQuery.value = ''
+})
+
 async function saveCookie() {
   if (!cookieInput.value.trim()) return
   cookieSaving.value = true
@@ -254,8 +291,12 @@ async function clearCookie() {
 // 分类数据
 const allCategories = ref({ male: [], female: [], commonTags: [] })
 
-const currentCats = computed(() => allCategories.value[gender.value] || [])
+const currentCats = computed(() => {
+  if (novelType.value === 'lightnovel') return lnFullTypes
+  return allCategories.value[gender.value] || []
+})
 const commonTags = computed(() => {
+  if (novelType.value === 'lightnovel') return ['傲娇', '天然呆', '元气', '治愈', '腹黑', '热血', '异世界', '学园', '奇幻', '日常', '战斗']
   const q = searchQuery.value.toLowerCase()
   if (!q) return allCategories.value.commonTags || []
   return (allCategories.value.commonTags || []).filter(t => t.includes(q))
@@ -356,6 +397,7 @@ async function startFanqieImport() {
   try {
     const res = await refStore.fanqieImport({
       bookId: fanqieBookId.value.trim(),
+      novelType: novelType.value,
       gender: gender.value,
       mainCategory: mainCategory.value,
       subCategory: subCategory.value,
@@ -412,6 +454,7 @@ async function startUpload() {
     formData.append('mainCategory', mainCategory.value)
     formData.append('subCategory', subCategory.value)
     formData.append('tags', JSON.stringify(selectedTags.value))
+    formData.append('novelType', novelType.value)
 
     const res = await refStore.uploadFile(formData)
     statusMsg.value = res.message || '上传成功！'
@@ -461,6 +504,15 @@ onMounted(async () => {
 .header-btn { position: absolute; right: 12px; font-size: 12px; }
 .upload-content { padding: 8px 0; }
 .section-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
+
+/* 小说类型切换 */
+.ln-toggle-card { border: 2px solid #ffd591; background: linear-gradient(135deg, #fff7e6, #fffbe6); }
+.novel-type-toggle { display: flex; gap: 10px; }
+.toggle-btn { flex: 1; padding: 12px; border: 2px solid var(--border-color); border-radius: 10px; font-size: 14px; font-weight: 600; background: #f8f8f8; cursor: pointer; font-family: inherit; transition: all 0.2s; }
+.toggle-btn.active { border-color: var(--primary-color); background: #fff5f0; }
+.toggle-btn:first-child.active { border-color: #52c41a; background: #f6ffed; }
+.toggle-btn:last-child.active { border-color: #fa8c16; background: #fff7e6; }
+.ln-type-hint { margin-top: 8px; font-size: 12px; color: var(--text-light); text-align: center; }
 
 /* 性别切换 */
 .gender-tabs {

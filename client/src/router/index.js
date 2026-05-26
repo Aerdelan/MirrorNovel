@@ -60,6 +60,12 @@ const routes = [
     component: () => import('../views/ReferenceListPage.vue'),
     meta: { title: '风格参考库', requiresAuth: true, requiresAdmin: true },
   },
+  {
+    path: '/polish',
+    name: 'Polish',
+    component: () => import('../views/PolishPage.vue'),
+    meta: { title: '润色文本', requiresAuth: true },
+  },
 ]
 
 const router = createRouter({

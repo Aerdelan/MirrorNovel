@@ -21,8 +21,57 @@ const adminOnly = async (req, res, next) => {
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } }) // 10MB
 
 // ---- AI 提取风格配置 ----
-async function extractStyleProfile(fileContent, mainCategory, subCategory) {
-  const prompt = `你是一位专业的小说分析专家。请分析以下小说内容，提取它的风格特征。
+async function extractStyleProfile(fileContent, mainCategory, subCategory, novelType = 'normal') {
+  const isLightNovel = novelType === 'lightnovel'
+  const typeLabel = isLightNovel ? '轻小说（日式ACGN风格）' : '小说'
+
+  const prompt = isLightNovel
+    ? `你是一位专业的轻小说分析专家。请分析以下轻小说的内容，提取它的风格特征。
+
+轻小说类型：${mainCategory}${subCategory ? ' - ' + subCategory : ''}
+
+请按以下格式输出（纯文本，不要用Markdown）：
+
+【风格描述】
+用 800-1000 字详细描述这部轻小说的整体风格。从以下几个维度展开：
+1. 叙事视角：第一人称还是第三人称，主角视角的贴近程度（内心独白的频率和风格）
+2. 角色塑造：角色萌属性（傲娇/天然呆/元气/冷酷等）的表现方式，角色间互动（吐槽/暧昧/羁绊）
+3. 对话风格：对话占比、对话中是否包含角色个性（口头禅、语气词、称呼方式）
+4. 描写风格：场景描写是否有动画感（画面感强，类似分镜）、萌系动作描写（脸红/慌张/遮嘴笑等）
+5. 情感基调：整体氛围（温馨/热血/治愈/伤感）、情感表达是直白还是含蓄
+6. 叙事节奏：日常/战斗/剧情的穿插比例，节奏快慢变化
+7. 用词倾向：是否使用拟声词、语气词（啊、呢、哟）、称呼后缀（さん、君、酱）
+
+【精选片段】
+从原文中挑选 8-10 个最能体现该轻小说风格的片段，每个片段不超过 300 字，用 【片段1】 【片段2】 ... 【片段10】 标记。要求覆盖以下类型（尽可能多覆盖）：
+- 初次登场/自我介绍
+- 角色间典型对话（含吐槽/斗嘴）
+- 萌系互动场景
+- 战斗/异能使用场景
+- 情感高潮/告白场景
+- 日常温馨场景
+- 搞笑/欢乐桥段
+- 世界观/设定说明
+- 章末悬念/钩子
+- 内心独白段落
+
+【写作特点】
+用 200-300 字从写作技法角度分析这部轻小说：句式特点、节奏把控、角色对话设计、伏笔与回收、段落布局（短段落快速切换）、情绪调动方式。
+
+【特色词汇】
+列出这部轻小说中最有辨识度的 15-25 个特色词汇/角色用语/设定术语，用逗号分隔。
+
+【章节结构】
+用 80-150 字概括该轻小说的章节结构规律，包括每章平均字数、开章方式（日常开头/直接进入事件）、结尾方式（悬念/温馨收尾/超展开）。
+
+【质量评分】
+根据该轻小说内容与所选分类（${mainCategory}${subCategory ? ' - ' + subCategory : ''}）的匹配程度，给出一个 1-100 的整数分数。只输出数字，不要额外文字。
+
+以下是轻小说内容（只截取前半部分供分析）：
+
+${fileContent.slice(0, 20000)}`
+
+    : `你是一位专业的小说分析专家。请分析以下小说内容，提取它的风格特征。
 
 小说类型：${mainCategory}${subCategory ? ' - ' + subCategory : ''}
 
@@ -68,7 +117,7 @@ async function extractStyleProfile(fileContent, mainCategory, subCategory) {
 ${fileContent.slice(0, 20000)}`
 
   const result = await streamGenerate(
-    '你是一位专业的小说分析专家，擅长提取文本风格特征。',
+    `你是一位专业的${typeLabel}分析专家，擅长提取文本风格特征。`,
     prompt, null, null,
     resolveApiConfig(null, 'writing')
   )
@@ -110,7 +159,7 @@ router.post('/upload', auth, adminOnly, upload.single('file'), async (req, res) 
     const ext = path.extname(req.file.originalname).toLowerCase()
     if (ext !== '.txt') return res.status(400).json({ message: '仅支持 .txt 文件' })
 
-    const { title, gender, mainCategory, subCategory, tags } = req.body
+    const { title, gender, mainCategory, subCategory, tags, novelType } = req.body
     if (!title || !gender || !mainCategory) {
       return res.status(400).json({ message: '请填写小说名称和分类' })
     }
@@ -123,7 +172,7 @@ router.post('/upload', auth, adminOnly, upload.single('file'), async (req, res) 
     // AI 提取风格
     let styleProfile = '', keyExcerpts = [], writingCharacteristics = '', vocabularyBank = [], chapterStructure = '', qualityScore = 0
     try {
-      const raw = await extractStyleProfile(content, mainCategory, subCategory)
+      const raw = await extractStyleProfile(content, mainCategory, subCategory, novelType || 'normal')
       const parsed = parseStyleOutput(raw)
       styleProfile = parsed.styleProfile
       keyExcerpts = parsed.keyExcerpts
@@ -139,6 +188,7 @@ router.post('/upload', auth, adminOnly, upload.single('file'), async (req, res) 
     const doc = await ReferenceNovel.create({
       userId: req.userId,
       title,
+      novelType: novelType || 'normal',
       gender, mainCategory, subCategory,
       tags: tags ? (typeof tags === 'string' ? JSON.parse(tags) : tags) : [],
       styleProfile, keyExcerpts, writingCharacteristics, vocabularyBank, chapterStructure, qualityScore,
@@ -267,7 +317,7 @@ router.get('/fanqie-download', auth, adminOnly, async (req, res) => {
 // ---- 从番茄小说导入并蒸馏（放在 /:id 前面） ----
 router.post('/fanqie-import', auth, adminOnly, async (req, res) => {
   try {
-    let { bookId, gender, mainCategory, subCategory, tags } = req.body
+    let { bookId, gender, mainCategory, subCategory, tags, novelType } = req.body
     if (!bookId) return res.status(400).json({ message: '请输入番茄小说 Book ID' })
 
     // 先获取书名、章节列表和分类标签
@@ -317,6 +367,7 @@ router.post('/fanqie-import', auth, adminOnly, async (req, res) => {
     const doc = await ReferenceNovel.create({
       userId: req.userId,
       title: realTitle,
+      novelType: novelType || 'normal',
       gender: gender || 'male',
       mainCategory, subCategory: subCategory || '',
       tags: tags || [],
@@ -354,7 +405,7 @@ router.post('/fanqie-import', auth, adminOnly, async (req, res) => {
     let styleProfile = '', keyExcerpts = [], writingCharacteristics = '',
         vocabularyBank = [], chapterStructure = '', qualityScore = 0
     try {
-      const raw = await extractStyleProfile(fullText, mainCategory, subCategory)
+      const raw = await extractStyleProfile(fullText, mainCategory, subCategory, novelType || 'normal')
       const parsed = parseStyleOutput(raw)
       styleProfile = parsed.styleProfile; keyExcerpts = parsed.keyExcerpts
       writingCharacteristics = parsed.writingCharacteristics; vocabularyBank = parsed.vocabularyBank
@@ -371,6 +422,21 @@ router.post('/fanqie-import', auth, adminOnly, async (req, res) => {
   } catch (error) {
     console.error('番茄导入失败:', error)
     if (!res.headersSent) res.status(500).json({ message: '导入失败: ' + error.message })
+  }
+})
+
+// 按 novelType 筛选参考小说列表（用于轻小说生成匹配，所有登录用户可访问）
+router.get('/list-by-type', auth, async (req, res) => {
+  try {
+    const { type } = req.query
+    const filter = type ? { novelType: type } : {}
+    const novels = await ReferenceNovel.find(filter)
+      .select('title novelType mainCategory subCategory styleProfile qualityScore aiProcessed')
+      .sort({ qualityScore: -1, createdAt: -1 })
+      .limit(50)
+    res.json(novels)
+  } catch (error) {
+    res.status(500).json({ message: '获取列表失败', error: error.message })
   }
 })
 

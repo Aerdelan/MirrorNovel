@@ -3,7 +3,7 @@
     <!-- Tab 切换 -->
     <div class="tabs">
       <button class="tab" :class="{ active: activeTab === 'generate' }" @click="activeTab='generate'">✍️ 生成小说</button>
-      <button class="tab" :class="{ active: activeTab === 'polish' }" @click="activeTab='polish'">✨ 润色文本</button>
+      <button class="tab" :class="{ active: activeTab === 'lightnovel' }" @click="activeTab='lightnovel'">🌸 轻小说</button>
     </div>
 
     <!-- ==================== 生成 Tab ==================== -->
@@ -50,6 +50,34 @@
           placeholder="可选，不填则由AI自动生成大纲"></textarea>
       </div>
 
+      <!-- 参考风格匹配（自动匹配蒸馏库中对应类型的参考） -->
+      <div v-if="authStore.user?.role === 'admin' && genRefsLoaded" class="card gen-ref-card">
+        <div class="section-title">📖 参考风格匹配</div>
+        <div v-if="genFilteredRefs.length === 0" class="ln-ref-empty">
+          <template v-if="selectedType">蒸馏库中暂无匹配「{{ selectedType }}」的参考数据</template>
+          <template v-else>请先选择小说类型，系统将自动匹配蒸馏库中的参考风格</template>
+        </div>
+        <div v-else>
+          <div class="ln-ref-desc">已自动匹配 {{ genFilteredRefs.length }} 部「{{ selectedType }}」风格参考</div>
+          <div class="ln-ref-list">
+            <div
+              v-for="ref in genFilteredRefs"
+              :key="ref._id"
+              class="ln-ref-item"
+              :class="{ selected: genSelectedRefs.includes(ref._id) }"
+              @click="toggleGenRef(ref._id)"
+            >
+              <div class="ref-check">{{ genSelectedRefs.includes(ref._id) ? '☑️' : '⬜' }}</div>
+              <div class="ref-info">
+                <div class="ref-title">{{ ref.title }}</div>
+                <div class="ref-meta">{{ ref.mainCategory }} · 质量分 {{ ref.qualityScore || '-' }}</div>
+              </div>
+            </div>
+          </div>
+          <div v-if="genSelectedRefs.length > 0" class="ref-count">已选 {{ genSelectedRefs.length }} 部</div>
+        </div>
+      </div>
+
       <!-- 模式选择 -->
       <div class="card">
         <div class="section-title">④ 生成模式 & 字数设定</div>
@@ -93,99 +121,116 @@
       </div>
     </template>
 
-    <!-- ==================== 润色 Tab ==================== -->
-    <template v-if="activeTab === 'polish'">
-      <!-- 输入方式选择 -->
+    <!-- ==================== 轻小说 Tab ==================== -->
+    <template v-if="activeTab === 'lightnovel'">
+      <!-- 类型选择 -->
       <div class="card">
-        <div class="section-title">① 选择输入方式（二选一）</div>
+        <div class="section-title">① 选择轻小说类型</div>
+        <div class="type-grid ln-grid">
+          <div v-for="t in lnTypes" :key="t.id" class="type-card" :class="{ selected: lnSelectedType === t.id }" @click="lnSelectedType = t.id">
+            <span class="type-icon">{{ t.icon }}</span>
+            <span class="type-name">{{ t.name }}</span>
+          </div>
+        </div>
+        <div v-if="lnSelectedType" class="type-info">✅ 已选择：{{ lnTypes.find(t=>t.id===lnSelectedType)?.name }}</div>
+      </div>
+
+      <!-- 角色设定 -->
+      <div class="card">
+        <div class="section-title">② 角色设定</div>
+        <input v-model="lnCharName" class="input" placeholder="主角名字（日式风格，如：佐藤悠真）" maxlength="20" />
+        <div class="ln-trait-section" style="margin-top:10px;">
+          <div class="label-sm">角色属性</div>
+          <div class="ln-traits">
+            <span v-for="trait in lnTraits" :key="trait" class="preset-btn" :class="{ active: lnCharTrait === trait }" @click="lnCharTrait = (lnCharTrait === trait ? '' : trait)">{{ trait }}</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 世界观设定 -->
+      <div class="card">
+        <div class="section-title">③ 世界观 / 背景设定</div>
+        <textarea v-model="lnWorldSetting" class="textarea" rows="4" placeholder="描述故事发生的世界背景，如：剑与魔法的异世界、现代学园都市、近未来科幻都市等（可选）"></textarea>
+      </div>
+
+      <!-- 参考风格匹配（自动匹配蒸馏库中对应类型的参考） -->
+      <div v-if="authStore.user?.role === 'admin' && lnRefsLoaded" class="card ln-ref-card">
+        <div class="section-title">📖 参考风格匹配</div>
+        <div v-if="lnFilteredRefs.length === 0" class="ln-ref-empty">
+          <template v-if="lnSelectedType">蒸馏库中暂无匹配「{{ lnTypes.find(t=>t.id===lnSelectedType)?.name }}」的参考轻小说</template>
+          <template v-else>请先选择轻小说类型，系统将自动匹配蒸馏库中的参考风格</template>
+        </div>
+        <div v-else>
+          <div class="ln-ref-desc">已自动匹配 {{ lnFilteredRefs.length }} 部「{{ lnTypes.find(t=>t.id===lnSelectedType)?.name }}」风格参考</div>
+          <div class="ln-ref-list">
+            <div
+              v-for="ref in lnFilteredRefs"
+              :key="ref._id"
+              class="ln-ref-item"
+              :class="{ selected: lnSelectedRefs.includes(ref._id) }"
+              @click="toggleRef(ref._id)"
+            >
+              <div class="ref-check">{{ lnSelectedRefs.includes(ref._id) ? '☑️' : '⬜' }}</div>
+              <div class="ref-info">
+                <div class="ref-title">{{ ref.title }}</div>
+                <div class="ref-meta">{{ ref.mainCategory }} · 质量分 {{ ref.qualityScore || '-' }}</div>
+              </div>
+            </div>
+          </div>
+          <div v-if="lnSelectedRefs.length > 0" class="ref-count">已选 {{ lnSelectedRefs.length }} 部</div>
+        </div>
+      </div>
+
+      <!-- 模式选择 -->
+      <div class="card">
+        <div class="section-title">④ 生成模式 & 字数设定</div>
         <div class="mode-radio-group">
-          <label class="mode-radio" :class="{ active: polishMode === 'text' }">
-            <input type="radio" v-model="polishMode" value="text" />
-            <span>⌨️ 输入文本</span>
+          <label class="mode-radio" :class="{ active: lnGenMode === 'book' }">
+            <input type="radio" v-model="lnGenMode" value="book" />
+            <span>📚 生成整本</span>
           </label>
-          <label class="mode-radio" :class="{ active: polishMode === 'file' }">
-            <input type="radio" v-model="polishMode" value="file" />
-            <span>📄 上传文件</span>
+          <label class="mode-radio" :class="{ active: lnGenMode === 'chapter' }">
+            <input type="radio" v-model="lnGenMode" value="chapter" />
+            <span>📄 生成一章</span>
           </label>
         </div>
-      </div>
-
-      <!-- 文本输入 -->
-      <div v-if="polishMode === 'text'" class="card">
-        <div class="section-title">② 输入需要润色的文本</div>
-        <textarea v-model="polishText" class="textarea" rows="8" placeholder="粘贴需要润色的小说文本..."></textarea>
-      </div>
-
-      <!-- 文件上传 -->
-      <div v-if="polishMode === 'file'" class="card">
-        <div class="section-title">② 上传需要润色的 .txt 文件</div>
-        <div class="upload-area" @click="$refs.polishFileInput.click()">
-          <input ref="polishFileInput" type="file" accept=".txt" @change="handlePolishFile" style="display:none" />
-          <div v-if="!polishFileName" class="upload-placeholder">
-            <div class="upload-icon">📄</div>
-            <div>点击选择 .txt 文件</div>
-          </div>
-          <div v-else class="upload-file-info">
-            <div class="file-icon">📄</div>
-            <div class="file-name">{{ polishFileName }}</div>
-          </div>
+        <div class="word-count-input" style="margin-top:12px;">
+          <input v-model.number="lnTargetWordCount" class="input" type="number" :min="lnGenMode==='chapter'?500:1000" :max="lnGenMode==='chapter'?20000:10000000" step="500" />
+          <span class="unit">字</span>
+        </div>
+        <div class="word-count-presets">
+          <span v-for="p in lnActivePresets" :key="p.value" class="preset-btn" :class="{ active: lnTargetWordCount === p.value }" @click="lnTargetWordCount = p.value">{{ p.label }}</span>
         </div>
       </div>
 
-      <!-- 润色方案 -->
-      <div class="card">
-        <div class="section-title">③ 润色方案</div>
-        <div class="polish-presets">
-          <span v-for="p in polishPresets" :key="p.label" class="preset-btn" :class="{ active: polishPrompt === p.prompt }" @click="polishPrompt = p.prompt">{{ p.label }}</span>
-        </div>
-        <textarea v-model="polishPrompt" class="textarea" rows="4" placeholder="自定义润色要求..."></textarea>
-      </div>
-
-      <!-- 去AI味选项 -->
-      <div class="card">
-        <div class="section-title">④ 附加选项</div>
-        <label class="checkbox-row">
-          <input type="checkbox" v-model="polishDoDeslop" />
-          <span>润色完成后同步执行去AI味处理</span>
-        </label>
-      </div>
-
-      <!-- 润色按钮 -->
-      <button class="btn btn-primary btn-block btn-lg" :disabled="polishing || !polishReady" @click="startPolish">
-        {{ polishing ? '⏳ 润色中...' : '✨ 开始润色' }}
+      <!-- 生成按钮 -->
+      <button class="btn btn-primary btn-block btn-lg" :disabled="lnGenerating || !lnSelectedType" @click="startLNGen">
+        {{ lnGenerating ? '⏳ 生成中...' : '🌸 开始创作轻小说' }}
       </button>
-      <div v-if="!polishReady && !polishing" class="polish-hint">
-        {{ polishMode === 'text' ? '请在上方输入需要润色的文本' : '请上传一个 .txt 文件' }}
-      </div>
 
-      <!-- 润色进度 -->
-      <div v-if="polishing" class="card polish-stream-card">
-        <div class="section-title">📝 润色进度</div>
-        <div class="polish-status">{{ polishStatusText }}</div>
-        <div class="polish-progress-bar" v-if="polishProgress > 0">
-          <div class="progress-fill" :style="{ width: polishProgress + '%' }"></div>
-        </div>
-        <div class="polish-preview" v-if="polishedText">{{ polishedText.length > 300 ? polishedText.substring(0,300)+'...' : polishedText }}</div>
-      </div>
+      <!-- 生成状态 -->
+      <div v-if="lnStatus" class="gen-status" :class="{ ok: lnOk }">{{ lnStatus }}</div>
 
-      <!-- 润色完成 -->
-      <div v-if="polishCompleted" class="card" style="text-align:center;">
-        <div class="section-title">✅ 润色完成！共 {{ polishedText.length }} 字</div>
-        <button class="btn btn-success btn-lg" @click="downloadPolish">📥 下载为 .txt 文件</button>
+      <!-- 流式输出 -->
+      <div v-if="lnStreamingText" class="card stream-card">
+        <div class="section-title">📝 生成内容</div>
+        <div class="stream-content" ref="lnStreamRef">{{ lnStreamingText }}</div>
       </div>
     </template>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNovelStore } from '../stores/novel'
 import { useAuthStore } from '../stores/auth'
+import { useReferenceStore } from '../stores/reference'
 
 const router = useRouter()
 const novelStore = useNovelStore()
 const authStore = useAuthStore()
+const refStore = useReferenceStore()
 
 const streamRef = ref(null)
 
@@ -231,6 +276,7 @@ async function startGen() {
     targetWordCount: targetWordCount.value,
     mode: genMode.value,
     outline: outline.value,
+    referenceIds: genSelectedRefs.value.length > 0 ? genSelectedRefs.value : undefined,
   }
 
   novelStore.startGeneration(params,
@@ -259,84 +305,132 @@ function scrollToBottom() {
   nextTick(() => { if (streamRef.value) streamRef.value.scrollTop = streamRef.value.scrollHeight })
 }
 
-// ---- 润色 ----
-const polishMode = ref('text')
-const polishText = ref('')
-const polishFileName = ref('')
-const polishFileContent = ref('')
-const polishPrompt = ref('')
-const polishDoDeslop = ref(false)
-const polishing = ref(false)
-const polishedText = ref('')
-const polishCompleted = ref(false)
-const polishStatusText = ref('')
-const polishProgress = ref(0)
+// ---- 轻小说 ----
+const lnTypes = ref([
+  { id: 'lightnovel_isekai', name: '异世界转生', icon: '🌍' },
+  { id: 'lightnovel_school', name: '校园恋爱', icon: '🏫' },
+  { id: 'lightnovel_fantasy', name: '奇幻冒险', icon: '⚔️' },
+  { id: 'lightnovel_slice', name: '日常系', icon: '☕' },
+  { id: 'lightnovel_battle', name: '战斗异能', icon: '💥' },
+  { id: 'lightnovel_scifi', name: '科幻未来', icon: '🤖' },
+])
+const lnSelectedType = ref('')
+const lnCharName = ref('')
+const lnCharTrait = ref('')
+const lnWorldSetting = ref('')
+const lnGenMode = ref('book')
+const lnTargetWordCount = ref(50000)
+const lnGenerating = ref(false)
+const lnStatus = ref('')
+const lnOk = ref(false)
+const lnStreamingText = ref('')
+const lnStreamRef = ref(null)
 
-const polishPresets = [
-  { label: '默认润色', prompt: '请对以下小说文本进行润色优化：修正语病，优化用词，调整句式节奏，保留原文风格。直接输出润色后文本。' },
-  { label: '精简文风', prompt: '请对以下文本进行精简润色：删除冗余描写，让句子更简洁有力，节奏更明快。保留核心剧情和人物对话。直接输出。' },
-  { label: '华丽文风', prompt: '请对以下文本进行华丽风格润色：增加生动的细节描写和修辞手法，使用更丰富的词汇，提升文学性。直接输出。' },
-  { label: '口语化', prompt: '请对以下文本进行口语化润色：让语言更自然、更像日常对话，减少书面化表达，增加接地气的用词。直接输出。' },
-]
+// ---- 生成小说 - 参考库匹配 ----
+const genRefs = ref([])
+const genRefsLoaded = ref(false)
+const genSelectedRefs = ref([])
 
-const polishReady = computed(() => {
-  if (polishMode.value === 'text') return polishText.value.trim().length >= 1
-  return polishFileContent.value.trim().length >= 1
+const genFilteredRefs = computed(() => {
+  if (!selectedType.value) return []
+  return genRefs.value.filter(r => r.mainCategory === selectedType.value)
 })
 
-function handlePolishFile(e) {
-  const file = e.target.files?.[0]
-  if (!file || !file.name.endsWith('.txt')) return alert('仅支持 .txt 文件')
-  polishFileName.value = file.name
-  const reader = new FileReader()
-  reader.onload = () => { polishFileContent.value = reader.result }
-  reader.readAsText(file, 'UTF-8')
+watch(selectedType, () => {
+  genSelectedRefs.value = genFilteredRefs.value.map(r => r._id)
+})
+
+function toggleGenRef(id) {
+  const idx = genSelectedRefs.value.indexOf(id)
+  if (idx > -1) genSelectedRefs.value.splice(idx, 1)
+  else genSelectedRefs.value.push(id)
 }
 
-function startPolish() {
-  const text = polishMode.value === 'text' ? polishText.value : polishFileContent.value
-  if (!text || text.trim().length < 10) return alert('请输入至少10个字符')
+// ---- 轻小说 ----
+// 轻小说类型ID → 蒸馏库 mainCategory 名称映射
+const lnTypeToCat = {
+  lightnovel_isekai: '异世界转生',
+  lightnovel_school: '校园恋爱',
+  lightnovel_fantasy: '奇幻冒险',
+  lightnovel_slice: '日常系',
+  lightnovel_battle: '战斗异能',
+  lightnovel_scifi: '科幻未来',
+}
 
-  polishing.value = true; polishCompleted.value = false
-  polishedText.value = ''; polishStatusText.value = '正在润色...'
-  polishProgress.value = 0
+// 参考库匹配
+const lnRefs = ref([])
+const lnRefsLoaded = ref(false)
+const lnSelectedRefs = ref([])
 
-  let totalChunks = 0
-  novelStore.startPolish(
-    { text, polishPrompt: polishPrompt.value || undefined, doDeslop: polishDoDeslop.value },
-    (chunk, isDeslop) => {
-      polishedText.value += chunk
-      totalChunks++
-      polishProgress.value = Math.min(95, Math.round(totalChunks / 10))
-      if (isDeslop) {
-        polishStatusText.value = '正在执行去AI味处理...'
-        polishProgress.value = 96
-      } else {
-        polishStatusText.value = '正在润色...'
-      }
-    },
+// 根据已选轻小说类型自动过滤匹配的参考
+const lnFilteredRefs = computed(() => {
+  if (!lnSelectedType.value) return []
+  const catName = lnTypeToCat[lnSelectedType.value]
+  if (!catName) return []
+  return lnRefs.value.filter(r => r.mainCategory === catName)
+})
+
+// 切换类型时自动选中匹配的参考
+watch(lnSelectedType, () => {
+  lnSelectedRefs.value = lnFilteredRefs.value.map(r => r._id)
+})
+
+function toggleRef(id) {
+  const idx = lnSelectedRefs.value.indexOf(id)
+  if (idx > -1) lnSelectedRefs.value.splice(idx, 1)
+  else lnSelectedRefs.value.push(id)
+}
+
+const lnTraits = ['元气', '冷酷', '温柔', '傲娇', '天然呆', '腹黑', '高冷', '治愈', '热血', '神秘', '活泼', '冷静']
+
+const lnActivePresets = computed(() => {
+  if (lnGenMode.value === 'book') return [{ label: '5万字', value: 50000 }, { label: '10万字', value: 100000 }, { label: '30万字', value: 300000 }, { label: '50万字', value: 500000 }]
+  return [{ label: '1000字', value: 1000 }, { label: '2000字', value: 2000 }, { label: '3000字', value: 3000 }, { label: '5000字', value: 5000 }]
+})
+
+async function startLNGen() {
+  if (!lnSelectedType.value) return alert('请选择轻小说类型')
+  lnGenerating.value = true; lnStatus.value = ''; lnOk.value = false
+  lnStreamingText.value = ''
+
+  const traitDesc = lnCharTrait.value ? `（${lnCharTrait.value}属性）` : ''
+  const params = {
+    novelTypeId: lnSelectedType.value,
+    protagonistName: (lnCharName.value + traitDesc).trim() || '未命名',
+    worldSetting: lnWorldSetting.value || (() => {
+      const type = lnTypes.find(t => t.id === lnSelectedType.value)
+      return type ? `${type.name}题材的日式轻小说世界` : '日式轻小说世界'
+    })(),
+    targetWordCount: lnTargetWordCount.value,
+    mode: lnGenMode.value,
+    outline: '',
+    referenceIds: lnSelectedRefs.value.length > 0 ? lnSelectedRefs.value : undefined,
+  }
+
+  novelStore.startGeneration(params,
+    (chunk) => { lnStreamingText.value += chunk; lnScrollToBottom() },
     (event) => {
-      if (event.type === 'completed') {
-        polishStatusText.value = '✅ 润色完成！'
-        polishProgress.value = 100
-        polishCompleted.value = true
-        polishing.value = false
-      } else if (event.type === 'error') {
-        polishStatusText.value = '❌ ' + event.message
-        polishing.value = false
+      if (event.type === 'outline') {
+        lnStatus.value = '大纲生成中...'
+      } else if (event.type === 'novel_created') {
+        lnStatus.value = '大纲生成中...'
+      } else if (event.type === 'status') {
+        lnStatus.value = event.message
+      } else if (event.type === 'chapter_start') {
+        lnStatus.value = `正在生成 ${event.title || '第' + event.chapterNumber + '章'}...`
+      } else if (event.type === 'completed') {
+        lnStatus.value = '✅ 生成完成！'; lnOk.value = true; lnGenerating.value = false
+      } else if (event.type === 'paused') {
+        lnStatus.value = '⏸️ 已暂停'; lnGenerating.value = false
+      } else if (event.type === 'token_exhausted') {
+        lnStatus.value = '⚠️ Token 已用完，请充值'; lnGenerating.value = false
       }
     }
   )
 }
 
-function downloadPolish() {
-  const blob = new Blob([polishedText.value], { type: 'text/plain;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `润色结果_${Date.now()}.txt`
-  a.click()
-  URL.revokeObjectURL(url)
+function lnScrollToBottom() {
+  nextTick(() => { if (lnStreamRef.value) lnStreamRef.value.scrollTop = lnStreamRef.value.scrollHeight })
 }
 
 onMounted(async () => {
@@ -345,6 +439,18 @@ onMounted(async () => {
     const data = await novelStore.fetchFullTypes()
     fullTypes.value = data
   } catch {}
+  // 加载普通小说参考库
+  try {
+    const refs = await refStore.fetchByType('normal')
+    genRefs.value = refs.filter(r => r.aiProcessed && r.styleProfile && r.styleProfile !== '风格提取中...')
+  } catch {}
+  genRefsLoaded.value = true
+  // 加载轻小说参考库
+  try {
+    const refs = await refStore.fetchLightNovelRefs()
+    lnRefs.value = refs.filter(r => r.aiProcessed && r.styleProfile && r.styleProfile !== '风格提取中...')
+  } catch {}
+  lnRefsLoaded.value = true
 })
 </script>
 
@@ -400,23 +506,26 @@ onMounted(async () => {
 .outline-loading .dot:nth-child(3) { animation-delay: 0.4s; }
 @keyframes dotPulse { 0%,80%,100% { opacity: 0.3; transform: scale(0.8); } 40% { opacity: 1; transform: scale(1); } }
 
-/* 润色 */
-.upload-area { border: 2px dashed var(--border-color); border-radius: 12px; padding: 24px; text-align: center; cursor: pointer; transition: all 0.2s; background: #fafafa; }
-.upload-area:hover { border-color: var(--primary-color); background: #fff5f0; }
-.upload-placeholder { color: var(--text-secondary); }
-.upload-icon { font-size: 36px; margin-bottom: 8px; }
-.upload-file-info { display: flex; align-items: center; gap: 8px; justify-content: center; }
-.file-icon { font-size: 24px; }
-.file-name { font-size: 14px; font-weight: 500; color: var(--text-primary); }
-.polish-stream-card { background: #f0f8ff; border-color: #91d5ff; }
-.polish-status { font-size: 13px; color: var(--text-secondary); margin-bottom: 8px; }
-.polish-preview { font-size: 13px; line-height: 1.6; color: var(--text-secondary); max-height: 200px; overflow-y: auto; background: #f8f8f8; padding: 10px; border-radius: 8px; white-space: pre-wrap; }
-.polish-progress-bar { height: 6px; background: #e8e8e8; border-radius: 3px; margin-bottom: 10px; overflow: hidden; }
-.progress-fill { height: 100%; background: linear-gradient(90deg, #1890ff, #40a9ff); border-radius: 3px; transition: width 0.3s ease; }
-.checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
-.checkbox-row input { width: 16px; height: 16px; cursor: pointer; }
-.polish-presets { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
-.btn-success { background: #52c41a; color: white; border: none; padding: 14px 24px; border-radius: 10px; font-size: 16px; cursor: pointer; font-family: inherit; }
-.btn-success:hover { background: #73d13d; }
-.polish-hint { text-align: center; font-size: 13px; color: var(--text-light); margin-top: 8px; }
+/* 生成小说参考 */
+.gen-ref-card { border-color: #91d5ff; background: #f0f8ff; }
+
+/* 轻小说 */
+.ln-grid { grid-template-columns: repeat(3,1fr) !important; }
+.ln-trait-section .label-sm { font-size: 13px; color: var(--text-secondary); margin-bottom: 8px; font-weight: 500; }
+.ln-traits { display: flex; gap: 6px; flex-wrap: wrap; }
+.ln-traits .preset-btn { font-size: 13px; }
+
+/* 参考风格匹配 */
+.ln-ref-card { border-color: #b7eb8f; background: #f6ffed; }
+.ln-ref-desc { font-size: 12px; color: var(--text-light); margin-bottom: 10px; }
+.ln-ref-empty { font-size: 13px; color: var(--text-light); text-align: center; padding: 16px; }
+.ln-ref-list { display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow-y: auto; }
+.ln-ref-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border-color); border-radius: 8px; cursor: pointer; transition: all 0.15s; background: #fff; }
+.ln-ref-item:hover { border-color: var(--primary-color); }
+.ln-ref-item.selected { border-color: #52c41a; background: #f6ffed; }
+.ref-check { font-size: 16px; flex-shrink: 0; }
+.ref-info { min-width: 0; }
+.ref-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.ref-meta { font-size: 11px; color: var(--text-light); margin-top: 1px; }
+.ref-count { margin-top: 8px; font-size: 12px; color: var(--success-color); font-weight: 500; text-align: center; }
 </style>

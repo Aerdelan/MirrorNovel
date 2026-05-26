@@ -42,13 +42,13 @@
           <div class="token-info-row">
             <span>总额 {{ totalTokens.toLocaleString() }}</span>
             <span>已用 {{ usedTokens.toLocaleString() }}</span>
-            <span>费率 ¥15/百万</span>
+            <!-- <span>费率 ¥15/百万</span> -->
           </div>
           <button class="btn btn-primary btn-block" @click="showGroupInfo = !showGroupInfo" style="margin-top:10px;">
-            💬 加群购买 Token
+            💬 加群联系群主获取 Token
           </button>
           <div v-if="showGroupInfo" class="group-info-card">
-            <div class="group-info-text">Token 用完或需要更多 Token，请加 QQ 群联系群主购买：</div>
+            <div class="group-info-text">Token 用完或需要更多 Token，请加 QQ 群联系群主：</div>
             <div class="group-qq">群号：1019601998</div>
             <div class="group-hint">加群时请备注"MirrorNovel"</div>
           </div>

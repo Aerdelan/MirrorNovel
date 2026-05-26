@@ -23,7 +23,7 @@ router.post('/generate', auth, async (req, res) => {
   try {
     await checkTokenBalance(req.user);
 
-    const { novelTypeId, protagonistName, worldSetting, targetWordCount } = req.body;
+    const { novelTypeId, protagonistName, worldSetting, targetWordCount, referenceIds } = req.body;
     if (!novelTypeId) return res.status(400).json({ message: '请选择小说类型' });
     // 支持新旧两种类型系统：先用旧 ID 查找，失败则用名称匹配
     let type = novelTypes.find(t => t.id === novelTypeId || t.name === novelTypeId);
@@ -51,8 +51,36 @@ router.post('/generate', auth, async (req, res) => {
       status: 'generating', batchIndex: 0,
     });
 
-    // 构建系统提示词
-    const systemPrompt = buildSystemPrompt(novelTypeId);
+    // 构建系统提示词（含参考风格注入）
+    let systemPrompt = buildSystemPrompt(novelTypeId);
+
+    // 如果有参考风格 ID，获取其风格数据注入提示词
+    if (referenceIds && Array.isArray(referenceIds) && referenceIds.length > 0) {
+      try {
+        const ReferenceNovel = require('../models/ReferenceNovel');
+        const refs = await ReferenceNovel.find({ _id: { $in: referenceIds } })
+          .select('title styleProfile writingCharacteristics vocabularyBank chapterStructure');
+        if (refs.length > 0) {
+          const refSection = refs.map((r, i) => {
+            return `【参考风格 ${i + 1}: ${r.title}】
+${r.styleProfile ? '风格描述：' + r.styleProfile : ''}
+${r.writingCharacteristics ? '写作特点：' + r.writingCharacteristics : ''}
+${r.vocabularyBank && r.vocabularyBank.length > 0 ? '特色词汇：' + r.vocabularyBank.join(', ') : ''}
+${r.chapterStructure ? '章节结构：' + r.chapterStructure : ''}`;
+          }).join('\n\n');
+
+          systemPrompt += `\n\n【参考风格库】
+以下是由用户选择的参考小说风格数据，请在创作时充分学习并融合这些风格特征：
+
+${refSection}
+
+请在保持轻小说整体风格的前提下，融合以上参考作品的行文特点和叙事风格。`;
+        }
+      } catch (e) {
+        console.error('加载参考风格失败:', e.message);
+      }
+    }
+
     novel.generationContext = systemPrompt;
     await novel.save();
 

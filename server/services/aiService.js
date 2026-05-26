@@ -25,7 +25,29 @@ function countTokens(text) {
 function buildSystemPrompt(novelTypeId) {
   const type = novelTypes.find(t => t.id === novelTypeId);
   if (!type) return '你是一位专业的小说家，擅长创作各种类型的小说。';
-  
+
+  // 轻小说使用日式ACGN专属提示
+  if (novelTypeId && novelTypeId.startsWith('lightnovel_')) {
+    return `你是一位专业的轻小说作家，擅长创作日式ACGN风格的${type.name}题材作品。
+
+写作风格要求：
+1. 【角色为核心】角色萌属性鲜明（傲娇、天然呆、无口、元气等），每个角色有自己的口头禅或习惯动作
+2. 【对话驱动】多用对话推进剧情，角色对话自然生动，加入日式吐槽和内心独白
+3. 【描写的节奏】场景描写简洁但有画面感，注重角色表情和动作的细节刻画
+4. 【萌系要素】适当加入脸红、慌张、嘟嘴、傲娇扭头等动漫式反应
+5. 【叙事视角】可采用第一人称或第三人称紧贴主角的限定视角
+6. 【章节结构】每章要有起承转合，结尾留钩子（cliffhanger）或温馨收尾
+7. 【语言风格】文字轻松活泼，可以加入可爱的象声词和语气词
+8. 【禁止AI味】不使用"仿佛、好像、不禁、微微、眼中闪过"等词汇
+
+题材关键词：${type.keywords}
+推荐用词：${type.aiWordBank}
+大纲参考：${type.outline}
+
+请直接开始创作，角色名称使用日本风格的名字，适当加入日式称呼（さん、くん、ちゃん等）。`;
+  }
+
+  // 国产小说提示
   return `你是一位专业的小说家，擅长创作${type.name}类型的小说。
 写作关键词：${type.keywords}
 写作大纲参考：${type.outline}

@@ -74,6 +74,15 @@ export const useReferenceStore = defineStore('reference', () => {
     } catch {}
   }
 
+  async function fetchByType(type) {
+    const res = await api.get(`/reference/list-by-type?type=${type}`)
+    return res.data
+  }
+
+  async function fetchLightNovelRefs() {
+    return fetchByType('lightnovel')
+  }
+
   async function deleteCookie() {
     const token = localStorage.getItem('token')
     const res = await api.delete('/reference/fanqie-cookie', {
@@ -87,6 +96,7 @@ export const useReferenceStore = defineStore('reference', () => {
     categories, referenceList, cookieStatus,
     fetchCategories, fetchList, uploadFile, deleteReference, getDetail,
     fanqieImport, fanqiePreview,
+    fetchByType, fetchLightNovelRefs,
     setCookie, fetchCookieStatus, deleteCookie,
   }
 })
