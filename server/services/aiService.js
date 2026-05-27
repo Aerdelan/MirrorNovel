@@ -20,10 +20,12 @@ function countTokens(text) {
 }
 
 /**
- * 构建小说生成系统提示词
+ * 构建小说生成系统提示词（支持男女频区分）
+ * @param {string} novelTypeId - 类型 ID
+ * @param {string} [gender] - 'male' | 'female' | 'unisex'
  */
-function buildSystemPrompt(novelTypeId) {
-  const type = novelTypes.find(t => t.id === novelTypeId);
+function buildSystemPrompt(novelTypeId, gender) {
+  const type = novelTypes.find(t => t.id === novelTypeId || t.name === novelTypeId);
   if (!type) return '你是一位专业的小说家，擅长创作各种类型的小说。';
 
   // 轻小说使用日式ACGN专属提示
@@ -47,8 +49,20 @@ function buildSystemPrompt(novelTypeId) {
 请直接开始创作，角色名称使用日本风格的名字，适当加入日式称呼（さん、くん、ちゃん等）。`;
   }
 
-  // 国产小说提示
-  return `你是一位专业的小说家，擅长创作${type.name}类型的小说。
+  // 国产小说 — 根据 gender 区分写作指导
+  const genderGuide = gender === 'female' ? `
+3. 【情感刻画优先】细腻描写人物的内心活动和情感变化，动作和环境为情感服务
+4. 【关系驱动】以人物关系的演变推动剧情，注重互动中的微妙张力
+5. 【氛围营造】场景描写要有氛围感和画面感，烘托情绪基调
+6. 【对话与潜台词】对话不仅是信息传递，更是情感交流和关系博弈的载体
+7. 【爽点节奏】虐心的桥段后必有甜宠回馈，保持"先苦后甜"的情感节奏` : `
+3. 【节奏紧凑】保持张弛有度的叙事节奏，每章至少有一个小高潮或悬念钩子
+4. 【爽点明确】每一段剧情都要有明确的"爽点"（升级/打脸/收获/揭秘）
+5. 【世界观清晰】逐步展开世界观设定，通过剧情自然带出而非大段说明
+6. 【对话直给】对话简洁有力，服务于剧情推进和人物塑造
+7. 【战斗/冲突描写】动作场面要有画面感和层次感，避免干巴巴的叙述`;
+
+  return `你是一位专业的小说家，擅长创作${type.name}类型的${gender === 'female' ? '女性向' : '男性向'}小说。
 写作关键词：${type.keywords}
 写作大纲参考：${type.outline}
 推荐用词：${type.aiWordBank}
@@ -56,9 +70,7 @@ function buildSystemPrompt(novelTypeId) {
 写作要求：
 1. 请完全按照${type.name}风格创作
 2. 每章约2000-3000字
-3. 保持情节连贯、人物鲜明
-4. 语言生动有趣，有画面感
-5. 每章结束时留有悬念或钩子
+${genderGuide}
 ${deslop.systemDeslopPrompt}`;
 }
 

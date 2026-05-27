@@ -273,4 +273,37 @@ router.post('/restart', async (req, res) => {
   setTimeout(() => { process.exit(0); }, 1000);
 });
 
+// ========== 6. 类型模板管理 ==========
+
+const novelTemplates = require('../config/novelTemplates');
+const fs = require('fs');
+const path = require('path');
+
+// 获取所有模板
+router.get('/templates', async (req, res) => {
+  try {
+    res.json({ templates: novelTemplates });
+  } catch (error) {
+    res.status(500).json({ message: '获取模板失败', error: error.message });
+  }
+});
+
+// 保存模板
+router.put('/templates', async (req, res) => {
+  try {
+    const { templates } = req.body;
+    if (!Array.isArray(templates)) return res.status(400).json({ message: '模板数据格式错误' });
+
+    const tplPath = path.join(__dirname, '../config/novelTemplates.js');
+    const content = `/**\n * 小说类型模板库\n * 每个模板包含：匹配关键词、系统提示上下文\n */\n\nconst novelTemplates = ${JSON.stringify(templates, null, 2)}\n\nmodule.exports = novelTemplates\n`;
+    fs.writeFileSync(tplPath, content, 'utf-8');
+    // 清除 require 缓存
+    delete require.cache[require.resolve('../config/novelTemplates')];
+
+    res.json({ message: '模板已保存', count: templates.length });
+  } catch (error) {
+    res.status(500).json({ message: '保存模板失败', error: error.message });
+  }
+});
+
 module.exports = router;

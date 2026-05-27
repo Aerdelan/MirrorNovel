@@ -30,7 +30,18 @@
 
       <div class="card">
         <div class="section-title">③ {{ $t('generate.stepWorld') }}</div>
-        <textarea v-model="worldSetting" class="textarea" :placeholder="$t('generate.placeholderWorld')" rows="4"></textarea>
+        <textarea v-model="worldSetting" class="textarea" :placeholder="$t('generate.placeholderWorld')" rows="4" @input="debounceMatchTemplates"></textarea>
+        <!-- 类型模板匹配提示 -->
+        <div v-if="matchedTemplates.length > 0" class="tmpl-match-card">
+          <div class="tmpl-match-title">{{ $t('generate.tmplMatched') }}</div>
+          <div class="tmpl-match-list">
+            <div v-for="tmpl in matchedTemplates" :key="tmpl.name" class="tmpl-match-item">
+              <span class="tmpl-name">{{ $tn(tmpl.name) || tmpl.name }}</span>
+              <span class="tmpl-score" :class="scoreClass(tmpl.score)">{{ tmpl.score }}% {{ $t('generate.tmplMatch') }}</span>
+            </div>
+          </div>
+          <div class="tmpl-match-hint">{{ $t('generate.tmplHint') }}</div>
+        </div>
       </div>
 
       <div v-if="genMode === 'book'" class="card">
@@ -186,6 +197,21 @@
         <div class="stream-content" ref="lnStreamRef">{{ lnStreamingText }}</div>
       </div>
     </template>
+
+    <!-- ==================== 大纲预览/编辑弹窗 ==================== -->
+    <Teleport to="body">
+      <div v-if="outlineModal" class="modal-overlay" @click.self="outlineModal=false">
+        <div class="outline-modal-card">
+          <h3 class="outline-modal-title">{{ $t('generate.outlinePreview') }}</h3>
+          <p class="outline-modal-desc">{{ $t('generate.outlineDesc') }}</p>
+          <textarea v-model="outlineModalText" class="outline-modal-textarea" rows="12"></textarea>
+          <div class="outline-modal-actions">
+            <button class="btn btn-outline" @click="outlineModal=false; outlineReject()">{{ $t('common.cancel') }}</button>
+            <button class="btn btn-primary" @click="outlineConfirm()">{{ $t('generate.outlineConfirm') }}</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -195,6 +221,7 @@ import { useRouter } from 'vue-router'
 import { useNovelStore } from '../stores/novel'
 import { useAuthStore } from '../stores/auth'
 import { useReferenceStore } from '../stores/reference'
+import api from '../api'
 
 const router = useRouter()
 const novelStore = useNovelStore()
@@ -226,6 +253,76 @@ const streamingText = ref('')
 const generatedOutline = ref('')
 const outlineStreamingText = ref('')
 
+// 类型模板匹配
+const matchedTemplates = ref([])
+const tmplMatching = ref(false)
+let tmplTimer = null
+
+async function matchTemplates() {
+  const ws = worldSetting.value?.trim()
+  const st = selectedType.value
+  if (!ws || ws.length < 5) { matchedTemplates.value = []; return }
+  tmplMatching.value = true
+  try {
+    const res = await api.post('/novel/match-templates', { worldSetting: ws, novelTypeId: st })
+    matchedTemplates.value = res.data.matched || []
+  } catch {
+    matchedTemplates.value = []
+  }
+  tmplMatching.value = false
+}
+function debounceMatchTemplates() {
+  clearTimeout(tmplTimer)
+  tmplTimer = setTimeout(matchTemplates, 800)
+}
+function scoreClass(s) { if (!s) return ''; if (s >= 60) return 'high'; if (s >= 35) return 'mid'; return 'low' }
+
+// 监听类型切换时重新匹配
+watch(selectedType, () => { matchTemplates() })
+
+// 大纲预览弹窗
+const outlineModal = ref(false)
+const outlineModalText = ref('')
+let outlineConfirmCallback = null
+let outlineRejectCallback = null
+
+async function generateOutline(selectedTypeId, charName, worldSetting, wordCount) {
+  try {
+    const res = await api.post('/novel/generate-outline', {
+      novelTypeId: selectedTypeId,
+      protagonistName: charName,
+      worldSetting: worldSetting,
+      targetWordCount: wordCount,
+    })
+    return res.data.outline || ''
+  } catch (e) {
+    console.error('大纲生成失败:', e)
+    return ''
+  }
+}
+
+async function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount) {
+  genStatus.value = $t('generate.outlineGenerating')
+  const outline = await generateOutline(selectedTypeId, charName, worldSetting, wordCount)
+  if (!outline) {
+    genStatus.value = ''
+    return null
+  }
+  return new Promise((resolve) => {
+    outlineModalText.value = outline
+    outlineConfirmCallback = () => { outlineModal.value = false; resolve(outlineModalText.value) }
+    outlineRejectCallback = () => { outlineModal.value = false; genStatus.value = ''; resolve(null) }
+    outlineModal.value = true
+  })
+}
+
+function outlineConfirm() {
+  if (outlineConfirmCallback) outlineConfirmCallback()
+}
+function outlineReject() {
+  if (outlineRejectCallback) outlineRejectCallback()
+}
+
 const maxWordCount = computed(() => genMode.value === 'chapter' ? 20000 : 10000000)
 
 const activePresets = computed(() => {
@@ -235,6 +332,14 @@ const activePresets = computed(() => {
 
 async function startGen() {
   if (!selectedType.value) return alert('请选择小说类型')
+
+  // 如果没有填写大纲且是整本模式，先生成大纲让用户确认
+  if (!outline.value.trim() && genMode.value === 'book') {
+    const confirmedOutline = await showOutlineModal(selectedType.value, protagonistName.value, worldSetting.value, targetWordCount.value)
+    if (!confirmedOutline) return // 用户取消或生成失败
+    outline.value = confirmedOutline
+  }
+
   generating.value = true; genStatus.value = ''; genOk.value = false
   streamingText.value = ''; outlineStreamingText.value = ''
 
@@ -359,6 +464,19 @@ const lnActivePresets = computed(() => {
 
 async function startLNGen() {
   if (!lnSelectedType.value) return alert('请选择轻小说类型')
+
+  // 轻小说整本模式：先生成大纲
+  let lnOutline = ''
+  if (lnGenMode.value === 'book') {
+    const lnTypeObj = lnTypes.find(t => t.id === lnSelectedType.value)
+    const lnName = lnTypeObj?.name || ''
+    const lnChar = (lnCharName.value + (lnCharTrait.value ? `（${lnCharTrait.value}属性）` : '')).trim() || '未命名'
+    const lnWorld = lnWorldSetting.value || `${lnName}题材的日式轻小说世界`
+    const confirmedOutline = await showOutlineModal(lnSelectedType.value, lnChar, lnWorld, lnTargetWordCount.value)
+    if (!confirmedOutline) return
+    lnOutline = confirmedOutline
+  }
+
   lnGenerating.value = true; lnStatus.value = ''; lnOk.value = false
   lnStreamingText.value = ''
 
@@ -372,7 +490,7 @@ async function startLNGen() {
     })(),
     targetWordCount: lnTargetWordCount.value,
     mode: lnGenMode.value,
-    outline: '',
+    outline: lnOutline,
     referenceIds: lnSelectedRefs.value.length > 0 ? lnSelectedRefs.value : undefined,
   }
 
@@ -497,4 +615,26 @@ onMounted(async () => {
 .ref-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
 .ref-meta { font-size: 11px; color: var(--text-light); margin-top: 1px; }
 .ref-count { margin-top: 8px; font-size: 12px; color: var(--success-color); font-weight: 500; text-align: center; }
+
+/* 模板匹配 */
+.tmpl-match-card { margin-top: 10px; padding: 10px 12px; background: #f0f8ff; border: 1px solid #91d5ff; border-radius: 8px; }
+.tmpl-match-title { font-size: 12px; font-weight: 600; color: #1890ff; margin-bottom: 6px; }
+.tmpl-match-list { display: flex; flex-direction: column; gap: 4px; }
+.tmpl-match-item { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.tmpl-name { font-weight: 500; color: var(--text-primary); }
+.tmpl-score { font-size: 11px; padding: 1px 6px; border-radius: 4px; font-weight: 600; }
+.tmpl-score.high { background: #f6ffed; color: #52c41a; }
+.tmpl-score.mid { background: #fff7e6; color: #fa8c16; }
+.tmpl-score.low { background: #fff1f0; color: #ff4d4f; }
+.tmpl-match-hint { font-size: 11px; color: var(--text-light); margin-top: 6px; }
+
+/* 大纲预览弹窗 */
+.modal-overlay { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; animation: fadeIn 0.2s; }
+.outline-modal-card { background: var(--card-bg); border-radius: 16px; padding: 24px; width: 90%; max-width: 600px; }
+.outline-modal-title { font-size: 17px; font-weight: 700; color: var(--text-primary); margin-bottom: 6px; }
+.outline-modal-desc { font-size: 13px; color: var(--text-light); margin-bottom: 14px; }
+.outline-modal-textarea { width: 100%; min-height: 300px; padding: 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 13px; line-height: 1.6; resize: vertical; font-family: inherit; box-sizing: border-box; }
+.outline-modal-actions { display: flex; gap: 10px; margin-top: 16px; justify-content: flex-end; }
+.outline-modal-actions .btn { min-width: 100px; text-align: center; }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 </style>

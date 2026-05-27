@@ -4,11 +4,15 @@ const auth = require('../middleware/auth');
 const Novel = require('../models/Novel');
 const User = require('../models/User');
 const novelTypes = require('../config/novelTypes');
+const novelTemplates = require('../config/novelTemplates');
+const { typeTemplates, buildTemplatePrompt } = novelTemplates;
 const {
   buildSystemPrompt, buildInitialPrompt, buildContinuePrompt,
-  buildImportContinuePrompt, buildOutlinePrompt, distillChapters,
+  buildImportContinuePrompt, buildOutlinePrompt,
   streamGenerate, resolveApiConfig, countTokens,
 } = require('../services/aiService');
+const { buildAugmentedContext } = require('../services/novelContext');
+const { processChapter } = require('../services/chapterToolchain');
 
 // 全局活跃生成流跟踪
 const activeStreams = new Map();
@@ -16,6 +20,40 @@ const activeStreams = new Map();
 // 获取所有小说类型
 router.get('/types', (req, res) => {
   res.json(novelTypes);
+});
+
+// 单独生成大纲（同步返回，供前端弹窗确认使用）
+router.post('/generate-outline', auth, async (req, res) => {
+  try {
+    const { novelTypeId, protagonistName, worldSetting, targetWordCount } = req.body;
+    if (!novelTypeId) return res.status(400).json({ message: '请选择小说类型' });
+
+    let type = novelTypes.find(t => t.id === novelTypeId || t.name === novelTypeId);
+    if (!type) {
+      try {
+        const typeData = require('../config/novelTypeData');
+        const allCats = [...(typeData.male || []), ...(typeData.female || [])];
+        const found = allCats.find(c => c.name === novelTypeId);
+        if (found) type = { id: novelTypeId, name: found.name, icon: found.icon, keywords: '', outline: '' };
+        else type = { id: novelTypeId, name: novelTypeId, icon: '📄', keywords: '', outline: '' };
+      } catch { type = { id: novelTypeId, name: novelTypeId, icon: '📄', keywords: '', outline: '' }; }
+    }
+
+    const outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount);
+    const result = await streamGenerate(
+      '你是一位专业的小说大纲策划师。',
+      outlinePrompt, null, null,
+      resolveApiConfig(req.user?.modelConfig, 'writing')
+    );
+
+    const outline = result.content || '';
+    if (!outline) return res.status(500).json({ message: '大纲生成失败' });
+
+    res.json({ outline });
+  } catch (error) {
+    console.error('大纲生成失败:', error);
+    res.status(500).json({ message: '大纲生成失败', error: error.message });
+  }
 });
 
 // 创建新小说并开始生成（SSE流式）
@@ -79,6 +117,28 @@ ${refSection}
       } catch (e) {
         console.error('加载参考风格失败:', e.message);
       }
+    }
+
+    // 类型模板匹配 — 先推断 gender 重建系统提示，再注入动态模板
+    try {
+      const matchedTmpls = matchTemplates(worldSetting || '', novelTypeId);
+      if (matchedTmpls.length > 0) {
+        const tmpl = matchedTmpls[0];
+        // 根据匹配到的 gender 重新构建系统提示（男女频写作指导不同）
+        systemPrompt = buildSystemPrompt(novelTypeId, tmpl.gender || 'male');
+
+        const genderTag = tmpl.gender === 'female' ? '女频' : tmpl.gender === 'unisex' ? '通用' : '男频';
+
+        systemPrompt += `\n\n【类型模板参考（${genderTag} · ${tmpl.name} · 匹配度 ${tmpl.score}%）】
+以下是系统根据「${tmpl.name}」类型和你的世界观设定自动生成的创作参考。
+⚠️ 重要提示：你的原始设定始终占主导地位，以下内容仅为辅助参考，每次生成时随机组合不同变体以保证多样性。
+
+${tmpl.dynamicPrompt}
+
+注意：以上为动态生成的参考组合，每次生成会随机选择不同的写作变体、节奏和看点，请根据你的故事主线灵活运用。`;
+      }
+    } catch (e) {
+      console.error('模板匹配注入失败:', e.message);
     }
 
     novel.generationContext = systemPrompt;
@@ -159,14 +219,23 @@ ${refSection}
         res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`);
       }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'));
 
+      // 工具链：去AI味 + 标点修正
+      let finalContent = buffer;
+      if (buffer.length > 100) {
+        try {
+          const { text } = processChapter(buffer);
+          finalContent = text;
+        } catch (e) { /* 后处理失败不影响主流程 */ }
+      }
+
       // 保存章节
-      novel.chapters.push({ chapterNumber: chNum, title: `第${chNum}章`, content: buffer, wordCount: buffer.length });
+      novel.chapters.push({ chapterNumber: chNum, title: `第${chNum}章`, content: finalContent, wordCount: finalContent.length });
       const sw = novel.chapters.reduce((s, c) => s + (c.wordCount || 0), 0);
       novel.currentWordCount = sw;
       novel.currentChapterIndex = chNum;
       novel.status = 'generating';
       await novel.save();
-      deductTokens(req.user, buffer);
+      deductTokens(req.user, finalContent);
 
       res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber: chNum, wordCount: buffer.length })}\n\n`);
       return buffer.length;
@@ -187,7 +256,7 @@ ${refSection}
           if (remaining <= 0) break; // 达到目标字数
 
           // 蒸馏提纯上下文（根据章节数量动态压缩）
-          const distilled = distillChapters(novel.chapters);
+          const distilled = buildAugmentedContext(novel.chapters);
 
           const chPrompt = `请继续创作这部${type.name}小说。
 
@@ -326,16 +395,30 @@ router.post('/continue/:novelId', auth, async (req, res) => {
         res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`);
       }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'));
 
+      // 工具链后处理：去AI味 + 标点修正
+      let finalContent = buffer;
+      if (buffer.length > 100) {
+        try {
+          const { text, report } = processChapter(buffer, { doDeAI: true, doPunctuation: true });
+          finalContent = text;
+          if (report.deAICount > 0 || report.punctuationFixes !== 0) {
+            console.log(`[Toolchain] 第${chNum}章: AI味 ${report.aiFlavorBefore?.density || 0}→${report.aiFlavorAfter?.density || 0}，去AI ${report.deAICount} 处`);
+          }
+        } catch (e) {
+          console.warn('[Toolchain] 后处理失败:', e.message);
+        }
+      }
+
       // 保存章节
-      novel.chapters.push({ chapterNumber: chNum, title: `第${chNum}章`, content: buffer, wordCount: buffer.length });
+      novel.chapters.push({ chapterNumber: chNum, title: `第${chNum}章`, content: finalContent, wordCount: finalContent.length });
       const sw = novel.chapters.reduce((s, c) => s + (c.wordCount || 0), 0);
       novel.currentWordCount = sw;
       novel.currentChapterIndex = chNum;
       await novel.save();
-      deductTokens(req.user, buffer);
+      deductTokens(req.user, finalContent);
 
-      res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber: chNum, wordCount: buffer.length })}\n\n`);
-      return buffer.length;
+      res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber: chNum, wordCount: finalContent.length })}\n\n`);
+      return finalContent.length;
     }
 
     try {
@@ -364,7 +447,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
           const remaining = targetWordCount - curTotal;
           if (remaining <= 0) break;
 
-          const distilled = distillChapters(novel.chapters);
+          const distilled = buildAugmentedContext(novel.chapters);
 
           const chPrompt = `请继续创作这部${typeName}小说。
 
@@ -933,6 +1016,88 @@ router.get('/types/map', (req, res) => {
   const map = {};
   novelTypes.forEach(t => { map[t.id] = { icon: t.icon, name: t.name }; });
   res.json(map);
+});
+
+// ====== 类型模板匹配（增强版） ======
+
+/**
+ * 类型模板匹配函数
+ * 根据用户输入的世界观文本，与 typeTemplates 的 keywords 计算相似度
+ * 同时返回匹配的 gender 信息，供后续动态模板构建使用
+ */
+function matchTemplates(worldSetting, selectedType) {
+  if (!worldSetting || !worldSetting.trim()) return [];
+
+  const tokens = worldSetting
+    .replace(/[，。！？、；：""''（）\n\r\s,\.!\?;:\(\)\[\]【】]/g, ' ')
+    .split(/\s+/)
+    .filter(t => t.length >= 2)
+
+  if (tokens.length === 0) return [];
+
+  const matched = [];
+  // 自动推断 gender（如果选中的类型在 typeTemplates 中有记录）
+  let inferredGender = 'male';
+
+  for (const tmpl of typeTemplates) {
+    // 只匹配与当前选择类型相关的模板
+    if (selectedType) {
+      const isMainMatch = tmpl.name === selectedType
+      const isSubMatch = selectedType.includes(tmpl.name) || tmpl.name.includes(selectedType)
+      if (!isMainMatch && !isSubMatch) continue
+    }
+
+    // 记录 gender，用于后续区分
+    if (tmpl.gender) inferredGender = tmpl.gender;
+
+    const kw = tmpl.keywords || []
+    if (kw.length === 0) continue
+
+    let matchCount = 0
+    for (const token of tokens) {
+      for (const keyword of kw) {
+        if (token.includes(keyword) || keyword.includes(token)) {
+          matchCount++
+          break
+        }
+      }
+    }
+
+    const userTokenRatio = tokens.length > 0 ? matchCount / tokens.length : 0
+    const keywordRatio = matchCount / kw.length
+    const score = Math.max(userTokenRatio, keywordRatio)
+
+    if (score >= 0.2) {
+      matched.push({ name: tmpl.name, score: Math.round(score * 100), gender: tmpl.gender })
+    }
+  }
+
+  if (matched.length === 0) return [];
+
+  // 使用 buildTemplatePrompt 生成动态、多样化的提示
+  const dynamicPrompt = buildTemplatePrompt(matched, inferredGender)
+
+  return [{
+    name: matched[0].name,
+    score: matched[0].score,
+    gender: inferredGender,
+    dynamicPrompt,
+  }]
+}
+
+// 根据用户输入匹配类型模板（生成前调用）
+router.post('/match-templates', auth, async (req, res) => {
+  try {
+    const { worldSetting, novelTypeId } = req.body;
+    if (!worldSetting || !worldSetting.trim()) {
+      return res.json({ matched: [] });
+    }
+    const matched = matchTemplates(worldSetting, novelTypeId);
+    res.json({ matched });
+  } catch (error) {
+    console.error('模板匹配失败:', error);
+    res.json({ matched: [] });
+  }
 });
 
 // ---- Token 扣除辅助函数 ----

@@ -40,6 +40,12 @@ const routes = [
     component: () => import('../views/AdminPage.vue'),
     meta: { requiresAuth: true },
   },
+  {
+    path: '/templates',
+    name: 'Templates',
+    component: () => import('../views/AdminPage.vue'),
+    meta: { requiresAuth: true },
+  },
 ]
 
 const router = createRouter({

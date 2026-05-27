@@ -279,4 +279,11 @@ async function saveOutline() {
 .progress-indicator .dot:nth-child(3) { animation-delay: 0.4s; }
 @keyframes dotPulse { 0%,80%,100% { opacity: 0.3; transform: scale(0.8); } 40% { opacity: 1; transform: scale(1); } }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* 大纲编辑弹窗 */
+.outline-overlay { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; animation: fadeIn 0.2s; }
+.outline-modal { background: var(--card-bg); border-radius: 16px; padding: 24px; width: 90%; max-width: 500px; }
+.outline-modal h3 { font-size: 17px; font-weight: 700; color: var(--text-primary); margin-bottom: 14px; }
+.outline-textarea { width: 100%; min-height: 200px; padding: 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 13px; line-height: 1.6; resize: vertical; font-family: inherit; box-sizing: border-box; }
+.outline-actions { display: flex; gap: 10px; margin-top: 14px; justify-content: flex-end; }
 </style>

@@ -46,6 +46,12 @@ export default {
     // 参考匹配
     refMatch: '📖 参考风格匹配', refAutoMatched: '已自动匹配 {count} 部「{type}」风格参考', refEmpty: '蒸馏库中暂无匹配「{type}」的参考数据', refSelectType: '请先选择小说类型，系统将自动匹配蒸馏库中的参考风格', refSelected: '已选 {count} 部', refNoLN: '蒸馏库中暂无轻小说参考数据，请先在「蒸馏」页面导入轻小说',
     wordShort: '字',
+    // 大纲弹窗
+    outlinePreview: '📋 AI 大纲预览', outlineDesc: '以下是大纲，你可以直接编辑修改，确认无误后点击"确定开始"生成正文',
+    outlineConfirm: '确定开始',
+    outlineGenerating: '🤖 AI 正在构思大纲...',
+    // 模板匹配
+    tmplMatched: '📋 已匹配类型模板', tmplMatch: '匹配', tmplHint: '以上模板仅为参考，实际创作以你的世界观设定为主',
   },
 
   // 润色页

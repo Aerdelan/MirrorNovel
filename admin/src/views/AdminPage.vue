@@ -202,6 +202,33 @@
         <div style="font-size:12px;color:#999;margin-top:6px;">重启 Node.js 服务（PM2 会自动恢复）</div>
       </div>
     </div>
+
+    <!-- ====== 类型模板管理 ====== -->
+    <div v-if="activeTab === 'templates'">
+      <div class="search-bar" style="margin-bottom:12px;">
+        <button class="btn-sm" style="background:#1890ff;color:white;border:none;" @click="addTemplate">{{ $t('templates.add') }}</button>
+        <button class="btn-sm" style="background:#52c41a;color:white;border:none;" :disabled="!tplDirty" @click="saveTemplates">{{ tplSaving ? '保存中...' : '💾 保存全部' }}</button>
+        <span v-if="tplDirty" style="font-size:12px;color:#fa8c16;margin-left:8px;">⚠️ 有未保存的修改</span>
+        <span v-if="tplMsg" class="msg" :class="{ ok: tplOk }" style="margin-left:8px;">{{ tplMsg }}</span>
+      </div>
+      <div class="tpl-list">
+        <div v-for="(tpl, idx) in templates" :key="idx" class="tpl-card">
+          <div class="tpl-header">
+            <span class="tpl-name">{{ tpl.name }} <span class="tpl-kw-count">{{ (tpl.keywords||[]).length }}个关键词</span></span>
+            <button class="btn-sm" style="color:#ff4d4f;border-color:#ff4d4f;" @click="deleteTemplate(idx)">删除</button>
+          </div>
+          <div class="tpl-field">
+            <label class="tpl-label">匹配关键词（逗号分隔）</label>
+            <input v-model="tpl.keywordsStr" class="input tpl-input" placeholder="关键词1, 关键词2, ..." @input="tplDirty=true" />
+          </div>
+          <div class="tpl-field">
+            <label class="tpl-label">注入提示（AI 参考上下文）</label>
+            <textarea v-model="tpl.contextPrompt" class="textarea tpl-textarea" rows="4" @input="tplDirty=true"></textarea>
+          </div>
+        </div>
+      </div>
+      <div v-if="templates.length === 0" style="text-align:center;padding:40px;color:#999;">暂无模板</div>
+    </div>
   </SidebarLayout>
 </template>
 
@@ -218,7 +245,8 @@ const now = ref(new Date().toLocaleString('zh-CN'))
 
 // 监听路由变化切换Tab
 watch(() => route.path, (p) => {
-  const tabMap = { '/dashboard':'dashboard', '/users':'users', '/novels':'novels', '/distill':'distill', '/models':'models' }
+  const tabMap = { '/dashboard':'dashboard', '/users':'users', '/novels':'novels', '/distill':'distill', '/templates':'templates', '/models':'models' }
+  if (p === '/templates') loadTemplates()
   activeTab.value = tabMap[p] || 'dashboard'
 }, { immediate: true })
 
@@ -302,12 +330,56 @@ async function saveModels() {
 }
 function restartServer() { if (confirm('确定重启服务？')) { api.post('/admin/restart').then(() => alert('重启命令已发送')).catch(() => alert('重启失败')) } }
 
+// ====== 类型模板管理 ======
+const templates = ref([])
+const tplDirty = ref(false)
+const tplSaving = ref(false)
+const tplMsg = ref('')
+const tplOk = ref(false)
+
+async function loadTemplates() {
+  try {
+    const r = await api.get('/admin/templates')
+    templates.value = (r.data.templates || []).map(t => ({
+      ...t,
+      keywordsStr: (t.keywords || []).join(', '),
+    }))
+    tplDirty.value = false
+  } catch {}
+}
+function addTemplate() {
+  templates.value.push({ name: '新模板', keywords: [], keywordsStr: '', contextPrompt: '' })
+  tplDirty.value = true
+}
+function deleteTemplate(idx) {
+  if (!confirm('删除 "' + templates.value[idx].name + '" ？')) return
+  templates.value.splice(idx, 1)
+  tplDirty.value = true
+}
+async function saveTemplates() {
+  tplSaving.value = true; tplMsg.value = ''; tplOk.value = false
+  try {
+    const data = templates.value.map(t => ({
+      name: t.name,
+      keywords: t.keywordsStr.split(/[,，、]/).map(s => s.trim()).filter(Boolean),
+      contextPrompt: t.contextPrompt || '',
+    }))
+    await api.put('/admin/templates', { templates: data })
+    tplMsg.value = '✅ 模板已保存'
+    tplOk.value = true; tplDirty.value = false
+  } catch (e) {
+    tplMsg.value = '❌ ' + (e.response?.data?.message || e.message)
+    tplOk.value = false
+  }
+  tplSaving.value = false
+}
+
 function fmt(d) { if (!d) return ''; const date = new Date(d); return `${date.getMonth()+1}/${date.getDate()} ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}` }
 function scoreClass(s) { if (!s) return ''; if (s >= 80) return 'high'; if (s >= 60) return 'mid'; return 'low' }
 function wcRateClass(s) { if (!s?.totalChapters) return ''; const rate = s.downloadedChapters / s.totalChapters; if (rate >= 0.9) return 'rate-high'; if (rate >= 0.5) return 'rate-mid'; return 'rate-low' }
 
 onMounted(() => {
-  loadDash(); loadUsers(); loadNovels(); loadDistillations(); loadModels(); loadUsersSimple()
+  loadDash(); loadUsers(); loadNovels(); loadDistillations(); loadModels(); loadUsersSimple(); loadTemplates()
 })
 </script>
 
@@ -387,4 +459,19 @@ tr:hover td { background: #fafafa; }
 .d-json-modal { max-width: 700px; }
 .json-view { background: #f5f5f5; padding: 12px; border-radius: 6px; font-size: 12px; max-height: 400px; overflow: auto; white-space: pre-wrap; }
 .textarea { width: 100%; padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 13px; outline: none; font-family: monospace; resize: vertical; }
+
+/* 模板管理 */
+.tpl-list { display: flex; flex-direction: column; gap: 10px; }
+.tpl-card { background: #fff; border-radius: 8px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+.tpl-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.tpl-name { font-size: 15px; font-weight: 600; color: #333; }
+.tpl-kw-count { font-size: 11px; color: #999; font-weight: 400; margin-left: 8px; }
+.tpl-field { margin-bottom: 8px; }
+.tpl-label { display: block; font-size: 12px; color: #666; margin-bottom: 4px; font-weight: 500; }
+.tpl-input { width: 100%; padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 13px; outline: none; box-sizing: border-box; }
+.tpl-input:focus { border-color: #1890ff; }
+.tpl-textarea { width: 100%; padding: 8px 12px; border: 1px solid #d9d9d9; border-radius: 6px; font-size: 13px; outline: none; resize: vertical; font-family: inherit; box-sizing: border-box; line-height: 1.5; }
+.tpl-textarea:focus { border-color: #1890ff; }
+.msg { font-size: 13px; }
+.msg.ok { color: #52c41a; }
 </style>

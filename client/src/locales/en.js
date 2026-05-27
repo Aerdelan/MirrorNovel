@@ -88,6 +88,10 @@ export default {
     lnCharTrait: 'Character Trait', lnBtnGenerate: '🌸 Start Light Novel',
     refMatch: '📖 Style Reference Match', refAutoMatched: 'Auto-matched {count} references for "{type}"', refEmpty: 'No matching references for "{type}" in library', refSelectType: 'Select a type to auto-match references from the distillation library', refSelected: '{count} selected', refNoLN: 'No light novel references in library. Import light novels from the Distill page first.',
     wordShort: 'chars',
+    outlinePreview: '📋 AI Outline Preview', outlineDesc: 'Edit the outline below if needed. Click "Confirm" to start generation.',
+    outlineConfirm: 'Confirm & Start',
+    outlineGenerating: '🤖 AI is drafting an outline...',
+    tmplMatched: '📋 Matched Type Templates', tmplMatch: 'match', tmplHint: 'Templates are for reference only. Your world setting takes priority.',
   },
 
   polish: {
