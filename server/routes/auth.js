@@ -85,7 +85,7 @@ router.post('/send-code', async (req, res) => {
 // 注册
 router.post('/register', async (req, res) => {
   try {
-    const { email, password, code, nickname } = req.body;
+    const { email, password, code, nickname, inviteCode } = req.body;
 
     if (!email || !password || !code) {
       return res.status(400).json({ message: '请填写完整信息' });
@@ -118,8 +118,25 @@ router.post('/register', async (req, res) => {
       email,
       password,
       nickname: nickname || '书友',
+      tokens: { total: 1000, used: 0 },
     });
     await user.save();
+
+    // 处理邀请：注册时携带 inviteCode
+    if (inviteCode) {
+      try {
+        const inviter = await User.findOne({ inviteCode });
+        if (inviter && inviter._id.toString() !== user._id.toString()) {
+          inviter.tokens.total = (inviter.tokens.total || 0) + 2000;
+          inviter.inviteCount = (inviter.inviteCount || 0) + 1;
+          inviter.inviteRewards = (inviter.inviteRewards || 0) + 2000;
+          await inviter.save();
+          user.invitedBy = inviter._id;
+          await user.save();
+          console.log(`[邀请] 用户 ${inviter.email} 获赠 2000 Token`);
+        }
+      } catch (e) { console.error('[邀请] 处理失败:', e.message) }
+    }
 
     // 删除已使用的验证码
     await VerificationCode.deleteMany({ email, type: 'register' });
@@ -201,6 +218,75 @@ router.post('/login', async (req, res) => {
     console.error('登录失败:', error);
     res.status(500).json({ message: '登录失败', error: error.message });
   }
+});
+
+// ====== 签到 ======
+router.post('/checkin', auth, async (req, res) => {
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const user = req.user;
+
+    if (user.checkin.lastDate === today) {
+      return res.status(400).json({ message: '今天已签到' });
+    }
+
+    // 计算周期天数
+    let dayIndex = 0;
+    if (user.checkin.lastDate) {
+      const last = new Date(user.checkin.lastDate);
+      const now = new Date(today);
+      const diff = (now - last) / (1000 * 60 * 60 * 24);
+      // 如果连续（差1天），继续周期；否则重置
+      if (diff >= 1 && diff < 2) {
+        dayIndex = (user.checkin.dayIndex + 1) % 7;
+      } else {
+        dayIndex = 0; // 重置
+      }
+    }
+
+    // 计算奖励：第7天(索引6)200，其他100
+    const reward = dayIndex === 6 ? 200 : 100;
+
+    user.checkin.lastDate = today;
+    user.checkin.dayIndex = dayIndex;
+    user.checkin.totalDays = (user.checkin.totalDays || 0) + 1;
+    user.tokens.total = (user.tokens.total || 0) + reward;
+    await user.save();
+
+    res.json({
+      message: `签到成功！获得 ${reward} Token`,
+      reward,
+      dayIndex: dayIndex + 1, // 前端显示1-7
+      totalDays: user.checkin.totalDays,
+      availableTokens: user.availableTokens,
+    });
+  } catch (error) {
+    console.error('签到失败:', error);
+    res.status(500).json({ message: '签到失败', error: error.message });
+  }
+});
+
+// 签到状态
+router.get('/checkin-status', auth, async (req, res) => {
+  const today = new Date().toISOString().slice(0, 10);
+  const user = req.user;
+  res.json({
+    checkedIn: user.checkin.lastDate === today,
+    dayIndex: (user.checkin.dayIndex || 0) + 1,
+    totalDays: user.checkin.totalDays || 0,
+  });
+});
+
+// ====== 邀请信息 ======
+router.get('/invite-info', auth, async (req, res) => {
+  const user = req.user;
+  const baseUrl = process.env.FRONTEND_URL || 'http://49.51.51.253:5173';
+  res.json({
+    inviteCode: user.inviteCode,
+    inviteCount: user.inviteCount || 0,
+    inviteRewards: user.inviteRewards || 0,
+    inviteLink: `${baseUrl}/register?invite=${user.inviteCode}`,
+  });
 });
 
 // 获取用户信息

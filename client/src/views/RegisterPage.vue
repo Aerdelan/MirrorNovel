@@ -38,7 +38,7 @@
           <span v-else>{{ $t('auth.register') }}</span>
         </button>
         <div class="auth-footer">
-          {{ $t('auth.hasAccount') }}
+          {{ $t('auth.hasAccount') }}<router-link to="/login">{{ $t('auth.login') }}</router-link>
         </div>
       </div>
     </div>
@@ -46,17 +46,19 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, onMounted } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useI18n } from '../composables/useI18n'
 
 const router = useRouter()
+const route = useRoute()
 const authStore = useAuthStore()
 const { $t } = useI18n()
 
 const email = ref('')
 const nickname = ref('')
+const inviteCode = ref('')
 const password = ref('')
 const confirmPassword = ref('')
 const code = ref('')
@@ -84,10 +86,16 @@ async function handleRegister() {
   if (password.value.length < 6) { errorMsg.value = $t('auth.pwdMinLen'); return }
   if (password.value !== confirmPassword.value) { errorMsg.value = $t('auth.pwdMismatch'); return }
   loading.value = true; errorMsg.value = ''
-  try { await authStore.register(email.value, password.value, code.value, nickname.value); router.push('/generate') }
+  try { await authStore.register(email.value, password.value, code.value, nickname.value, inviteCode.value || undefined); router.push('/generate') }
   catch (e) { errorMsg.value = e.response?.data?.message || $t('auth.registerFail') }
   loading.value = false
 }
+
+onMounted(() => {
+  // 读取URL中的邀请码
+  const code = route.query.invite
+  if (code) inviteCode.value = code
+})
 </script>
 
 <style scoped>

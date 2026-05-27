@@ -158,6 +158,16 @@ const novelTypeData = {
         '现代百合 / 校园 / 职场', '古风百合 / 宫斗 / 仙侠',
       ],
     },
+    {
+      name: '现言脑洞',
+      icon: '💡',
+      children: [],
+    },
+    {
+      name: '星光璀璨',
+      icon: '✨',
+      children: [],
+    },
   ],
   // 共用高频标签（情节类 + 角色/风格类）
   commonTags: [

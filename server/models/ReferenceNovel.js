@@ -22,6 +22,14 @@ const referenceNovelSchema = new mongoose.Schema({
   originalLength: { type: Number, default: 0 },        // 原始文件字数
   aiProcessed: { type: Boolean, default: false },
   qualityScore: { type: Number, default: 0, min: 0, max: 100 },
+
+  // 下载统计（番茄导入专用）
+  downloadStats: {
+    totalChapters: { type: Number, default: 0 },     // 总章节数
+    downloadedChapters: { type: Number, default: 0 }, // 成功下载数
+    failedChapters: { type: Number, default: 0 },     // 失败数
+    avgChapterLength: { type: Number, default: 0 },   // 平均每章字数
+  },
 }, { timestamps: true })
 
 module.exports = mongoose.model('ReferenceNovel', referenceNovelSchema)

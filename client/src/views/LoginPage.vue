@@ -21,7 +21,7 @@
           <span v-else>{{ $t('auth.login') }}</span>
         </button>
         <div class="auth-footer">
-          {{ $t('auth.needAccount') }}
+          {{ $t('auth.needAccount') }}<router-link to="/register">{{ $t('auth.register') }}</router-link>
         </div>
         <div class="back-link">
           <router-link to="/generate">{{ $t('auth.backHome') }}</router-link>

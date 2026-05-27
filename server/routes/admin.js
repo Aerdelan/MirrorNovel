@@ -54,6 +54,7 @@ router.get('/users', async (req, res) => {
     const total = await User.countDocuments(query);
     const users = await User.find(query)
       .select('-password')
+      .populate('invitedBy', 'email nickname')
       .sort({ createdAt: -1 })
       .skip((page - 1) * pageSize)
       .limit(Number(pageSize));
@@ -97,6 +98,18 @@ router.post('/users/:id/group-reward', async (req, res) => {
     res.json({ message: '赠送成功，已发放 5000 Token', user: safe });
   } catch (error) {
     res.status(500).json({ message: '赠送失败', error: error.message });
+  }
+});
+
+// 获取某用户邀请的用户列表
+router.get('/users/:id/invited-users', async (req, res) => {
+  try {
+    const invited = await User.find({ invitedBy: req.params.id })
+      .select('email nickname createdAt tokens')
+      .sort({ createdAt: -1 });
+    res.json(invited);
+  } catch (error) {
+    res.status(500).json({ message: '获取失败', error: error.message });
   }
 });
 

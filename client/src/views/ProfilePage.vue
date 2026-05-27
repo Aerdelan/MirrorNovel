@@ -64,6 +64,43 @@
           </div>
         </div>
 
+        <!-- 签到 -->
+        <div class="card checkin-card">
+          <div class="checkin-header">
+            <div class="section-title" style="margin:0;">📅 签到</div>
+            <span class="checkin-total">已签到 {{ checkinTotal }} 天</span>
+          </div>
+          <div class="checkin-streak">
+            <div v-for="d in 7" :key="d" class="checkin-day" :class="{ active: d <= checkinDayIndex, today: d === checkinDayIndex && !checkinDone, done: d <= checkinDayIndex && (d < checkinDayIndex || checkinDone) }">
+              <div class="day-icon">{{ d === 7 ? '🎁' : '📅' }}</div>
+              <div class="day-label">Day {{ d }}</div>
+              <div class="day-reward">{{ d === 7 ? '200' : '100' }}</div>
+            </div>
+          </div>
+          <button class="btn btn-primary btn-block" :disabled="checkinDone || checkining" @click="doCheckin">
+            {{ checkining ? '⏳' : checkinDone ? '✅ 已签到' : '📅 今日签到' }}
+          </button>
+          <div v-if="checkinMsg" class="checkin-msg" :class="{ ok: checkinOk }">{{ checkinMsg }}</div>
+        </div>
+
+        <!-- 邀请 -->
+        <div class="card invite-card">
+          <div class="section-title">👥 邀请好友</div>
+          <div class="invite-stats">
+            <div class="invite-stat"><span class="stat-num">{{ inviteInfo.inviteCount }}</span><span>已邀请</span></div>
+            <div class="invite-stat"><span class="stat-num">{{ inviteInfo.inviteRewards }}</span><span>获得 Token</span></div>
+          </div>
+          <div class="invite-code-row">
+            <span class="invite-label">邀请码</span>
+            <span class="invite-code" @click="copyInviteCode">{{ inviteInfo.inviteCode }}</span>
+            <button class="btn btn-sm btn-outline" @click="copyInviteLink">复制链接</button>
+          </div>
+          <div class="invite-qr" v-if="inviteInfo.inviteLink">
+            <img :src="'https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=' + encodeURIComponent(inviteInfo.inviteLink)" alt="QR" />
+          </div>
+          <div class="invite-hint">每邀请一位新用户注册，您可获得 <strong>2000 Token</strong></div>
+        </div>
+
         <!-- 昵称 -->
         <div class="card">
           <div class="section-title">{{ $t('profile.editNick') }}</div>
@@ -172,6 +209,17 @@ const novelStore = useNovelStore()
 const { isZh, setLocale } = useI18n()
 const newNickname = ref('')
 
+// 签到
+const checkinDayIndex = ref(0)
+const checkinTotal = ref(0)
+const checkinDone = ref(false)
+const checkining = ref(false)
+const checkinMsg = ref('')
+const checkinOk = ref(false)
+
+// 邀请
+const inviteInfo = ref({ inviteCode: '', inviteCount: 0, inviteRewards: 0, inviteLink: '' })
+
 // Token
 const totalTokens = ref(0)
 const usedTokens = ref(0)
@@ -212,7 +260,84 @@ onMounted(async () => {
   loadTokenInfo()
   loadStats()
   loadModelConfig()
+  loadCheckinStatus()
+  loadInviteInfo()
 })
+
+async function loadCheckinStatus() {
+  try {
+    const data = await authStore.getCheckinStatus()
+    checkinDone.value = data.checkedIn
+    checkinDayIndex.value = data.dayIndex || 0
+    checkinTotal.value = data.totalDays || 0
+  } catch {}
+}
+
+async function loadInviteInfo() {
+  try {
+    inviteInfo.value = await authStore.getInviteInfo()
+  } catch {}
+}
+
+async function doCheckin() {
+  checkining.value = true; checkinMsg.value = ''
+  try {
+    const data = await authStore.checkin()
+    checkinDone.value = true
+    checkinDayIndex.value = data.dayIndex
+    checkinTotal.value = data.totalDays
+    checkinMsg.value = data.message
+    checkinOk.value = true
+  } catch (e) {
+    checkinMsg.value = e.response?.data?.message || '签到失败'
+    checkinOk.value = false
+  }
+  checkining.value = false
+}
+
+function copyToClipboard(text, label) {
+  // 优先使用 Clipboard API（HTTPS 环境）
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      alert(`${label}已复制`)
+    }).catch(() => {
+      fallbackCopy(text, label)
+    })
+  } else {
+    fallbackCopy(text, label)
+  }
+}
+
+function fallbackCopy(text, label) {
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.style.position = 'fixed'
+  ta.style.left = '-9999px'
+  ta.style.top = '-9999px'
+  document.body.appendChild(ta)
+  ta.select()
+  ta.setSelectionRange(0, text.length)
+  try {
+    document.execCommand('copy')
+    alert(`${label}已复制`)
+  } catch {
+    // 全失败时引导用户手动复制
+    prompt('请手动复制以下内容：', text)
+  }
+  document.body.removeChild(ta)
+}
+
+function copyInviteCode() {
+  if (inviteInfo.value.inviteCode) {
+    copyToClipboard(inviteInfo.value.inviteCode, '邀请码')
+  }
+}
+
+function copyInviteLink() {
+  if (inviteInfo.value.inviteLink) {
+    copyToClipboard(inviteInfo.value.inviteLink, '邀请链接')
+  }
+}
 
 async function loadTokenInfo() {
   try {
@@ -345,6 +470,36 @@ async function handleLogout() {
 .group-info-text { font-size: 13px; color: var(--text-secondary); margin-bottom: 8px; }
 .group-qq { font-size: 22px; font-weight: 700; color: var(--primary-color); }
 .group-hint { font-size: 12px; color: var(--text-light); margin-top: 4px; }
+
+/* 签到 */
+.checkin-card { text-align: center; }
+.checkin-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.checkin-total { font-size: 12px; color: var(--text-light); }
+.checkin-streak { display: flex; gap: 4px; justify-content: center; margin-bottom: 14px; }
+.checkin-day { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 6px; border-radius: 10px; background: #f5f5f5; min-width: 44px; transition: all 0.2s; }
+.checkin-day.active { background: #fff5f0; border: 1px solid var(--primary-color); }
+.checkin-day.done { background: #f6ffed; border: 1px solid #b7eb8f; }
+.checkin-day.today { border: 2px solid var(--primary-color); }
+.day-icon { font-size: 16px; }
+.day-label { font-size: 10px; color: var(--text-light); }
+.day-reward { font-size: 11px; font-weight: 700; color: var(--primary-color); }
+.checkin-msg { margin-top: 8px; font-size: 13px; color: var(--error-color); }
+.checkin-msg.ok { color: var(--success-color); }
+
+/* 邀请 */
+.invite-card { text-align: center; border-color: #ffd591; background: linear-gradient(135deg, #fff7e6, #fffbe6); }
+.invite-stats { display: flex; gap: 20px; justify-content: center; margin: 12px 0; }
+.invite-stat { display: flex; flex-direction: column; align-items: center; }
+.invite-stat .stat-num { font-size: 22px; font-weight: 700; color: var(--primary-color); }
+.invite-stat span:last-child { font-size: 11px; color: var(--text-light); }
+.invite-code-row { display: flex; align-items: center; gap: 8px; justify-content: center; margin-bottom: 10px; }
+.invite-label { font-size: 13px; color: var(--text-secondary); }
+.invite-code { font-size: 18px; font-weight: 700; color: var(--primary-color); cursor: pointer; letter-spacing: 2px; }
+.invite-code:hover { text-decoration: underline; }
+.invite-qr { margin: 10px 0; }
+.invite-qr img { border-radius: 8px; border: 1px solid var(--border-color); }
+.invite-hint { font-size: 12px; color: var(--text-light); margin-top: 6px; }
+.invite-hint strong { color: var(--primary-color); }
 
 /* 语言切换 */
 .lang-switch-row { display: flex; gap: 10px; }

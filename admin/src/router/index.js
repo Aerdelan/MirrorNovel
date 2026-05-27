@@ -1,7 +1,10 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
 const routes = [
-  { path: '/', redirect: '/login' },
+  {
+    path: '/',
+    redirect: '/login',
+  },
   {
     path: '/login',
     name: 'Login',
@@ -10,16 +13,46 @@ const routes = [
   {
     path: '/dashboard',
     name: 'Dashboard',
-    component: () => import('../views/DashboardPage.vue'),
+    component: () => import('../views/AdminPage.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/users',
+    name: 'Users',
+    component: () => import('../views/AdminPage.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/novels',
+    name: 'Novels',
+    component: () => import('../views/AdminPage.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/distill',
+    name: 'Distill',
+    component: () => import('../views/AdminPage.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/models',
+    name: 'Models',
+    component: () => import('../views/AdminPage.vue'),
+    meta: { requiresAuth: true },
   },
 ]
 
-const router = createRouter({ history: createWebHistory(), routes })
+const router = createRouter({
+  history: createWebHistory(),
+  routes,
+})
 
 router.beforeEach((to, from, next) => {
-  const token = localStorage.getItem('admin_token')
-  if (to.name !== 'Login' && !token) next({ name: 'Login' })
-  else next()
+  if (to.meta.requiresAuth) {
+    const token = localStorage.getItem('admin_token')
+    if (!token) return next('/login')
+  }
+  next()
 })
 
 export default router

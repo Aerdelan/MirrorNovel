@@ -18,13 +18,13 @@ try {
 } catch (e) {}
 
 /**
- * HTTP GET 请求
+ * HTTP GET 请求（带超时）
  */
-function httpGet(url, cookie = '') {
+function httpGet(url, cookie = '', timeout = 15000) {
   const u = new URL(url)
   const mod = u.protocol === 'https:' ? https : http
   return new Promise((resolve, reject) => {
-    mod.get(url, {
+    const req = mod.get(url, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Cookie': cookie,
@@ -34,7 +34,9 @@ function httpGet(url, cookie = '') {
       let data = ''
       res.on('data', c => data += c)
       res.on('end', () => resolve({ text: data, status: res.statusCode, setCookie: res.headers['set-cookie'] || '' }))
-    }).on('error', reject)
+    })
+    req.on('error', reject)
+    req.setTimeout(timeout, () => { req.destroy(); reject(new Error(`HTTP timeout ${timeout}ms: ${url}`)) })
   })
 }
 
@@ -103,62 +105,137 @@ async function getBookInfoViaHTML(bookId) {
 
   items = items.map((ch, i) => ({
     item_id: ch.item_id || ch.itemId,
-    chapter_number: ch.chapter_number || (i + 1),
+    chapter_number: ch.realChapterOrder || ch.chapter_number || ch.chapterNumber || (i + 1),
     title: ch.title || '',
   }))
+  // 按章节序号排序
+  items.sort((a, b) => a.chapter_number - b.chapter_number)
 
   return { title, chapters: items }
 }
 
-const CONCURRENCY = 10 // 并发数比 Playwright 版更大
+const CONCURRENCY = 12 // HTML 抓取并发数
+const API_CONCURRENCY = 5 // API 方式并发数
+const CHAPTER_TIMEOUT = 25000 // 单章超时（毫秒）
+const MAX_RETRIES = 2 // 失败重试次数
 
 /**
- * 批量获取章节内容（HTML 抓取方式）
+ * 带重试和超时的通用抓取包装
+ */
+async function fetchWithRetry(fn, label, options = {}) {
+  const { maxRetries = MAX_RETRIES, baseDelay = 1500, timeout = CHAPTER_TIMEOUT } = options
+  let lastError
+  for (let i = 0; i <= maxRetries; i++) {
+    try {
+      const result = await Promise.race([
+        fn(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error(`Timeout ${timeout}ms`)), timeout)),
+      ])
+      if (result) return result
+      throw new Error('empty result')
+    } catch (e) {
+      lastError = e
+      if (i < maxRetries) {
+        console.warn(`[retry] ${label} 第${i+1}/${maxRetries+1}次失败: ${e.message}，${baseDelay * (i + 1)}ms 后重试`)
+        await new Promise(r => setTimeout(r, baseDelay * (i + 1)))
+      }
+    }
+  }
+  throw lastError
+}
+
+/**
+ * HTML 方式：从 reader 页面提取章节内容（增强版）
+ * 支持多种 content 出现模式，提高提取成功率
+ */
+function extractContentEnhanced(html) {
+  // 尝试方法1: 标准 "content":"..."（转义 JSON）
+  let text = extractContent(html)
+  if (text && text.length > 50) return text
+
+  // 尝试方法2: 搜索 data.content 或 content = "..."
+  const patterns = [
+    /content\s*[:=]\s*"((?:[^"\\]|\\.)*)"/,
+    /"content"\s*:\s*"((?:[^"\\]|\\.)*)"/,
+    /chapterData\.content\s*=\s*"((?:[^"\\]|\\.)*)"/,
+  ]
+  for (const pat of patterns) {
+    const m = html.match(pat)
+    if (m) {
+      let raw = m[1]
+        .replace(/\\u003C/g, '<').replace(/\\u003E/g, '>').replace(/\\u002F/g, '/')
+        .replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+      const clean = raw.replace(/<[^>]+>/g, '').trim()
+      if (clean.length > 50) return clean
+    }
+  }
+
+  // 尝试方法3: 直接找大量中文文本区域
+  const bodyStart = html.indexOf('<div class="page-text"')
+  if (bodyStart >= 0) {
+    let end = html.indexOf('</div>', bodyStart)
+    if (end < 0) end = bodyStart + 30000
+    const section = html.substring(bodyStart, end)
+      .replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim()
+    if (section.length > 50) return section
+  }
+
+  return null
+}
+
+/**
+ * 批量获取章节内容（HTML 抓取方式）— 带重试
  */
 async function getChapterContentsViaHTML(bookId, chapters, maxChapters = 9999, onChapter = null) {
   const results = []
   const toFetch = chapters.slice(0, maxChapters)
+  let failCount = 0
 
   for (let start = 0; start < toFetch.length; start += CONCURRENCY) {
     const batch = toFetch.slice(start, start + CONCURRENCY)
 
     const batchResults = await Promise.all(batch.map(async (ch) => {
       const itemId = ch.item_id || ch.itemId
-      if (!itemId) return null
+      if (!itemId) return { error: 'no itemId' }
 
       try {
-        const res = await httpGet(READER_PAGE + itemId)
-        const html = res.text
+        const text = await fetchWithRetry(async () => {
+          const res = await httpGet(READER_PAGE + itemId)
+          const html = res.text
+          const content = extractContentEnhanced(html)
+          if (!content || content.length <= 50) return null
+          const decoded = decodeText(content, fontMapping)
+          return decoded && decoded.length > 50 ? decoded : content
+        }, `HTML 章节 ${itemId}`, { maxRetries: 1, timeout: 20000 })
 
-        // 从 HTML 提取内容
-        let text = extractContent(html)
-
-        if (text && text.length > 50) {
-          const decoded = decodeText(text, fontMapping)
+        if (text) {
           return {
             item_id: itemId,
             chapter_number: ch.chapter_number || 0,
             title: ch.title || '',
-            content: decoded,
+            content: text,
           }
         }
+        return { error: 'empty content after retry' }
       } catch (e) {
-        console.error('章节', itemId, '失败:', e.message)
+        return { error: e.message }
       }
-      return null
     }))
 
     for (const r of batchResults) {
-      if (r) {
+      if (r && r.content) {
         results.push(r)
         if (onChapter) onChapter(r)
+      } else if (r && r.error) {
+        failCount++
       }
     }
 
-    if (start + CONCURRENCY < toFetch.length) await new Promise(r => setTimeout(r, 200))
+    if (start + CONCURRENCY < toFetch.length) await new Promise(r => setTimeout(r, 300))
   }
 
-  results.sort((a, b) => (a.item_id || '').localeCompare(b.item_id || ''))
+  results.sort((a, b) => a.chapter_number - b.chapter_number)
+  if (failCount > 0) console.warn(`[HTML] 共 ${toFetch.length} 章，成功 ${results.length}，失败 ${failCount}`)
   return results
 }
 
@@ -213,14 +290,13 @@ async function getBookInfoViaAPI(bookId) {
 }
 
 /**
- * 批量获取章节内容（纯 API 方式）
- * 先批量调 API 拿原始 HTML → 再统一构建字体映射 → 批量解码
+ * 批量获取章节内容（纯 API 方式）— 带重试与逐批字体映射
  */
 async function getChapterContentsViaAPI(bookId, chapters, maxChapters = 9999, onChapter = null) {
   const toFetch = chapters.slice(0, maxChapters)
-  const API_CONCURRENCY = 3
+  let failCount = 0
 
-  // 第一步：批量下载原始内容（PUA 编码的 HTML），不构建字体映射
+  // 第一步：批量下载原始内容（带重试）
   const rawResults = []
   for (let start = 0; start < toFetch.length; start += API_CONCURRENCY) {
     const batch = toFetch.slice(start, start + API_CONCURRENCY)
@@ -228,25 +304,34 @@ async function getChapterContentsViaAPI(bookId, chapters, maxChapters = 9999, on
       const itemId = ch.item_id || ch.itemId
       if (!itemId) return null
       try {
-        const cookie = fanqieAuth.getCookie()
-        const data = await playwrightProxy.fetchViaBrowser('chapter', { itemId }, cookie)
-        const rawHtml = data?.chapterData?.content || data?.content || ''
-        if (rawHtml && rawHtml.length > 50) {
-          return { item_id: itemId, chapter_number: ch.chapter_number || 0, title: ch.title || '', content: rawHtml }
+        const content = await fetchWithRetry(async () => {
+          const cookie = fanqieAuth.getCookie()
+          const data = await playwrightProxy.fetchViaBrowser('chapter', { itemId }, cookie)
+          const rawHtml = data?.chapterData?.content || data?.content || ''
+          return rawHtml && rawHtml.length > 50 ? rawHtml : null
+        }, `API 章节 ${itemId}`, { maxRetries: MAX_RETRIES, timeout: 30000 })
+        if (content) {
+          return { item_id: itemId, chapter_number: ch.chapter_number || 0, title: ch.title || '', content }
         }
-      } catch (e) { console.error('[API] 章节', itemId, '失败:', e.message) }
+      } catch (e) {
+        failCount++
+      }
       return null
     }))
     for (const r of batchResults) { if (r) rawResults.push(r) }
+    if (start + API_CONCURRENCY < toFetch.length) await new Promise(r => setTimeout(r, 300))
   }
 
   if (rawResults.length === 0) throw new Error('API 方式未获取到任何章节内容')
 
-  // 第二步：只对第一个章节构建字体映射
+  // 第二步：构建字体映射（取前几个成功章节中内容最长的作为映射源）
   playwrightProxy.resetFontCache()
-  const firstId = rawResults[0]?.item_id
-  if (firstId) {
-    try { await playwrightProxy.ensureMapping(firstId, fanqieAuth.getCookie()) } catch (e) { console.warn('[映射] 字体映射失败:', e.message) }
+  const sortedByLength = [...rawResults].sort((a, b) => b.content.length - a.content.length)
+  const mappingItemId = sortedByLength[0]?.item_id
+  if (mappingItemId) {
+    try { await playwrightProxy.ensureMapping(mappingItemId, fanqieAuth.getCookie()) } catch (e) {
+      console.warn('[映射] 字体映射失败:', e.message)
+    }
   }
 
   // 第三步：批量解码 PUA 字符
@@ -267,6 +352,7 @@ async function getChapterContentsViaAPI(bookId, chapters, maxChapters = 9999, on
   }
 
   if (results.length === 0) throw new Error('API 方式未获取到任何章节内容')
+  console.log(`[API] 共 ${toFetch.length} 章，成功 ${results.length}，失败 ${failCount}`)
   return results
 }
 

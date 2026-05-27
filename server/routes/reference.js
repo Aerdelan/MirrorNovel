@@ -363,6 +363,18 @@ router.post('/fanqie-import', auth, adminOnly, async (req, res) => {
 
     if (!mainCategory) return res.status(400).json({ message: '无法自动检测小说类型，请手动选择' })
 
+    // 根据 mainCategory 自动推断 gender（如果用户未明确指定）
+    if (novelType === 'lightnovel') {
+      gender = 'unisex';  // 轻小说不分男频/女频
+    } else if (!gender || gender === 'male') {
+      // 检查是否为女频分类
+      try {
+        const typeData = require('../config/novelTypeData');
+        const isFemale = (typeData.female || []).some(c => c.name === mainCategory);
+        if (isFemale) gender = 'female';
+      } catch {}
+    }
+
     // 创建参考小说记录（异步后台处理）
     const doc = await ReferenceNovel.create({
       userId: req.userId,
@@ -385,20 +397,48 @@ router.post('/fanqie-import', auth, adminOnly, async (req, res) => {
 
     // ---- 后台异步下载+蒸馏 ----
     let contents = []
+    let downloadAttempted = false
     try {
       contents = await fanqieScraper.getChapterContents(bookId, chapters, chapters.length)
+      downloadAttempted = true
     } catch (e) {
       console.error('[fanqie-import] 下载失败:', e.message)
     }
 
+    const totalChapters = chapters.length
+    const downloadedChapters = contents.length
+    const failedChapters = totalChapters - downloadedChapters
+    const avgChapterLength = downloadedChapters > 0
+      ? Math.round(contents.reduce((s, c) => s + (c.content?.length || 0), 0) / downloadedChapters)
+      : 0
+
     if (contents.length === 0) {
-      await ReferenceNovel.findByIdAndUpdate(doc._id, { $set: { styleProfile: '❌ 下载失败，检查 Cookie', aiProcessed: false } })
+      await ReferenceNovel.findByIdAndUpdate(doc._id, {
+        $set: {
+          styleProfile: '❌ 下载失败，检查 Cookie',
+          aiProcessed: false,
+          downloadStats: { totalChapters, downloadedChapters: 0, failedChapters: totalChapters, avgChapterLength: 0 },
+        },
+      })
       return
+    }
+
+    // 检查下载成功率，如果过低则记录警告
+    const successRate = (downloadedChapters / totalChapters * 100).toFixed(1)
+    if (successRate < 50) {
+      console.warn(`[fanqie-import] 《${realTitle}》下载成功率仅 ${successRate}%（${downloadedChapters}/${totalChapters}），内容可能不完整`)
     }
 
     const fullText = contents.map(c => `第${c.chapter_number}章 ${c.title || ''}\n${c.content}`).join('\n\n')
     if (fullText.length < 100) {
-      await ReferenceNovel.findByIdAndUpdate(doc._id, { $set: { styleProfile: '❌ 内容太少', aiProcessed: false, originalLength: fullText.length } })
+      await ReferenceNovel.findByIdAndUpdate(doc._id, {
+        $set: {
+          styleProfile: '❌ 内容太少',
+          aiProcessed: false,
+          originalLength: fullText.length,
+          downloadStats: { totalChapters, downloadedChapters, failedChapters, avgChapterLength },
+        },
+      })
       return
     }
 
@@ -417,8 +457,9 @@ router.post('/fanqie-import', auth, adminOnly, async (req, res) => {
       styleProfile: styleProfile || '风格提取暂不可用',
       keyExcerpts, writingCharacteristics, vocabularyBank, chapterStructure, qualityScore,
       aiProcessed: !!styleProfile, title: realTitle,
+      downloadStats: { totalChapters, downloadedChapters, failedChapters, avgChapterLength },
     }})
-    console.log(`[fanqie-import] 《${realTitle}》蒸馏完成，${contents.length}/${chapters.length} 章`)
+    console.log(`[fanqie-import] 《${realTitle}》蒸馏完成，${contents.length}/${chapters.length} 章，成功率 ${successRate}%`)
   } catch (error) {
     console.error('番茄导入失败:', error)
     if (!res.headersSent) res.status(500).json({ message: '导入失败: ' + error.message })

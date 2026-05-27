@@ -45,7 +45,7 @@
         <textarea v-model="outline" class="textarea" rows="4" :placeholder="$t('generate.placeholderOutline')"></textarea>
       </div>
 
-      <div v-if="authStore.user?.role === 'admin' && genRefsLoaded" class="card gen-ref-card">
+      <div v-if="genRefsLoaded" class="card gen-ref-card">
         <div class="section-title">{{ $t('generate.refMatch') }}</div>
         <div v-if="genFilteredRefs.length === 0" class="ln-ref-empty">
           <template v-if="selectedType">{{ $t('generate.refEmpty', { type: selectedType }) }}</template>
@@ -133,7 +133,7 @@
         <textarea v-model="lnWorldSetting" class="textarea" rows="4" :placeholder="$t('generate.lnPlaceholderWorld')"></textarea>
       </div>
 
-      <div v-if="authStore.user?.role === 'admin' && lnRefsLoaded" class="card ln-ref-card">
+      <div v-if="lnRefsLoaded" class="card ln-ref-card">
         <div class="section-title">{{ $t('generate.refMatch') }}</div>
         <div v-if="lnFilteredRefs.length === 0" class="ln-ref-empty">
           <template v-if="lnSelectedType">{{ $t('generate.refEmpty', { type: $tn(lnTypes.find(t=>t.id===lnSelectedType)?.name) }) }}</template>

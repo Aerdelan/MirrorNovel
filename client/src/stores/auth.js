@@ -28,8 +28,8 @@ export const useAuthStore = defineStore('auth', () => {
     return res.data
   }
 
-  async function register(email, password, code, nickname) {
-    const res = await api.post('/auth/register', { email, password, code, nickname })
+  async function register(email, password, code, nickname, inviteCode) {
+    const res = await api.post('/auth/register', { email, password, code, nickname, inviteCode })
     setAuth(res.data.user, res.data.token)
     return res.data
   }
@@ -100,6 +100,28 @@ export const useAuthStore = defineStore('auth', () => {
     return res.data
   }
 
+  // 签到
+  async function checkin() {
+    const res = await api.post('/auth/checkin')
+    if (user.value) {
+      user.value.tokens = { total: res.data.availableTokens + (user.value.tokens?.used || 0), used: user.value.tokens?.used || 0 }
+      user.value.availableTokens = res.data.availableTokens
+      localStorage.setItem('user', JSON.stringify(user.value))
+    }
+    return res.data
+  }
+
+  async function getCheckinStatus() {
+    const res = await api.get('/auth/checkin-status')
+    return res.data
+  }
+
+  // 邀请
+  async function getInviteInfo() {
+    const res = await api.get('/auth/invite-info')
+    return res.data
+  }
+
   // 公告
   async function checkAnnouncement() {
     try {
@@ -135,6 +157,8 @@ export const useAuthStore = defineStore('auth', () => {
     getTokenInfo,
     getUserStats,
     purchaseTokens,
+    checkin, getCheckinStatus,
+    getInviteInfo,
     checkAnnouncement,
     dismissAnnouncement,
     logout,
