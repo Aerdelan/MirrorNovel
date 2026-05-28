@@ -194,12 +194,32 @@ async function ensureMapping(itemId, cs, prefetchedHtml) {
       html = await page.content()
     }
 
-    // 从 HTML 中提取 woff2 字体 URL（嵌入在 JS state 中）
-    const woffMatches = html.match(/https?:[^"'\\)\\s]+bytetos[^"'\\)\\s]*woff2/g)
+    // 从页面 styleSheets 提取字体 URL（SPA 动态加载的 CSS 才有）
     let fontUrl = ''
-    if (woffMatches && woffMatches.length > 0) {
-      fontUrl = woffMatches[0].replace(/\\u002F/g, '/')
-      console.log('[ensureMapping] 字体 URL:', fontUrl.replace(/\?.*$/, ''))
+    if (!prefetchedHtml) {
+      // 使用当前页面（已导航到 reader 页）
+      try {
+        const page = mainPage || await ensurePage(cs)
+        fontUrl = await page.evaluate(() => {
+          for (const s of document.styleSheets) {
+            try {
+              for (const r of s.cssRules || []) {
+                const m = (r.cssText || '').match(/url\(\s*["']?([^"'\s)]+woff2[^"'\s)]*)/i)
+                if (m) return m[1].replace(/^["']|["']$/g, '')
+              }
+            } catch {}
+          }
+          return null
+        })
+      } catch {}
+    }
+
+    // 兜底：从 HTML 中正则提取
+    if (!fontUrl) {
+      const woffMatches = html.match(/https?:[^"'\\)\\s]+bytetos[^"'\\)\\s]*woff2/g)
+      if (woffMatches && woffMatches.length > 0) {
+        fontUrl = woffMatches[0].replace(/\\u002F/g, '/')
+      }
     }
 
     if (!fontUrl) {
@@ -208,6 +228,8 @@ async function ensureMapping(itemId, cs, prefetchedHtml) {
       mappingBuiltFor = itemId
       return charMapping
     }
+
+    console.log('[ensureMapping] 字体 URL:', fontUrl.replace(/\?.*$/, ''))
 
     // 下载字体
     let fontData = null
