@@ -164,14 +164,14 @@ function stopChapterGen() { if (window.__chapterGenXHR) { window.__chapterGenXHR
 
 function openEdit(chapter) { editingChapter.value = chapter; editContent.value = chapter.content || ''; showEditModal.value = true }
 async function saveEdit() {
-  try { await api.put(`/api/novel/${route.params.id}/chapter/${editingChapter.value.chapterNumber}`, { content: editContent.value }); showEditModal.value = false; refreshNovel() }
+  try { await api.put(`/novel/${route.params.id}/chapter/${editingChapter.value.chapterNumber}`, { content: editContent.value }); showEditModal.value = false; refreshNovel() }
   catch (e) { alert('保存失败:'+(e.response?.data?.message||e.message)) }
 }
 
 async function confirmDeleteChapter(ch) {
   if (!confirm(`确定删除第${ch.chapterNumber}章吗？`)) return
   try {
-    await api.delete(`/api/novel/${route.params.id}/chapter/${ch.chapterNumber}`)
+    await api.delete(`/novel/${route.params.id}/chapter/${ch.chapterNumber}`)
     refreshNovel()
   } catch (e) {
     alert('删除失败: ' + (e.response?.data?.message || e.message))
