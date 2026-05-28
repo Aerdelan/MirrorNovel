@@ -59,59 +59,59 @@ async function ensurePage(cs) {
 
 /**
  * 从 reader 页面提取章节内容 + 字体映射
- * 替代旧的 fetchViaBrowser API 方式（a_bogus 已失效）
+ * 导航到 reader 页后等待 SPA 加载并调用 API（自动处理 a_bogus），拦截响应
  */
 async function fetchChapterContent(itemId, cs) {
   if (!cs) throw new Error('no cookie')
   const page = await ensurePage(cs)
-
-  // 导航到 reader 页面（即使 404，JS state 仍在 HTML 中）
-  await page.goto('https://fanqienovel.com/reader/' + itemId, {
-    waitUntil: 'domcontentloaded', timeout: 30000
-  }).catch(() => {})
-  await page.waitForTimeout(4000)
-
-  // 从 page state 中提取章节内容
-  let chapterData = null
+  let apiResponse = null
   let rawHtml = ''
 
-  try {
-    // 尝试从 window.__NUXT__ 提取
-    chapterData = await page.evaluate(() => {
+  // 拦截 SPA 发起的章节 API 响应（SPA 会自动生成 a_bogus）
+  page.on('response', async (resp) => {
+    const url = resp.url()
+    if (url.includes('/api/reader/full') && url.includes(itemId)) {
       try {
-        const nuxt = window.__NUXT__ || window.__NUXT_DATA__ || window.__NEXT_DATA__
-        if (nuxt) {
-          const reader = nuxt.state?.reader || nuxt.reader || {}
-          return reader.chapterData || reader.content || null
-        }
-        return null
-      } catch { return null }
-    })
-  } catch {}
+        const json = await resp.json()
+        apiResponse = json
+      } catch {}
+    }
+  })
+
+  // 导航到 reader 页面，等待 SPA 加载并调用 API
+  await page.goto('https://fanqienovel.com/reader/' + itemId, {
+    waitUntil: 'networkidle', timeout: 35000
+  }).catch(() => {})
+  await page.waitForTimeout(3000)
+
+  // 从拦截的 API 响应中提取内容
+  let content = ''
+  if (apiResponse) {
+    content = apiResponse?.data?.chapterData?.content || apiResponse?.chapterData?.content || ''
+  }
 
   // 兜底：从 page.content() 正则提取
-  if (!chapterData) {
+  if (!content || content.length < 50) {
     rawHtml = await page.content()
-    // 匹配 "content":"..." 字段（含转义字符）
     const m = rawHtml.match(/"content"\s*:\s*"((?:[^"\\]|\\.)*)"/)
     if (m) {
       let c = m[1].replace(/\\u003C/g, '<').replace(/\\u003E/g, '>').replace(/\\n/g, '\n')
       c = c.replace(/\\"/g, '"').replace(/\\\\/g, '\\')
-      if (c.length > 50) chapterData = { content: c }
+      if (c.length > 50) content = c
     }
   }
 
-  if (!chapterData) throw new Error('未提取到章节内容')
+  if (!content || content.length < 50) throw new Error('未提取到章节内容')
 
   // 构建字体映射
   if (!charMapping) {
-    try { await ensureMapping(itemId, cs, rawHtml) } catch (e) {
+    try { await ensureMapping(itemId, cs, rawHtml || (await page.content())) } catch (e) {
       console.error('[pp] 字体映射失败:', e.message)
     }
   }
 
   // 解码 PUA 字符
-  let text = (chapterData.content || chapterData || '').replace(/<[^>]+>/g, '').trim()
+  let text = content.replace(/<[^>]+>/g, '').trim()
   if (!text || text.length < 10) return null
 
   if (charMapping && Object.keys(charMapping).length > 0) {
