@@ -197,7 +197,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useNovelStore } from '../stores/novel'
@@ -260,6 +260,15 @@ onMounted(async () => {
   loadTokenInfo()
   loadStats()
   loadModelConfig()
+  loadCheckinStatus()
+  loadInviteInfo()
+})
+
+// 从 keep-alive 缓存重新激活时刷新数据
+onActivated(() => {
+  if (!authStore.isLoggedIn) return
+  loadTokenInfo()
+  loadStats()
   loadCheckinStatus()
   loadInviteInfo()
 })

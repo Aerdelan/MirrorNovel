@@ -1,9 +1,9 @@
 <template>
   <div class="app">
-    <router-view v-slot="{ Component, route }">
+    <router-view v-slot="{ Component }">
       <transition name="slide-fade" mode="out-in">
         <keep-alive>
-          <component :is="Component" :key="route.path" />
+          <component :is="Component" />
         </keep-alive>
       </transition>
     </router-view>
