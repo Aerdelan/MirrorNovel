@@ -134,10 +134,10 @@ async function ensureMapping(itemId, cs, forceRebuild = false) {
     }
 
     if (!fontUrl) {
-      console.warn('[ensureMapping] 找不到字体 URL，使用预置映射')
-      try { charMapping = require('./font_mapping.json') } catch {}
+      console.warn('[ensureMapping] 找不到字体 URL，无法建立映射')
       mappingBuiltFor = itemId
-      return charMapping || {}
+      if (!charMapping) charMapping = {}
+      return charMapping
     }
 
     console.log('[ensureMapping] 下载字体:', fontUrl.replace(/\?.*$/, ''))
@@ -163,34 +163,48 @@ async function ensureMapping(itemId, cs, forceRebuild = false) {
     }
 
     if (!fontData || fontData.length < 100) {
-      console.warn('[ensureMapping] 字体数据无效，使用预置映射')
-      try { charMapping = require('./font_mapping.json') } catch {}
+      console.warn('[ensureMapping] 字体数据无效')
       mappingBuiltFor = itemId
-      return charMapping || {}
+      if (!charMapping) charMapping = {}
+      return charMapping
     }
 
     console.log('[ensureMapping] 字体大小:', fontData.length)
 
-    // 用 fontkit 构建映射
+    // 用 fontkit 构建映射 — 直接从字体 cmap 表解析 PUA→汉字的映射
     try {
       const fontkit = require('fontkit')
       const font = fontkit.create(fontData)
-      const knownMapping = require('./font_mapping.json')
+      const cmap = font.characterSet
+      const glyphToChars = new Map()
+      for (const code of cmap || []) {
+        try {
+          const glyph = font.glyphForCodePoint(code)
+          if (!glyph) continue
+          const idx = glyph.id
+          if (!glyphToChars.has(idx)) glyphToChars.set(idx, [])
+          glyphToChars.get(idx).push(code)
+        } catch {}
+      }
       const map = {}
       let matchCount = 0
-      for (const [puaChar, chineseChar] of Object.entries(knownMapping)) {
-        const code = puaChar.charCodeAt(0)
-        const glyph = font.glyphForCodePoint(code)
-        if (glyph) {
-          map[String.fromCodePoint(code)] = chineseChar
-          matchCount++
+      for (const [, codes] of glyphToChars) {
+        if (codes.length < 2) continue
+        const puaChars = codes.filter(c => c >= 0xE000 && c <= 0xF8FF)
+        const normalChars = codes.filter(c =>
+          (c >= 0x4E00 && c <= 0x9FFF) || (c >= 0x3000 && c <= 0x303F) || (c >= 0xFF00 && c <= 0xFFEF)
+        )
+        for (const pua of puaChars) {
+          if (normalChars.length > 0) {
+            map[String.fromCodePoint(pua)] = String.fromCodePoint(normalChars[0])
+            matchCount++
+          }
         }
       }
       charMapping = map
-      console.log(`[ensureMapping] 字体映射: ${matchCount}/${Object.keys(knownMapping).length} 个字符匹配`)
+      console.log(`[ensureMapping] cmap 直接解析: ${matchCount} 个 PUA→汉字 映射`)
     } catch (e) {
       console.error('[ensureMapping] 字体解析失败:', e.message)
-      try { charMapping = require('./font_mapping.json') } catch {}
     }
 
     if (!charMapping || Object.keys(charMapping).length === 0) {
