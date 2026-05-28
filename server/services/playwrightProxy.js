@@ -106,26 +106,58 @@ async function ensureMapping(itemId, cs, forceRebuild = false) {
     const page = await ensurePage(cs)
     let fontUrl = ''
 
-    // 拦截字体响应
+    // 拦截字体响应（检查新 CDN 域名 bytetos 和旧域名 awesome-font）
     page.on('response', r => {
       const u = r.url()
-      if (u.includes('awesome-font') && !fontUrl) fontUrl = u
+      if ((u.includes('bytetos') || u.includes('awesome-font') || u.includes('.woff2')) && !fontUrl) fontUrl = u
     })
 
-    // 导航到阅读页，等待字体加载
-    await page.goto('https://fanqienovel.com/reader/' + itemId, {
-      waitUntil: 'networkidle', timeout: 30000
+    // 先导航到主页（确保 cookies 生效，加载全局 CSS）
+    await page.goto('https://fanqienovel.com/', {
+      waitUntil: 'domcontentloaded', timeout: 20000
     }).catch(() => {})
     await page.waitForTimeout(3000)
 
-    // 如果路由拦截没抓到，从 CSS 中提取
+    // 从首页 CSS 中提取字体 URL
     if (!fontUrl) {
       fontUrl = await page.evaluate(() => {
         for (const s of document.styleSheets) {
           try {
-            for (const r of s.cssRules) {
-              const m = r.cssText.match(/url\(([^)]+woff2[^)]*)\)/)
-              if (m) return m[1]
+            for (const r of s.cssRules || []) {
+              const m = (r.cssText || '').match(/url\(([^)]+woff2[^)]*)\)/)
+              if (m) return m[1].replace(/^["']|["']$/g, '')
+            }
+          } catch {}
+        }
+        return null
+      })
+    }
+
+    // 导航到阅读页（即使 404，HTML 中仍内嵌字体配置）
+    await page.goto('https://fanqienovel.com/reader/' + itemId, {
+      waitUntil: 'domcontentloaded', timeout: 15000
+    }).catch(() => {})
+    await page.waitForTimeout(3000)
+
+    // 从原始 HTML 中提取字体 URL（字体嵌入在 JS state 中，不在 CSS 内）
+    if (!fontUrl) {
+      const html = await page.content()
+      const woffMatches = html.match(/https?:[^"']+bytetos[^"']*woff2[^"']*/g)
+      if (woffMatches && woffMatches.length > 0) {
+        // HTML 中 URL 使用 \\u002F 代替 /，需要还原
+        fontUrl = woffMatches[0].replace(/\\u002F/g, '/')
+        console.log('[ensureMapping] 从 HTML 提取字体:', fontUrl.replace(/\?.*$/, '').split('/').pop())
+      }
+    }
+
+    // 如果 HTML 提取没抓到，再从 styleSheets 捞一次
+    if (!fontUrl) {
+      fontUrl = await page.evaluate(() => {
+        for (const s of document.styleSheets) {
+          try {
+            for (const r of s.cssRules || []) {
+              const m = (r.cssText || '').match(/url\(([^)]+woff2[^)]*)\)/)
+              if (m) return m[1].replace(/^["']|["']$/g, '')
             }
           } catch {}
         }
