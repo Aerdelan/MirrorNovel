@@ -1,11 +1,9 @@
 <template>
   <div class="app">
     <router-view v-slot="{ Component }">
-      <transition name="slide-fade" mode="out-in">
-        <keep-alive>
-          <component :is="Component" />
-        </keep-alive>
-      </transition>
+      <keep-alive>
+        <component :is="Component" />
+      </keep-alive>
     </router-view>
     <TabBar v-if="showTabBar" />
     <div v-if="showTabBar" class="global-footer">
