@@ -12,7 +12,7 @@ function request(method, url, data, options = {}) {
     if (token) header['Authorization'] = `Bearer ${token}`
 
     uni.request({
-      url: API_BASE + url,
+      url: API_BASE() + url,
       method: method.toUpperCase(),
       data: data || undefined,
       header,

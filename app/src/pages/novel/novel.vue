@@ -64,7 +64,7 @@ const editContent = ref('')
 
 const statusMap = { generating: '生成中', paused: '已暂停', completed: '已完成', error: '异常' }
 
-function apiUrl(path) { return API_BASE + path }
+function apiUrl(path) { return API_BASE() + path }
 
 onMounted(async () => {
   const pages = getCurrentPages()
