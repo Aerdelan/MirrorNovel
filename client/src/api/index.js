@@ -20,14 +20,23 @@ api.interceptors.request.use(
   (error) => Promise.reject(error)
 )
 
-// 响应拦截器：处理401
+// 响应拦截器：处理401 — 软导航替代硬跳转
+let _authRedirecting = false
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    if (error.response?.status === 401 && !_authRedirecting) {
+      _authRedirecting = true
       localStorage.removeItem('token')
       localStorage.removeItem('user')
-      window.location.href = '/login'
+      // 使用动态 import 避免循环依赖
+      import('../router').then(({ default: router }) => {
+        router.push('/login')
+      }).catch(() => {
+        window.location.href = '/login'
+      }).finally(() => {
+        _authRedirecting = false
+      })
     }
     return Promise.reject(error)
   }

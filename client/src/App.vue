@@ -44,7 +44,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watchEffect } from 'vue'
+import { ref, computed, watchEffect, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import TabBar from './components/TabBar.vue'
 import { useAuthStore } from './stores/auth'
@@ -63,6 +63,21 @@ watchEffect(async () => {
     const shouldShow = await authStore.checkAnnouncement()
     showAnnouncement.value = shouldShow
   }
+})
+
+// 手机切后台再回来时：验证 token 是否仍有效
+function handleVisibilityChange() {
+  if (document.visibilityState === 'visible' && authStore.isLoggedIn) {
+    authStore.getProfile().catch(() => {
+      // getProfile 返回 401 时，api 拦截器会清 token 并跳转登录
+    })
+  }
+}
+onMounted(() => {
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+})
+onUnmounted(() => {
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 
 function closeAnnouncement() {

@@ -123,7 +123,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onActivated } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNovelStore } from '../stores/novel'
 import { useAuthStore } from '../stores/auth'
@@ -160,6 +160,14 @@ const allSelected = computed(() => novelStore.bookshelf.length > 0 && selectedId
 onMounted(async () => {
   if (!authStore.isLoggedIn) { router.push('/login'); return }
   try { await novelStore.fetchBookshelf() } catch (e) { console.error('获取书架失败:', e) }
+  loading.value = false
+})
+
+// 从 keep-alive 缓存重新激活时刷新书架数据（切换 tab 回来时）
+onActivated(async () => {
+  if (!authStore.isLoggedIn) return
+  loading.value = true
+  try { await novelStore.fetchBookshelf() } catch (e) { console.error('书架刷新失败:', e) }
   loading.value = false
 })
 

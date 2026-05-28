@@ -2,9 +2,23 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import api from '../api'
 
+function safeParse(key) {
+  try { const v = localStorage.getItem(key); if (!v || v === 'undefined') return null; return JSON.parse(v) }
+  catch { return null }
+}
+
+// 安全获取 token，处理 "undefined"/"null" 字符串
+function safeToken() {
+  try {
+    const t = localStorage.getItem('token')
+    if (!t || t === 'undefined' || t === 'null') return ''
+    return t
+  } catch { return '' }
+}
+
 export const useAuthStore = defineStore('auth', () => {
-  const user = ref(JSON.parse(localStorage.getItem('user') || 'null'))
-  const token = ref(localStorage.getItem('token') || '')
+  const user = ref(safeParse('user'))
+  const token = ref(safeToken())
 
   const isLoggedIn = computed(() => !!token.value)
 
