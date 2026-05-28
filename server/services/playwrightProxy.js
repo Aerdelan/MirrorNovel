@@ -198,7 +198,7 @@ async function ensureMapping(itemId, cs, prefetchedHtml) {
     }
 
     // 从 HTML 中提取 woff2 字体 URL（嵌入在 JS state 中）
-    const woffMatches = html.match(/https?:[^"']+bytetos[^"']*woff2[^"']*/g)
+    const woffMatches = html.match(/https?:[^"'\\)\\s]+bytetos[^"'\\)\\s]*woff2/g)
     let fontUrl = ''
     if (woffMatches && woffMatches.length > 0) {
       fontUrl = woffMatches[0].replace(/\\u002F/g, '/')
@@ -239,41 +239,25 @@ async function ensureMapping(itemId, cs, prefetchedHtml) {
 
     console.log('[ensureMapping] 字体大小:', fontData.length)
 
-    // 用 fontkit 解析 cmap
+    // 交叉验证：用已知 font_mapping.json + 当前字体 glyph 表筛选
     try {
       const fontkit = require('fontkit')
       const font = fontkit.create(fontData)
-      const cmap = font.characterSet
-      const glyphToChars = new Map()
-      for (const code of cmap || []) {
-        try {
-          const glyph = font.glyphForCodePoint(code)
-          if (!glyph) continue
-          const idx = glyph.id
-          if (!glyphToChars.has(idx)) glyphToChars.set(idx, [])
-          glyphToChars.get(idx).push(code)
-        } catch {}
-      }
+      const knownMapping = require('./font_mapping.json')
       const map = {}
       let matchCount = 0
-      for (const [, codes] of glyphToChars) {
-        if (codes.length < 2) continue
-        const puaChars = codes.filter(c => c >= 0xE000 && c <= 0xF8FF)
-        const normalChars = codes.filter(c =>
-          (c >= 0x4E00 && c <= 0x9FFF) || (c >= 0x3000 && c <= 0x303F) || (c >= 0xFF00 && c <= 0xFFEF)
-        )
-        for (const pua of puaChars) {
-          if (normalChars.length > 0) {
-            map[String.fromCodePoint(pua)] = String.fromCodePoint(normalChars[0])
-            matchCount++
-          }
+      for (const [puaChar, chineseChar] of Object.entries(knownMapping)) {
+        const code = puaChar.charCodeAt(0)
+        const glyph = font.glyphForCodePoint(code)
+        if (glyph) {
+          map[String.fromCodePoint(code)] = chineseChar
+          matchCount++
         }
       }
       charMapping = map
-      console.log(`[ensureMapping] cmap 解析: ${matchCount} 个 PUA→汉字 映射`)
+      console.log(`[ensureMapping] 交叉验证: ${matchCount}/${Object.keys(knownMapping).length} 个字符匹配`)
     } catch (e) {
-      console.error('[ensureMapping] fontkit 解析失败:', e.message)
-      charMapping = {}
+      console.error('[ensureMapping] 字体解析失败:', e.message)
     }
     mappingBuiltFor = itemId
     return charMapping
