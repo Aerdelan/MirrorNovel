@@ -79,25 +79,28 @@ async function fetchChapterContent(itemId, cs) {
   if (!cs) throw new Error('no cookie')
   const page = await ensurePage(cs)
 
-  const navPromise = page.goto('https://fanqienovel.com/reader/' + itemId, {
+  // 用事件方式拦截 API 响应 + x-tt-zhal 响应头
+  let apiResponse = null, fontUrl = ''
+  page.on('response', async (resp) => {
+    if (resp.url().includes('/api/reader/full') && !apiResponse) {
+      try {
+        apiResponse = await resp.json()
+        const zhal = resp.headers()['x-tt-zhal'] || ''
+        if (zhal && !fontUrl) {
+          const parts = {}; zhal.split(';').forEach(p => { const kv = p.trim().split('='); if (kv.length === 2) parts[kv[0]] = kv[1] })
+          const domain = parts.d1 || parts.d2; const fname = parts.f
+          if (domain && fname) fontUrl = `https://${domain}/obj/awesome-font/c/${fname}.woff2`
+        }
+      } catch {}
+    }
+  })
+
+  // 导航到 reader 页，等待 SPA 加载并调用 API
+  await page.goto('https://fanqienovel.com/reader/' + itemId, {
     waitUntil: 'domcontentloaded', timeout: 20000
   }).catch(() => {})
-
-  // 拦截 API 响应 + x-tt-zhal 响应头
-  let apiResponse = null, fontUrl = ''
-  try {
-    const resp = await page.waitForResponse(r => r.url().includes('/api/reader/full') && r.url().includes(itemId), { timeout: 25000 })
-    apiResponse = await resp.json()
-    const zhal = resp.headers()['x-tt-zhal'] || ''
-    if (zhal) {
-      const parts = {}; zhal.split(';').forEach(p => { const kv = p.trim().split('='); if (kv.length === 2) parts[kv[0]] = kv[1] })
-      const domain = parts.d1 || parts.d2; const fname = parts.f
-      if (domain && fname) fontUrl = `https://${domain}/obj/awesome-font/c/${fname}.woff2`
-    }
-  } catch {}
-
-  await navPromise
-  await page.waitForTimeout(1500)
+  // 等待 SPA 完全加载
+  await page.waitForTimeout(8000)
 
   // 提取内容
   let content = apiResponse?.data?.chapterData?.content || apiResponse?.chapterData?.content || apiResponse?.content || ''
