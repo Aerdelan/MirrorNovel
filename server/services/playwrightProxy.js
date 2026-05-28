@@ -125,33 +125,50 @@ async function fetchChapterContent(itemId, cs) {
   return text
 }
 
-// 旧 fetchViaBrowser 保留供目录获取使用（目录 API 可能仍可用）
+/**
+ * 通用浏览器 API 调用 — 先尝试 fetch，失败则从页面 HTML 提取
+ */
 async function fetchViaBrowser(action, params, cs) {
   if (!cs) throw new Error('no cookie')
   const page = await ensurePage(cs)
 
   if (action === 'chapter') {
-    // 章节内容改用 fetchChapterContent
     return { chapterData: { content: await fetchChapterContent(params.itemId, cs) } }
   }
 
-  // 目录 API 使用页面内的 fetch（可能也需要 a_bogus，但先试试）
+  // 目录 — 先尝试 API fetch
   const url = `https://fanqienovel.com/api/reader/directory/detail?bookId=${params.bookId}`
-  const r = await page.evaluate(async (u) => {
+  try {
+    const r = await page.evaluate(async (u) => {
+      try {
+        const a = await fetch(u, {
+          credentials: 'include',
+          headers: { 'accept': 'application/json, text/plain, */*', 'referer': 'https://fanqienovel.com/' }
+        })
+        if (!a.ok) throw Error('HTTP ' + a.status)
+        const b = await a.json()
+        return { ok: true, data: b.data || b }
+      } catch (e) {
+        return { ok: false, error: e.message }
+      }
+    }, url)
+    if (r.ok && r.data?.chapterListWithVolume) return r.data
+  } catch {}
+
+  // API 失败，从 reader 页 HTML 提取目录
+  console.warn('[pp] 目录 API 失败，从页面 HTML 提取')
+  await page.goto('https://fanqienovel.com/reader/' + params.bookId, {
+    waitUntil: 'domcontentloaded', timeout: 20000
+  }).catch(() => {})
+  await page.waitForTimeout(3000)
+  const html = await page.content()
+  const m = html.match(/"chapterListWithVolume"\s*:\s*(\[[\s\S]*?\])\s*,\s*"chapterTotal"/)
+  if (m) {
     try {
-      const a = await fetch(u, {
-        credentials: 'include',
-        headers: { 'accept': 'application/json, text/plain, */*', 'referer': 'https://fanqienovel.com/' }
-      })
-      if (!a.ok) throw Error('HTTP ' + a.status)
-      const b = await a.json()
-      return { ok: true, data: b.data || b }
-    } catch (e) {
-      return { ok: false, error: e.message }
-    }
-  }, url)
-  if (!r.ok) throw Error('fetch failed: ' + (r.error || '?'))
-  return r.data
+      return { chapterListWithVolume: JSON.parse(m[1].replace(/\\u002F/g, '/')) }
+    } catch {}
+  }
+  throw new Error('无法获取目录数据')
 }
 
 /**
