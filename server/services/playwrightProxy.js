@@ -142,11 +142,14 @@ async function ensureMapping(itemId, cs, forceRebuild = false) {
     // 从原始 HTML 中提取字体 URL（字体嵌入在 JS state 中，不在 CSS 内）
     if (!fontUrl) {
       const html = await page.content()
+      console.log('[ensureMapping] 页面 HTML 长度:', html.length)
       const woffMatches = html.match(/https?:[^"']+bytetos[^"']*woff2[^"']*/g)
+      console.log('[ensureMapping] 匹配到字体 URL 数:', woffMatches ? woffMatches.length : 0)
       if (woffMatches && woffMatches.length > 0) {
+        console.log('[ensureMapping] 原始匹配:', woffMatches[0].substring(0, 100))
         // HTML 中 URL 使用 \\u002F 代替 /，需要还原
         fontUrl = woffMatches[0].replace(/\\u002F/g, '/')
-        console.log('[ensureMapping] 从 HTML 提取字体:', fontUrl.replace(/\?.*$/, '').split('/').pop())
+        console.log('[ensureMapping] 还原后字体 URL:', fontUrl.replace(/\?.*$/, ''))
       }
     }
 
