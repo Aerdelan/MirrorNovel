@@ -1,0 +1,90 @@
+{
+  "pages": [
+    {
+      "path": "pages/index/index",
+      "style": {
+        "navigationBarTitleText": "生成小说",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/bookshelf/bookshelf",
+      "style": {
+        "navigationBarTitleText": "我的书架",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/profile/profile",
+      "style": {
+        "navigationBarTitleText": "我的",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/polish/polish",
+      "style": {
+        "navigationBarTitleText": "润色",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/novel/novel",
+      "style": {
+        "navigationBarTitleText": "小说详情",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/login/login",
+      "style": {
+        "navigationBarTitleText": "登录",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/register/register",
+      "style": {
+        "navigationBarTitleText": "注册",
+        "navigationStyle": "custom"
+      }
+    },
+    {
+      "path": "pages/continue/continue",
+      "style": {
+        "navigationBarTitleText": "续写",
+        "navigationStyle": "custom"
+      }
+    }
+  ],
+  "globalStyle": {
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "番茄小说",
+    "navigationBarBackgroundColor": "#F8F8F8",
+    "backgroundColor": "#F8F8F8"
+  },
+  "tabBar": {
+    "color": "#999",
+    "selectedColor": "#FF6B35",
+    "backgroundColor": "#ffffff",
+    "borderStyle": "black",
+    "list": [
+      {
+        "pagePath": "pages/index/index",
+        "text": "生成"
+      },
+      {
+        "pagePath": "pages/polish/polish",
+        "text": "润色"
+      },
+      {
+        "pagePath": "pages/bookshelf/bookshelf",
+        "text": "书架"
+      },
+      {
+        "pagePath": "pages/profile/profile",
+        "text": "我的"
+      }
+    ]
+  }
+}

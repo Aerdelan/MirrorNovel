@@ -1,0 +1,19 @@
+{
+  "appId": "com.fanqiexiaoshuo.app",
+  "appName": "番茄小说AI",
+  "webDir": "dist/build/h5",
+  "bundledWebRuntime": false,
+  "server": {
+    "androidScheme": "http",
+    "cleartext": true,
+    "allowNavigation": [
+      "49.51.51.253:*",
+      "localhost:*"
+    ]
+  },
+  "android": {
+    "allowMixedContent": true,
+    "captureInput": true,
+    "webContentsDebuggingEnabled": true
+  }
+}
