@@ -1190,11 +1190,14 @@ router.post('/deslop', auth, async (req, res) => {
   }
 });
 
-// ====== 润色（SSE流式，支持自定义润色方案） ======
+// ====== 润色（SSE流式，支持自定义润色方案 + Token实时消耗） ======
 router.post('/polish', auth, async (req, res) => {
   try {
     const { text, polishPrompt, doDeslop } = req.body;
     if (!text || text.trim().length < 10) return res.status(400).json({ message: '文本太短' });
+
+    // 检查 Token 余额
+    await checkTokenBalance(req.user);
 
     const defaultPolishPrompt = `你是一位专业的小说润色专家。请对以下小说文本进行润色优化，要求：
 
@@ -1209,6 +1212,17 @@ router.post('/polish', auth, async (req, res) => {
 
     const userPrompt = `${polishPrompt || defaultPolishPrompt}\n\n以下是需要润色的文本：\n\n${text}`;
 
+    // 估算输入 token 成本（输入文本 + 提示词）
+    const inputTokenCost = countTokens(text) + countTokens(polishPrompt || defaultPolishPrompt);
+    let outputTokenUsed = 0;
+
+    // 获取最新余额
+    const getAvailableTokens = async () => {
+      const fresh = await User.findById(req.user._id);
+      if (!fresh) return 0;
+      return Math.max(0, (fresh.tokens.total || 0) - (fresh.tokens.used || 0));
+    };
+
     // SSE 流式输出润色结果
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -1219,46 +1233,121 @@ router.post('/polish', auth, async (req, res) => {
 
     let polished = '';
     const abortController = new AbortController();
+    let streamAborted = false;
+    let tokenExhausted = false;
 
     req.on('close', () => { try { abortController.abort(); } catch {}; try { res.end(); } catch {} });
 
-    await streamGenerate(
-      '你是一位专业的小说润色专家，擅长各种文风的精修与优化。',
-      userPrompt,
-      (chunk) => {
-        polished += chunk;
-        res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`);
-      },
-      abortController.signal,
-      resolveApiConfig(req.user?.modelConfig, 'writing')
-    );
+    // 发送初始 Token 信息
+    const initialAvailable = await getAvailableTokens();
+    res.write(`data: ${JSON.stringify({ type: 'token_info', available: initialAvailable })}\n\n`);
 
-    // 如果用户选择了去AI味
-    if (doDeslop && polished.trim().length > 10) {
-      res.write(`data: ${JSON.stringify({ type: 'status', message: '正在执行去AI味处理...' })}\n\n`);
+    // 包装 onChunk：实时检查 Token
+    const wrappedOnChunk = async (chunk) => {
+      if (streamAborted) return;
+      polished += chunk;
+      outputTokenUsed = countTokens(polished);
 
-      const deslopPrompt = `${deslop.deslopSystemPrompt}\n\n请对以下文本进行去AI味处理：\n\n${polished}`;
+      // 每 200 输出 token 检查一次余额
+      if (outputTokenUsed % 200 < 10) {
+        const available = await getAvailableTokens();
+        const totalCost = inputTokenCost + outputTokenUsed;
+        if (totalCost >= available) {
+          tokenExhausted = true;
+          streamAborted = true;
+          abortController.abort();
+          return;
+        }
+      }
 
-      let desloped = '';
+      res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`);
+    };
+
+    try {
       await streamGenerate(
-        '你是一位专业的小说润色专家。',
-        deslopPrompt,
-        (chunk) => {
-          desloped += chunk;
-          res.write(`data: ${JSON.stringify({ type: 'deslop_content', content: chunk })}\n\n`);
-        },
+        '你是一位专业的小说润色专家，擅长各种文风的精修与优化。',
+        userPrompt,
+        wrappedOnChunk,
         abortController.signal,
         resolveApiConfig(req.user?.modelConfig, 'writing')
       );
-
-      if (desloped.trim().length > 10) polished = desloped;
+    } catch (e) {
+      if (e.name === 'AbortError' && tokenExhausted) {
+        // Token 耗尽导致的正常中止
+      } else if (!tokenExhausted) {
+        throw e;
+      }
     }
 
-    res.write(`data: ${JSON.stringify({ type: 'completed', totalLength: polished.length })}\n\n`);
+    // 扣除实际消耗的 Token（仅扣除输出部分，输入部分可酌情免除）
+    try {
+      await deductTokens(req.user, polished);
+    } catch (e) {
+      if (e.message === 'TOKEN_EXHAUSTED') {
+        tokenExhausted = true;
+      }
+    }
+
+    // 如果用户选择了去AI味且未因 token 耗尽中止
+    if (doDeslop && polished.trim().length > 10 && !tokenExhausted) {
+      // 去AI味前再次检查余额
+      const availableNow = await getAvailableTokens();
+      if (availableNow <= 0) {
+        tokenExhausted = true;
+      } else {
+        res.write(`data: ${JSON.stringify({ type: 'status', message: '正在执行去AI味处理...' })}\n\n`);
+
+        const deslopPrompt = `${deslop.deslopSystemPrompt}\n\n请对以下文本进行去AI味处理：\n\n${polished}`;
+        let desloped = '';
+        let deslopExhausted = false;
+
+        const deslopOnChunk = async (chunk) => {
+          if (deslopExhausted) return;
+          desloped += chunk;
+          const dtc = countTokens(desloped);
+          if (dtc % 100 < 10) {
+            const avail = await getAvailableTokens();
+            if (avail <= 0) {
+              deslopExhausted = true;
+              abortController.abort();
+              return;
+            }
+          }
+          res.write(`data: ${JSON.stringify({ type: 'deslop_content', content: chunk })}\n\n`);
+        };
+
+        try {
+          await streamGenerate(
+            '你是一位专业的小说润色专家。',
+            deslopPrompt,
+            deslopOnChunk,
+            abortController.signal,
+            resolveApiConfig(req.user?.modelConfig, 'writing')
+          );
+        } catch (e) {
+          if (!(e.name === 'AbortError' && deslopExhausted)) throw e;
+        }
+
+        // 扣除去AI味消耗的 Token
+        try { await deductTokens(req.user, desloped); } catch {}
+
+        if (desloped.trim().length > 10) polished = desloped;
+      }
+    }
+
+    // 发送完成事件（含 Token 信息）
+    if (tokenExhausted) {
+      res.write(`data: ${JSON.stringify({ type: 'token_exhausted', message: 'Token 已消耗完毕，已返回当前润色结果', totalLength: polished.length })}\n\n`);
+    }
+    res.write(`data: ${JSON.stringify({ type: 'completed', totalLength: polished.length, tokenExhausted })}\n\n`);
     res.end();
   } catch (error) {
     console.error('润色失败:', error);
-    try { res.write(`data: ${JSON.stringify({ type: 'error', message: error.message })}\n\n`); res.end(); } catch {}
+    if (error.message === 'TOKEN_EXHAUSTED' || (error.message && error.message.includes('Token 不足'))) {
+      try { res.write(`data: ${JSON.stringify({ type: 'token_exhausted', message: 'Token 余额不足，请充值后重试' })}\n\n`); res.end(); } catch {}
+    } else {
+      try { res.write(`data: ${JSON.stringify({ type: 'error', message: error.message })}\n\n`); res.end(); } catch {}
+    }
   }
 });
 

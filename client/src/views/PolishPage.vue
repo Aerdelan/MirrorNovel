@@ -55,6 +55,17 @@
       </label>
     </div>
 
+    <!-- Token 余额显示 -->
+    <div v-if="polishing || polishCompleted" class="card token-indicator">
+      <div class="token-row">
+        <span class="token-label">{{ $t('profile.tokenBalance') }}</span>
+        <span class="token-value">
+          <strong>{{ tokenAvailable.toLocaleString() }}</strong>
+          <span v-if="polishing" class="token-consuming"> ⟳ {{ tokenConsumed }} 消耗中</span>
+        </span>
+      </div>
+    </div>
+
     <button class="btn btn-primary btn-block btn-lg" :disabled="polishing || !polishReady" @click="startPolish">
       {{ polishing ? $t('polish.btnPolishing') : $t('polish.btnPolish') }}
     </button>
@@ -81,9 +92,11 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useNovelStore } from '../stores/novel'
+import { useAuthStore } from '../stores/auth'
 import { useI18n } from '../composables/useI18n'
 
 const novelStore = useNovelStore()
+const authStore = useAuthStore()
 const { $t } = useI18n()
 
 const polishMode = ref('text')
@@ -97,6 +110,8 @@ const polishedText = ref('')
 const polishCompleted = ref(false)
 const polishStatusText = ref('')
 const polishProgress = ref(0)
+const tokenAvailable = ref(0)
+const tokenConsumed = ref(0)
 
 const polishPresets = [
   { label: $t('polish.presets.default'), prompt: '请对以下小说文本进行润色优化：修正语病，优化用词，调整句式节奏，保留原文风格。直接输出润色后文本。' },
@@ -124,7 +139,7 @@ function startPolish() {
   if (!text || text.trim().length < 10) return alert($t('common.loading'))
   polishing.value = true; polishCompleted.value = false
   polishedText.value = ''; polishStatusText.value = $t('polish.statusPolishing')
-  polishProgress.value = 0
+  polishProgress.value = 0; tokenConsumed.value = 0
   let totalChunks = 0
   novelStore.startPolish(
     { text, polishPrompt: polishPrompt.value || undefined, doDeslop: polishDoDeslop.value },
@@ -135,8 +150,25 @@ function startPolish() {
       else { polishStatusText.value = $t('polish.statusPolishing') }
     },
     (event) => {
-      if (event.type === 'completed') { polishStatusText.value = $t('polish.statusDone', { count: polishedText.length }); polishProgress.value = 100; polishCompleted.value = true; polishing.value = false }
-      else if (event.type === 'error') { polishStatusText.value = '❌ ' + event.message; polishing.value = false }
+      if (event.type === 'token_info') {
+        tokenAvailable.value = event.available
+      } else if (event.type === 'completed') {
+        polishStatusText.value = $t('polish.statusDone', { count: polishedText.length })
+        polishProgress.value = 100; polishCompleted.value = true; polishing.value = false
+        // 刷新 Token 信息
+        authStore.getTokenInfo().catch(() => {})
+      } else if (event.type === 'token_exhausted') {
+        if (polishedText.value.length > 0) {
+          polishStatusText.value = '⚠️ Token 已用完，已保留当前润色结果'
+          polishCompleted.value = true
+        } else {
+          polishStatusText.value = '⚠️ ' + (event.message || 'Token 余额不足')
+        }
+        polishProgress.value = 100; polishing.value = false
+        authStore.getTokenInfo().catch(() => {})
+      } else if (event.type === 'error') {
+        polishStatusText.value = '❌ ' + event.message; polishing.value = false
+      }
     }
   )
 }
@@ -183,4 +215,8 @@ function downloadPolish() {
 .btn-success { background: #52c41a; color: white; border: none; padding: 14px 24px; border-radius: 10px; font-size: 16px; cursor: pointer; font-family: inherit; }
 .btn-success:hover { background: #73d13d; }
 .polish-hint { text-align: center; font-size: 13px; color: var(--text-light); margin-top: 8px; }
+.token-indicator { padding: 10px 16px; background: #f6ffed; border: 1px solid #b7eb8f; }
+.token-row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+.token-value strong { color: var(--primary-color); font-size: 15px; }
+.token-consuming { color: var(--text-light); font-size: 12px; }
 </style>
