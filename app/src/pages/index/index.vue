@@ -70,9 +70,15 @@
 import { ref, computed } from 'vue'
 import { useNovelStore } from '../../stores/novel'
 import { useAuthStore } from '../../stores/auth'
+import { xhrUrl } from '../../utils/apiUrl'
 
 const novelStore = useNovelStore()
 const authStore = useAuthStore()
+
+function getToken() {
+  try { if (uni.getStorageSync) return uni.getStorageSync('token') || '' } catch {}
+  try { return localStorage.getItem('token') || '' } catch { return '' }
+}
 
 const gender = ref('male')
 const selectedType = ref('')
@@ -112,9 +118,9 @@ async function startGen() {
     return
   }
 
-  const token = typeof uni !== 'undefined' && uni.getStorageSync ? uni.getStorageSync('token') : (localStorage.getItem('token') || '')
+  const token = getToken()
   const xhr = new XMLHttpRequest()
-  xhr.open('POST', '/api/novel/generate')
+  xhr.open('POST', xhrUrl('/api/novel/generate'))
   xhr.setRequestHeader('Authorization', `Bearer ${token}`)
   xhr.setRequestHeader('Content-Type', 'application/json')
   let lastIndex = 0

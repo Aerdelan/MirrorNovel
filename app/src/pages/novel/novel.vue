@@ -52,6 +52,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useAuthStore } from '../../stores/auth'
 import { useNovelStore } from '../../stores/novel'
+import { API_BASE } from '../../utils/apiUrl'
 
 const authStore = useAuthStore()
 const novelStore = useNovelStore()
@@ -62,6 +63,8 @@ const editingChapter = ref(null)
 const editContent = ref('')
 
 const statusMap = { generating: '生成中', paused: '已暂停', completed: '已完成', error: '异常' }
+
+function apiUrl(path) { return API_BASE + path }
 
 onMounted(async () => {
   const pages = getCurrentPages()
@@ -90,7 +93,7 @@ async function saveEdit() {
   const id = getNovelId()
   try {
     await uni.request({
-      url: '/api/novel/' + id + '/chapter/' + editingChapter.value.chapterNumber,
+      url: apiUrl('/novel/' + id + '/chapter/' + editingChapter.value.chapterNumber),
       method: 'PUT',
       data: { content: editContent.value },
       header: { 'Authorization': 'Bearer ' + getToken(), 'Content-Type': 'application/json' },
@@ -109,7 +112,7 @@ async function confirmDeleteChapter(ch) {
       const id = getNovelId()
       try {
         await uni.request({
-          url: '/api/novel/' + id + '/chapter/' + ch.chapterNumber,
+          url: apiUrl('/novel/' + id + '/chapter/' + ch.chapterNumber),
           method: 'DELETE',
           header: { 'Authorization': 'Bearer ' + getToken(), 'Content-Type': 'application/json' },
         })
@@ -127,11 +130,11 @@ async function deslopChapter(chapter) {
     success: async (res) => {
       if (!res.confirm) return
       try {
-        const deslopRes = await uni.request({ url: '/api/novel/deslop', method: 'POST', data: { text: chapter.content || '' }, header: { 'Authorization': 'Bearer ' + getToken(), 'Content-Type': 'application/json' } })
+        const deslopRes = await uni.request({ url: apiUrl('/novel/deslop'), method: 'POST', data: { text: chapter.content || '' }, header: { 'Authorization': 'Bearer ' + getToken(), 'Content-Type': 'application/json' } })
         const data = deslopRes.data
         if (data.processed) {
           const id = getNovelId()
-          await uni.request({ url: '/api/novel/' + id + '/chapter/' + chapter.chapterNumber, method: 'PUT', data: { content: data.processed }, header: { 'Authorization': 'Bearer ' + getToken(), 'Content-Type': 'application/json' } })
+          await uni.request({ url: apiUrl('/novel/' + id + '/chapter/' + chapter.chapterNumber), method: 'PUT', data: { content: data.processed }, header: { 'Authorization': 'Bearer ' + getToken(), 'Content-Type': 'application/json' } })
           refreshNovel()
           uni.showToast({ title: '✅ 去AI味完成' })
         }

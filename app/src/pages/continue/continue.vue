@@ -67,6 +67,7 @@
 
 <script setup>
 import { ref } from 'vue'
+import { xhrUrl } from '../../utils/apiUrl'
 
 const importedText = ref('')
 const fileName = ref('')
@@ -108,7 +109,7 @@ function startContinue() {
 
   const token = getToken()
   const xhr = new XMLHttpRequest()
-  xhr.open('POST', '/api/novel/continue-import')
+  xhr.open('POST', xhrUrl('/api/novel/continue-import'))
   xhr.setRequestHeader('Authorization', `Bearer ${token}`)
   xhr.setRequestHeader('Content-Type', 'application/json')
   xhr.setRequestHeader('Accept', 'text/event-stream')

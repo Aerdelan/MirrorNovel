@@ -1,6 +1,12 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import api from '../api'
+import { API_BASE } from '../utils/apiUrl'
+
+function getToken() {
+  try { if (uni.getStorageSync) return uni.getStorageSync('token') || '' } catch {}
+  try { return localStorage.getItem('token') || '' } catch { return '' }
+}
 
 export const useNovelStore = defineStore('novel', () => {
   const novelTypes = ref([])
@@ -23,8 +29,7 @@ export const useNovelStore = defineStore('novel', () => {
   }
 
   async function fetchNovelDetail(novelId) {
-    const token = typeof uni !== 'undefined' && uni.getStorageSync ? uni.getStorageSync('token') : (localStorage.getItem('token') || '')
-    const res = await api.get(`/novel/${novelId}`, { headers: { Authorization: `Bearer ${token}` } })
+    const res = await api.get(`/novel/${novelId}`, { headers: { Authorization: `Bearer ${getToken()}` } })
     return res
   }
 
@@ -33,8 +38,7 @@ export const useNovelStore = defineStore('novel', () => {
   }
 
   async function deleteNovel(novelId) {
-    const token = typeof uni !== 'undefined' && uni.getStorageSync ? uni.getStorageSync('token') : (localStorage.getItem('token') || '')
-    await api.delete(`/novel/${novelId}`, { headers: { Authorization: `Bearer ${token}` } })
+    await api.delete(`/novel/${novelId}`, { headers: { Authorization: `Bearer ${getToken()}` } })
   }
 
   function setPrefillContinue(data) { prefillContinue.value = data }

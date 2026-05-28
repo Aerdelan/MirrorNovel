@@ -89,8 +89,14 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useAuthStore } from '../../stores/auth'
+import { xhrUrl } from '../../utils/apiUrl'
 
 const authStore = useAuthStore()
+
+function getToken() {
+  try { if (uni.getStorageSync) return uni.getStorageSync('token') || '' } catch {}
+  try { return localStorage.getItem('token') || '' } catch { return '' }
+}
 const polishMode = ref('text')
 const polishText = ref('')
 const polishFileName = ref('')
@@ -132,13 +138,6 @@ function chooseFile() {
   })
 }
 
-function getToken() {
-  try {
-    if (typeof uni !== 'undefined' && uni.getStorageSync) return uni.getStorageSync('token') || ''
-  } catch {}
-  try { return localStorage.getItem('token') || '' } catch { return '' }
-}
-
 function startPolish() {
   const text = polishMode.value === 'text' ? polishText.value : polishFileContent.value
   if (!text || text.trim().length < 10) return uni.showToast({ title: '文本太短', icon: 'none' })
@@ -149,7 +148,7 @@ function startPolish() {
 
   const token = getToken()
   const xhr = new XMLHttpRequest()
-  xhr.open('POST', '/api/novel/polish')
+  xhr.open('POST', xhrUrl('/api/novel/polish'))
   xhr.setRequestHeader('Authorization', `Bearer ${token}`)
   xhr.setRequestHeader('Content-Type', 'application/json')
   xhr.setRequestHeader('Accept', 'text/event-stream')

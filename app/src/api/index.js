@@ -1,11 +1,7 @@
-// uni-app 通用 API 客户端 — 纯 uni.request，无外部依赖
-const isNative = typeof uni !== 'undefined' && uni.getSystemInfoSync && uni.getSystemInfoSync().platform !== 'web'
-const BASE_URL = isNative ? 'http://49.51.51.253:3001/api' : '/api'
+import { API_BASE } from '../utils/apiUrl'
 
 function getToken() {
-  try {
-    if (typeof uni !== 'undefined' && uni.getStorageSync) return uni.getStorageSync('token') || ''
-  } catch {}
+  try { if (uni.getStorageSync) return uni.getStorageSync('token') || '' } catch {}
   try { return localStorage.getItem('token') || '' } catch { return '' }
 }
 
@@ -16,7 +12,7 @@ function request(method, url, data, options = {}) {
     if (token) header['Authorization'] = `Bearer ${token}`
 
     uni.request({
-      url: BASE_URL + url,
+      url: API_BASE + url,
       method: method.toUpperCase(),
       data: data || undefined,
       header,
