@@ -293,68 +293,42 @@ async function getBookInfoViaAPI(bookId) {
 }
 
 /**
- * 批量获取章节内容（纯 API 方式）— 带重试与逐批字体映射
+ * 批量获取章节内容（通过 reader 页面提取 + 自动字体解码）
+ * playwrightProxy.fetchChapterContent 已内置字体映射和解码
  */
 async function getChapterContentsViaAPI(bookId, chapters, maxChapters = 9999, onChapter = null) {
   const toFetch = chapters.slice(0, maxChapters)
   let failCount = 0
+  const results = []
 
-  // 第一步：批量下载原始内容（带重试）
-  const rawResults = []
   for (let start = 0; start < toFetch.length; start += API_CONCURRENCY) {
     const batch = toFetch.slice(start, start + API_CONCURRENCY)
     const batchResults = await Promise.all(batch.map(async (ch) => {
       const itemId = ch.item_id || ch.itemId
       if (!itemId) return null
       try {
-        const content = await fetchWithRetry(async () => {
+        const text = await fetchWithRetry(async () => {
           const cookie = fanqieAuth.getCookie()
-          const data = await playwrightProxy.fetchViaBrowser('chapter', { itemId }, cookie)
-          const rawHtml = data?.chapterData?.content || data?.content || ''
-          return rawHtml && rawHtml.length > 50 ? rawHtml : null
-        }, `API 章节 ${itemId}`, { maxRetries: MAX_RETRIES, timeout: 30000 })
-        if (content) {
-          return { item_id: itemId, chapter_number: ch.chapter_number || 0, title: ch.title || '', content }
+          const decoded = await playwrightProxy.fetchChapterContent(itemId, cookie)
+          return decoded && decoded.length > 50 ? decoded : null
+        }, `章节 ${itemId}`, { maxRetries: MAX_RETRIES, timeout: 45000 })
+        if (text) {
+          const result = { item_id: itemId, chapter_number: ch.chapter_number || 0, title: ch.title || '', content: text }
+          if (onChapter) onChapter(result)
+          return result
         }
       } catch (e) {
         failCount++
+        console.warn(`[API] 章节 ${itemId} 失败:`, e.message)
       }
       return null
     }))
-    for (const r of batchResults) { if (r) rawResults.push(r) }
-    if (start + API_CONCURRENCY < toFetch.length) await new Promise(r => setTimeout(r, 300))
+    for (const r of batchResults) { if (r) results.push(r) }
+    if (start + API_CONCURRENCY < toFetch.length) await new Promise(r => setTimeout(r, 500))
   }
 
-  if (rawResults.length === 0) throw new Error('API 方式未获取到任何章节内容')
-
-  // 第二步：构建字体映射（取前几个成功章节中内容最长的作为映射源）
-  playwrightProxy.resetFontCache()
-  const sortedByLength = [...rawResults].sort((a, b) => b.content.length - a.content.length)
-  const mappingItemId = sortedByLength[0]?.item_id
-  if (mappingItemId) {
-    try { await playwrightProxy.ensureMapping(mappingItemId, fanqieAuth.getCookie()) } catch (e) {
-      console.warn('[映射] 字体映射失败:', e.message)
-    }
-  }
-
-  // 第三步：批量解码 PUA 字符
-  const { decodeText } = require('./fontDecoder')
-  const mapping = playwrightProxy.getCharMapping()
-  const results = []
-  for (const r of rawResults) {
-    let text = r.content.replace(/<[^>]+>/g, '').trim()
-    if (text && mapping && Object.keys(mapping).length > 0) {
-      const decoded = decodeText(text, mapping)
-      if (decoded && decoded.length > 10) text = decoded
-    }
-    if (text && text.length > 10) {
-      const result = { item_id: r.item_id, chapter_number: r.chapter_number, title: r.title, content: text }
-      results.push(result)
-      if (onChapter) onChapter(result)
-    }
-  }
-
-  if (results.length === 0) throw new Error('API 方式未获取到任何章节内容')
+  results.sort((a, b) => a.chapter_number - b.chapter_number)
+  if (results.length === 0) throw new Error('未获取到任何章节内容')
   console.log(`[API] 共 ${toFetch.length} 章，成功 ${results.length}，失败 ${failCount}`)
   return results
 }

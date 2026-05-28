@@ -1,18 +1,20 @@
 /**
- * Playwright 浏览器代理服务
+ * Playwright 浏览器代理服务 — 从 reader 页面 JS state 提取内容 + 字体解码
+ * 注意：番茄小说 API 现已要求 a_bogus 签名，无法直接 fetch。
+ *       改用导航到 reader 页后从 window.__NUXT__ 或内嵌 state 提取数据。
  */
 const fs = require('fs')
 const path = require('path')
 const https = require('https')
+const http = require('http')
 
 let browser = null, context = null, mainPage = null, charMapping = null, mappingPromise = null
 let browserInitTime = 0
-const BROWSER_TTL = 10 * 60 * 1000 // 浏览器实例最长存活 10 分钟
-const PAGE_RECREATE_COOLDOWN = 2000 // 页重建冷却时间
+const BROWSER_TTL = 10 * 60 * 1000
+const PAGE_RECREATE_COOLDOWN = 2000
 
 async function getBrowser() {
   const now = Date.now()
-  // 如果浏览器已过期或断开，重新启动
   if (browser) {
     try {
       if (browser.isConnected() && (now - browserInitTime) < BROWSER_TTL) return browser
@@ -26,18 +28,13 @@ async function getBrowser() {
 }
 
 async function ensurePage(cs) {
-  // 如果已有可用页面且未过期，直接返回
   if (mainPage && !mainPage.isClosed()) {
     try {
       await mainPage.evaluate(() => 1)
       return mainPage
-    } catch {
-      // 页面不可用，继续往下重建
-    }
+    } catch { /* 页面不可用 */ }
   }
-
   const br = await getBrowser()
-  // 关闭旧 context
   if (context) { try { await context.close().catch(() => {}) } catch {} }
   context = await br.newContext({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -53,28 +50,98 @@ async function ensurePage(cs) {
     if (cookies.length > 0) try { await context.addCookies(cookies) } catch {}
   }
   mainPage = await context.newPage()
-  // 设置更长的导航超时
   mainPage.setDefaultNavigationTimeout(30000)
   mainPage.setDefaultTimeout(30000)
-  // 首页预加载，先用较短超时，失败不影响后续
-  await mainPage.goto('https://fanqienovel.com/', { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {
-    console.warn('[pp] 首页加载超时，继续')
-  })
+  await mainPage.goto('https://fanqienovel.com/', { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {})
   await mainPage.waitForTimeout(2000)
   return mainPage
 }
 
+/**
+ * 从 reader 页面提取章节内容 + 字体映射
+ * 替代旧的 fetchViaBrowser API 方式（a_bogus 已失效）
+ */
+async function fetchChapterContent(itemId, cs) {
+  if (!cs) throw new Error('no cookie')
+  const page = await ensurePage(cs)
+
+  // 导航到 reader 页面（即使 404，JS state 仍在 HTML 中）
+  await page.goto('https://fanqienovel.com/reader/' + itemId, {
+    waitUntil: 'domcontentloaded', timeout: 30000
+  }).catch(() => {})
+  await page.waitForTimeout(4000)
+
+  // 从 page state 中提取章节内容
+  let chapterData = null
+  let rawHtml = ''
+
+  try {
+    // 尝试从 window.__NUXT__ 提取
+    chapterData = await page.evaluate(() => {
+      try {
+        const nuxt = window.__NUXT__ || window.__NUXT_DATA__ || window.__NEXT_DATA__
+        if (nuxt) {
+          const reader = nuxt.state?.reader || nuxt.reader || {}
+          return reader.chapterData || reader.content || null
+        }
+        return null
+      } catch { return null }
+    })
+  } catch {}
+
+  // 兜底：从 page.content() 正则提取
+  if (!chapterData) {
+    rawHtml = await page.content()
+    // 匹配 "content":"..." 字段（含转义字符）
+    const m = rawHtml.match(/"content"\s*:\s*"((?:[^"\\]|\\.)*)"/)
+    if (m) {
+      let c = m[1].replace(/\\u003C/g, '<').replace(/\\u003E/g, '>').replace(/\\n/g, '\n')
+      c = c.replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+      if (c.length > 50) chapterData = { content: c }
+    }
+  }
+
+  if (!chapterData) throw new Error('未提取到章节内容')
+
+  // 构建字体映射
+  if (!charMapping) {
+    try { await ensureMapping(itemId, cs, rawHtml) } catch (e) {
+      console.error('[pp] 字体映射失败:', e.message)
+    }
+  }
+
+  // 解码 PUA 字符
+  let text = (chapterData.content || chapterData || '').replace(/<[^>]+>/g, '').trim()
+  if (!text || text.length < 10) return null
+
+  if (charMapping && Object.keys(charMapping).length > 0) {
+    const { decodeText } = require('./fontDecoder')
+    const decoded = decodeText(text, charMapping)
+    if (decoded && decoded.length > 10) text = decoded
+    console.log('[pp] 解码完成:', text.substring(0, 30) + '...')
+  } else {
+    console.warn('[pp] 无字体映射，返回原始 PUA 文本')
+  }
+  return text
+}
+
+// 旧 fetchViaBrowser 保留供目录获取使用（目录 API 可能仍可用）
 async function fetchViaBrowser(action, params, cs) {
   if (!cs) throw new Error('no cookie')
   const page = await ensurePage(cs)
-  const url = action === 'chapter'
-    ? `https://fanqienovel.com/api/reader/full?itemId=${params.itemId}`
-    : `https://fanqienovel.com/api/reader/directory/detail?bookId=${params.bookId}`
+
+  if (action === 'chapter') {
+    // 章节内容改用 fetchChapterContent
+    return { chapterData: { content: await fetchChapterContent(params.itemId, cs) } }
+  }
+
+  // 目录 API 使用页面内的 fetch（可能也需要 a_bogus，但先试试）
+  const url = `https://fanqienovel.com/api/reader/directory/detail?bookId=${params.bookId}`
   const r = await page.evaluate(async (u) => {
     try {
       const a = await fetch(u, {
         credentials: 'include',
-        headers: { 'accept': 'application/json, text/plain, */*', 'referer': 'https://fanqienovel.com/reader/' }
+        headers: { 'accept': 'application/json, text/plain, */*', 'referer': 'https://fanqienovel.com/' }
       })
       if (!a.ok) throw Error('HTTP ' + a.status)
       const b = await a.json()
@@ -88,125 +155,74 @@ async function fetchViaBrowser(action, params, cs) {
 }
 
 /**
- * 从阅读页提取字体，构建 PUA→汉字 映射
- * 如果 alreadyBuiltFor 与当前 itemId 在同一本书中，可复用缓存加快速度
+ * 从 reader 页面 HTML 构建字体映射
+ * @param {string} itemId - 章节 ID
+ * @param {string} cs - cookie
+ * @param {string} [prefetchedHtml] - 已预取的 HTML
  */
-let mappingBuiltFor = null // 记录映射是为哪个 itemId 构建的
-
-async function ensureMapping(itemId, cs, forceRebuild = false) {
-  // 如果已有映射且不强制重建，并且不是同一本书（同一批 chunk 可能 itemId 相近但需要不同字体），先尝试用
-  if (charMapping && !forceRebuild && mappingBuiltFor && itemId) {
-    // 如果两个 item_id 的差值不超过 100，认为同书，复用映射
+async function ensureMapping(itemId, cs, prefetchedHtml) {
+  if (charMapping && mappingBuiltFor) {
     const diff = Math.abs(parseInt(itemId) - parseInt(mappingBuiltFor))
     if (diff < 200) return charMapping
   }
-  if (mappingPromise && !forceRebuild) return mappingPromise
+  if (mappingPromise && !prefetchedHtml) return mappingPromise
 
   mappingPromise = (async () => {
-    const page = await ensurePage(cs)
+    let html = prefetchedHtml || ''
+
+    // 如果没有预取 HTML，导航到 reader 页
+    if (!html) {
+      const page = await ensurePage(cs)
+      await page.goto('https://fanqienovel.com/reader/' + itemId, {
+        waitUntil: 'domcontentloaded', timeout: 30000
+      }).catch(() => {})
+      await page.waitForTimeout(3000)
+      html = await page.content()
+    }
+
+    // 从 HTML 中提取 woff2 字体 URL（嵌入在 JS state 中）
+    const woffMatches = html.match(/https?:[^"']+bytetos[^"']*woff2[^"']*/g)
     let fontUrl = ''
-
-    // 拦截字体响应（检查新 CDN 域名 bytetos 和旧域名 awesome-font）
-    page.on('response', r => {
-      const u = r.url()
-      if ((u.includes('bytetos') || u.includes('awesome-font') || u.includes('.woff2')) && !fontUrl) fontUrl = u
-    })
-
-    // 先导航到主页（确保 cookies 生效，加载全局 CSS）
-    await page.goto('https://fanqienovel.com/', {
-      waitUntil: 'domcontentloaded', timeout: 20000
-    }).catch(() => {})
-    await page.waitForTimeout(3000)
-
-    // 从首页 CSS 中提取字体 URL
-    if (!fontUrl) {
-      fontUrl = await page.evaluate(() => {
-        for (const s of document.styleSheets) {
-          try {
-            for (const r of s.cssRules || []) {
-              const m = (r.cssText || '').match(/url\(([^)]+woff2[^)]*)\)/)
-              if (m) return m[1].replace(/^["']|["']$/g, '')
-            }
-          } catch {}
-        }
-        return null
-      })
-    }
-
-    // 导航到阅读页（即使 404，HTML 中仍内嵌字体配置）
-    await page.goto('https://fanqienovel.com/reader/' + itemId, {
-      waitUntil: 'domcontentloaded', timeout: 15000
-    }).catch(() => {})
-    await page.waitForTimeout(3000)
-
-    // 从原始 HTML 中提取字体 URL（字体嵌入在 JS state 中，不在 CSS 内）
-    if (!fontUrl) {
-      const html = await page.content()
-      console.log('[ensureMapping] 页面 HTML 长度:', html.length)
-      const woffMatches = html.match(/https?:[^"']+bytetos[^"']*woff2[^"']*/g)
-      console.log('[ensureMapping] 匹配到字体 URL 数:', woffMatches ? woffMatches.length : 0)
-      if (woffMatches && woffMatches.length > 0) {
-        console.log('[ensureMapping] 原始匹配:', woffMatches[0].substring(0, 100))
-        // HTML 中 URL 使用 \\u002F 代替 /，需要还原
-        fontUrl = woffMatches[0].replace(/\\u002F/g, '/')
-        console.log('[ensureMapping] 还原后字体 URL:', fontUrl.replace(/\?.*$/, ''))
-      }
-    }
-
-    // 如果 HTML 提取没抓到，再从 styleSheets 捞一次
-    if (!fontUrl) {
-      fontUrl = await page.evaluate(() => {
-        for (const s of document.styleSheets) {
-          try {
-            for (const r of s.cssRules || []) {
-              const m = (r.cssText || '').match(/url\(([^)]+woff2[^)]*)\)/)
-              if (m) return m[1].replace(/^["']|["']$/g, '')
-            }
-          } catch {}
-        }
-        return null
-      })
+    if (woffMatches && woffMatches.length > 0) {
+      fontUrl = woffMatches[0].replace(/\\u002F/g, '/')
+      console.log('[ensureMapping] 字体 URL:', fontUrl.replace(/\?.*$/, ''))
     }
 
     if (!fontUrl) {
-      console.warn('[ensureMapping] 找不到字体 URL，无法建立映射')
+      console.warn('[ensureMapping] 无字体 URL')
+      charMapping = {}
       mappingBuiltFor = itemId
-      if (!charMapping) charMapping = {}
       return charMapping
     }
 
-    console.log('[ensureMapping] 下载字体:', fontUrl.replace(/\?.*$/, ''))
+    // 下载字体
     let fontData = null
-    // 下载字体文件（支持 HTTP 和 data: URI）
-    if (fontUrl.startsWith('data:')) {
-      const { parseDataUri } = require('./fontDecoder')
-      fontData = parseDataUri(fontUrl)
-    } else {
+    try {
       fontData = await new Promise((resolve, reject) => {
         const mod = fontUrl.startsWith('https:') ? https : http
         mod.get(fontUrl, {
           headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': 'https://fanqienovel.com/' }
         }, r => {
-          const c = []
-          r.on('data', d => c.push(d))
+          const c = []; r.on('data', d => c.push(d))
           r.on('end', () => resolve(Buffer.concat(c)))
           r.on('error', reject)
         }).on('error', reject)
-        // 10s 超时
         setTimeout(() => reject(new Error('font download timeout')), 10000)
       })
+    } catch (e) {
+      console.error('[ensureMapping] 字体下载失败:', e.message)
+      charMapping = {}; mappingBuiltFor = itemId
+      return charMapping
     }
 
     if (!fontData || fontData.length < 100) {
-      console.warn('[ensureMapping] 字体数据无效')
-      mappingBuiltFor = itemId
-      if (!charMapping) charMapping = {}
+      charMapping = {}; mappingBuiltFor = itemId
       return charMapping
     }
 
     console.log('[ensureMapping] 字体大小:', fontData.length)
 
-    // 用 fontkit 构建映射 — 直接从字体 cmap 表解析 PUA→汉字的映射
+    // 用 fontkit 解析 cmap
     try {
       const fontkit = require('fontkit')
       const font = fontkit.create(fontData)
@@ -237,38 +253,16 @@ async function ensureMapping(itemId, cs, forceRebuild = false) {
         }
       }
       charMapping = map
-      console.log(`[ensureMapping] cmap 直接解析: ${matchCount} 个 PUA→汉字 映射`)
+      console.log(`[ensureMapping] cmap 解析: ${matchCount} 个 PUA→汉字 映射`)
     } catch (e) {
-      console.error('[ensureMapping] 字体解析失败:', e.message)
-    }
-
-    if (!charMapping || Object.keys(charMapping).length === 0) {
-      try { charMapping = require('./font_mapping.json') } catch {}
+      console.error('[ensureMapping] fontkit 解析失败:', e.message)
+      charMapping = {}
     }
     mappingBuiltFor = itemId
-    return charMapping || {}
+    return charMapping
   })()
 
   return mappingPromise
-}
-
-async function fetchChapterContent(itemId, cs) {
-  if (!cs) throw new Error('no cookie')
-  const data = await fetchViaBrowser('chapter', { itemId }, cs)
-  const rawHtml = data?.chapterData?.content || data?.content || ''
-  if (!rawHtml || rawHtml.length < 50) return null
-  let text = rawHtml.replace(/<[^>]+>/g, '').trim()
-  if (!text || text.length < 10) return null
-
-  if (!charMapping) {
-    try { await ensureMapping(itemId, cs) } catch (e) { console.error('[pp] mapping:', e.message) }
-  }
-  if (charMapping && Object.keys(charMapping).length > 0) {
-    const { decodeText } = require('./fontDecoder')
-    const decoded = decodeText(text, charMapping)
-    if (decoded && decoded.length > 10) text = decoded
-  }
-  return text
 }
 
 function resetFontCache() { charMapping = null; mappingPromise = null }
@@ -280,7 +274,6 @@ async function closeBrowser() {
   context = null; browser = null; mainPage = null; charMapping = null; mappingPromise = null
 }
 
-// 进程退出时清理浏览器进程
 process.on('exit', () => { if (browser) { try { browser.process()?.kill(); } catch {} } })
 process.on('SIGINT', () => { closeBrowser(); process.exit() })
 process.on('SIGTERM', () => { closeBrowser(); process.exit() })
