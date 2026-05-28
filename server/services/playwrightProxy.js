@@ -113,9 +113,11 @@ async function fetchChapterContent(itemId, cs) {
   if (!content || content.length < 50) throw new Error('未提取到章节内容')
 
   // 构建字体映射（从 x-tt-zhal 响应头获取字体 URL）
+  console.log('[dbg] fontUrl=' + fontUrl + ' charMapping=' + (charMapping ? Object.keys(charMapping).length : 'null'))
   if (!charMapping && fontUrl) {
     console.log('[font] 从响应头构建字体:', fontUrl.replace(/\?.*$/, '').split('/').pop())
     charMapping = await downloadAndMap(fontUrl)
+    console.log('[dbg] after downloadAndMap cnt=' + (charMapping ? Object.keys(charMapping).length : 0))
   }
 
   // 解码
