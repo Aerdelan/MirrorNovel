@@ -221,7 +221,8 @@ import { useRouter } from 'vue-router'
 import api from '../api'
 
 const router = useRouter()
-const adminUser = computed(() => JSON.parse(localStorage.getItem('admin_user') || '{}'))
+function safeParse(key) { try { const v = localStorage.getItem(key); if (!v || v === 'undefined') return {}; return JSON.parse(v) } catch { return {} } }
+const adminUser = computed(() => safeParse('admin_user'))
 const activeTab = ref('dashboard')
 const now = ref(new Date().toLocaleString())
 setInterval(() => { now.value = new Date().toLocaleString() }, 10000)

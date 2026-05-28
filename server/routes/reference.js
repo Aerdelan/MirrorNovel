@@ -6,6 +6,7 @@ const { streamGenerate, resolveApiConfig, countTokens } = require('../services/a
 const multer = require('multer')
 const path = require('path')
 const fs = require('fs')
+const crypto = require('crypto')
 const fanqieScraper = require('../services/fanqieScraper')
 const fanqieAuth = require('../services/fanqieAuth')
 
@@ -17,16 +18,42 @@ const adminOnly = async (req, res, next) => {
   next()
 }
 
-// multer 内存存储（不上盘）
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } }) // 10MB
+// multer 内存存储 — 支持大文件（100MB）
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } })
 
-// ---- AI 提取风格配置 ----
+/**
+ * 全本蒸馏 — 分块分析 + AI 综合
+ * 策略：
+ *   1. 将全文按 20K 字分块
+ *   2. 对首块做完整分析（含精选片段）
+ *   3. 对后续每块提取"新增风格特征"（压缩格式）
+ *   4. 最后让 AI 综合所有分析结果，生成最终风格档案
+ */
+const CHUNK_SIZE = 20000
+const MAX_CHUNKS = 20 // 最多分析 20 块 ≈ 40 万字
+
 async function extractStyleProfile(fileContent, mainCategory, subCategory, novelType = 'normal') {
   const isLightNovel = novelType === 'lightnovel'
   const typeLabel = isLightNovel ? '轻小说（日式ACGN风格）' : '小说'
 
-  const prompt = isLightNovel
-    ? `你是一位专业的轻小说分析专家。请分析以下轻小说的内容，提取它的风格特征。
+  // 分块
+  const totalLen = fileContent.length
+  const chunkCount = Math.min(Math.ceil(totalLen / CHUNK_SIZE), MAX_CHUNKS)
+  console.log(`[蒸馏] 全文 ${totalLen} 字，分 ${chunkCount} 块分析`)
+
+  const chunkResults = []
+
+  for (let i = 0; i < chunkCount; i++) {
+    const start = i * CHUNK_SIZE
+    const end = Math.min(start + CHUNK_SIZE, totalLen)
+    const chunk = fileContent.slice(start, end)
+    const isFirst = i === 0
+    const positionLabel = isFirst ? '开头' : (i === chunkCount - 1 ? '结尾' : `第${i + 1}部分`)
+
+    // 首块做完整分析，后续块只提取"新增特征"
+    const prompt = isFirst
+      ? (isLightNovel
+        ? `你是一位专业的轻小说分析专家。请分析以下轻小说内容，提取它的风格特征。
 
 轻小说类型：${mainCategory}${subCategory ? ' - ' + subCategory : ''}
 
@@ -34,44 +61,32 @@ async function extractStyleProfile(fileContent, mainCategory, subCategory, novel
 
 【风格描述】
 用 800-1000 字详细描述这部轻小说的整体风格。从以下几个维度展开：
-1. 叙事视角：第一人称还是第三人称，主角视角的贴近程度（内心独白的频率和风格）
-2. 角色塑造：角色萌属性（傲娇/天然呆/元气/冷酷等）的表现方式，角色间互动（吐槽/暧昧/羁绊）
-3. 对话风格：对话占比、对话中是否包含角色个性（口头禅、语气词、称呼方式）
-4. 描写风格：场景描写是否有动画感（画面感强，类似分镜）、萌系动作描写（脸红/慌张/遮嘴笑等）
-5. 情感基调：整体氛围（温馨/热血/治愈/伤感）、情感表达是直白还是含蓄
-6. 叙事节奏：日常/战斗/剧情的穿插比例，节奏快慢变化
-7. 用词倾向：是否使用拟声词、语气词（啊、呢、哟）、称呼后缀（さん、君、酱）
+1. 叙事视角：第一人称还是第三人称，主角视角的贴近程度
+2. 角色塑造：角色萌属性（傲娇/天然呆/元气/冷酷等）的表现方式，角色间互动
+3. 对话风格：对话占比、对话中是否包含角色个性
+4. 描写风格：场景描写是否有动画感、萌系动作描写
+5. 情感基调：整体氛围（温馨/热血/治愈/伤感）
+6. 叙事节奏：日常/战斗/剧情的穿插比例
+7. 用词倾向：是否使用拟声词、语气词
 
 【精选片段】
-从原文中挑选 8-10 个最能体现该轻小说风格的片段，每个片段不超过 300 字，用 【片段1】 【片段2】 ... 【片段10】 标记。要求覆盖以下类型（尽可能多覆盖）：
-- 初次登场/自我介绍
-- 角色间典型对话（含吐槽/斗嘴）
-- 萌系互动场景
-- 战斗/异能使用场景
-- 情感高潮/告白场景
-- 日常温馨场景
-- 搞笑/欢乐桥段
-- 世界观/设定说明
-- 章末悬念/钩子
-- 内心独白段落
+从原文中挑选 8-10 个最能体现风格的片段，每个不超过 300 字，用 【片段1】...【片段10】 标记。
 
 【写作特点】
-用 200-300 字从写作技法角度分析这部轻小说：句式特点、节奏把控、角色对话设计、伏笔与回收、段落布局（短段落快速切换）、情绪调动方式。
+用 200-300 字分析写作技法。
 
 【特色词汇】
-列出这部轻小说中最有辨识度的 15-25 个特色词汇/角色用语/设定术语，用逗号分隔。
+列出 15-25 个最有辨识度的特色词汇。
 
 【章节结构】
-用 80-150 字概括该轻小说的章节结构规律，包括每章平均字数、开章方式（日常开头/直接进入事件）、结尾方式（悬念/温馨收尾/超展开）。
+用 80-150 字概括章节结构规律。
 
 【质量评分】
-根据该轻小说内容与所选分类（${mainCategory}${subCategory ? ' - ' + subCategory : ''}）的匹配程度，给出一个 1-100 的整数分数。只输出数字，不要额外文字。
+根据内容与分类（${mainCategory}${subCategory ? ' - ' + subCategory : ''}）的匹配程度，给出 1-100 的整数分数。
 
-以下是轻小说内容（只截取前半部分供分析）：
-
-${fileContent.slice(0, 20000)}`
-
-    : `你是一位专业的小说分析专家。请分析以下小说内容，提取它的风格特征。
+以下是小说${positionLabel}内容：
+${chunk}`
+        : `你是一位专业的小说分析专家。请分析以下小说内容，提取它的风格特征。
 
 小说类型：${mainCategory}${subCategory ? ' - ' + subCategory : ''}
 
@@ -80,48 +95,109 @@ ${fileContent.slice(0, 20000)}`
 【风格描述】
 用 800-1000 字详细描述这部小说的整体风格。从以下几个维度展开：
 1. 叙事节奏：整体快慢风格、张弛节奏变化规律、高潮分布密度
-2. 对话比例与风格：对话/叙述比例、对话是否简洁有力还是长篇对白、对话特色
-3. 描写风格：场景描写是简笔勾勒还是细密铺陈、人物外貌/心理/动作描写的侧重
-4. 情感基调：整体氛围（压抑/热血/轻松/沉重）、情绪变化轨迹
+2. 对话比例与风格：对话/叙述比例、对话特色
+3. 描写风格：场景描写是简笔勾勒还是细密铺陈
+4. 情感基调：整体氛围（压抑/热血/轻松/沉重）
 5. 开篇风格：如何快速引入世界观/人物/冲突
-6. 用词倾向：文言/白话、用词华丽或朴实、句子长短偏好
+6. 用词倾向：文言/白话、用词华丽或朴实
 7. 爽点/爽感设计：打脸节奏、升级反馈、情绪释放方式
 
 【精选片段】
-从原文中挑选 8-10 个最能体现该小说风格的片段，每个片段不超过 300 字，用 【片段1】 【片段2】 ... 【片段10】 标记。要求覆盖以下类型（尽可能多覆盖）：
-- 开篇引入方式
-- 典型对话场景
-- 高潮/爽点/打脸写法
-- 章末钩子写法
-- 情绪渲染段落
-- 世界观展现场景
-- 角色情感刻画
-- 战斗/冲突场景描写
-- 悬念布置方式
-- 日常过渡段落
+从原文中挑选 8-10 个最能体现风格的片段，每个不超过 300 字，用 【片段1】...【片段10】 标记。
 
 【写作特点】
-用 200-300 字从写作技法角度分析这部小说：句式变化规律（长短句交替、排比、设问等）、比喻/意象使用的特点、悬念设置技巧、节奏控制手段、情绪调动方式、如果存在多线叙事则分析其交叉技巧。
+用 200-300 字分析写作技法。
 
 【特色词汇】
-列出这部小说中最有辨识度的 15-25 个特色词汇/术语，用逗号分隔。
+列出 15-25 个最有辨识度的特色词汇。
 
 【章节结构】
-用 80-150 字概括该小说的章节结构规律，包括每章平均字数、开章方式、结尾方式、章节间过渡技巧。
+用 80-150 字概括章节结构规律。
 
 【质量评分】
-根据该小说内容与所选分类（${mainCategory}${subCategory ? ' - ' + subCategory : ''}）的匹配程度，给出一个 1-100 的整数分数。只输出数字，不要额外文字。
+根据内容与分类（${mainCategory}${subCategory ? ' - ' + subCategory : ''}）的匹配程度，给出 1-100 的整数分数。
 
-以下是小说内容（只截取前半部分供分析）：
+以下是小说${positionLabel}内容：
+${chunk}`)
+      : `以下是${typeLabel}《${mainCategory}》的${positionLabel}（第${start}~${end}字范围）。请提取这一段新增的风格特征，重点标注与开头部分不同的地方。
 
-${fileContent.slice(0, 20000)}`
+格式要求：
+【新增风格特征】
+用 200-300 字描述这一段与开头相比出现的新的风格特征（如有），包括但不限于：
+- 节奏是否有变化
+- 是否有新的写作手法
+- 角色塑造是否有新的维度
+- 是否有新的用词习惯
 
-  const result = await streamGenerate(
-    `你是一位专业的${typeLabel}分析专家，擅长提取文本风格特征。`,
-    prompt, null, null,
-    resolveApiConfig(null, 'writing')
-  )
-  return result.content || ''
+【新增特色词汇】
+列出这一段中新出现的、前面没有的特色词汇，最多 10 个，用逗号分隔。
+
+【补充片段】
+从这一段中挑选 1-3 个最能代表风格或与前文不同的片段，每个不超过 200 字，用 【片段1】... 标记。
+
+文本内容：
+${chunk}`
+
+    const result = await streamGenerate(
+      `你是一位专业的${typeLabel}分析专家，擅长提取文本风格特征。`,
+      prompt, null, null,
+      resolveApiConfig(null, 'writing')
+    )
+
+    const raw = result.content || ''
+    if (raw.length > 50) {
+      chunkResults.push({ index: i, position: positionLabel, content: raw, isFirst })
+    }
+  }
+
+  // 如果有多个分块，让 AI 综合成最终结果
+  if (chunkResults.length > 1) {
+    const synthesisInput = chunkResults.map((r, idx) => {
+      return `===== 第${idx + 1}块分析（${r.position}）=====\n${r.content}`
+    }).join('\n\n')
+
+    const synthesisPrompt = `你是一位资深的小说编辑，请将以下对同一部小说的多份风格分析报告，综合成一份完整、一致的最终风格档案。
+
+要求：
+1. 合并所有分析中的风格描述，去重、补充
+2. 精选片段从所有块中挑选最好的 8-10 个
+3. 特色词汇去重合并为 15-30 个
+4. 写作特点和章节结构综合所有块的信息
+5. 质量评分取各块评分的平均值
+
+请严格按照以下格式输出：
+
+【风格描述】
+（合并后的完整风格描述，1000-1500 字）
+
+【精选片段】
+（从全文范围挑选 8-10 个最佳片段）
+
+【写作特点】
+（综合后的写作特点分析，200-300 字）
+
+【特色词汇】
+（去重合并后的特色词汇列表，逗号分隔）
+
+【章节结构】
+（综合后的章节结构描述，80-150 字）
+
+【质量评分】
+（综合评分，1-100 的整数）
+
+以下是各块分析结果：
+${synthesisInput}`
+
+    const result = await streamGenerate(
+      '你是一位资深的小说编辑，擅长综合多份分析报告。',
+      synthesisPrompt, null, null,
+      resolveApiConfig(null, 'writing')
+    )
+
+    return result.content || chunkResults[0].content
+  }
+
+  return chunkResults[0]?.content || ''
 }
 
 // 解析 AI 输出为结构化数据
@@ -152,7 +228,7 @@ router.get('/categories', (req, res) => {
   res.json(data)
 })
 
-// 上传参考小说（TXT + 分类信息）—— 仅管理员
+// 上传参考小说（TXT + 分类信息）—— 仅管理员（含去重）
 router.post('/upload', auth, adminOnly, upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ message: '请上传 .txt 文件' })
@@ -162,6 +238,15 @@ router.post('/upload', auth, adminOnly, upload.single('file'), async (req, res) 
     const { title, gender, mainCategory, subCategory, tags, novelType } = req.body
     if (!title || !gender || !mainCategory) {
       return res.status(400).json({ message: '请填写小说名称和分类' })
+    }
+
+    // 去重检测：同标题 + 同分类视为重复
+    const existing = await ReferenceNovel.findOne({ title, mainCategory })
+    if (existing) {
+      return res.status(409).json({
+        message: `《${title}》已存在于蒸馏库中，如需重新蒸馏请先删除旧记录`,
+        existingId: existing._id,
+      })
     }
 
     const content = req.file.buffer.toString('utf-8')
@@ -373,6 +458,15 @@ router.post('/fanqie-import', auth, adminOnly, async (req, res) => {
         const isFemale = (typeData.female || []).some(c => c.name === mainCategory);
         if (isFemale) gender = 'female';
       } catch {}
+    }
+
+    // 去重检测：同书名 + 同分类视为重复
+    const existing = await ReferenceNovel.findOne({ title: realTitle, mainCategory })
+    if (existing) {
+      return res.status(409).json({
+        message: `《${realTitle}》已存在于蒸馏库中，如需重新蒸馏请先删除旧记录`,
+        existingId: existing._id,
+      })
     }
 
     // 创建参考小说记录（异步后台处理）

@@ -57,10 +57,11 @@ const route = useRoute()
 const sidebarCollapsed = ref(false)
 const currentPath = computed(() => route.path)
 
-const adminUser = computed(() => {
-  try { return JSON.parse(localStorage.getItem('admin_user') || 'null') }
+function safeParse(key) {
+  try { const v = localStorage.getItem(key); if (!v || v === 'undefined') return null; return JSON.parse(v) }
   catch { return null }
-})
+}
+const adminUser = computed(() => safeParse('admin_user'))
 
 const menuItems = [
   { path: '/dashboard', icon: '📊', label: '数据大屏' },

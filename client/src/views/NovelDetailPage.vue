@@ -168,7 +168,15 @@ async function saveEdit() {
   catch (e) { alert('保存失败:'+(e.response?.data?.message||e.message)) }
 }
 
-function confirmDeleteChapter(ch) { if (!confirm(`确定删除第${ch.chapterNumber}章吗？`)) return; api.delete(`/api/novel/${route.params.id}/chapter/${ch.chapterNumber}`).then(() => refreshNovel()).catch(e => { alert('删除失败') }) }
+async function confirmDeleteChapter(ch) {
+  if (!confirm(`确定删除第${ch.chapterNumber}章吗？`)) return
+  try {
+    await api.delete(`/api/novel/${route.params.id}/chapter/${ch.chapterNumber}`)
+    refreshNovel()
+  } catch (e) {
+    alert('删除失败: ' + (e.response?.data?.message || e.message))
+  }
+}
 
 async function deslopChapter(chapter) {
   if (!confirm(`对第${chapter.chapterNumber}章进行去AI味处理？`)) return
