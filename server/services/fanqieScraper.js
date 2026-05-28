@@ -269,7 +269,10 @@ async function getBookInfoViaAPI(bookId) {
   if (!data) throw new Error('目录数据为空')
 
   const rawChapters = data.chapterListWithVolume || []
-  const chapterList = (Array.isArray(rawChapters) && rawChapters.length > 0 && Array.isArray(rawChapters[0])) ? rawChapters[0] : []
+  // chapterListWithVolume 是二维数组 [卷1章节, 卷2章节, ...]，需要展开
+  const chapterList = (Array.isArray(rawChapters) && rawChapters.length > 0)
+    ? [].concat(...rawChapters)
+    : []
   if (chapterList.length === 0) throw new Error('目录数据中无章节列表')
 
   // 从书籍 HTML 页面提取真实书名（API 返回的字段没有 bookName）
