@@ -194,25 +194,22 @@ async function ensureMapping(itemId, cs, prefetchedHtml) {
       html = await page.content()
     }
 
-    // 从页面 styleSheets 提取字体 URL（SPA 动态加载的 CSS 才有）
+    // 从页面 styleSheets 提取字体 URL（SPA 动态 CSS 才有）
     let fontUrl = ''
-    if (!prefetchedHtml) {
-      // 使用当前页面（已导航到 reader 页）
-      try {
-        const page = mainPage || await ensurePage(cs)
-        fontUrl = await page.evaluate(() => {
-          for (const s of document.styleSheets) {
-            try {
-              for (const r of s.cssRules || []) {
-                const m = (r.cssText || '').match(/url\(\s*["']?([^"'\s)]+woff2[^"'\s)]*)/i)
-                if (m) return m[1].replace(/^["']|["']$/g, '')
-              }
-            } catch {}
-          }
-          return null
-        })
-      } catch {}
-    }
+    try {
+      const page = mainPage || await ensurePage(cs)
+      fontUrl = await page.evaluate(() => {
+        for (const s of document.styleSheets) {
+          try {
+            for (const r of s.cssRules || []) {
+              const m = (r.cssText || '').match(/url\(\s*["']?([^"'\s)]+woff2[^"'\s)]*)/i)
+              if (m) return m[1].replace(/^["']|["']$/g, '')
+            }
+          } catch {}
+        }
+        return null
+      })
+    } catch {}
 
     // 兜底：从 HTML 中正则提取
     if (!fontUrl) {
