@@ -230,7 +230,15 @@ function exportSelected() { if (selectedIds.value.length) downloadZip(selectedId
 function exportAll() { const allIds = novelStore.bookshelf.map(n => n._id); downloadZip(allIds, `批量导出_全部${allIds.length}本_${Date.now()}.zip`) }
 
 async function pauseNovel(novel) { try { await novelStore.pauseNovel(novel._id); await novelStore.fetchBookshelf() } catch (e) { alert($t('bookshelf.pause') + '失败') } }
-function confirmDelete(novel) { if (confirm($t('bookshelf.deleteConfirm', { title: novel.title }))) novelStore.deleteNovel(novel._id) }
+async function confirmDelete(novel) {
+  if (!confirm($t('bookshelf.deleteConfirm', { title: novel.title }))) return
+  try {
+    await novelStore.deleteNovel(novel._id)
+    await novelStore.fetchBookshelf()
+  } catch (e) {
+    alert('删除失败: ' + (e.response?.data?.message || e.message))
+  }
+}
 
 function editOutline(novel) { outlineNovel.value = novel; outlineText.value = novel.outline || ''; outlineModal.value = true }
 async function saveOutline() {
