@@ -59,35 +59,32 @@ async function ensurePage(cs) {
 
 /**
  * 从 reader 页面提取章节内容 + 字体映射
- * 导航到 reader 页后等待 SPA 加载并调用 API（自动处理 a_bogus），拦截响应
+ * 导航到 reader 页后等待 SPA 调用 API（自动带 a_bogus），用 waitForResponse 拦截
  */
 async function fetchChapterContent(itemId, cs) {
   if (!cs) throw new Error('no cookie')
   const page = await ensurePage(cs)
-  let apiResponse = null
   let rawHtml = ''
 
-  // 拦截 SPA 发起的章节 API 响应（SPA 会自动生成 a_bogus）
-  page.on('response', async (resp) => {
-    const url = resp.url()
-    if (url.includes('/api/reader/full') && url.includes(itemId)) {
-      try {
-        const json = await resp.json()
-        apiResponse = json
-      } catch {}
-    }
-  })
-
-  // 导航到 reader 页面，等待 SPA 加载并调用 API
-  await page.goto('https://fanqienovel.com/reader/' + itemId, {
-    waitUntil: 'networkidle', timeout: 35000
+  // 导航到 reader 页面
+  const navPromise = page.goto('https://fanqienovel.com/reader/' + itemId, {
+    waitUntil: 'domcontentloaded', timeout: 20000
   }).catch(() => {})
-  await page.waitForTimeout(3000)
 
-  // 从拦截的 API 响应中提取内容
+  // 等待 SPA 调用章节 API（自动携带 a_bogus）
+  let apiResponse = null
+  try {
+    const resp = await page.waitForResponse(r => r.url().includes('/api/reader/full') && r.url().includes(itemId), { timeout: 25000 })
+    apiResponse = await resp.json()
+  } catch { /* API 拦截超时，走兜底 */ }
+
+  await navPromise
+  await page.waitForTimeout(1500)
+
+  // 从 API 响应提取
   let content = ''
   if (apiResponse) {
-    content = apiResponse?.data?.chapterData?.content || apiResponse?.chapterData?.content || ''
+    content = apiResponse?.data?.chapterData?.content || apiResponse?.chapterData?.content || apiResponse?.content || ''
   }
 
   // 兜底：从 page.content() 正则提取
