@@ -93,6 +93,15 @@
           {{ deslopAllProgress }}
         </div>
       </div>
+
+      <div class="card" style="margin-top:8px;">
+        <button class="btn btn-warning btn-block" :disabled="optimizeBusy" @click="optimizeNovel">
+          {{ optimizeBusy ? '⏳ 全文调优中...' : '📝 全文调优（修复流水账/重复/伏笔 + 去AI味）' }}
+        </button>
+        <div v-if="optimizeProgress" style="margin-top:6px;font-size:12px;color:var(--text-secondary);">
+          {{ optimizeProgress }}
+        </div>
+      </div>
     </div>
     <div style="height:20px;"></div>
   </div>
@@ -197,6 +206,29 @@ async function deslopChapter(chapter) {
 
 const deslopAllBusy = ref(false)
 const deslopAllProgress = ref('')
+
+const optimizeBusy = ref(false)
+const optimizeProgress = ref('')
+
+async function optimizeNovel() {
+  if (!novel.value?.chapters?.length) return alert('没有章节需要调优')
+  if (!confirm(`对《${novel.value.title}》进行全文调优？\n\nAI 将：\n1️⃣ 分析全文问题（流水账/重复/伏笔未回收）\n2️⃣ 逐章优化重写\n3️⃣ 自动去AI味\n\n预计耗时较长（每章约30秒），是否继续？`)) return
+  optimizeBusy.value = true
+  optimizeProgress.value = '正在分析全文问题...'
+  try {
+    const res = await api.post(`/novel/optimize/${route.params.id}`)
+    if (res.data.status === 'completed') {
+      alert(res.data.message)
+      refreshNovel()
+    } else {
+      alert('调优失败: ' + (res.data.message || '未知错误'))
+    }
+  } catch (e) {
+    alert('全文调优失败: ' + (e.response?.data?.message || e.message))
+  }
+  optimizeBusy.value = false
+  optimizeProgress.value = ''
+}
 
 async function deslopAllChapters() {
   const chapters = novel.value?.chapters

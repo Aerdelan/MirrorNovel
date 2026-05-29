@@ -452,9 +452,82 @@ ${revealedForeshadowing}
 - ${progress >= 80 ? '📌 已接近目标字数，确保在剩余章节内完成主线和副线收束。' : '📌 按章节计划推进，确保每章有明确的目标。'}`;
 }
 
+/**
+ * 构建全文调优分析提示词
+ */
+function buildOptimizeAnalysisPrompt(chapters, outline, protagonistName, worldSetting) {
+  const fullText = chapters.map(ch =>
+    `【第${ch.chapterNumber}章（${ch.wordCount}字）】\n${(ch.content || '').slice(0, 3000)}`
+  ).join('\n\n').slice(0, 40000);
+
+  return `你是一位专业的小说编辑。请分析以下小说的全文，输出一份详细的调优分析报告。
+
+小说信息：
+主角：${protagonistName || '未设定'}
+世界观：${worldSetting || '未设定'}
+大纲：${(outline || '无').slice(0, 1000)}
+总章节数：${chapters.length} 章
+
+小说全文摘要（每章前3000字）：
+${fullText}
+
+请按以下格式输出分析报告：
+
+【问题诊断】
+逐章列出以下问题：
+- 情节重复：与前面某章核心事件高度相似的章节
+- 流水账：缺乏矛盾冲突、纯粹堆砌对话/描写的章节
+- 伏笔未回收：设置了但未在后续回收的伏笔清单
+- 节奏问题：推进过快或过慢的章节
+
+【修复方案】
+对每个有问题的章节，给出明确的修复建议和重写方向
+
+【优化后章节计划】
+列出每章是否需要重写，以及重写后的目标方向
+格式：第N章 → 无需修改/轻微润色/需要重写（原因+方向）`;
+}
+
+/**
+ * 构建单章调优重写提示词
+ */
+function buildOptimizeChapterPrompt(chapter, chapterNumber, analysis, outline) {
+  return `你是一位专业的小说编辑。请根据以下小说全文分析报告，对第${chapterNumber}章进行优化重写。
+
+小说大纲：${(outline || '无').slice(0, 2000)}
+
+全文分析报告（相关部分）：
+${analysis.slice(0, 6000)}
+
+【当前章节原文（第${chapterNumber}章）】
+${(chapter.content || '').slice(0, 5000)}
+
+要求：
+1. 修复分析报告中指出的问题（情节重复、流水账、伏笔等）
+2. 保持文风和整体风格一致
+3. 保持与前后的剧情连贯性
+4. 如果分析报告未指出本章问题，则仅做精简润色，不要大幅改写
+5. 输出优化后的完整章节内容，不要省略任何段落
+6. 字数与原章相近，不要过度扩展或压缩
+
+请直接输出优化后的章节内容。`;
+}
+
+/**
+ * 提取章节摘要（用于生成下一章时提示不要重复）
+ */
+function extractChapterSummary(content) {
+  if (!content || content.length < 100) return '';
+  // 取开头500字中的关键信息 + 结尾200字
+  const head = content.slice(0, 500).replace(/\s+/g, ' ').trim();
+  const tail = content.slice(-200).replace(/\s+/g, ' ').trim();
+  return `本章概要：${head}...本章结尾：${tail}`;
+}
+
 module.exports = {
   buildSystemPrompt, buildInitialPrompt, buildContinuePrompt,
   buildImportContinuePrompt, buildOutlinePrompt, distillChapters,
   buildChapterPlan, buildStoryStateSummary,
+  buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, extractChapterSummary,
   streamGenerate, resolveApiConfig, countTokens,
 };

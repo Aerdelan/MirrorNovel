@@ -12,6 +12,7 @@ const {
   buildSystemPrompt, buildInitialPrompt, buildContinuePrompt,
   buildImportContinuePrompt, buildOutlinePrompt,
   buildChapterPlan, buildStoryStateSummary,
+  buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, extractChapterSummary,
   streamGenerate, resolveApiConfig, countTokens,
 } = require('../services/aiService');
 const { buildAugmentedContext } = require('../services/novelContext');
@@ -351,7 +352,7 @@ ${structureRef}
       deductTokens(req.user, finalContent);
 
       res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber: chNum, wordCount: buffer.length })}\n\n`);
-      return buffer.length;
+      return { content: finalContent, wordCount: buffer.length };
     }
 
     console.log('开始正文循环生成，outline长度:', outline?.length || 0, 'aborted:', abortController.signal.aborted);
@@ -362,6 +363,9 @@ ${structureRef}
         const maxChapters = Math.ceil(targetWordCount / 1000);
         const planChapters = chapterPlan ? (chapterPlan.match(/第\d+章/g) || []).length : 0;
         const totalPlannedChapters = planChapters || Math.ceil(targetWordCount / chapterSize);
+
+        // 追踪上一章内容，防止重复
+        let lastChapterContent = '';
 
         for (let ch = 1; ch <= maxChapters; ch++) {
           if (abortController.signal.aborted) break;
@@ -387,6 +391,9 @@ ${structureRef}
 
           const chPlanSection = chapterPlan ? '【章节计划表】\n' + chapterPlan + '\n' : '';
           const thisChSection = currentChapterPlan ? '【本章计划】\n' + currentChapterPlan + '\n' : '';
+          const prevChSection = lastChapterContent
+            ? `【上一章概要】（⚠️ 当前章节的核心事件/剧情推进必须与上一章不同，不要重复）\n${extractChapterSummary(lastChapterContent)}\n`
+            : '';
 
           const chPrompt = `请继续创作这部${type.name}小说。
 
@@ -395,6 +402,7 @@ ${structureRef}
 ${outline ? '【创作大纲】\n' + outline + '\n' : ''}
 ${chPlanSection}
 ${thisChSection}
+${prevChSection}
 ${storyState}
 
 已有章节摘要：
@@ -403,18 +411,23 @@ ${distilled || '（故事开始）'}
 当前是第${ch}章，剩余目标约${remaining}字。
 要求：
 1. 保持与前面章节一致的文风和节奏
-2. 注意剧情连贯性，衔接上一章结尾
+2. 注意剧情连贯性，衔接上一章结尾，但核心事件不能与上一章重复
 3. 如有【本章计划】请严格遵循，完成本章核心事件
-4. 每章有独立的小高潮，同时推进主线
+4. 每章必须有新的情节推进，必须有矛盾冲突或转折，禁止写纯粹的过渡章
 5. 严格按照【章节计划表】中的伏笔安排来设置和回收伏笔
 6. 密切关注【当前故事状态】中的进度要求，确保在剩余章节内合理收束
-7. 目标本章约${chapterSize}字
+7. 目标本章约${chapterSize}字，不要过度缩水或灌水
 8. 每章结束时标注【未完待续】
 9. 如果剩余章节不足10章，逐步收紧节奏，开始准备结局
-10. 最后3章要给出一个有力量、有意义、不烂尾的结局`;
+10. 最后3章要给出一个有力量、有意义、不烂尾的结局
+11. ⚠️ 绝对禁止：核心剧情与上一章高度相似或完全重复，每章必须推动主线`;
 
           await ensureTokensLeft(req.user);
-          await generateOneChapter(ch, chPrompt);
+          const genResult = await generateOneChapter(ch, chPrompt);
+          // 更新上一章内容摘要用于下一章的防重复检测
+          if (genResult && genResult.content) {
+            lastChapterContent = genResult.content;
+          }
           currentChapterNum = ch + 1;
         }
 
@@ -1716,6 +1729,75 @@ ${partialsText}
   } catch (error) {
     console.error('结构分析失败:', error);
     res.status(500).json({ message: '结构分析失败', error: error.message });
+  }
+});
+
+// ====== 全文调优（分析问题 + 逐章重写 + 去AI味） ======
+router.post('/optimize/:novelId', auth, async (req, res) => {
+  try {
+    const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
+    if (!novel) return res.status(404).json({ message: '小说不存在' });
+    if (!novel.chapters || novel.chapters.length === 0) return res.status(400).json({ message: '没有章节需要调优' });
+
+    const apiConfig = resolveApiConfig(req.user?.modelConfig, 'writing');
+
+    // Step 1: AI 分析全文问题
+    res.json({ status: 'analyzing', message: '正在分析全文问题...' });
+    const analysisPrompt = buildOptimizeAnalysisPrompt(
+      novel.chapters, novel.outline, novel.protagonistName, novel.worldSetting
+    );
+    const analysisResult = await streamGenerate(
+      '你是一位专业的小说编辑。请分析小说全文，找出所有问题。',
+      analysisPrompt, null, null, apiConfig
+    );
+    const analysis = analysisResult?.content || '';
+
+    // Step 2: 逐章调优 + 去AI味
+    let optimizedCount = 0;
+    let polishedCount = 0;
+    const totalCh = novel.chapters.length;
+
+    for (let i = 0; i < totalCh; i++) {
+      const ch = novel.chapters[i];
+      const chPrompt = buildOptimizeChapterPrompt(ch, ch.chapterNumber, analysis, novel.outline);
+      const chResult = await streamGenerate(
+        '你是一位专业的小说编辑。请根据分析报告优化指定章节。',
+        chPrompt, null, null, apiConfig
+      );
+      let newContent = chResult?.content || '';
+      if (newContent.length > 50) {
+        // 去AI味 + 标点修正
+        try {
+          const { text } = processChapter(newContent);
+          newContent = text;
+        } catch {}
+        novel.chapters[i].content = newContent;
+        novel.chapters[i].wordCount = newContent.length;
+        optimizedCount++;
+      } else {
+        // 内容太短，只做去AI味
+        try {
+          const { text } = processChapter(ch.content || '');
+          if (text !== ch.content) {
+            novel.chapters[i].content = text;
+            polishedCount++;
+          }
+        } catch {}
+      }
+    }
+
+    novel.currentWordCount = novel.chapters.reduce((s, c) => s + (c.wordCount || 0), 0);
+    novel.status = 'completed';
+    await novel.save();
+
+    res.json({
+      status: 'completed',
+      message: `✅ 全文调优完成！重写 ${optimizedCount} 章，润色 ${polishedCount} 章`,
+      optimizedCount, polishedCount, totalChapters: totalCh,
+    });
+  } catch (error) {
+    console.error('全文调优失败:', error);
+    res.status(500).json({ message: '全文调优失败', error: error.message });
   }
 });
 
