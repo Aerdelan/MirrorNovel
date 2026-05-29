@@ -384,12 +384,17 @@ let outlineRejectCallback = null
 
 async function generateOutline(selectedTypeId, charName, worldSetting, wordCount) {
   try {
-    const res = await api.post('/novel/generate-outline', {
+    const payload = {
       novelTypeId: selectedTypeId,
       protagonistName: charName,
       worldSetting: worldSetting,
       targetWordCount: wordCount,
-    })
+    }
+    // 勾选了参考结构则传给大纲生成
+    if (useStructureRef.value && structResult.value) {
+      payload.structureRef = structResult.value
+    }
+    const res = await api.post('/novel/generate-outline', payload)
     return res.data.outline || ''
   } catch (e) {
     console.error('大纲生成失败:', e)

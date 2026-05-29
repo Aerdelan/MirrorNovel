@@ -84,6 +84,15 @@
       <div v-if="allChaptersComplete" class="card">
         <button class="btn btn-primary btn-block" @click="openGenSettings(nextChapterNum)">➕ 生成第{{ nextChapterNum }}章</button>
       </div>
+
+      <div class="card" style="margin-top:8px;">
+        <button class="btn btn-outline btn-block" :disabled="deslopAllBusy" @click="deslopAllChapters">
+          {{ deslopAllBusy ? '⏳ 整本去AI味中...' : '✨ 整本去AI味' }}
+        </button>
+        <div v-if="deslopAllProgress" style="margin-top:6px;font-size:12px;color:var(--text-secondary);">
+          {{ deslopAllProgress }}
+        </div>
+      </div>
     </div>
     <div style="height:20px;"></div>
   </div>
@@ -184,6 +193,35 @@ async function deslopChapter(chapter) {
     const res = await api.post('/novel/deslop', { text: chapter.content || '' })
     if (res.data.processed) { await api.put(`/novel/${route.params.id}/chapter/${chapter.chapterNumber}`, { content: res.data.processed }); refreshNovel(); alert('✅ 去AI味完成！') }
   } catch (e) { alert('处理失败:'+(e.response?.data?.message||e.message)) }
+}
+
+const deslopAllBusy = ref(false)
+const deslopAllProgress = ref('')
+
+async function deslopAllChapters() {
+  const chapters = novel.value?.chapters
+  if (!chapters || chapters.length === 0) return alert('没有章节需要处理')
+  if (!confirm(`对全部 ${chapters.length} 章进行整本去AI味处理？（每章单独调用AI处理，预计耗时较长）`)) return
+  deslopAllBusy.value = true
+  deslopAllProgress.value = ''
+  let success = 0, fail = 0
+  for (let i = 0; i < chapters.length; i++) {
+    const ch = chapters[i]
+    deslopAllProgress.value = `正在处理第 ${i + 1}/${chapters.length} 章...`
+    try {
+      const res = await api.post('/novel/deslop', { text: ch.content || '' })
+      if (res.data.processed) {
+        await api.put(`/novel/${route.params.id}/chapter/${ch.chapterNumber}`, { content: res.data.processed })
+        success++
+      }
+    } catch (e) {
+      fail++
+      console.error(`第${ch.chapterNumber}章去AI味失败:`, e)
+    }
+  }
+  deslopAllBusy.value = false
+  refreshNovel()
+  alert(`✅ 整本去AI味完成！成功 ${success} 章${fail ? '，失败 ' + fail + ' 章' : ''}`)
 }
 
 async function refreshNovel() { try { novel.value = await novelStore.fetchNovelDetail(route.params.id) } catch {} }

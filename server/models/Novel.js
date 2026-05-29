@@ -65,6 +65,11 @@ const novelSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
+  // 章节计划表（AI生成，每章事件/伏笔/字数分配）
+  chapterPlan: {
+    type: String,
+    default: '',
+  },
   chapters: [chapterSchema],
   currentChapterIndex: {
     type: Number,

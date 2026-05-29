@@ -11,6 +11,7 @@ const { typeTemplates, buildTemplatePrompt } = novelTemplates;
 const {
   buildSystemPrompt, buildInitialPrompt, buildContinuePrompt,
   buildImportContinuePrompt, buildOutlinePrompt,
+  buildChapterPlan, buildStoryStateSummary,
   streamGenerate, resolveApiConfig, countTokens,
 } = require('../services/aiService');
 const { buildAugmentedContext } = require('../services/novelContext');
@@ -27,7 +28,7 @@ router.get('/types', (req, res) => {
 // 单独生成大纲（同步返回，供前端弹窗确认使用）
 router.post('/generate-outline', auth, async (req, res) => {
   try {
-    const { novelTypeId, protagonistName, worldSetting, targetWordCount } = req.body;
+    const { novelTypeId, protagonistName, worldSetting, targetWordCount, structureRef } = req.body;
     if (!novelTypeId) return res.status(400).json({ message: '请选择小说类型' });
 
     let type = novelTypes.find(t => t.id === novelTypeId || t.name === novelTypeId);
@@ -41,10 +42,58 @@ router.post('/generate-outline', auth, async (req, res) => {
       } catch { type = { id: novelTypeId, name: novelTypeId, icon: '📄', keywords: '', outline: '' }; }
     }
 
-    const outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount);
+    // 如果有参考结构，用它覆盖世界观并强制大纲遵循参考
+    let effectiveWorld = worldSetting;
+    let outlinePrompt;
+    if (structureRef) {
+      // 从参考结构中提取世界观设定部分
+      const worldMatch = structureRef.match(/【世界观设定】([\s\S]*?)(?=【|$)/);
+      const plotMatch = structureRef.match(/【剧情整体走向】([\s\S]*?)(?=【|$)/);
+      effectiveWorld = worldMatch ? worldMatch[1].trim() : (worldSetting || '由参考小说设定');
+
+      outlinePrompt = `你是一位专业的小说大纲策划师。用户上传了一本参考小说并要求严格遵循其结构创作。
+
+主角名字：${protagonistName || '未设定'}
+世界观设定（来自参考小说）：${effectiveWorld}
+目标总字数：约${targetWordCount}字
+
+【参考小说完整结构】
+请严格按照以下参考小说的结构来创作大纲：
+${structureRef}
+
+⚠️ 重要：你必须严格遵循以上参考结构的【剧情整体走向】和【章节结构规划】来编写大纲。
+故事主线和核心冲突必须与参考一致，只替换角色名称和地名。
+角色名称使用参考结构中"AI生成替换名称"部分提供的新名称。
+
+请按以下格式输出大纲：
+
+【故事主线】
+（基于参考小说的剧情走向，用新名称重述核心故事线）
+
+【核心冲突】
+（基于参考小说的冲突线）
+
+【主要角色】
+（使用参考结构中提供的新名称）
+
+【剧情阶段】
+（严格按照参考小说的章节结构规划）
+
+【结局方向】
+（基于参考小说的结局）
+
+【关键节点】
+（参考小说的关键伏笔和转折点）`;
+    } else {
+      outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount);
+    }
+
+    const systemPrompt = structureRef
+      ? '你是一位专业的小说大纲策划师。用户提供了参考小说结构，你必须严格遵循该结构来制定大纲，仅替换角色名称和地名。'
+      : '你是一位专业的小说大纲策划师。';
+
     const result = await streamGenerate(
-      '你是一位专业的小说大纲策划师。',
-      outlinePrompt, null, null,
+      systemPrompt, outlinePrompt, null, null,
       resolveApiConfig(req.user?.modelConfig, 'writing')
     );
 
@@ -63,7 +112,7 @@ router.post('/generate', auth, async (req, res) => {
   try {
     await checkTokenBalance(req.user);
 
-    const { novelTypeId, protagonistName, worldSetting, targetWordCount, referenceIds } = req.body;
+    let { novelTypeId, protagonistName, worldSetting, targetWordCount, referenceIds } = req.body;
     if (!novelTypeId) return res.status(400).json({ message: '请选择小说类型' });
     // 支持新旧两种类型系统：先用旧 ID 查找，失败则用名称匹配
     let type = novelTypes.find(t => t.id === novelTypeId || t.name === novelTypeId);
@@ -81,6 +130,14 @@ router.post('/generate', auth, async (req, res) => {
     const mode = req.body.mode || 'book';
     const isBook = mode === 'book';
     const structureRef = req.body.structureRef || '';
+
+    // 如果启用了参考结构，强制使用参考小说的世界观设定
+    if (structureRef) {
+      const worldMatch = structureRef.match(/【世界观设定】([\s\S]*?)(?=【|$)/);
+      if (worldMatch) {
+        worldSetting = worldMatch[1].trim();
+      }
+    }
 
     // 创建小说记录
     const novel = new Novel({
@@ -123,16 +180,18 @@ ${refSection}
     }
 
     // 如果有小说结构参考（上传参考小说 → 提取结构 → 替换名称）
+    // ⚠️ 此注入可能在模板匹配时被覆盖，模板匹配逻辑中有重新注入
     if (structureRef) {
-      systemPrompt += `\n\n【参考小说结构（名称已替换）】
-用户上传了一本参考小说并提取了以下结构。请严格遵循这个结构来创作：
-- 剧情走向和节奏必须与参考一致
-- 世界观设定、伏笔布局、情节流程严格参照
-- 人物名称、地点名称、宠物名称等使用下方提供的新名称，不要使用参考中的原名
+      systemPrompt += `\n\n【参考小说结构（名称已替换）—— 必须严格遵守】
+用户上传了一本参考小说并要求严格遵循其结构。以下内容的优先级高于所有其他参考：
+- 剧情走向、场景顺序、对话节奏、冲突安排必须与参考一致
+- 世界观设定使用参考中的设定，不要自行发挥
+- 人物名称、地点名称等使用参考结构中"AI生成替换名称"部分提供的新名称
+- 参考小说原文的所有元素都已替换为新名称，请直接使用
 
 ${structureRef}
 
-注意：所有名称都是 AI 重新生成的，你必须使用新名称。剧情结构、场景顺序、对话节奏、冲突安排必须遵循参考。`;
+注意：这是最高优先级指令。所有其他参考仅在补充细节时使用，不得偏离本参考结构的剧情框架。`;
     }
 
     // 类型模板匹配 — 先推断 gender 重建系统提示，再注入动态模板
@@ -141,17 +200,31 @@ ${structureRef}
       if (matchedTmpls.length > 0) {
         const tmpl = matchedTmpls[0];
         // 根据匹配到的 gender 重新构建系统提示（男女频写作指导不同）
-        systemPrompt = buildSystemPrompt(novelTypeId, tmpl.gender || 'male');
+        const baseSys = buildSystemPrompt(novelTypeId, tmpl.gender || 'male');
 
         const genderTag = tmpl.gender === 'female' ? '女频' : tmpl.gender === 'unisex' ? '通用' : '男频';
 
-        systemPrompt += `\n\n【类型模板参考（${genderTag} · ${tmpl.name} · 匹配度 ${tmpl.score}%）】
+        systemPrompt = baseSys + `\n\n【类型模板参考（${genderTag} · ${tmpl.name} · 匹配度 ${tmpl.score}%）】
 以下是系统根据「${tmpl.name}」类型和你的世界观设定自动生成的创作参考。
 ⚠️ 重要提示：你的原始设定始终占主导地位，以下内容仅为辅助参考，每次生成时随机组合不同变体以保证多样性。
 
 ${tmpl.dynamicPrompt}
 
 注意：以上为动态生成的参考组合，每次生成会随机选择不同的写作变体、节奏和看点，请根据你的故事主线灵活运用。`;
+
+        // 如果启用了参考结构，在模板之后重新注入（因为 buildSystemPrompt 覆盖了之前的注入）
+        if (structureRef) {
+          systemPrompt += `\n\n【参考小说结构（名称已替换）—— 必须严格遵守】
+用户上传了一本参考小说并要求严格遵循其结构。以下内容的优先级高于所有其他参考：
+- 剧情走向、场景顺序、对话节奏、冲突安排必须与参考一致
+- 世界观设定使用参考中的设定，不要自行发挥
+- 人物名称、地点名称等使用参考结构中"AI生成替换名称"部分提供的新名称
+- 参考小说原文的所有元素都已替换为新名称，请直接使用
+
+${structureRef}
+
+注意：这是最高优先级指令。所有其他参考（类型模板、风格库）仅在补充细节时使用，不得偏离本参考结构的剧情框架。`;
+        }
       }
     } catch (e) {
       console.error('模板匹配注入失败:', e.message);
@@ -216,6 +289,30 @@ ${tmpl.dynamicPrompt}
       await novel.save();
     }
 
+    // ====== 生成章节计划表（整本模式） ======
+    let chapterPlan = '';
+    if (isBook && outline) {
+      try {
+        res.write(`data: ${JSON.stringify({ type: 'status', message: '正在制定章节计划表...' })}\n\n`);
+        const planPrompt = buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, structureRef);
+        const planResult = await streamGenerate(
+          '你是一位专业的小说章节规划师。你的任务是制定详细的章节计划表，确保每章有明确目标、伏笔合理铺设和回收、结局节奏自然。',
+          planPrompt, null, null,
+          resolveApiConfig(req.user?.modelConfig, 'writing')
+        );
+        if (planResult && planResult.content) {
+          chapterPlan = planResult.content;
+          novel.chapterPlan = chapterPlan;
+          await novel.save();
+          const planChCount = (chapterPlan.match(/第\d+章/g) || []).length;
+          res.write(`data: ${JSON.stringify({ type: 'status', message: `章节计划已制定（共 ${planChCount} 章）` })}\n\n`);
+        }
+      } catch (e) {
+        console.error('章节计划生成失败:', e.message);
+        res.write(`data: ${JSON.stringify({ type: 'status', message: '章节计划生成暂不可用，继续创作...' })}\n\n`);
+      }
+    }
+
     // ====== 循环生成 ======
 
     /** 生成并保存一个章节 */
@@ -261,24 +358,44 @@ ${tmpl.dynamicPrompt}
     try {
       if (isBook) {
         // ====== 整本模式：生成多章直到达到目标字数 ======
-        const chapterSize = Math.max(2000, Math.min(5000, Math.floor(targetWordCount / 3))); // 每章约2000-5000字
-        const maxChapters = Math.ceil(targetWordCount / 1000); // 防无限循环
+        const chapterSize = Math.max(2000, Math.min(5000, Math.floor(targetWordCount / 3)));
+        const maxChapters = Math.ceil(targetWordCount / 1000);
+        const planChapters = chapterPlan ? (chapterPlan.match(/第\d+章/g) || []).length : 0;
+        const totalPlannedChapters = planChapters || Math.ceil(targetWordCount / chapterSize);
 
         for (let ch = 1; ch <= maxChapters; ch++) {
           if (abortController.signal.aborted) break;
 
           const currentTotal = novel.chapters.reduce((s, c) => s + (c.wordCount || 0), 0);
           const remaining = targetWordCount - currentTotal;
-          if (remaining <= 0) break; // 达到目标字数
+          if (remaining <= 0) break;
 
-          // 蒸馏提纯上下文（根据章节数量动态压缩）
           const distilled = buildAugmentedContext(novel.chapters);
+
+          // 从章节计划中提取当前章的描述
+          let currentChapterPlan = '';
+          if (chapterPlan) {
+            const lines = chapterPlan.split('\n').filter(l => l.trim());
+            const chLine = lines.find(l => l.trim().startsWith(`第${ch}章(`) || l.trim().startsWith(`第${ch}章 `));
+            if (chLine) currentChapterPlan = chLine.trim();
+          }
+
+          const storyState = buildStoryStateSummary(
+            chapterPlan, ch, totalPlannedChapters,
+            currentTotal, targetWordCount
+          );
+
+          const chPlanSection = chapterPlan ? '【章节计划表】\n' + chapterPlan + '\n' : '';
+          const thisChSection = currentChapterPlan ? '【本章计划】\n' + currentChapterPlan + '\n' : '';
 
           const chPrompt = `请继续创作这部${type.name}小说。
 
 主角：${protagonistName || '未设定'}
 世界观：${worldSetting || '自由发挥'}
 ${outline ? '【创作大纲】\n' + outline + '\n' : ''}
+${chPlanSection}
+${thisChSection}
+${storyState}
 
 已有章节摘要：
 ${distilled || '（故事开始）'}
@@ -287,11 +404,14 @@ ${distilled || '（故事开始）'}
 要求：
 1. 保持与前面章节一致的文风和节奏
 2. 注意剧情连贯性，衔接上一章结尾
-3. 如有大纲请严格遵循
+3. 如有【本章计划】请严格遵循，完成本章核心事件
 4. 每章有独立的小高潮，同时推进主线
-5. 全局规划好伏笔的铺设和回收
-6. 目标本章约${chapterSize}字
-7. 每章结束时标注【未完待续】`;
+5. 严格按照【章节计划表】中的伏笔安排来设置和回收伏笔
+6. 密切关注【当前故事状态】中的进度要求，确保在剩余章节内合理收束
+7. 目标本章约${chapterSize}字
+8. 每章结束时标注【未完待续】
+9. 如果剩余章节不足10章，逐步收紧节奏，开始准备结局
+10. 最后3章要给出一个有力量、有意义、不烂尾的结局`;
 
           await ensureTokensLeft(req.user);
           await generateOneChapter(ch, chPrompt);

@@ -372,8 +372,89 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
   throw new Error('AI API 请求失败，所有重试均已耗尽');
 }
 
+/**
+ * 构建章节计划表（细化到每一章的事件、伏笔、字数）
+ */
+function buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, structureRef) {
+  const estChapters = Math.max(10, Math.ceil(targetWordCount / 3000));
+
+  let planPrompt = `你是一位专业的小说章节规划师。请根据以下素材制定一份详细的章节计划表。
+
+目标：约${targetWordCount}字，预计${estChapters}章
+
+素材：
+主角：${protagonistName || '未设定'}
+世界观：${worldSetting || '自由发挥'}
+大纲：
+${outline || '无大纲，请自行规划故事'}`;
+
+  if (structureRef) {
+    planPrompt += `\n\n参考小说结构（必须严格遵循）：
+${structureRef}`;
+  }
+
+  planPrompt += `\n\n请按以下格式输出【章节计划表】（每章一行，不要额外解释）：
+
+【章节计划表】
+阶段1: [阶段名称](第X-Y章) — [一句话概括本阶段]
+第1章([字数]字): [本章核心事件] | 埋伏笔: [伏笔1],[伏笔2] | 回收伏笔: [伏笔1] | 关键角色: [角色]
+第2章([字数]字): [本章核心事件] | 埋伏笔: [伏笔3] | 回收伏笔: [伏笔2] | 关键角色: [角色]
+...
+阶段2: [阶段名称](第X-Y章) — [一句话概括]
+...
+
+关键规则：
+1. 每个伏笔设置后，必须在后续某章中标明"回收伏笔: [该伏笔]"
+2. 最后5-8章集中回收所有遗留伏笔，确保结局不烂尾
+3. 重要转折所在的章标 ★转折点
+4. 每章字数3000-5000字
+5. 总章节数控制在${estChapters}章左右
+6. 用"大结局"标注最后一章`;
+
+  return planPrompt;
+}
+
+/**
+ * 根据章节计划和已完成章数，构建当前故事状态摘要
+ */
+function buildStoryStateSummary(chapterPlan, currentChapter, totalChapters, currentWords, targetWords) {
+  const progress = Math.round((currentWords / targetWords) * 100);
+  const phase = progress < 25 ? '开端' : progress < 55 ? '发展' : progress < 80 ? '转折' : '高潮结局';
+  const remaining = totalChapters - currentChapter + 1;
+
+  // 从章节计划中提取本阶段和伏笔信息
+  // 简单实现：直接提取计划文本中相关段落
+  let currentPhase = '';
+  let pendingForeshadowing = '（请参考章节计划表）';
+  let revealedForeshadowing = '（请参考章节计划表）';
+
+  // 根据进度判断当前所处阶段
+  if (chapterPlan) {
+    const phases = chapterPlan.match(/阶段\d+:[^\n]+/g) || [];
+    const phaseIdx = Math.min(Math.floor(progress / 25), phases.length - 1);
+    currentPhase = phases[phaseIdx] || '进行中';
+  }
+
+  return `【当前故事状态】
+当前阶段: ${currentPhase} (已完成 ${progress}%)
+已生成: ${currentChapter - 1}/${totalChapters} 章, ${currentWords}/${targetWords} 字
+剩余: ${remaining} 章
+
+【伏笔追踪】
+${pendingForeshadowing}
+
+${revealedForeshadowing}
+
+【写作提示】
+- 当前处于${phase}阶段，注意节奏把控
+- ${remaining <= 8 ? '⚠️ 剩余章节不多，开始集中回收伏笔，准备结局！' : ''}
+- ${remaining <= 3 ? '⚡ 最后几章，收束所有故事线，给出有力量的结局！' : ''}
+- ${progress >= 80 ? '📌 已接近目标字数，确保在剩余章节内完成主线和副线收束。' : '📌 按章节计划推进，确保每章有明确的目标。'}`;
+}
+
 module.exports = {
   buildSystemPrompt, buildInitialPrompt, buildContinuePrompt,
   buildImportContinuePrompt, buildOutlinePrompt, distillChapters,
+  buildChapterPlan, buildStoryStateSummary,
   streamGenerate, resolveApiConfig, countTokens,
 };
