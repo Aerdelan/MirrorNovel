@@ -358,7 +358,13 @@ async function analyzeStructure() {
     const res = await fetch('/api/novel/analyze-structure', {
       method: 'POST', headers: { 'Authorization': `Bearer ${token}` }, body: formData,
     })
-    const data = await res.json()
+    let data
+    try {
+      data = await res.json()
+    } catch {
+      const text = await res.text()
+      throw new Error(text || `服务器返回 ${res.status}，但响应体为空`)
+    }
     if (!res.ok) throw new Error(data.message || '分析失败')
     structResult.value = data.structure
   } catch (e) {

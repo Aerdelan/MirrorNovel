@@ -1374,9 +1374,14 @@ router.post('/analyze-structure', auth, upload.single('file'), async (req, res) 
     const text = req.file.buffer.toString('utf-8');
     if (text.length < 100) return res.status(400).json({ message: '小说太短，至少100字' });
 
-    // 截取前 4 万字分析（足够提取结构）
-    const maxLen = 40000;
-    const sample = text.length > maxLen ? text.substring(0, maxLen) + '\n\n...(后续内容略，用于结构分析)' : text;
+    // 限制最大分析字数（避免 AI 模型超上下文窗口）
+    const MAX_ANALYSIS_CHARS = 5000000;
+    if (text.length > MAX_ANALYSIS_CHARS) {
+      return res.status(400).json({ message: `小说内容过长（${text.length} 字），最多支持 ${MAX_ANALYSIS_CHARS} 字分析，请截取前 ${MAX_ANALYSIS_CHARS} 字后重试` });
+    }
+
+    // 使用完整文本分析
+    const sample = text;
 
     const systemPrompt = '你是一位专业的小说结构分析师。你的任务是从给定的小说文本中提取完整的剧情结构，并用AI生成全新的角色名称和地点名称。';
 
@@ -1411,7 +1416,7 @@ router.post('/analyze-structure', auth, upload.single('file'), async (req, res) 
 
 重要：这些名称必须是新创作的，不能使用原文中的任何名字！
 
-小说文本（前${sample.length}字）：
+小说文本（${sample.length}字）：
 ${sample}
 
 请严格按照以上格式输出，不要遗漏任何部分。确保所有名称都是全新创作的。`;
