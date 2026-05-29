@@ -452,12 +452,6 @@ async function saveConfig() {
 import { getCurrentInstance } from 'vue'
 const { t } = getCurrentInstance().appContext.config.globalProperties
 
-function formatSize(bytes) {
-  if (!bytes) return ''
-  const gb = bytes/1024/1024/1024
-  return gb >= 1 ? `${gb.toFixed(1)}GB` : `${(bytes/1024/1024).toFixed(0)}MB`
-}
-
 function goToLogin() { router.push('/login') }
 function goToRegister() { router.push('/register') }
 async function updateNickname() {
