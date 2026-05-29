@@ -221,12 +221,14 @@ import { useRouter } from 'vue-router'
 import { useNovelStore } from '../stores/novel'
 import { useAuthStore } from '../stores/auth'
 import { useReferenceStore } from '../stores/reference'
+import { useI18n } from '../composables/useI18n'
 import api from '../api'
 
 const router = useRouter()
 const novelStore = useNovelStore()
 const authStore = useAuthStore()
 const refStore = useReferenceStore()
+const { $t } = useI18n()
 
 const streamRef = ref(null)
 
