@@ -148,23 +148,44 @@
           <!-- Ollama -->
           <template v-if="modelConfig.provider === 'ollama'">
             <div class="form-group">
-              <label>Ollama URL</label>
+              <label>Ollama 地址</label>
               <input v-model="modelConfig.ollamaBaseUrl" class="input" placeholder="http://localhost:11434" />
-            </div>
-            <div v-for="role in modelRoles" :key="role.key" class="form-group">
-              <label>{{ role.icon }} {{ $t('profile.' + role.labelKey) }}</label>
-              <input v-model="modelConfig['ollama' + role.fieldSuffix]" class="input" :placeholder="role.placeholder" />
-            </div>
-            <button class="btn btn-outline btn-sm" :disabled="ollamaLoading" @click="fetchOllamaModels">
-              {{ ollamaLoading ? $t('common.loading') : $t('profile.refreshModels') }}
-            </button>
-            <div v-if="ollamaModels.length > 0" class="model-list">
-              <div v-for="m in ollamaModels" :key="m.name" class="model-item" @click="setOllamaModel(m.name)">
-                <span class="model-name">{{ m.name }}</span>
-                <span v-if="m.details" class="model-size">({{ formatSize(m.size) }})</span>
+              <div style="font-size:12px;color:var(--text-light);margin-top:4px;">
+                如果 Ollama 运行在本地，需确保服务器能访问到此地址
               </div>
             </div>
+
+            <div class="form-group">
+              <label>📥 刷新模型列表</label>
+              <div style="display:flex;gap:8px;align-items:center;">
+                <button class="btn btn-outline btn-sm" :disabled="ollamaLoading" @click="fetchOllamaModels">
+                  {{ ollamaLoading ? '⏳ 连接中...' : '🔄 从服务器刷新' }}
+                </button>
+                <button class="btn btn-outline btn-sm" :disabled="ollamaLoading" @click="fetchLocalOllamaModels">
+                  🖥️ 从本机刷新
+                </button>
+              </div>
+            </div>
+
+            <div v-if="ollamaModels.length > 0" class="form-group">
+              <label>📋 选择模型（将应用到所有角色）</label>
+              <select v-model="selectedOllamaModel" class="input select-input" @change="setOllamaModel(selectedOllamaModel)">
+                <option value="">-- 请选择模型 --</option>
+                <option v-for="m in ollamaModels" :key="m.name" :value="m.name">
+                  {{ m.name }}{{ m.details ? ' (' + formatSize(m.size) + ')' : '' }}
+                </option>
+              </select>
+            </div>
+
             <div v-if="ollamaError" class="model-error">{{ ollamaError }}</div>
+
+            <div class="form-group" style="margin-top:8px;">
+              <label>✏️ 或手动输入模型名（如果刷新失败）</label>
+              <div v-for="role in modelRoles" :key="role.key" class="form-group" style="margin-bottom:4px;">
+                <label style="font-size:13px;">{{ role.icon }} {{ $t('profile.' + role.labelKey) }}</label>
+                <input v-model="modelConfig['ollama' + role.fieldSuffix]" class="input" :placeholder="role.placeholder" />
+              </div>
+            </div>
           </template>
 
           <!-- 云端自定义 -->
@@ -248,6 +269,7 @@ const modelConfig = ref({
 const ollamaModels = ref([])
 const ollamaLoading = ref(false)
 const ollamaError = ref('')
+const selectedOllamaModel = ref('')
 const savingConfig = ref(false)
 const configMsg = ref('')
 const configMsgOk = ref(false)
@@ -379,6 +401,26 @@ async function fetchOllamaModels() {
   try { ollamaModels.value = await authStore.fetchOllamaModels() }
   catch (e) { ollamaError.value = e.response?.data?.message || e.message || '连接失败' }
   ollamaLoading.value = false
+}
+
+async function fetchLocalOllamaModels() {
+  ollamaLoading.value = true; ollamaError.value = ''; ollamaModels.value = []
+  try {
+    const baseUrl = modelConfig.value.ollamaBaseUrl || 'http://localhost:11434'
+    // 通过后端代理请求本地Ollama
+    const res = await api.post('/auth/ollama/models', { baseUrl })
+    ollamaModels.value = res.data.models || []
+  } catch (e) {
+    ollamaError.value = e.response?.data?.message || e.message || '连接失败'
+    ollamaError.value += '\n提示：确保 Ollama 正在运行，且服务器能访问到该地址'
+  }
+  ollamaLoading.value = false
+}
+
+function formatSize(size) {
+  if (!size) return ''
+  const mb = size / 1024 / 1024
+  return mb > 1024 ? (mb / 1024).toFixed(1) + 'GB' : mb.toFixed(0) + 'MB'
 }
 
 async function saveConfig() {

@@ -465,4 +465,35 @@ router.get('/ollama/models', auth, async (req, res) => {
   }
 });
 
+// POST 方式支持自定义 Ollama 地址（用于连接本机 Ollama）
+router.post('/ollama/models', auth, async (req, res) => {
+  try {
+    const baseUrl = req.body.baseUrl || 'http://localhost:11434';
+    const apiUrl = `${baseUrl.replace(/\/+$/, '')}/api/tags`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+
+    const response = await fetch(apiUrl, { signal: controller.signal });
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      throw new Error(`Ollama 返回 ${response.status}`);
+    }
+
+    const data = await response.json();
+    const models = (data.models || []).map(m => ({
+      name: m.name,
+      size: m.size,
+      details: { size: m.size },
+    }));
+    res.json({ models });
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      return res.status(504).json({ message: `连接 ${baseUrl || 'localhost:11434'} 超时` });
+    }
+    res.status(502).json({ message: `获取 Ollama 模型失败 (${baseUrl}): ${error.message}` });
+  }
+});
+
 module.exports = router;
