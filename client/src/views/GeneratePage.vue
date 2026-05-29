@@ -44,6 +44,37 @@
         </div>
       </div>
 
+      <!-- 上传参考小说 → 提取结构 -->
+      <div class="card ref-struct-card">
+        <div class="section-title">📄 上传参考小说（结构克隆）</div>
+        <div class="ref-struct-desc">上传一本小说，AI 将提取其剧情结构、伏笔和世界观，用新名称重新生成</div>
+        <div class="upload-bar">
+          <input ref="structFileInput" type="file" accept=".txt" @change="handleStructFile" style="display:none" />
+          <button class="btn btn-sm btn-outline" @click="$refs.structFileInput.click()">📁 选择文件</button>
+          <span v-if="structFileName" class="file-name">{{ structFileName }}</span>
+        </div>
+        <button v-if="structRawText && !structAnalyzing && !structResult" class="btn btn-primary btn-sm btn-block" style="margin-top:8px;" @click="analyzeStructure">
+          🔍 分析结构
+        </button>
+        <div v-if="structAnalyzing" class="struct-analyzing">
+          <span class="loading-spinner" style="width:20px;height:20px;display:inline-block;"></span>
+          <span style="margin-left:8px;">AI 正在分析剧情结构...</span>
+        </div>
+        <div v-if="structResult" class="struct-result">
+          <div class="struct-preview">
+            <div v-for="(section, idx) in structSections" :key="idx" class="struct-section">
+              <div class="struct-section-title">{{ section.title }}</div>
+              <div class="struct-section-body">{{ section.body.substring(0, 200) }}{{ section.body.length > 200 ? '...' : '' }}</div>
+            </div>
+          </div>
+          <label class="checkbox-row" style="margin-top:8px;">
+            <input type="checkbox" v-model="useStructureRef" />
+            <span>✅ 在生成中使用此结构（名称已替换）</span>
+          </label>
+          <button class="btn btn-sm btn-outline" style="margin-top:4px;" @click="structResult='';structRawText=''">清除重新上传</button>
+        </div>
+      </div>
+
       <div v-if="genMode === 'book'" class="card">
         <div class="section-title">📋 {{ $t('generate.stepOutline') }}</div>
         <div v-if="generating && outlineStreamingText" class="outline-streaming">
@@ -248,6 +279,31 @@ const outline = ref('')
 const genMode = ref('book')
 const targetWordCount = ref(50000)
 
+// ---- 参考小说结构克隆 ----
+const structFileInput = ref(null)
+const structFileName = ref('')
+const structRawText = ref('')
+const structAnalyzing = ref(false)
+const structResult = ref('')
+const useStructureRef = ref(false)
+const structSections = computed(() => {
+  if (!structResult.value) return []
+  const lines = structResult.value.split('\n')
+  const sections = []
+  let current = null
+  for (const line of lines) {
+    const m = line.match(/^【(.+?)】/)
+    if (m) {
+      if (current) sections.push(current)
+      current = { title: m[1], body: '' }
+    } else if (current) {
+      current.body += line + '\n'
+    }
+  }
+  if (current) sections.push(current)
+  return sections
+})
+
 const generating = ref(false)
 const genStatus = ref('')
 const genOk = ref(false)
@@ -278,6 +334,38 @@ function debounceMatchTemplates() {
   tmplTimer = setTimeout(matchTemplates, 800)
 }
 function scoreClass(s) { if (!s) return ''; if (s >= 60) return 'high'; if (s >= 35) return 'mid'; return 'low' }
+
+// ---- 参考小说结构克隆 ----
+function handleStructFile(e) {
+  const file = e.target.files?.[0]
+  if (!file || !file.name.endsWith('.txt')) return alert('请选择 .txt 文件')
+  structFileName.value = file.name
+  structRawText.value = ''
+  structResult.value = ''
+  useStructureRef.value = false
+  const reader = new FileReader()
+  reader.onload = () => { structRawText.value = reader.result }
+  reader.readAsText(file, 'UTF-8')
+}
+
+async function analyzeStructure() {
+  if (!structRawText.value || structRawText.value.length < 100) return alert('小说内容太短（至少100字）')
+  structAnalyzing.value = true
+  const token = localStorage.getItem('token')
+  try {
+    const formData = new FormData()
+    formData.append('file', new Blob([structRawText.value], { type: 'text/plain' }), structFileName.value || 'ref.txt')
+    const res = await fetch('/api/novel/analyze-structure', {
+      method: 'POST', headers: { 'Authorization': `Bearer ${token}` }, body: formData,
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data.message || '分析失败')
+    structResult.value = data.structure
+  } catch (e) {
+    alert('结构分析失败: ' + e.message)
+  }
+  structAnalyzing.value = false
+}
 
 // 监听类型切换时重新匹配
 watch(selectedType, () => { matchTemplates() })
@@ -353,6 +441,7 @@ async function startGen() {
     mode: genMode.value,
     outline: outline.value,
     referenceIds: genSelectedRefs.value.length > 0 ? genSelectedRefs.value : undefined,
+    structureRef: useStructureRef.value && structResult.value ? structResult.value : undefined,
   }
 
   novelStore.startGeneration(params,
@@ -494,6 +583,7 @@ async function startLNGen() {
     mode: lnGenMode.value,
     outline: lnOutline,
     referenceIds: lnSelectedRefs.value.length > 0 ? lnSelectedRefs.value : undefined,
+    structureRef: useStructureRef.value && structResult.value ? structResult.value : undefined,
   }
 
   novelStore.startGeneration(params,
@@ -639,4 +729,17 @@ onMounted(async () => {
 .outline-modal-actions { display: flex; gap: 10px; margin-top: 16px; justify-content: flex-end; }
 .outline-modal-actions .btn { min-width: 100px; text-align: center; }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* 参考小说结构克隆 */
+.ref-struct-card { border: 1px solid #b7eb8f; background: #f6ffed; }
+.ref-struct-desc { font-size: 12px; color: var(--text-light); margin-bottom: 10px; line-height: 1.5; }
+.ref-struct-card .upload-bar { display: flex; align-items: center; gap: 8px; }
+.ref-struct-card .file-name { font-size: 12px; color: var(--text-secondary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.struct-analyzing { display: flex; align-items: center; margin-top: 8px; font-size: 13px; color: var(--text-secondary); }
+.struct-result { margin-top: 8px; }
+.struct-preview { max-height: 300px; overflow-y: auto; background: #fafafa; border-radius: 8px; padding: 10px; }
+.struct-section { margin-bottom: 10px; }
+.struct-section:last-child { margin-bottom: 0; }
+.struct-section-title { font-size: 13px; font-weight: 600; color: var(--primary-color); margin-bottom: 4px; }
+.struct-section-body { font-size: 12px; color: var(--text-secondary); line-height: 1.6; white-space: pre-wrap; }
 </style>

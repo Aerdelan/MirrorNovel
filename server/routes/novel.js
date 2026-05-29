@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const auth = require('../middleware/auth');
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 const Novel = require('../models/Novel');
 const User = require('../models/User');
 const novelTypes = require('../config/novelTypes');
@@ -78,6 +80,7 @@ router.post('/generate', auth, async (req, res) => {
 
     const mode = req.body.mode || 'book';
     const isBook = mode === 'book';
+    const structureRef = req.body.structureRef || '';
 
     // 创建小说记录
     const novel = new Novel({
@@ -117,6 +120,19 @@ ${refSection}
       } catch (e) {
         console.error('加载参考风格失败:', e.message);
       }
+    }
+
+    // 如果有小说结构参考（上传参考小说 → 提取结构 → 替换名称）
+    if (structureRef) {
+      systemPrompt += `\n\n【参考小说结构（名称已替换）】
+用户上传了一本参考小说并提取了以下结构。请严格遵循这个结构来创作：
+- 剧情走向和节奏必须与参考一致
+- 世界观设定、伏笔布局、情节流程严格参照
+- 人物名称、地点名称、宠物名称等使用下方提供的新名称，不要使用参考中的原名
+
+${structureRef}
+
+注意：所有名称都是 AI 重新生成的，你必须使用新名称。剧情结构、场景顺序、对话节奏、冲突安排必须遵循参考。`;
     }
 
     // 类型模板匹配 — 先推断 gender 重建系统提示，再注入动态模板
@@ -1348,6 +1364,65 @@ router.post('/polish', auth, async (req, res) => {
     } else {
       try { res.write(`data: ${JSON.stringify({ type: 'error', message: error.message })}\n\n`); res.end(); } catch {}
     }
+  }
+});
+
+// ====== 上传参考小说 → 提取剧情结构（走向/伏笔/世界观/地名替换） ======
+router.post('/analyze-structure', auth, upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: '请上传 .txt 文件' });
+    const text = req.file.buffer.toString('utf-8');
+    if (text.length < 100) return res.status(400).json({ message: '小说太短，至少100字' });
+
+    // 截取前 4 万字分析（足够提取结构）
+    const maxLen = 40000;
+    const sample = text.length > maxLen ? text.substring(0, maxLen) + '\n\n...(后续内容略，用于结构分析)' : text;
+
+    const systemPrompt = '你是一位专业的小说结构分析师。你的任务是从给定的小说文本中提取完整的剧情结构，并用AI生成全新的角色名称和地点名称。';
+
+    const userPrompt = `请分析以下小说文本，提取其故事结构。你需要输出以下内容（使用中文）：
+
+【剧情整体走向】
+- 用300-500字描述故事的完整剧情脉络，包含起承转合、核心冲突和结局
+
+【章节结构规划】
+- 列出每个主要剧情阶段的章节分布和关键事件
+- 格式：第X-Y章：[阶段标题] → 关键事件描述
+
+【世界观设定】
+- 列出核心世界观要素（时代背景、社会结构、特殊规则等）
+- 每个要素50-100字描述
+
+【伏笔与回收】
+- 列出文中埋设的重要伏笔及其回收方式
+- 格式：伏笔 → 回收章节 → 作用
+
+【核心冲突】
+- 列出主要冲突线（至少3条，含主线、感情线、成长线）
+- 每条冲突30-50字
+
+【AI生成替换名称】
+请为以下每个类别生成5个全新的、与原文风格不同的名称：
+- 主角（男女各5个）
+- 配角（男女各5个）  
+- 地名/场景（5个）
+- 特殊物品/能力（5个）
+- 宠物/坐骑（3个）
+
+重要：这些名称必须是新创作的，不能使用原文中的任何名字！
+
+小说文本（前${sample.length}字）：
+${sample}
+
+请严格按照以上格式输出，不要遗漏任何部分。确保所有名称都是全新创作的。`;
+
+    const result = await streamGenerate(systemPrompt, userPrompt, null, null, resolveApiConfig(req.user?.modelConfig, 'writing'));
+    if (!result || !result.content) throw new Error('结构分析失败');
+
+    res.json({ structure: result.content, tokenCount: result.tokenCount });
+  } catch (error) {
+    console.error('结构分析失败:', error);
+    res.status(500).json({ message: '结构分析失败', error: error.message });
   }
 });
 
