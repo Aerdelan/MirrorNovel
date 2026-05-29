@@ -227,6 +227,7 @@ import { useI18n } from '../composables/useI18n'
 const router = useRouter()
 const authStore = useAuthStore()
 const novelStore = useNovelStore()
+const { t } = useI18n()
 const { isZh, setLocale } = useI18n()
 const newNickname = ref('')
 
@@ -461,9 +462,6 @@ async function saveConfig() {
   }
   savingConfig.value = false
 }
-
-import { getCurrentInstance } from 'vue'
-const { t } = getCurrentInstance().appContext.config.globalProperties
 
 function goToLogin() { router.push('/login') }
 function goToRegister() { router.push('/register') }
