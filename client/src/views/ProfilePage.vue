@@ -385,8 +385,8 @@ async function loadStats() {
 
 async function loadModelConfig() {
   try {
-    const res = await authStore.getModelConfig()
-    if (res?.modelConfig) modelConfig.value = { ...modelConfig.value, ...res.modelConfig }
+    const config = await authStore.getModelConfig()
+    if (config) modelConfig.value = { ...modelConfig.value, ...config }
   } catch (e) { console.error('加载模型配置失败:', e) }
 }
 
