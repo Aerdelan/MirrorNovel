@@ -1374,18 +1374,16 @@ router.post('/analyze-structure', auth, upload.single('file'), async (req, res) 
     const text = req.file.buffer.toString('utf-8');
     if (text.length < 100) return res.status(400).json({ message: '小说太短，至少100字' });
 
-    // 限制最大分析字数（避免 AI 模型超上下文窗口）
+    // 限制最大分析字数
     const MAX_ANALYSIS_CHARS = 5000000;
     if (text.length > MAX_ANALYSIS_CHARS) {
-      return res.status(400).json({ message: `小说内容过长（${text.length} 字），最多支持 ${MAX_ANALYSIS_CHARS} 字分析，请截取前 ${MAX_ANALYSIS_CHARS} 字后重试` });
+      return res.status(400).json({ message: `小说内容过长（${text.length} 字），最多支持 ${MAX_ANALYSIS_CHARS} 字分析` });
     }
-
-    // 使用完整文本分析
-    const sample = text;
 
     const systemPrompt = '你是一位专业的小说结构分析师。你的任务是从给定的小说文本中提取完整的剧情结构，并用AI生成全新的角色名称和地点名称。';
 
-    const userPrompt = `请分析以下小说文本，提取其故事结构。你需要输出以下内容（使用中文）：
+    // 估算 token 开销
+    const promptSkeleton = `请分析以下小说文本，提取其故事结构。你需要输出以下内容（使用中文）：
 
 【剧情整体走向】
 - 用300-500字描述故事的完整剧情脉络，包含起承转合、核心冲突和结局
@@ -1416,15 +1414,184 @@ router.post('/analyze-structure', auth, upload.single('file'), async (req, res) 
 
 重要：这些名称必须是新创作的，不能使用原文中的任何名字！
 
-小说文本（${sample.length}字）：
-${sample}
+小说文本（0字）：
+DUMMY_TEXT
 
 请严格按照以上格式输出，不要遗漏任何部分。确保所有名称都是全新创作的。`;
 
-    const result = await streamGenerate(systemPrompt, userPrompt, null, null, resolveApiConfig(req.user?.modelConfig, 'writing'));
-    if (!result || !result.content) throw new Error('结构分析失败');
+    const overhead = countTokens(systemPrompt + promptSkeleton);
+    const MAX_PROMPT_TOKENS = 1000000;
+    const maxNovelTokens = MAX_PROMPT_TOKENS - overhead;
 
-    res.json({ structure: result.content, tokenCount: result.tokenCount });
+    const estimatedTokens = countTokens(text);
+    let finalContent = '';
+    let totalTokenCount = 0;
+    const apiConfig = resolveApiConfig(req.user?.modelConfig, 'writing');
+
+    // ---------- 单次处理（文本足够短） ----------
+    if (estimatedTokens <= maxNovelTokens) {
+      const userPrompt = `请分析以下小说文本，提取其故事结构。你需要输出以下内容（使用中文）：
+
+【剧情整体走向】
+- 用300-500字描述故事的完整剧情脉络，包含起承转合、核心冲突和结局
+
+【章节结构规划】
+- 列出每个主要剧情阶段的章节分布和关键事件
+- 格式：第X-Y章：[阶段标题] → 关键事件描述
+
+【世界观设定】
+- 列出核心世界观要素（时代背景、社会结构、特殊规则等）
+- 每个要素50-100字描述
+
+【伏笔与回收】
+- 列出文中埋设的重要伏笔及其回收方式
+- 格式：伏笔 → 回收章节 → 作用
+
+【核心冲突】
+- 列出主要冲突线（至少3条，含主线、感情线、成长线）
+- 每条冲突30-50字
+
+【AI生成替换名称】
+请为以下每个类别生成5个全新的、与原文风格不同的名称：
+- 主角（男女各5个）
+- 配角（男女各5个）  
+- 地名/场景（5个）
+- 特殊物品/能力（5个）
+- 宠物/坐骑（3个）
+
+重要：这些名称必须是新创作的，不能使用原文中的任何名字！
+
+小说文本（${text.length}字）：
+${text}
+
+请严格按照以上格式输出，不要遗漏任何部分。确保所有名称都是全新创作的。`;
+
+      const result = await streamGenerate(systemPrompt, userPrompt, null, null, apiConfig);
+      if (!result || !result.content) throw new Error('结构分析失败');
+      finalContent = result.content;
+      totalTokenCount = result.tokenCount;
+
+    // ---------- 智能分批处理（超长文本） ----------
+    } else {
+      // 每块可容纳的最大字符数（留 10% 余量，按 token/字比例折算）
+      const ratio = (maxNovelTokens * 0.85) / estimatedTokens;
+      const rawChunkSize = Math.floor(text.length * ratio);
+      const OVERLAP = 2000; // 块间重叠字符数，保证上下文不丢失
+      const MIN_CHUNK = 5000; // 每块至少 5000 字
+
+      // 在段落边界拆分
+      const chunks = [];
+      let pos = 0;
+      while (pos < text.length) {
+        const endRaw = Math.min(pos + rawChunkSize, text.length);
+        // 找到最后一个段落边界（\n\n）
+        let cutPos = endRaw;
+        if (endRaw < text.length) {
+          const searchStart = Math.max(pos, endRaw - 3000);
+          const segment = text.substring(searchStart, endRaw);
+          const lastBreak = segment.lastIndexOf('\n\n');
+          if (lastBreak !== -1 && lastBreak > 100) {
+            cutPos = searchStart + lastBreak;
+          } else {
+            // 没有段落边界，找最后一个换行
+            const lastNewline = segment.lastIndexOf('\n');
+            if (lastNewline > 0) {
+              cutPos = searchStart + lastNewline;
+            }
+          }
+        }
+        // 加上重叠
+        const chunkEnd = Math.min(cutPos + OVERLAP, text.length);
+        if (chunkEnd - pos < MIN_CHUNK && chunks.length > 0) {
+          // 最后一块太小，并入前一块
+          chunks[chunks.length - 1] += text.substring(pos, chunkEnd);
+          break;
+        }
+        chunks.push(text.substring(pos, chunkEnd));
+        pos = cutPos;
+      }
+
+      const totalBatches = chunks.length;
+
+      // 分批 prompt 模板（不要求输出 AI 生成替换名称，只在前/后块提）
+      const chunkPrompt = (chunkText, batchIdx, total) => `你正在分析小说的第 ${batchIdx}/${total} 部分。请从这一部分中提取以下内容（使用中文）：
+
+【本部分剧情走向】
+- 本部分的主要剧情推进和关键事件（100-200字）
+
+【本部分世界观设定（新增）】
+- 本部分中新出现的世界观要素
+
+【本部分伏笔】
+- 新埋设的伏笔和已回收的伏笔
+
+【本部分核心冲突】
+- 本部分中出现的冲突及其发展
+
+【本部分关键角色】
+- 本部分中新出现或重点描写的角色${batchIdx === total ? '\n\n【AI生成替换名称】（仅在最后一部分输出）\n请为以下每个类别生成5个全新的名称：\n- 主角（男女各5个）\n- 配角（男女各5个）\n- 地名/场景（5个）\n- 特殊物品/能力（5个）\n- 宠物/坐骑（3个）' : ''}
+
+小说片段（第 ${batchIdx}/${total} 部分，${chunkText.length}字）：
+${chunkText}`;
+
+      // 分批执行
+      const partialResults = [];
+      for (let i = 0; i < totalBatches; i++) {
+        const cp = chunkPrompt(chunks[i], i + 1, totalBatches);
+        const result = await streamGenerate(systemPrompt, cp, null, null, apiConfig);
+        if (!result || !result.content) throw new Error(`第 ${i + 1}/${totalBatches} 部分分析失败`);
+        partialResults.push(result.content);
+        totalTokenCount += result.tokenCount;
+      }
+
+      // 合并汇总
+      const aggregationSystemPrompt = '你是一位专业的小说结构分析师。你将收到对同一本小说多个部分的结构分析结果，请将它们合并成一份完整、连贯的结构报告。';
+      const partialsText = partialResults.map((r, i) => `===== 第 ${i + 1}/${totalBatches} 部分分析 =====\n${r}`).join('\n\n');
+
+      const aggregationPrompt = `以下是对同一本小说的 ${totalBatches} 个部分分别进行结构分析的结果。请合并这些结果，输出一份完整的结构分析报告（使用中文）：
+
+【剧情整体走向】
+- 用300-500字描述故事的完整剧情脉络，包含起承转合、核心冲突和结局
+
+【章节结构规划】
+- 列出每个主要剧情阶段的章节分布和关键事件
+- 格式：第X-Y章：[阶段标题] → 关键事件描述
+
+【世界观设定】
+- 列出核心世界观要素（时代背景、社会结构、特殊规则等）
+- 每个要素50-100字描述
+
+【伏笔与回收】
+- 列出文中埋设的重要伏笔及其回收方式
+- 格式：伏笔 → 回收章节 → 作用
+
+【核心冲突】
+- 列出主要冲突线（至少3条，含主线、感情线、成长线）
+- 每条冲突30-50字
+
+【AI生成替换名称】
+请为以下每个类别生成5个全新的、与原文风格不同的名称：
+- 主角（男女各5个）
+- 配角（男女各5个）  
+- 地名/场景（5个）
+- 特殊物品/能力（5个）
+- 宠物/坐骑（3个）
+
+重要：这些名称必须是新创作的，不能使用原文中的任何名字！
+
+各部分分析结果如下：
+
+${partialsText}
+
+请严格按照以上格式输出，不要遗漏任何部分。确保所有名称都是全新创作的。`;
+
+      const aggResult = await streamGenerate(aggregationSystemPrompt, aggregationPrompt, null, null, apiConfig);
+      if (!aggResult || !aggResult.content) throw new Error('结构汇总分析失败');
+      finalContent = aggResult.content;
+      totalTokenCount += aggResult.tokenCount;
+    }
+
+    res.json({ structure: finalContent, tokenCount: totalTokenCount });
   } catch (error) {
     console.error('结构分析失败:', error);
     res.status(500).json({ message: '结构分析失败', error: error.message });
