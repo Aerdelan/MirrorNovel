@@ -167,23 +167,22 @@
               </div>
             </div>
 
-            <div v-if="ollamaModels.length > 0" class="form-group">
-              <label>📋 选择模型（将应用到所有角色）</label>
-              <select v-model="selectedOllamaModel" class="input select-input" @change="setOllamaModel(selectedOllamaModel)">
-                <option value="">-- 请选择模型 --</option>
-                <option v-for="m in ollamaModels" :key="m.name" :value="m.name">
-                  {{ m.name }}{{ m.details ? ' (' + formatSize(m.size) + ')' : '' }}
-                </option>
-              </select>
-            </div>
-
             <div v-if="ollamaError" class="model-error">{{ ollamaError }}</div>
 
             <div class="form-group" style="margin-top:8px;">
-              <label>✏️ 或手动输入模型名（如果刷新失败）</label>
-              <div v-for="role in modelRoles" :key="role.key" class="form-group" style="margin-bottom:4px;">
+              <label>📋 各角色模型（支持从下拉选择或手动输入）</label>
+              <div v-for="role in modelRoles" :key="role.key" class="form-group" style="margin-bottom:6px;">
                 <label style="font-size:13px;">{{ role.icon }} {{ $t('profile.' + role.labelKey) }}</label>
-                <input v-model="modelConfig['ollama' + role.fieldSuffix]" class="input" :placeholder="role.placeholder" />
+                <div style="display:flex;gap:4px;">
+                  <input v-model="modelConfig['ollama' + role.fieldSuffix]"
+                    class="input" :placeholder="role.placeholder"
+                    :list="'ollama-models-' + role.key" />
+                  <datalist :id="'ollama-models-' + role.key">
+                    <option v-for="m in ollamaModels" :key="m.name" :value="m.name">
+                      {{ m.name }}{{ m.details ? ' (' + formatSize(m.size) + ')' : '' }}
+                    </option>
+                  </datalist>
+                </div>
               </div>
             </div>
           </template>
@@ -270,7 +269,6 @@ const modelConfig = ref({
 const ollamaModels = ref([])
 const ollamaLoading = ref(false)
 const ollamaError = ref('')
-const selectedOllamaModel = ref('')
 const savingConfig = ref(false)
 const configMsg = ref('')
 const configMsgOk = ref(false)
@@ -469,12 +467,6 @@ async function updateNickname() {
   if (!newNickname.value.trim()) return
   try { await authStore.updateNickname(newNickname.value.trim()); alert(t('profile.nickUpdated')) }
   catch (e) { alert(t('profile.nickFail') + (e.response?.data?.message || e.message)) }
-}
-function setOllamaModel(name) {
-  modelConfig.value.ollamaOutlineModel = name
-  modelConfig.value.ollamaWritingModel = name
-  modelConfig.value.ollamaPolishModel = name
-  modelConfig.value.ollamaReasoningModel = name
 }
 async function handleLogout() {
   authStore.logout()
