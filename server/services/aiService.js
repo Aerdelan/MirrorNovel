@@ -278,7 +278,7 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
  * 流式生成
  * @returns {Promise<{content:string, tokenCount:number}>}
  */
-async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConfig) {
+async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConfig, retries = 2) {
   const config = apiConfig || resolveApiConfig(null);
   const isOllama = config.baseUrl && config.baseUrl.includes('localhost:11434');
   const apiUrl = isOllama
@@ -292,58 +292,84 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
     ? { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, options: { temperature: 0.8, num_predict: 8192 } }
     : { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, temperature: 0.8, max_tokens: 8192 };
 
-  const response = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify(body), signal });
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 90000);
+      const combinedSignal = controller.signal;
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`AI API 请求失败: ${response.status} ${errorText}`);
-  }
+      const response = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify(body), signal: combinedSignal });
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let fullContent = '';
-  let buffer = '';
+      clearTimeout(timeoutId);
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    if (isOllama) {
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const parsed = JSON.parse(line);
-          const content = parsed.message?.content || '';
-          if (content) { fullContent += content; if (onChunk) onChunk(content); }
-          if (parsed.done) break;
-        } catch (e) { /* skip */ }
-      }
-    } else {
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith(':')) continue;
-        if (trimmed.startsWith('data: ')) {
-          const data = trimmed.slice(6);
-          if (data === '[DONE]') continue;
-          try {
-            const parsed = JSON.parse(data);
-            const content = parsed.choices?.[0]?.delta?.content || '';
-            if (content) { fullContent += content; if (onChunk) onChunk(content); }
-          } catch (e) { /* skip */ }
+      if (!response.ok) {
+        const errorText = await response.text();
+        if ((response.status === 503 || response.status === 429) && attempt < retries) {
+          const delay = Math.pow(2, attempt) * 1000;
+          console.warn(`AI API 请求 ${response.status}，第 ${attempt + 1} 次重试，等待 ${delay}ms`);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
         }
+        throw new Error(`AI API 请求失败: ${response.status} ${errorText}`);
       }
-    }
-  }
 
-  return {
-    content: fullContent,
-    tokenCount: countTokens(fullContent),
-  };
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let fullContent = '';
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        if (isOllama) {
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const parsed = JSON.parse(line);
+              const content = parsed.message?.content || '';
+              if (content) { fullContent += content; if (onChunk) onChunk(content); }
+              if (parsed.done) break;
+            } catch (e) { /* skip */ }
+          }
+        } else {
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith(':')) continue;
+            if (trimmed.startsWith('data: ')) {
+              const data = trimmed.slice(6);
+              if (data === '[DONE]') continue;
+              try {
+                const parsed = JSON.parse(data);
+                const content = parsed.choices?.[0]?.delta?.content || '';
+                if (content) { fullContent += content; if (onChunk) onChunk(content); }
+              } catch (e) { /* skip */ }
+            }
+          }
+        }
+      } // while
+
+      return { content: fullContent, tokenCount: countTokens(fullContent) };
+
+    } catch (e) {
+      clearTimeout(timeoutId);
+      if (attempt < retries) {
+        const delay = Math.pow(2, attempt) * 1000;
+        console.warn(`AI API 请求异常（${e.message}），第 ${attempt + 1} 次重试，等待 ${delay}ms`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
+      // 所有重试耗尽，向外抛
+      throw (e.name === 'AbortError') ? new Error('AI API 请求超时（90s）') : e;
+    }
+  } // for
+  // 所有尝试均失败（理论上不会到达，但保留以防万一）
+  throw new Error('AI API 请求失败，所有重试均已耗尽');
 }
 
 module.exports = {
