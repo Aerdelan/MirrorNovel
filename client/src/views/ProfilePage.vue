@@ -151,18 +151,18 @@
               <label>Ollama 地址</label>
               <input v-model="modelConfig.ollamaBaseUrl" class="input" placeholder="http://localhost:11434" />
               <div style="font-size:12px;color:var(--text-light);margin-top:4px;">
-                如果 Ollama 运行在本地，需确保服务器能访问到此地址
+                如果 Ollama 在本机，先点「🖥️ 从本机刷新」（按提示开启 CORS 即可）
               </div>
             </div>
 
             <div class="form-group">
               <label>📥 刷新模型列表</label>
-              <div style="display:flex;gap:8px;align-items:center;">
-                <button class="btn btn-outline btn-sm" :disabled="ollamaLoading" @click="fetchOllamaModels">
-                  {{ ollamaLoading ? '⏳ 连接中...' : '🔄 从服务器刷新' }}
-                </button>
+              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
                 <button class="btn btn-outline btn-sm" :disabled="ollamaLoading" @click="fetchLocalOllamaModels">
                   🖥️ 从本机刷新
+                </button>
+                <button class="btn btn-outline btn-sm" :disabled="ollamaLoading" @click="fetchOllamaModels">
+                  🔄 从服务器刷新
                 </button>
               </div>
             </div>
@@ -406,13 +406,26 @@ async function fetchOllamaModels() {
 async function fetchLocalOllamaModels() {
   ollamaLoading.value = true; ollamaError.value = ''; ollamaModels.value = []
   try {
-    const baseUrl = modelConfig.value.ollamaBaseUrl || 'http://localhost:11434'
-    // 通过后端代理请求本地Ollama
-    const res = await api.post('/auth/ollama/models', { baseUrl })
-    ollamaModels.value = res.data.models || []
+    // 直接从浏览器请求本机的 Ollama（绕过服务器）
+    const res = await fetch('http://localhost:11434/api/tags')
+    if (!res.ok) throw new Error(`Ollama 返回 ${res.status}`)
+    const data = await res.json()
+    ollamaModels.value = (data.models || []).map(m => ({
+      name: m.name,
+      size: m.size,
+      details: { size: m.size },
+    }))
   } catch (e) {
-    ollamaError.value = e.response?.data?.message || e.message || '连接失败'
-    ollamaError.value += '\n提示：确保 Ollama 正在运行，且服务器能访问到该地址'
+    if (e.message?.includes('Failed to fetch') || e.message?.includes('NetworkError')) {
+      ollamaError.value = '浏览器无法直接连接本机 Ollama（CORS 限制）\n\n' +
+        '解决方法（二选一）：\n' +
+        '1️⃣ 在 Ollama 终端执行：set OLLAMA_ORIGINS=*   （Windows）\n' +
+        '   或：export OLLAMA_ORIGINS=* （Mac/Linux）\n' +
+        '   然后重启 Ollama\n\n' +
+        '2️⃣ 或者使用「从服务器刷新」按钮（需在服务器上安装 Ollama）'
+    } else {
+      ollamaError.value = e.message || '连接失败'
+    }
   }
   ollamaLoading.value = false
 }
