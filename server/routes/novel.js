@@ -1534,15 +1534,16 @@ ${text}
 小说片段（第 ${batchIdx}/${total} 部分，${chunkText.length}字）：
 ${chunkText}`;
 
-      // 分批执行
-      const partialResults = [];
-      for (let i = 0; i < totalBatches; i++) {
-        const cp = chunkPrompt(chunks[i], i + 1, totalBatches);
+      // 分批执行（并行加速）
+      let parallelTokenCount = 0;
+      const partialResults = await Promise.all(chunks.map(async (chunk, i) => {
+        const cp = chunkPrompt(chunk, i + 1, totalBatches);
         const result = await streamGenerate(systemPrompt, cp, null, null, apiConfig);
         if (!result || !result.content) throw new Error(`第 ${i + 1}/${totalBatches} 部分分析失败`);
-        partialResults.push(result.content);
-        totalTokenCount += result.tokenCount;
-      }
+        parallelTokenCount += result.tokenCount;
+        return result.content;
+      }));
+      totalTokenCount += parallelTokenCount;
 
       // 合并汇总
       const aggregationSystemPrompt = '你是一位专业的小说结构分析师。你将收到对同一本小说多个部分的结构分析结果，请将它们合并成一份完整、连贯的结构报告。';
