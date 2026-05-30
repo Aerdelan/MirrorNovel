@@ -57,7 +57,7 @@ check_and_restart "xiaoshuo-server" "3001" "${BASE_DIR}/server" \
 check_and_restart "xiaoshuo-client" "5173" "${BASE_DIR}/client" \
   "pm2 start node_modules/.bin/vite --name xiaoshuo-client -- --port 5173 --host 0.0.0.0"
 
-# 3. 管理后台 (端口 5174) — 通过 nginx 静态文件服务
+# 3. 管理后台 (端口 5175) — 通过 nginx 静态文件服务
 # 先部署 nginx 配置文件（如果不存在）
 ADMIN_CONF_SRC="${BASE_DIR}/admin/mirrornovel-admin.conf"
 ADMIN_CONF_DST="/etc/nginx/conf.d/mirrornovel-admin.conf"
@@ -69,10 +69,10 @@ if [ ! -f "$ADMIN_CONF_DST" ]; then
   fi
 fi
 
-# 检查 nginx 是否正常响应 5174
-ADMIN_HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 8 "http://localhost:5174/" 2>/dev/null || echo "000")
+# 检查 nginx 是否正常响应 5175
+ADMIN_HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 8 "http://localhost:5175/" 2>/dev/null || echo "000")
 if [ "$ADMIN_HTTP_CODE" = "000" ] || [ "$ADMIN_HTTP_CODE" = "" ]; then
-  echo "$DATE ⚠️  管理后台 5174 无响应，检查 nginx 和静态文件..." >> "$LOG_FILE"
+  echo "$DATE ⚠️  管理后台 5175 无响应，检查 nginx 和静态文件..." >> "$LOG_FILE"
   # 确保静态文件存在
   NGINX_ADMIN_DIR="/var/www/mirrornovel-admin"
   if [ ! -f "${NGINX_ADMIN_DIR}/index.html" ]; then
