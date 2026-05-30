@@ -1742,7 +1742,6 @@ router.post('/optimize/:novelId', auth, async (req, res) => {
     const apiConfig = resolveApiConfig(req.user?.modelConfig, 'writing');
 
     // Step 1: AI 分析全文问题
-    res.json({ status: 'analyzing', message: '正在分析全文问题...' });
     const analysisPrompt = buildOptimizeAnalysisPrompt(
       novel.chapters, novel.outline, novel.protagonistName, novel.worldSetting
     );
