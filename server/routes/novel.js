@@ -1753,6 +1753,13 @@ router.post('/optimize/:novelId', auth, async (req, res) => {
 
     const apiConfig = resolveApiConfig(req.user?.modelConfig, 'writing');
 
+    // 定期心跳，防止浏览器/nginx断开空闲连接
+    const keepAlive = setInterval(() => {
+      try { res.write(': keepalive\n\n'); } catch { clearInterval(keepAlive); }
+    }, 15000);
+
+    const done = () => clearInterval(keepAlive);
+
     sendEvent('progress', { message: '正在分析全文问题...' });
 
     const analysisPrompt = buildOptimizeAnalysisPrompt(
@@ -1801,12 +1808,14 @@ router.post('/optimize/:novelId', auth, async (req, res) => {
     novel.status = 'completed';
     await novel.save();
 
+    done();
     sendEvent('completed', {
       message: `✅ 全文调优完成！重写 ${optimizedCount} 章，润色 ${polishedCount} 章`,
       optimizedCount, polishedCount, totalChapters: totalCh,
     });
     res.end();
   } catch (error) {
+    done();
     console.error('全文调优失败:', error);
     sendEvent('error', { message: error.message });
     try { res.end(); } catch {}
