@@ -57,9 +57,47 @@ check_and_restart "xiaoshuo-server" "3001" "${BASE_DIR}/server" \
 check_and_restart "xiaoshuo-client" "5173" "${BASE_DIR}/client" \
   "pm2 start node_modules/.bin/vite --name xiaoshuo-client -- --port 5173 --host 0.0.0.0"
 
-# 3. 管理后台 (端口 5174)
-check_and_restart "xiaoshuo-admin" "5174" "${BASE_DIR}/admin" \
-  "pm2 start node_modules/.bin/vite --name xiaoshuo-admin -- --port 5174 --host 0.0.0.0"
+# 3. 管理后台 (端口 5174) — 通过 nginx 静态文件服务
+# 先部署 nginx 配置文件（如果不存在）
+ADMIN_CONF_SRC="${BASE_DIR}/admin/mirrornovel-admin.conf"
+ADMIN_CONF_DST="/etc/nginx/conf.d/mirrornovel-admin.conf"
+if [ ! -f "$ADMIN_CONF_DST" ]; then
+  if [ -f "$ADMIN_CONF_SRC" ]; then
+    cp "$ADMIN_CONF_SRC" "$ADMIN_CONF_DST" 2>/dev/null
+    echo "$DATE ⚙️  部署管理后台 nginx 配置..." >> "$LOG_FILE"
+    nginx -s reload 2>/dev/null && echo "$DATE ✅ nginx 已重载" >> "$LOG_FILE"
+  fi
+fi
+
+# 检查 nginx 是否正常响应 5174
+ADMIN_HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 8 "http://localhost:5174/" 2>/dev/null || echo "000")
+if [ "$ADMIN_HTTP_CODE" = "000" ] || [ "$ADMIN_HTTP_CODE" = "" ]; then
+  echo "$DATE ⚠️  管理后台 5174 无响应，检查 nginx 和静态文件..." >> "$LOG_FILE"
+  # 确保静态文件存在
+  NGINX_ADMIN_DIR="/var/www/mirrornovel-admin"
+  if [ ! -f "${NGINX_ADMIN_DIR}/index.html" ]; then
+    ADMIN_DIST="${BASE_DIR}/admin/dist"
+    mkdir -p "$NGINX_ADMIN_DIR"
+    cp -r "$ADMIN_DIST/"* "$NGINX_ADMIN_DIR/" 2>/dev/null
+    echo "$DATE 🔄 管理后台静态文件已重新部署" >> "$LOG_FILE"
+  fi
+  # 确保 nginx 配置存在
+  if [ -f "$ADMIN_CONF_SRC" ] && [ ! -f "$ADMIN_CONF_DST" ]; then
+    cp "$ADMIN_CONF_SRC" "$ADMIN_CONF_DST" 2>/dev/null
+    nginx -s reload 2>/dev/null
+    echo "$DATE 🔄 nginx 配置已重新部署" >> "$LOG_FILE"
+  fi
+fi
+# 更新静态文件（如果 admin/dist 更新了）
+ADMIN_DIST="${BASE_DIR}/admin/dist"
+NGINX_ADMIN_DIR="/var/www/mirrornovel-admin"
+if [ -f "${ADMIN_DIST}/index.html" ] && ( [ ! -f "${NGINX_ADMIN_DIR}/index.html" ] || [ "${ADMIN_DIST}/index.html" -nt "${NGINX_ADMIN_DIR}/index.html" ] 2>/dev/null ); then
+  echo "$DATE ⚙️  检测到管理后台更新，同步静态文件..." >> "$LOG_FILE"
+  mkdir -p "$NGINX_ADMIN_DIR"
+  cp -r "$ADMIN_DIST/"* "$NGINX_ADMIN_DIR/" 2>/dev/null && echo "$DATE ✅ 管理后台静态文件已更新" >> "$LOG_FILE"
+fi
+# 删除旧的 PM2 进程（如果还存在）
+pm2 delete xiaoshuo-admin 2>/dev/null
 
 # 4. 检查 MongoDB 容器是否运行
 mongo_health=$(docker inspect --format='{{.State.Health.Status}}' jtbs-mongo 2>/dev/null || echo "dead")

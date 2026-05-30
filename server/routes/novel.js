@@ -43,54 +43,58 @@ router.post('/generate-outline', auth, async (req, res) => {
       } catch { type = { id: novelTypeId, name: novelTypeId, icon: '📄', keywords: '', outline: '' }; }
     }
 
-    // 如果有参考结构，用它覆盖世界观并强制大纲遵循参考
+    // 如果有参考结构，提取世界观但不再强制大纲雷同
     let effectiveWorld = worldSetting;
     let outlinePrompt;
     if (structureRef) {
-      // 从参考结构中提取世界观设定部分
+      // 从参考结构中提取世界观设定作为参考
       const worldMatch = structureRef.match(/【世界观设定】([\s\S]*?)(?=【|$)/);
       const plotMatch = structureRef.match(/【剧情整体走向】([\s\S]*?)(?=【|$)/);
       effectiveWorld = worldMatch ? worldMatch[1].trim() : (worldSetting || '由参考小说设定');
 
-      outlinePrompt = `你是一位专业的小说大纲策划师。用户上传了一本参考小说并要求严格遵循其结构创作。
+      outlinePrompt = `你是一位专业的小说大纲策划师。用户上传了一本参考小说，要求参考其结构模式进行**创新性再创作**，生成一本全新的原创小说。
 
 主角名字：${protagonistName || '未设定'}
-世界观设定（来自参考小说）：${effectiveWorld}
+世界观设定（来自参考小说，可以调整）：${effectiveWorld}
 目标总字数：约${targetWordCount}字
 
-【参考小说完整结构】
-请严格按照以下参考小说的结构来创作大纲：
+【参考小说的结构模式】
+以下是参考小说的结构分析，请参考其**结构模式**（如冲突类型、节奏安排、阶段划分等），但不要照搬具体情节：
 ${structureRef}
 
-⚠️ 重要：你必须严格遵循以上参考结构的【剧情整体走向】和【章节结构规划】来编写大纲。
-故事主线和核心冲突必须与参考一致，只替换角色名称和地名。
-角色名称使用参考结构中"AI生成替换名称"部分提供的新名称。
+⚠️ 核心原则：
+1. **不得直接复制原小说的具体情节、事件、场景和冲突**。必须全新创作具体内容。
+2. 参考其**结构模板**（如"主角成长→遇到挑战→突破瓶颈"这种抽象模式），填入全新的情节素材
+3. 改变冲突的具体表现方式：如果原小说是"武林争霸"，你可以写成"商业竞争"或"宫廷斗争"
+4. 调整章节顺序和事件分布：将原小说的前半与后半打乱重组，或添加全新的事件节点
+5. 角色名称使用参考结构中"AI生成替换名称"部分提供的新名称
+6. 如果与原小说情节雷同，将被内容平台判定为抄袭下架，所以必须确保每个情节都是原创的
 
 请按以下格式输出大纲：
 
 【故事主线】
-（基于参考小说的剧情走向，用新名称重述核心故事线）
+（一个全新的原创故事线，只保留参考小说的结构骨架）
 
 【核心冲突】
-（基于参考小说的冲突线）
+（生成全新的具体冲突，不要复刻原小说的冲突设定）
 
 【主要角色】
-（使用参考结构中提供的新名称）
+（使用参考结构中提供的新名称，但重新设计角色关系和性格）
 
 【剧情阶段】
-（严格按照参考小说的章节结构规划）
+（参考参考小说的阶段数量和节奏比例，但每个阶段的内容必须全新创作）
 
 【结局方向】
-（基于参考小说的结局）
+（参考参考小说的结局类型，但具体实现方式必须原创）
 
 【关键节点】
-（参考小说的关键伏笔和转折点）`;
+（参考参考小说的关键节奏点位置，但每个节点的具体事件必须原创）`;
     } else {
       outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount);
     }
 
     const systemPrompt = structureRef
-      ? '你是一位专业的小说大纲策划师。用户提供了参考小说结构，你必须严格遵循该结构来制定大纲，仅替换角色名称和地名。'
+      ? '你是一位专业的小说大纲策划师。用户提供了参考小说的结构模式，你必须参考其结构骨架进行创新性再创作。输出的大纲必须是在结构上与原文相似，但在具体情节、冲突、事件上完全不同的原创作品。避免抄袭，确保每个情节都是全新的。'
       : '你是一位专业的小说大纲策划师。';
 
     const result = await streamGenerate(
@@ -183,16 +187,21 @@ ${refSection}
     // 如果有小说结构参考（上传参考小说 → 提取结构 → 替换名称）
     // ⚠️ 此注入可能在模板匹配时被覆盖，模板匹配逻辑中有重新注入
     if (structureRef) {
-      systemPrompt += `\n\n【参考小说结构（名称已替换）—— 必须严格遵守】
-用户上传了一本参考小说并要求严格遵循其结构。以下内容的优先级高于所有其他参考：
-- 剧情走向、场景顺序、对话节奏、冲突安排必须与参考一致
-- 世界观设定使用参考中的设定，不要自行发挥
-- 人物名称、地点名称等使用参考结构中"AI生成替换名称"部分提供的新名称
-- 参考小说原文的所有元素都已替换为新名称，请直接使用
+      systemPrompt += `\n\n【参考小说结构（名称已替换）—— 参考结构模式，创作全新内容】
+用户上传了一本参考小说，要求参考其结构模式进行**创新性再创作**。以下内容作为创作蓝图参考：
 
+⚠️ 核心要求：
+1. **禁止直接复制参考小说的具体情节、事件、场景、对话** — 必须全新创作
+2. 参考其**结构骨架**（冲突节奏、阶段划分、角色弧线类型），填入全新的情节素材
+3. 改变冲突的具体表现形式（如原小说是武力冲突，可改为权谋/商战/情感冲突）
+4. 重新设计角色关系和人物性格，避免人物关系与原小说雷同
+5. 调整章节顺序和事件分布，可打乱重组、添加新的事件节点
+6. 世界观设定可参考但允许自行调整和延伸
+
+【参考小说的结构模板】
 ${structureRef}
 
-注意：这是最高优先级指令。所有其他参考仅在补充细节时使用，不得偏离本参考结构的剧情框架。`;
+注意：本参考仅提供结构模式参考。**如果生成的内容与原小说情节雷同，将被内容平台判定为抄袭下架**，因此必须确保每个具体情节和冲突都是原创的。`;
     }
 
     // 类型模板匹配 — 先推断 gender 重建系统提示，再注入动态模板
@@ -215,16 +224,19 @@ ${tmpl.dynamicPrompt}
 
         // 如果启用了参考结构，在模板之后重新注入（因为 buildSystemPrompt 覆盖了之前的注入）
         if (structureRef) {
-          systemPrompt += `\n\n【参考小说结构（名称已替换）—— 必须严格遵守】
-用户上传了一本参考小说并要求严格遵循其结构。以下内容的优先级高于所有其他参考：
-- 剧情走向、场景顺序、对话节奏、冲突安排必须与参考一致
-- 世界观设定使用参考中的设定，不要自行发挥
-- 人物名称、地点名称等使用参考结构中"AI生成替换名称"部分提供的新名称
-- 参考小说原文的所有元素都已替换为新名称，请直接使用
+          systemPrompt += `\n\n【参考小说结构（名称已替换）—— 参考结构模式，创作全新内容】
+⚠️ 核心要求：
+1. **禁止直接复制参考小说的具体情节、事件、场景、对话** — 必须全新创作
+2. 参考其**结构骨架**（冲突节奏、阶段划分、角色弧线类型），填入全新的情节素材
+3. 改变冲突的具体表现形式（如原小说是武力冲突，可改为权谋/商战/情感冲突）
+4. 重新设计角色关系和人物性格
+5. 可调整章节顺序和事件分布，添加新的事件节点
+6. **若与原小说情节雷同，将被判定为抄袭下架**
 
+【参考小说的结构模板】
 ${structureRef}
 
-注意：这是最高优先级指令。所有其他参考（类型模板、风格库）仅在补充细节时使用，不得偏离本参考结构的剧情框架。`;
+注意：本参考仅提供结构模式参考。所有具体情节和冲突必须全新创作，不得直接搬运。`;
         }
       }
     } catch (e) {
@@ -651,7 +663,8 @@ ${'='.repeat(40)}
 
         async function finalSave(status = 'completed') {
           if (chapterBuffer.trim()) {
-            novel.chapters.push({ chapterNumber, title: `第${chapterNumber}章`, content: chapterBuffer, wordCount: chapterBuffer.length });
+            const { text: finalContent } = processChapter(chapterBuffer);
+            novel.chapters.push({ chapterNumber, title: `第${chapterNumber}章`, content: finalContent, wordCount: finalContent.length });
           }
           const savedWords = novel.chapters.reduce((s, c) => s + (c.wordCount || 0), 0);
           novel.currentWordCount = savedWords;
@@ -1100,12 +1113,13 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
       } catch {}
     }
 
-    function saveChapterContent() {
+    function saveChapterContent(isFinal = false) {
       if (!appendBuffer.trim()) return;
       const idx = novel.chapters.findIndex(c => c.chapterNumber === chNum);
       if (idx > -1) {
-        novel.chapters[idx].content = (novel.chapters[idx].content || '') + appendBuffer;
-        novel.chapters[idx].wordCount = (novel.chapters[idx].wordCount || 0) + appendBuffer.length;
+        const newContent = (novel.chapters[idx].content || '') + appendBuffer;
+        novel.chapters[idx].content = isFinal ? processChapter(newContent).text : newContent;
+        novel.chapters[idx].wordCount = novel.chapters[idx].content.length;
         novel.markModified(`chapters.${idx}`);
       }
       novel.currentWordCount = (novel.currentWordCount || 0) + appendBuffer.length;
@@ -1115,7 +1129,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
       activeStreams.delete(streamKey);
       if (!generationDone) {
         abortController.abort();
-        saveChapterContent();
+        saveChapterContent(true);
         novel.status = 'paused'; await novel.save();
         deductTokens(req.user, appendBuffer);
         try { res.write(`data: ${JSON.stringify({ type: 'paused' })}\n\n`); res.end(); } catch {}
@@ -1131,7 +1145,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
 
       if (abortController.signal.aborted) {
         activeStreams.delete(streamKey);
-        saveChapterContent();
+        saveChapterContent(true);
         novel.status = 'paused'; await novel.save();
         deductTokens(req.user, appendBuffer);
         return;
@@ -1139,7 +1153,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
 
       generationDone = true;
       activeStreams.delete(streamKey);
-      saveChapterContent();
+      saveChapterContent(true);
       novel.status = 'completed'; await novel.save();
       deductTokens(req.user, appendBuffer);
 
@@ -1148,7 +1162,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
       res.end();
     } catch (streamError) {
       activeStreams.delete(streamKey);
-      saveChapterContent();
+      saveChapterContent(true);
       novel.status = 'paused'; await novel.save();
       deductTokens(req.user, appendBuffer);
       try { res.write(`data: ${JSON.stringify({ type: 'paused' })}\n\n`); res.end(); } catch {}
@@ -1333,7 +1347,7 @@ router.post('/deslop', auth, async (req, res) => {
       resolveApiConfig(req.user?.modelConfig, 'writing')
     );
 
-    res.json({ original: text, processed: result.content });
+    res.json({ original: text, processed: processChapter(result.content).text });
   } catch (error) {
     res.status(500).json({ message: '去AI味处理失败', error: error.message });
   }
@@ -1513,29 +1527,31 @@ router.post('/analyze-structure', auth, upload.single('file'), async (req, res) 
       return res.status(400).json({ message: `小说内容过长（${text.length} 字），最多支持 ${MAX_ANALYSIS_CHARS} 字分析` });
     }
 
-    const systemPrompt = '你是一位专业的小说结构分析师。你的任务是从给定的小说文本中提取完整的剧情结构，并用AI生成全新的角色名称和地点名称。';
+    const systemPrompt = '你是一位专业的小说结构分析师。你的任务是从给定的小说文本中提取**抽象的结构骨架**（节奏模式、冲突类型、阶段划分方式）作为创作蓝图，并用AI生成全新的角色名称和地点名称。⚠️ 注意：输出的结构模板会用于生成全新的小说，因此要抽象到"模板"级别，避免包含具体的情节细节，防止被控抄袭。';
 
     // 估算 token 开销
-    const promptSkeleton = `请分析以下小说文本，提取其故事结构。你需要输出以下内容（使用中文）：
+    const promptSkeleton = `请分析以下小说文本，提取其抽象的结构模式作为创作模板。你需要输出以下内容（使用中文）：
 
-【剧情整体走向】
-- 用300-500字描述故事的完整剧情脉络，包含起承转合、核心冲突和结局
+【结构模板 — 剧情整体走向】
+- 不要复述原小说的具体情节，而是抽象描述其**故事类型模板**（如：废柴逆袭型、寻宝探险型、重生复仇型、系统升级型等）
+- 用100-200字描述该模板的核心套路和节奏模式
 
-【章节结构规划】
-- 列出每个主要剧情阶段的章节分布和关键事件
-- 格式：第X-Y章：[阶段标题] → 关键事件描述
+【结构模板 — 章节结构规划】
+- 不要复制原小说的章节顺序，而是抽象描述**阶段划分方式**
+- 格式：阶段1：[类型描述，如"主角初始困境建立"] → 大致节奏、关键转折类型
+- 阶段2：[类型描述，如"外部势力介入"] → 大致节奏、关键转折类型
 
 【世界观设定】
 - 列出核心世界观要素（时代背景、社会结构、特殊规则等）
-- 每个要素50-100字描述
+- 每个要素30-50字，抽象描述类型（如"修炼等级体系"而非具体等级名字）
 
-【伏笔与回收】
-- 列出文中埋设的重要伏笔及其回收方式
-- 格式：伏笔 → 回收章节 → 作用
+【伏笔类型】
+- 不要列出具体伏笔，而是描述**伏笔的类型和设置方式**
+- 格式：伏笔类型 → 常见回收方式
 
-【核心冲突】
-- 列出主要冲突线（至少3条，含主线、感情线、成长线）
-- 每条冲突30-50字
+【核心冲突类型】
+- 列出主要冲突类型（至少3条，含主线、感情线、成长线）
+- 每种类型20-30字，描述冲突的模板
 
 【AI生成替换名称】
 请为以下每个类别生成5个全新的、与原文风格不同的名称：
@@ -1545,12 +1561,12 @@ router.post('/analyze-structure', auth, upload.single('file'), async (req, res) 
 - 特殊物品/能力（5个）
 - 宠物/坐骑（3个）
 
-重要：这些名称必须是新创作的，不能使用原文中的任何名字！
+重要：这些名称必须是新创作的，不能使用原文中的任何名字！名称的文化背景可以与原文不同（如原文是中式名称，可生成西式名称）
 
 小说文本（0字）：
 DUMMY_TEXT
 
-请严格按照以上格式输出，不要遗漏任何部分。确保所有名称都是全新创作的。`;
+请按照以上格式输出，确保名称是全新的。`;
 
     const overhead = countTokens(systemPrompt + promptSkeleton);
     const MAX_PROMPT_TOKENS = 1000000;
@@ -1563,26 +1579,28 @@ DUMMY_TEXT
 
     // ---------- 单次处理（文本足够短） ----------
     if (estimatedTokens <= maxNovelTokens) {
-      const userPrompt = `请分析以下小说文本，提取其故事结构。你需要输出以下内容（使用中文）：
+      const userPrompt = `请分析以下小说文本，提取其抽象的结构模式作为创作模板。你需要输出以下内容（使用中文）：
 
-【剧情整体走向】
-- 用300-500字描述故事的完整剧情脉络，包含起承转合、核心冲突和结局
+【结构模板 — 剧情整体走向】
+- 不要复述原小说的具体情节，而是抽象描述其**故事类型模板**（如：废柴逆袭型、寻宝探险型、重生复仇型、系统升级型等）
+- 用100-200字描述该模板的核心套路和节奏模式
 
-【章节结构规划】
-- 列出每个主要剧情阶段的章节分布和关键事件
-- 格式：第X-Y章：[阶段标题] → 关键事件描述
+【结构模板 — 章节结构规划】
+- 不要复制原小说的章节顺序，而是抽象描述**阶段划分方式**
+- 格式：阶段1：[类型描述，如"主角初始困境建立"] → 大致节奏、关键转折类型
+- 阶段2：[类型描述，如"外部势力介入"] → 大致节奏、关键转折类型
 
 【世界观设定】
 - 列出核心世界观要素（时代背景、社会结构、特殊规则等）
-- 每个要素50-100字描述
+- 每个要素30-50字，抽象描述类型（如"修炼等级体系"而非具体等级名字）
 
-【伏笔与回收】
-- 列出文中埋设的重要伏笔及其回收方式
-- 格式：伏笔 → 回收章节 → 作用
+【伏笔类型】
+- 不要列出具体伏笔，而是描述**伏笔的类型和设置方式**
+- 格式：伏笔类型 → 常见回收方式
 
-【核心冲突】
-- 列出主要冲突线（至少3条，含主线、感情线、成长线）
-- 每条冲突30-50字
+【核心冲突类型】
+- 列出主要冲突类型（至少3条，含主线、感情线、成长线）
+- 每种类型20-30字，描述冲突的模板
 
 【AI生成替换名称】
 请为以下每个类别生成5个全新的、与原文风格不同的名称：
@@ -1592,12 +1610,12 @@ DUMMY_TEXT
 - 特殊物品/能力（5个）
 - 宠物/坐骑（3个）
 
-重要：这些名称必须是新创作的，不能使用原文中的任何名字！
+重要：这些名称必须是新创作的，不能使用原文中的任何名字！名称的文化背景可以与原文不同（如原文是中式名称，可生成西式名称）
 
 小说文本（${text.length}字）：
 ${text}
 
-请严格按照以上格式输出，不要遗漏任何部分。确保所有名称都是全新创作的。`;
+请按照以上格式输出，确保名称是全新的。`;
 
       const result = await streamGenerate(systemPrompt, userPrompt, null, null, apiConfig);
       if (!result || !result.content) throw new Error('结构分析失败');
@@ -1646,23 +1664,21 @@ ${text}
 
       const totalBatches = chunks.length;
 
-      // 分批 prompt 模板（不要求输出 AI 生成替换名称，只在前/后块提）
-      const chunkPrompt = (chunkText, batchIdx, total) => `你正在分析小说的第 ${batchIdx}/${total} 部分。请从这一部分中提取以下内容（使用中文）：
+      // 分批 prompt 模板（提取抽象结构模式，不要求输出 AI 生成替换名称，只在前/后块提）
+      const chunkPrompt = (chunkText, batchIdx, total) => `你正在为小说结构的第 ${batchIdx}/${total} 部分提取结构模式。请从这一部分中提取**抽象的结构特征**（使用中文）：
 
-【本部分剧情走向】
-- 本部分的主要剧情推进和关键事件（100-200字）
+【本部分的结构作用】
+- 本部分在全书中承担什么结构功能（如：引入冲突、建立世界观、推进主线等）
+- 描述其叙事节奏类型（快速推进/慢速铺垫/高潮爆发等）
 
-【本部分世界观设定（新增）】
-- 本部分中新出现的世界观要素
+【本部分的新增世界观类型】
+- 本部分中出现的新世界观要素类型
 
-【本部分伏笔】
-- 新埋设的伏笔和已回收的伏笔
+【本部分的冲突模式】
+- 本部分中出现的冲突类型及其在故事结构中的位置
 
-【本部分核心冲突】
-- 本部分中出现的冲突及其发展
-
-【本部分关键角色】
-- 本部分中新出现或重点描写的角色${batchIdx === total ? '\n\n【AI生成替换名称】（仅在最后一部分输出）\n请为以下每个类别生成5个全新的名称：\n- 主角（男女各5个）\n- 配角（男女各5个）\n- 地名/场景（5个）\n- 特殊物品/能力（5个）\n- 宠物/坐骑（3个）' : ''}
+【本部分的关键角色类型】
+- 本部分中起关键作用的角色类型（如：导师型、对手型、伙伴型等）${batchIdx === total ? '\n\n【AI生成替换名称】（仅在最后一部分输出）\n请为以下每个类别生成5个全新的、与原文文化背景不同的名称：\n- 主角（男女各5个）\n- 配角（男女各5个）\n- 地名/场景（5个）\n- 特殊物品/能力（5个）\n- 宠物/坐骑（3个）' : ''}
 
 小说片段（第 ${batchIdx}/${total} 部分，${chunkText.length}字）：
 ${chunkText}`;
@@ -1679,29 +1695,30 @@ ${chunkText}`;
       totalTokenCount += parallelTokenCount;
 
       // 合并汇总
-      const aggregationSystemPrompt = '你是一位专业的小说结构分析师。你将收到对同一本小说多个部分的结构分析结果，请将它们合并成一份完整、连贯的结构报告。';
+      const aggregationSystemPrompt = '你是一位专业的小说结构分析师。你将收到对同一本小说多个部分的结构分析结果，请将它们合并成一份**抽象的结构模板**，用于指导新小说的创作，不得包含原文的具体情节细节。';
       const partialsText = partialResults.map((r, i) => `===== 第 ${i + 1}/${totalBatches} 部分分析 =====\n${r}`).join('\n\n');
 
-      const aggregationPrompt = `以下是对同一本小说的 ${totalBatches} 个部分分别进行结构分析的结果。请合并这些结果，输出一份完整的结构分析报告（使用中文）：
+      const aggregationPrompt = `以下是对同一本小说的 ${totalBatches} 个部分分别进行结构分析的结果。请将这些抽象的结构模式合并成一份完整的结构模板报告（使用中文）：
 
-【剧情整体走向】
-- 用300-500字描述故事的完整剧情脉络，包含起承转合、核心冲突和结局
+【结构模板 — 剧情整体走向】
+- 不要复述原小说的具体情节，而是抽象描述其**故事类型模板**（如：废柴逆袭型、寻宝探险型、重生复仇型等）
+- 用100-200字描述该模板的核心套路和节奏模式
 
-【章节结构规划】
-- 列出每个主要剧情阶段的章节分布和关键事件
-- 格式：第X-Y章：[阶段标题] → 关键事件描述
+【结构模板 — 章节结构规划】
+- 不要复制原小说的章节顺序，而是抽象描述**阶段划分方式**
+- 格式：阶段1：[类型描述] → 大致节奏、关键转折类型
 
 【世界观设定】
 - 列出核心世界观要素（时代背景、社会结构、特殊规则等）
-- 每个要素50-100字描述
+- 每个要素30-50字，抽象描述类型
 
-【伏笔与回收】
-- 列出文中埋设的重要伏笔及其回收方式
-- 格式：伏笔 → 回收章节 → 作用
+【伏笔类型】
+- 不要列出具体伏笔，而是描述**伏笔的类型和设置方式**
+- 格式：伏笔类型 → 常见回收方式
 
-【核心冲突】
-- 列出主要冲突线（至少3条，含主线、感情线、成长线）
-- 每条冲突30-50字
+【核心冲突类型】
+- 列出主要冲突类型（至少3条，含主线、感情线、成长线）
+- 每种类型20-30字，描述冲突的模板
 
 【AI生成替换名称】
 请为以下每个类别生成5个全新的、与原文风格不同的名称：
@@ -1717,7 +1734,7 @@ ${chunkText}`;
 
 ${partialsText}
 
-请严格按照以上格式输出，不要遗漏任何部分。确保所有名称都是全新创作的。`;
+请输出抽象的结构模板，确保所有名称都是全新的。`;
 
       const aggResult = await streamGenerate(aggregationSystemPrompt, aggregationPrompt, null, null, apiConfig);
       if (!aggResult || !aggResult.content) throw new Error('结构汇总分析失败');
@@ -1732,36 +1749,34 @@ ${partialsText}
   }
 });
 
-// ====== 全文调优（分析问题 + 逐章重写 + 去AI味） ======
-router.post('/optimize/:novelId', auth, async (req, res) => {
-  // 先发 SSE 头部，后续所有输出（包括错误）都以 SSE 事件发送
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
-    'X-Accel-Buffering': 'no',
-  });
+// ====== 后台全文调优任务（断网不中断） ======
 
-  const sendEvent = (type, data) => {
-    try { res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`); } catch {}
-  };
-
+/**
+ * 后台运行调优任务，定期更新 novel.optimizeTask 到数据库
+ */
+async function runOptimizeTask(novelId, userId, apiConfig) {
+  let novel;
   try {
-    const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
-    if (!novel) { sendEvent('error', { message: '小说不存在' }); return res.end(); }
-    if (!novel.chapters || novel.chapters.length === 0) { sendEvent('error', { message: '没有章节需要调优' }); return res.end(); }
+    novel = await Novel.findOne({ _id: novelId, userId });
+    if (!novel) throw new Error('小说不存在');
+    if (!novel.chapters || novel.chapters.length === 0) throw new Error('没有章节需要调优');
 
-    const apiConfig = resolveApiConfig(req.user?.modelConfig, 'writing');
+    const totalCh = novel.chapters.length;
+    await Novel.updateOne({ _id: novelId }, {
+      $set: {
+        'optimizeTask.status': 'analyzing',
+        'optimizeTask.progress': '正在分析全文问题...',
+        'optimizeTask.currentChapter': 0,
+        'optimizeTask.totalChapters': totalCh,
+        'optimizeTask.optimizedCount': 0,
+        'optimizeTask.polishedCount': 0,
+        'optimizeTask.error': '',
+        'optimizeTask.startedAt': new Date(),
+        'optimizeTask.completedAt': null,
+      }
+    });
 
-    // 定期心跳，防止浏览器/nginx断开空闲连接
-    const keepAlive = setInterval(() => {
-      try { res.write(': keepalive\n\n'); } catch { clearInterval(keepAlive); }
-    }, 15000);
-
-    const done = () => clearInterval(keepAlive);
-
-    sendEvent('progress', { message: '正在分析全文问题...' });
-
+    // 1. 分析全文问题
     const analysisPrompt = buildOptimizeAnalysisPrompt(
       novel.chapters, novel.outline, novel.protagonistName, novel.worldSetting
     );
@@ -1771,12 +1786,23 @@ router.post('/optimize/:novelId', auth, async (req, res) => {
     );
     const analysis = analysisResult?.content || '';
 
+    // 2. 逐章优化
     let optimizedCount = 0;
     let polishedCount = 0;
-    const totalCh = novel.chapters.length;
 
     for (let i = 0; i < totalCh; i++) {
-      sendEvent('progress', { message: `正在调优第 ${i + 1}/${totalCh} 章...` });
+      // 每次 start 后重新读取 novel（防止多任务覆盖）
+      novel = await Novel.findOne({ _id: novelId });
+      if (!novel) throw new Error('调优过程中小说被删除');
+
+      // 更新进度
+      await Novel.updateOne({ _id: novelId }, {
+        $set: {
+          'optimizeTask.status': 'optimizing',
+          'optimizeTask.progress': `正在调优第 ${i + 1}/${totalCh} 章...`,
+          'optimizeTask.currentChapter': i + 1,
+        }
+      });
 
       const ch = novel.chapters[i];
       const chPrompt = buildOptimizeChapterPrompt(ch, ch.chapterNumber, analysis, novel.outline);
@@ -1790,35 +1816,103 @@ router.post('/optimize/:novelId', auth, async (req, res) => {
           const { text } = processChapter(newContent);
           newContent = text;
         } catch {}
-        novel.chapters[i].content = newContent;
-        novel.chapters[i].wordCount = newContent.length;
+        await Novel.updateOne(
+          { _id: novelId, 'chapters.chapterNumber': ch.chapterNumber },
+          { $set: { 'chapters.$.content': newContent, 'chapters.$.wordCount': newContent.length } }
+        );
         optimizedCount++;
       } else {
         try {
           const { text } = processChapter(ch.content || '');
           if (text !== ch.content) {
-            novel.chapters[i].content = text;
+            await Novel.updateOne(
+              { _id: novelId, 'chapters.chapterNumber': ch.chapterNumber },
+              { $set: { 'chapters.$.content': text } }
+            );
             polishedCount++;
           }
         } catch {}
       }
     }
 
-    novel.currentWordCount = novel.chapters.reduce((s, c) => s + (c.wordCount || 0), 0);
-    novel.status = 'completed';
-    await novel.save();
-
-    done();
-    sendEvent('completed', {
-      message: `✅ 全文调优完成！重写 ${optimizedCount} 章，润色 ${polishedCount} 章`,
-      optimizedCount, polishedCount, totalChapters: totalCh,
-    });
-    res.end();
+    // 更新总字数
+    novel = await Novel.findOne({ _id: novelId });
+    if (novel) {
+      const totalWords = novel.chapters.reduce((s, c) => s + (c.wordCount || 0), 0);
+      await Novel.updateOne({ _id: novelId }, {
+        $set: {
+          currentWordCount: totalWords,
+          status: 'completed',
+          'optimizeTask.status': 'completed',
+          'optimizeTask.progress': `✅ 全文调优完成！重写 ${optimizedCount} 章，润色 ${polishedCount} 章`,
+          'optimizeTask.optimizedCount': optimizedCount,
+          'optimizeTask.polishedCount': polishedCount,
+          'optimizeTask.completedAt': new Date(),
+        }
+      });
+    }
   } catch (error) {
-    done();
-    console.error('全文调优失败:', error);
-    sendEvent('error', { message: error.message });
-    try { res.end(); } catch {}
+    console.error('后台调优失败:', error);
+    try {
+      await Novel.updateOne({ _id: novelId }, {
+        $set: {
+          'optimizeTask.status': 'error',
+          'optimizeTask.progress': `调优失败: ${error.message}`,
+          'optimizeTask.error': error.message,
+          'optimizeTask.completedAt': new Date(),
+        }
+      });
+    } catch (dbError) {
+      console.error('保存调优错误状态失败:', dbError);
+    }
+  }
+}
+
+// 启动后台调优任务（立即返回）
+router.post('/optimize/:novelId', auth, async (req, res) => {
+  try {
+    const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
+    if (!novel) return res.status(404).json({ message: '小说不存在' });
+    if (!novel.chapters || novel.chapters.length === 0) return res.status(400).json({ message: '没有章节需要调优' });
+
+    // 检查是否已有任务在运行
+    if (novel.optimizeTask?.status === 'analyzing' || novel.optimizeTask?.status === 'optimizing') {
+      return res.status(409).json({ message: '已有调优任务正在运行，请等待完成' });
+    }
+
+    const apiConfig = resolveApiConfig(req.user?.modelConfig, 'writing');
+
+    // 后台执行，不 await
+    runOptimizeTask(req.params.novelId, req.userId, apiConfig);
+
+    res.json({
+      message: '调优任务已启动，后台运行中，即使断网也不受影响',
+      novelId: req.params.novelId,
+    });
+  } catch (error) {
+    console.error('启动调优失败:', error);
+    res.status(500).json({ message: '启动调优失败', error: error.message });
+  }
+});
+
+// 查询后台调优任务状态
+router.post('/optimize-status/:novelId', auth, async (req, res) => {
+  try {
+    const novel = await Novel.findOne(
+      { _id: req.params.novelId, userId: req.userId },
+      { 'optimizeTask': 1 }
+    );
+    if (!novel) return res.status(404).json({ message: '小说不存在' });
+
+    res.json({
+      task: novel.optimizeTask || {
+        status: 'idle', progress: '', currentChapter: 0, totalChapters: 0,
+        optimizedCount: 0, polishedCount: 0, error: '',
+      }
+    });
+  } catch (error) {
+    console.error('查询调优状态失败:', error);
+    res.status(500).json({ message: '查询调优状态失败', error: error.message });
   }
 });
 

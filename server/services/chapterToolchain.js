@@ -86,15 +86,107 @@ function fixPunctuation(text) {
 }
 
 /**
+ * 自动格式化章节文本：分段 + 首行缩进 + 段落间距
+ * - 如果 AI 已分段，保持并规范换行
+ * - 如果没有分段，智能拆分
+ * - 每个段落前加两个全角空格作为首行缩进
+ */
+function autoFormat(text) {
+  if (!text || text.length < 20) return text;
+
+  let processed = text;
+
+  // 1. 归一化换行符
+  processed = processed.replace(/\r\n/g, '\n');
+  processed = processed.replace(/\n{3,}/g, '\n\n');
+
+  // 2. 尝试按段落拆分
+  let paragraphs = processed.split(/\n\n+/).map(p => p.trim()).filter(p => p.length > 0);
+
+  // 3. 如果按双换行只分出1段且长度较大，尝试按单换行拆分
+  if (paragraphs.length <= 1 && processed.length > 300) {
+    // 检查是否有单换行
+    if (processed.includes('\n')) {
+      paragraphs = processed.split(/\n+/).map(p => p.trim()).filter(p => p.length > 0);
+    }
+  }
+
+  // 4. 如果仍只有1段（AI 没分段），智能按句子边界拆分
+  if (paragraphs.length <= 1 && processed.length > 300) {
+    paragraphs = smartSplitParagraphs(processed);
+  }
+
+  // 5. 如果拆分完仍然是单段或无意义，直接加缩进返回
+  if (paragraphs.length === 0) {
+    paragraphs = [processed.trim()];
+  }
+
+  // 6. 每个段落添加首行缩进（两个全角空格），避免重复缩进
+  const formatted = paragraphs.map(p => {
+    // 如果段落已经以全角空格开头，不再重复添加
+    if (p.startsWith('\u3000\u3000')) return p;
+    return '\u3000\u3000' + p.trim();
+  });
+
+  // 7. 用双换行连接（前端 white-space: pre-wrap 支持）
+  return formatted.join('\n\n');
+}
+
+/**
+ * 智能将无分段的长文本拆分为段落
+ * 在句子结束标点处拆分，每段约150-350字符
+ */
+function smartSplitParagraphs(text) {
+  if (!text || text.length < 100) return [text.trim()];
+
+  const segments = [];
+  // 按句子结束标点拆分
+  const raw = text.trim();
+  let buffer = '';
+  let i = 0;
+
+  while (i < raw.length) {
+    buffer += raw[i];
+
+    // 检测句子结束：句号、问号、感叹号、省略号、对话结束引号
+    const isEnd = /[。！？…」』」\n]/.test(raw[i]);
+
+    if (isEnd && buffer.length >= 120) {
+      segments.push(buffer.trim());
+      buffer = '';
+    } else if (buffer.length >= 400) {
+      // 超过400字没有遇到句子结束，强制拆分
+      segments.push(buffer.trim());
+      buffer = '';
+    }
+
+    i++;
+  }
+
+  if (buffer.trim()) {
+    // 如果最后一段太短（<60字），合并到前一段
+    if (segments.length > 0 && buffer.trim().length < 60) {
+      segments[segments.length - 1] += buffer;
+    } else {
+      segments.push(buffer.trim());
+    }
+  }
+
+  // 确保有段落返回
+  return segments.length > 0 ? segments : [text.trim()];
+}
+
+/**
  * 完整后处理流水线
  * @param {string} text - 原始章节内容
  * @param {Object} options - 配置项
  * @param {boolean} options.doDeAI - 是否执行去AI味
  * @param {boolean} options.doPunctuation - 是否执行标点修正
+ * @param {boolean} options.doAutoFormat - 是否执行自动格式化（分段+缩进）
  * @returns {{ text: string, report: Object }}
  */
 function processChapter(text, options = {}) {
-  const { doDeAI = true, doPunctuation = true } = options
+  const { doDeAI = true, doPunctuation = true, doAutoFormat = true } = options
   if (!text) return { text: '', report: {} }
 
   let processed = text
@@ -102,6 +194,7 @@ function processChapter(text, options = {}) {
     originalLength: text.length,
     deAICount: 0,
     punctuationFixes: 0,
+    formatted: false,
   }
 
   // Step 1: AI味检测
@@ -122,7 +215,14 @@ function processChapter(text, options = {}) {
     report.punctuationFixes = processed.length - before
   }
 
-  // Step 4: 再次检测AI味
+  // Step 4: 自动格式化（分段 + 首行缩进）
+  if (doAutoFormat) {
+    const before = processed
+    processed = autoFormat(processed)
+    report.formatted = (processed !== before)
+  }
+
+  // Step 5: 再次检测AI味
   const aiFlavorAfter = countAIFlavor(processed)
   report.aiFlavorAfter = aiFlavorAfter
 

@@ -54,7 +54,8 @@
               <div class="novel-title">{{ novel.title || $t('bookshelf.defaultTitle') }}</div>
               <div class="novel-type">{{ novel.novelTypeName }}</div>
             </div>
-            <span class="status-badge" :class="novel.status">{{ statusMap[novel.status] || novel.status }}</span>
+            <span v-if="novel.optimizeTask?.status === 'analyzing' || novel.optimizeTask?.status === 'optimizing'" class="status-badge optimizing">⏳ 调优中</span>
+            <span v-else class="status-badge" :class="novel.status">{{ statusMap[novel.status] || novel.status }}</span>
           </div>
           <div class="novel-meta">
             <span>📝 {{ novel.currentWordCount }} / {{ novel.targetWordCount }} {{ $t('bookshelf.chapter') }}</span>

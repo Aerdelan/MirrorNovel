@@ -75,6 +75,18 @@ const novelSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
+  // 后台调优任务状态
+  optimizeTask: {
+    status: { type: String, enum: ['idle', 'analyzing', 'optimizing', 'completed', 'error'], default: 'idle' },
+    progress: { type: String, default: '' },
+    currentChapter: { type: Number, default: 0 },
+    totalChapters: { type: Number, default: 0 },
+    optimizedCount: { type: Number, default: 0 },
+    polishedCount: { type: Number, default: 0 },
+    error: { type: String, default: '' },
+    startedAt: { type: Date },
+    completedAt: { type: Date },
+  },
   createdAt: {
     type: Date,
     default: Date.now,

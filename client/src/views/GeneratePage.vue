@@ -44,10 +44,10 @@
         </div>
       </div>
 
-      <!-- 上传参考小说 → 提取结构 -->
+      <!-- 上传参考小说 → 提取结构模式 -->
       <div class="card ref-struct-card">
-        <div class="section-title">📄 上传参考小说（结构克隆）</div>
-        <div class="ref-struct-desc">上传一本小说，AI 将提取其剧情结构、伏笔和世界观，用新名称重新生成</div>
+        <div class="section-title">📄 上传参考小说（结构启发创作）</div>
+        <div class="ref-struct-desc">上传一本小说，AI 将提取其结构骨架（剧情套路/冲突类型/世界观模板），生成一本结构相似但情节完全原创的新小说，避免抄袭风险</div>
         <div class="upload-bar">
           <input ref="structFileInput" type="file" accept=".txt" @change="handleStructFile" style="display:none" />
           <button class="btn btn-sm btn-outline" @click="$refs.structFileInput.click()">📁 选择文件</button>
@@ -69,7 +69,7 @@
           </div>
           <label class="checkbox-row" style="margin-top:8px;">
             <input type="checkbox" v-model="useStructureRef" />
-            <span>✅ 在生成中使用此结构（名称已替换）</span>
+            <span>✅ 参考此结构模式生成（情节将完全原创）</span>
           </label>
           <button class="btn btn-sm btn-outline" style="margin-top:4px;" @click="structResult='';structRawText=''">清除重新上传</button>
         </div>

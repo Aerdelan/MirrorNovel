@@ -108,7 +108,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useNovelStore } from '../stores/novel'
 import { useI18n } from '../composables/useI18n'
@@ -142,8 +142,29 @@ const allChaptersComplete = computed(() => { if (!novel.value) return false; ret
 function isLastUnfinished(index) { if (!novel.value || novel.value.status !== 'paused') return false; return index === novel.value.chapters.length - 1 }
 
 onMounted(async () => {
-  try { novel.value = await novelStore.fetchNovelDetail(route.params.id) }
+  try {
+    novel.value = await novelStore.fetchNovelDetail(route.params.id)
+    // 检查是否有正在运行或刚完成的后台调优任务
+    if (novel.value?.optimizeTask) {
+      const task = novel.value.optimizeTask
+      if (task.status === 'analyzing' || task.status === 'optimizing') {
+        optimizeBusy.value = true
+        optimizeProgress.value = task.progress || '后台任务运行中...'
+        startPollingOptimize()
+      } else if (task.status === 'completed' && task.optimizedCount > 0) {
+        // 任务在用户离开时已完成，刷新章节内容并提示
+        refreshNovel()
+        setTimeout(() => {
+          alert('全文调优已在后台完成！' + (task.progress || ''))
+        }, 300)
+      }
+    }
+  }
   catch { alert($t('error.unknown')); router.push('/bookshelf') }
+})
+
+onUnmounted(() => {
+  stopPollingOptimize()
 })
 
 watch(chapterStreamingText, async () => { await nextTick(); if (streamingRef.value) streamingRef.value.scrollTop = streamingRef.value.scrollHeight })
@@ -209,48 +230,57 @@ const deslopAllProgress = ref('')
 
 const optimizeBusy = ref(false)
 const optimizeProgress = ref('')
+let optimizePollTimer = null
 
 async function optimizeNovel() {
   if (!novel.value?.chapters?.length) return alert('没有章节需要调优')
-  if (!confirm(`对《${novel.value.title}》进行全文调优？\n\nAI 将：\n1️⃣ 分析全文问题（流水账/重复/伏笔未回收）\n2️⃣ 逐章优化重写\n3️⃣ 自动去AI味\n\n预计耗时较长（每章约30秒），是否继续？`)) return
+  if (!confirm(`对《${novel.value.title}》进行全文调优？\n\nAI 将：\n1️⃣ 分析全文问题（流水账/重复/伏笔未回收）\n2️⃣ 逐章优化重写\n3️⃣ 自动去AI味\n\n任务将在后台运行，即使关闭页面或断网也不中断。\n是否继续？`)) return
   optimizeBusy.value = true
-  optimizeProgress.value = '正在分析全文问题...'
-  const token = localStorage.getItem('token')
-  const xhr = new XMLHttpRequest()
-  xhr.open('POST', `/api/novel/optimize/${route.params.id}`)
-  xhr.setRequestHeader('Authorization', `Bearer ${token}`)
-  xhr.setRequestHeader('Content-Type', 'application/json')
-  xhr.responseType = 'text'
-  let lastIndex = 0
-  xhr.onreadystatechange = () => {
-    if (xhr.readyState >= 3 && xhr.responseText) {
-      const newData = xhr.responseText.substring(lastIndex)
-      lastIndex = xhr.responseText.length
-      const lines = newData.split('\n')
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          try {
-            const ev = JSON.parse(line.slice(6))
-            if (ev.type === 'progress') {
-              optimizeProgress.value = ev.message
-            } else if (ev.type === 'completed') {
-              alert(ev.message); refreshNovel()
-              optimizeBusy.value = false; optimizeProgress.value = ''
-            } else if (ev.type === 'error') {
-              alert('调优失败: ' + ev.message)
-              optimizeBusy.value = false; optimizeProgress.value = ''
-            }
-          } catch {}
-        }
-      }
-    }
-    if (xhr.readyState === 4 && xhr.status !== 200) {
-      alert('连接失败: HTTP ' + xhr.status)
-      optimizeBusy.value = false; optimizeProgress.value = ''
-    }
+  optimizeProgress.value = '正在启动调优任务...'
+  try {
+    const res = await api.post(`/novel/optimize/${route.params.id}`)
+    optimizeProgress.value = '任务已启动，正在后台分析...'
+    startPollingOptimize()
+  } catch (e) {
+    alert('启动失败: ' + (e.response?.data?.message || e.message))
+    optimizeBusy.value = false
+    optimizeProgress.value = ''
   }
-  xhr.onerror = () => { alert('网络错误，请检查连接'); optimizeBusy.value = false; optimizeProgress.value = '' }
-  xhr.send('{}')
+}
+
+function startPollingOptimize() {
+  stopPollingOptimize()
+  optimizePollTimer = setInterval(async () => {
+    try {
+      const res = await api.post(`/novel/optimize-status/${route.params.id}`)
+      const task = res.data.task
+      if (!task || task.status === 'idle') return
+      optimizeProgress.value = task.progress || ''
+      if (task.status === 'completed') {
+        stopPollingOptimize()
+        optimizeBusy.value = false
+        optimizeProgress.value = ''
+        refreshNovel()
+        alert(task.progress || '✅ 全文调优完成！')
+      } else if (task.status === 'error') {
+        stopPollingOptimize()
+        optimizeBusy.value = false
+        optimizeProgress.value = ''
+        alert('调优失败: ' + (task.error || task.progress))
+      }
+      // 'analyzing' 和 'optimizing' 状态继续轮询
+    } catch (e) {
+      // 轮询出错不弹窗，继续尝试
+      console.error('轮询调优状态失败:', e)
+    }
+  }, 3000)
+}
+
+function stopPollingOptimize() {
+  if (optimizePollTimer) {
+    clearInterval(optimizePollTimer)
+    optimizePollTimer = null
+  }
 }
 
 async function deslopAllChapters() {

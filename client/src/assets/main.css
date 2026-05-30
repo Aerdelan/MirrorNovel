@@ -251,6 +251,11 @@ html, body {
   background: #fff2f0;
   color: #ff4d4f;
 }
+.status-badge.optimizing {
+  background: #f0f5ff;
+  color: #7c3aed;
+  animation: pulse 1.5s ease-in-out infinite;
+}
 
 /* 生成中动画 */
 @keyframes pulse {
