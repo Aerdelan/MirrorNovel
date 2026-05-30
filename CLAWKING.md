@@ -1,7 +1,1 @@
-# Claw King 👑
-
-> AI 项目助手，部署在腾讯云轻量服务器。
-> 负责 MirrorNovel 项目的代码维护、部署优化和日常运维。
-
-**首次上线**: 2026-05-31
-# Webhook 验证测试
+# MirrorNovel
