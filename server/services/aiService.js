@@ -293,9 +293,10 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
     : { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, temperature: 0.8, max_tokens: 8192 };
 
   for (let attempt = 0; attempt <= retries; attempt++) {
+    let timeoutId;
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 90000);
+      timeoutId = setTimeout(() => controller.abort(), 90000);
       const combinedSignal = controller.signal;
 
       const response = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify(body), signal: combinedSignal });
