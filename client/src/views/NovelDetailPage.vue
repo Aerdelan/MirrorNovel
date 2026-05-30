@@ -216,22 +216,17 @@ async function optimizeNovel() {
   optimizeBusy.value = true
   optimizeProgress.value = '正在分析全文问题...'
   const token = localStorage.getItem('token')
-  try {
-    const response = await fetch(`/api/novel/optimize/${route.params.id}`, {
-      method: 'POST',
-      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: '{}',
-    })
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buf = ''
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buf += decoder.decode(value, { stream: true })
-      // 按行解析 SSE 事件
-      const lines = buf.split('\n')
-      buf = lines.pop() || '' // 保留未完成的行
+  const xhr = new XMLHttpRequest()
+  xhr.open('POST', `/api/novel/optimize/${route.params.id}`)
+  xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+  xhr.setRequestHeader('Content-Type', 'application/json')
+  xhr.responseType = 'text'
+  let lastIndex = 0
+  xhr.onreadystatechange = () => {
+    if (xhr.readyState >= 3 && xhr.responseText) {
+      const newData = xhr.responseText.substring(lastIndex)
+      lastIndex = xhr.responseText.length
+      const lines = newData.split('\n')
       for (const line of lines) {
         if (line.startsWith('data: ')) {
           try {
@@ -239,24 +234,23 @@ async function optimizeNovel() {
             if (ev.type === 'progress') {
               optimizeProgress.value = ev.message
             } else if (ev.type === 'completed') {
-              alert(ev.message)
-              refreshNovel()
-              optimizeBusy.value = false
-              optimizeProgress.value = ''
+              alert(ev.message); refreshNovel()
+              optimizeBusy.value = false; optimizeProgress.value = ''
             } else if (ev.type === 'error') {
               alert('调优失败: ' + ev.message)
-              optimizeBusy.value = false
-              optimizeProgress.value = ''
+              optimizeBusy.value = false; optimizeProgress.value = ''
             }
           } catch {}
         }
       }
     }
-  } catch (e) {
-    alert('全文调优请求失败: ' + e.message)
+    if (xhr.readyState === 4 && xhr.status !== 200) {
+      alert('连接失败: HTTP ' + xhr.status)
+      optimizeBusy.value = false; optimizeProgress.value = ''
+    }
   }
-  optimizeBusy.value = false
-  optimizeProgress.value = ''
+  xhr.onerror = () => { alert('网络错误，请检查连接'); optimizeBusy.value = false; optimizeProgress.value = '' }
+  xhr.send('{}')
 }
 
 async function deslopAllChapters() {
