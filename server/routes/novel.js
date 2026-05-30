@@ -1734,22 +1734,22 @@ ${partialsText}
 
 // ====== 全文调优（分析问题 + 逐章重写 + 去AI味） ======
 router.post('/optimize/:novelId', auth, async (req, res) => {
+  // 先发 SSE 头部，后续所有输出（包括错误）都以 SSE 事件发送
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+
+  const sendEvent = (type, data) => {
+    try { res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`); } catch {}
+  };
+
   try {
     const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
-    if (!novel) return res.status(404).json({ message: '小说不存在' });
-    if (!novel.chapters || novel.chapters.length === 0) return res.status(400).json({ message: '没有章节需要调优' });
-
-    // SSE
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'X-Accel-Buffering': 'no',
-    });
-
-    const sendEvent = (type, data) => {
-      res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
-    };
+    if (!novel) { sendEvent('error', { message: '小说不存在' }); return res.end(); }
+    if (!novel.chapters || novel.chapters.length === 0) { sendEvent('error', { message: '没有章节需要调优' }); return res.end(); }
 
     const apiConfig = resolveApiConfig(req.user?.modelConfig, 'writing');
 
@@ -1808,8 +1808,8 @@ router.post('/optimize/:novelId', auth, async (req, res) => {
     res.end();
   } catch (error) {
     console.error('全文调优失败:', error);
-    res.write(`data: ${JSON.stringify({ type: 'error', message: error.message })}\n\n`);
-    res.end();
+    sendEvent('error', { message: error.message });
+    try { res.end(); } catch {}
   }
 });
 
