@@ -216,7 +216,7 @@ async function optimizeNovel() {
   optimizeBusy.value = true
   optimizeProgress.value = '正在分析全文问题...'
   try {
-    const res = await api.post(`/novel/optimize/${route.params.id}`)
+    const res = await api.post(`/novel/optimize/${route.params.id}`, null, { timeout: 7200000 })
     if (res.data.status === 'completed') {
       alert(res.data.message)
       refreshNovel()
