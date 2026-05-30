@@ -216,36 +216,47 @@ async function optimizeNovel() {
   optimizeBusy.value = true
   optimizeProgress.value = '正在分析全文问题...'
   const token = localStorage.getItem('token')
-  const xhr = new XMLHttpRequest()
-  xhr.open('POST', `/api/novel/optimize/${route.params.id}`)
-  xhr.setRequestHeader('Authorization', `Bearer ${token}`)
-  xhr.setRequestHeader('Content-Type', 'application/json')
-  let buf = ''
-  xhr.onprogress = () => {
-    const lines = xhr.responseText.substring(buf.length).split('\n')
-    buf = xhr.responseText
-    for (const line of lines) {
-      if (line.startsWith('data: ')) {
-        try {
-          const ev = JSON.parse(line.slice(6))
-          if (ev.type === 'progress') {
-            optimizeProgress.value = ev.message
-          } else if (ev.type === 'completed') {
-            alert(ev.message)
-            refreshNovel()
-            optimizeBusy.value = false
-            optimizeProgress.value = ''
-          } else if (ev.type === 'error') {
-            alert('调优失败: ' + ev.message)
-            optimizeBusy.value = false
-            optimizeProgress.value = ''
-          }
-        } catch {}
+  try {
+    const response = await fetch(`/api/novel/optimize/${route.params.id}`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      // 按行解析 SSE 事件
+      const lines = buf.split('\n')
+      buf = lines.pop() || '' // 保留未完成的行
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const ev = JSON.parse(line.slice(6))
+            if (ev.type === 'progress') {
+              optimizeProgress.value = ev.message
+            } else if (ev.type === 'completed') {
+              alert(ev.message)
+              refreshNovel()
+              optimizeBusy.value = false
+              optimizeProgress.value = ''
+            } else if (ev.type === 'error') {
+              alert('调优失败: ' + ev.message)
+              optimizeBusy.value = false
+              optimizeProgress.value = ''
+            }
+          } catch {}
+        }
       }
     }
+  } catch (e) {
+    alert('全文调优请求失败: ' + e.message)
   }
-  xhr.onerror = () => { alert('全文调优请求失败'); optimizeBusy.value = false; optimizeProgress.value = '' }
-  xhr.send('{}')
+  optimizeBusy.value = false
+  optimizeProgress.value = ''
 }
 
 async function deslopAllChapters() {
