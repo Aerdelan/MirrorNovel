@@ -215,19 +215,37 @@ async function optimizeNovel() {
   if (!confirm(`对《${novel.value.title}》进行全文调优？\n\nAI 将：\n1️⃣ 分析全文问题（流水账/重复/伏笔未回收）\n2️⃣ 逐章优化重写\n3️⃣ 自动去AI味\n\n预计耗时较长（每章约30秒），是否继续？`)) return
   optimizeBusy.value = true
   optimizeProgress.value = '正在分析全文问题...'
-  try {
-    const res = await api.post(`/novel/optimize/${route.params.id}`, null, { timeout: 7200000 })
-    if (res.data.status === 'completed') {
-      alert(res.data.message)
-      refreshNovel()
-    } else {
-      alert('调优失败: ' + (res.data.message || '未知错误'))
+  const token = localStorage.getItem('token')
+  const xhr = new XMLHttpRequest()
+  xhr.open('POST', `/api/novel/optimize/${route.params.id}`)
+  xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+  xhr.setRequestHeader('Content-Type', 'application/json')
+  let buf = ''
+  xhr.onprogress = () => {
+    const lines = xhr.responseText.substring(buf.length).split('\n')
+    buf = xhr.responseText
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try {
+          const ev = JSON.parse(line.slice(6))
+          if (ev.type === 'progress') {
+            optimizeProgress.value = ev.message
+          } else if (ev.type === 'completed') {
+            alert(ev.message)
+            refreshNovel()
+            optimizeBusy.value = false
+            optimizeProgress.value = ''
+          } else if (ev.type === 'error') {
+            alert('调优失败: ' + ev.message)
+            optimizeBusy.value = false
+            optimizeProgress.value = ''
+          }
+        } catch {}
+      }
     }
-  } catch (e) {
-    alert('全文调优失败: ' + (e.response?.data?.message || e.message))
   }
-  optimizeBusy.value = false
-  optimizeProgress.value = ''
+  xhr.onerror = () => { alert('全文调优请求失败'); optimizeBusy.value = false; optimizeProgress.value = '' }
+  xhr.send('{}')
 }
 
 async function deslopAllChapters() {

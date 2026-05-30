@@ -1739,9 +1739,22 @@ router.post('/optimize/:novelId', auth, async (req, res) => {
     if (!novel) return res.status(404).json({ message: '小说不存在' });
     if (!novel.chapters || novel.chapters.length === 0) return res.status(400).json({ message: '没有章节需要调优' });
 
+    // SSE
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    const sendEvent = (type, data) => {
+      res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
+    };
+
     const apiConfig = resolveApiConfig(req.user?.modelConfig, 'writing');
 
-    // Step 1: AI 分析全文问题
+    sendEvent('progress', { message: '正在分析全文问题...' });
+
     const analysisPrompt = buildOptimizeAnalysisPrompt(
       novel.chapters, novel.outline, novel.protagonistName, novel.worldSetting
     );
@@ -1751,12 +1764,13 @@ router.post('/optimize/:novelId', auth, async (req, res) => {
     );
     const analysis = analysisResult?.content || '';
 
-    // Step 2: 逐章调优 + 去AI味
     let optimizedCount = 0;
     let polishedCount = 0;
     const totalCh = novel.chapters.length;
 
     for (let i = 0; i < totalCh; i++) {
+      sendEvent('progress', { message: `正在调优第 ${i + 1}/${totalCh} 章...` });
+
       const ch = novel.chapters[i];
       const chPrompt = buildOptimizeChapterPrompt(ch, ch.chapterNumber, analysis, novel.outline);
       const chResult = await streamGenerate(
@@ -1765,7 +1779,6 @@ router.post('/optimize/:novelId', auth, async (req, res) => {
       );
       let newContent = chResult?.content || '';
       if (newContent.length > 50) {
-        // 去AI味 + 标点修正
         try {
           const { text } = processChapter(newContent);
           newContent = text;
@@ -1774,7 +1787,6 @@ router.post('/optimize/:novelId', auth, async (req, res) => {
         novel.chapters[i].wordCount = newContent.length;
         optimizedCount++;
       } else {
-        // 内容太短，只做去AI味
         try {
           const { text } = processChapter(ch.content || '');
           if (text !== ch.content) {
@@ -1789,14 +1801,15 @@ router.post('/optimize/:novelId', auth, async (req, res) => {
     novel.status = 'completed';
     await novel.save();
 
-    res.json({
-      status: 'completed',
+    sendEvent('completed', {
       message: `✅ 全文调优完成！重写 ${optimizedCount} 章，润色 ${polishedCount} 章`,
       optimizedCount, polishedCount, totalChapters: totalCh,
     });
+    res.end();
   } catch (error) {
     console.error('全文调优失败:', error);
-    res.status(500).json({ message: '全文调优失败', error: error.message });
+    res.write(`data: ${JSON.stringify({ type: 'error', message: error.message })}\n\n`);
+    res.end();
   }
 });
 
