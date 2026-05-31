@@ -46,18 +46,18 @@
 
       <!-- 上传参考小说 → 提取结构模式 -->
       <div class="card ref-struct-card">
-        <div class="section-title">📄 上传参考小说（结构启发创作）</div>
+        <div class="section-title">上传参考小说（结构启发创作）</div>
         <div class="ref-struct-desc">上传一本小说，AI 将提取其结构骨架（剧情套路/冲突类型/世界观模板），生成一本结构相似但情节完全原创的新小说，避免抄袭风险</div>
         <div class="upload-bar">
           <input ref="structFileInput" type="file" accept=".txt" @change="handleStructFile" style="display:none" />
-          <button class="btn btn-sm btn-outline" @click="$refs.structFileInput.click()">📁 选择文件</button>
+          <button class="btn btn-sm btn-secondary" @click="$refs.structFileInput.click()">选择文件</button>
           <span v-if="structFileName" class="file-name">{{ structFileName }}</span>
         </div>
         <button v-if="structRawText && !structAnalyzing && !structResult" class="btn btn-primary btn-sm btn-block" style="margin-top:8px;" @click="analyzeStructure">
-          🔍 分析结构
+          分析结构
         </button>
         <div v-if="structAnalyzing" class="struct-analyzing">
-          <span class="loading-spinner" style="width:20px;height:20px;display:inline-block;"></span>
+          <span class="spinner" style="width:20px;height:20px;display:inline-block;"></span>
           <span style="margin-left:8px;">AI 正在分析剧情结构...</span>
         </div>
         <div v-if="structResult" class="struct-result">
@@ -69,14 +69,14 @@
           </div>
           <label class="checkbox-row" style="margin-top:8px;">
             <input type="checkbox" v-model="useStructureRef" />
-            <span>✅ 参考此结构模式生成（情节将完全原创）</span>
+            <span>参考此结构模式生成（情节将完全原创）</span>
           </label>
-          <button class="btn btn-sm btn-outline" style="margin-top:4px;" @click="structResult='';structRawText=''">清除重新上传</button>
+          <button class="btn btn-sm btn-secondary" style="margin-top:4px;" @click="structResult='';structRawText=''">清除重新上传</button>
         </div>
       </div>
 
       <div v-if="genMode === 'book'" class="card">
-        <div class="section-title">📋 {{ $t('generate.stepOutline') }}</div>
+        <div class="section-title">{{ $t('generate.stepOutline') }}</div>
         <div v-if="generating && outlineStreamingText" class="outline-streaming">
           <div class="outline-loading">
             <span class="dot"></span><span class="dot"></span><span class="dot"></span>
@@ -134,7 +134,7 @@
       </button>
 
       <div v-if="generating && outlineStreamingText" class="card outline-stream-card">
-        <div class="section-title">📋 {{ $t('generate.statusGenerating') }}</div>
+        <div class="section-title">{{ $t('generate.statusGenerating') }}</div>
         <div class="outline-stream-text">{{ outlineStreamingText }}</div>
       </div>
 
@@ -237,7 +237,7 @@
           <p class="outline-modal-desc">{{ $t('generate.outlineDesc') }}</p>
           <textarea v-model="outlineModalText" class="outline-modal-textarea" rows="12"></textarea>
           <div class="outline-modal-actions">
-            <button class="btn btn-outline" @click="outlineModal=false; outlineReject()">{{ $t('common.cancel') }}</button>
+            <button class="btn btn-secondary" @click="outlineModal=false; outlineReject()">{{ $t('common.cancel') }}</button>
             <button class="btn btn-primary" @click="outlineConfirm()">{{ $t('generate.outlineConfirm') }}</button>
           </div>
         </div>
@@ -467,11 +467,11 @@ async function startGen() {
       } else if (event.type === 'chapter_start') {
         genStatus.value = `正在生成 ${event.title || '第' + event.chapterNumber + '章'}...`
       } else if (event.type === 'completed') {
-        genStatus.value = '✅ 生成完成！'; genOk.value = true; generating.value = false
+        genStatus.value = '生成完成！'; genOk.value = true; generating.value = false
       } else if (event.type === 'paused') {
         genStatus.value = '⏸️ 已暂停'; generating.value = false
       } else if (event.type === 'token_exhausted') {
-        genStatus.value = '⚠️ Token 已用完，请充值'; generating.value = false
+        genStatus.value = 'Token 已用完，请充值'; generating.value = false
       }
     }
   )
@@ -609,11 +609,11 @@ async function startLNGen() {
       } else if (event.type === 'chapter_start') {
         lnStatus.value = `正在生成 ${event.title || '第' + event.chapterNumber + '章'}...`
       } else if (event.type === 'completed') {
-        lnStatus.value = '✅ 生成完成！'; lnOk.value = true; lnGenerating.value = false
+        lnStatus.value = '生成完成！'; lnOk.value = true; lnGenerating.value = false
       } else if (event.type === 'paused') {
         lnStatus.value = '⏸️ 已暂停'; lnGenerating.value = false
       } else if (event.type === 'token_exhausted') {
-        lnStatus.value = '⚠️ Token 已用完，请充值'; lnGenerating.value = false
+        lnStatus.value = 'Token 已用完，请充值'; lnGenerating.value = false
       }
     }
   )
@@ -645,112 +645,481 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.generate-page { padding-top: var(--header-height); }
+.generate-page {
+  padding-top: var(--header-height);
+}
 
-/* Tabs */
-.tabs { display: flex; gap: 0; margin-bottom: 12px; background: var(--card-bg); border-radius: 10px; overflow: hidden; border: 1px solid var(--border-color); }
-.tab { flex: 1; padding: 12px; text-align: center; font-size: 14px; font-weight: 600; cursor: pointer; border: none; background: transparent; font-family: inherit; transition: all 0.2s; color: var(--text-secondary); }
-.tab.active { background: var(--primary-color); color: white; }
-.tab:hover:not(.active) { background: #f5f5f5; }
+/* --- Tab switcher --- */
+.tabs {
+  display: flex;
+  background: var(--bg);
+  border-radius: var(--radius);
+  padding: 3px;
+  margin: 0 16px 16px;
+  border: 1px solid var(--card-border);
+}
+.tab {
+  flex: 1;
+  padding: 10px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  color: var(--text-tertiary);
+  border-radius: 6px;
+  transition: all var(--transition);
+}
+.tab.active {
+  background: var(--card);
+  color: var(--text);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+.tab:hover:not(.active) {
+  color: var(--text-secondary);
+}
 
-/* 类型 */
-.gender-tabs { display: flex; gap: 10px; margin-bottom: 14px; }
-.gender-tabs button { flex: 1; padding: 10px; border: 2px solid var(--border-color); border-radius: 10px; font-size: 14px; font-weight: 600; background: #f8f8f8; cursor: pointer; font-family: inherit; transition: all 0.2s; }
-.gender-tabs button.active { border-color: var(--primary-color); background: #fff5f0; }
-.type-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; }
-.type-card { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 8px; border: 2px solid var(--border-color); border-radius: 10px; background: #f8f8f8; cursor: pointer; transition: all 0.15s; }
-.type-card:hover { border-color: var(--primary-light); }
-.type-card.selected { border-color: var(--primary-color); background: #fff5f0; }
-.type-icon { font-size: 24px; }
-.type-name { font-size: 12px; font-weight: 500; color: var(--text-secondary); text-align: center; }
-.type-info { margin-top: 8px; font-size: 13px; color: var(--success-color); font-weight: 500; text-align: center; }
+/* --- Genre Tabs --- */
+.gender-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.gender-tabs button {
+  flex: 1;
+  padding: 10px 14px;
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  font-size: 14px;
+  font-weight: 500;
+  background: var(--card);
+  cursor: pointer;
+  font-family: inherit;
+  transition: all var(--transition);
+  color: var(--text-secondary);
+}
+.gender-tabs button.active {
+  border-color: var(--primary);
+  background: var(--primary-light);
+  color: var(--primary);
+  font-weight: 600;
+}
 
-/* 模式 */
-.mode-radio-group { display: flex; gap: 10px; }
-.mode-radio { flex: 1; padding: 10px; border: 2px solid var(--border-color); border-radius: 10px; cursor: pointer; text-align: center; transition: all 0.15s; font-size: 14px; font-weight: 500; }
+/* --- Type Grid --- */
+.type-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+}
+.type-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 14px 6px;
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  background: var(--card);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.type-card:hover {
+  border-color: var(--primary);
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.08);
+}
+.type-card.selected {
+  border-color: var(--primary);
+  background: var(--primary-light);
+}
+.type-icon {
+  font-size: 22px;
+  line-height: 1;
+}
+.type-name {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-align: center;
+  line-height: 1.3;
+}
+.type-info {
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--primary);
+  font-weight: 500;
+  text-align: center;
+}
+
+/* --- Mode Radios --- */
+.mode-radio-group {
+  display: flex;
+  gap: 10px;
+}
+.mode-radio {
+  flex: 1;
+  padding: 12px;
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  text-align: center;
+  transition: all var(--transition);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
 .mode-radio input { display: none; }
-.mode-radio.active { border-color: var(--primary-color); background: #fff5f0; }
-.word-count-input { display: flex; align-items: center; gap: 8px; }
+.mode-radio.active {
+  border-color: var(--primary);
+  background: var(--primary-light);
+  color: var(--primary);
+}
+.mode-icon {
+  font-size: 20px;
+  display: block;
+  margin-bottom: 4px;
+}
+.mode-label {
+  font-size: 13px;
+}
+
+/* --- Word Count --- */
+.word-count-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .word-count-input .input { flex: 1; }
-.unit { font-size: 14px; color: var(--text-secondary); }
-.word-count-presets { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
-.preset-btn { padding: 4px 12px; border: 1px solid var(--border-color); border-radius: 14px; font-size: 12px; cursor: pointer; transition: all 0.15s; color: var(--text-secondary); }
-.preset-btn.active { border-color: var(--primary-color); background: #fff5f0; color: var(--primary-color); font-weight: 600; }
-.preset-btn:hover { border-color: var(--primary-color); }
+.unit {
+  font-size: 14px;
+  color: var(--text-tertiary);
+}
+.word-count-presets {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+.preset-btn {
+  padding: 4px 14px;
+  border: 1px solid var(--card-border);
+  border-radius: 100px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all var(--transition);
+  color: var(--text-tertiary);
+  background: var(--card);
+  font-family: inherit;
+}
+.preset-btn.active {
+  border-color: var(--primary);
+  background: var(--primary-light);
+  color: var(--primary);
+  font-weight: 600;
+}
+.preset-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
 
-/* 生成状态 */
-.btn-lg { padding: 14px; font-size: 16px; }
-.gen-status { margin-top: 10px; text-align: center; font-size: 14px; font-weight: 500; color: var(--error-color); }
-.gen-status.ok { color: var(--success-color); }
+/* --- Status --- */
+.gen-status {
+  margin-top: 12px;
+  text-align: center;
+}
 
-/* 流式输出 */
-.stream-card { max-height: 60vh; overflow-y: auto; }
-.stream-content { white-space: pre-wrap; font-size: 14px; line-height: 1.8; color: var(--text-primary); }
+/* --- Stream Output --- */
+.stream-card {
+  max-height: 60vh;
+  overflow-y: auto;
+}
 
-/* 大纲流式 */
-.outline-stream-card { background: #fff8f0; border-color: #ffd591; }
-.outline-stream-text { white-space: pre-wrap; font-size: 13px; line-height: 1.6; color: var(--text-secondary); }
-.outline-loading { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 13px; color: var(--text-light); }
-.outline-loading .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--primary-color); animation: dotPulse 1.2s infinite; }
-.outline-loading .dot:nth-child(2) { animation-delay: 0.2s; }
-.outline-loading .dot:nth-child(3) { animation-delay: 0.4s; }
-@keyframes dotPulse { 0%,80%,100% { opacity: 0.3; transform: scale(0.8); } 40% { opacity: 1; transform: scale(1); } }
+/* --- Outline Stream --- */
+.outline-stream-card {
+  background: #fffbeb;
+  border-color: #fde68a;
+}
 
-/* 生成小说参考 */
-.gen-ref-card { border-color: #91d5ff; background: #f0f8ff; }
+/* --- Light Novel Tab --- */
+.ln-grid {
+  grid-template-columns: repeat(3, 1fr) !important;
+}
+.ln-trait-section .label-sm {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+.ln-traits {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ln-traits .preset-btn {
+  font-size: 13px;
+}
 
-/* 轻小说 */
-.ln-grid { grid-template-columns: repeat(3,1fr) !important; }
-.ln-trait-section .label-sm { font-size: 13px; color: var(--text-secondary); margin-bottom: 8px; font-weight: 500; }
-.ln-traits { display: flex; gap: 6px; flex-wrap: wrap; }
-.ln-traits .preset-btn { font-size: 13px; }
+/* --- Reference Style Matching --- */
+.ln-ref-card {
+  border-color: #a7f3d0;
+  background: #ecfdf5;
+}
+.ln-ref-desc {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-bottom: 10px;
+}
+.ln-ref-empty {
+  font-size: 13px;
+  color: var(--text-tertiary);
+  text-align: center;
+  padding: 16px;
+}
+.ln-ref-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.ln-ref-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: all var(--transition);
+  background: var(--card);
+}
+.ln-ref-item:hover {
+  border-color: var(--primary);
+}
+.ln-ref-item.selected {
+  border-color: var(--success);
+  background: var(--success-bg);
+}
+.ref-check {
+  font-size: 16px;
+  flex-shrink: 0;
+  width: 20px;
+  text-align: center;
+}
+.ref-info {
+  min-width: 0;
+  flex: 1;
+}
+.ref-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.ref-meta {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-top: 1px;
+}
+.ref-count {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--success);
+  font-weight: 500;
+  text-align: center;
+}
 
-/* 参考风格匹配 */
-.ln-ref-card { border-color: #b7eb8f; background: #f6ffed; }
-.ln-ref-desc { font-size: 12px; color: var(--text-light); margin-bottom: 10px; }
-.ln-ref-empty { font-size: 13px; color: var(--text-light); text-align: center; padding: 16px; }
-.ln-ref-list { display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow-y: auto; }
-.ln-ref-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border-color); border-radius: 8px; cursor: pointer; transition: all 0.15s; background: #fff; }
-.ln-ref-item:hover { border-color: var(--primary-color); }
-.ln-ref-item.selected { border-color: #52c41a; background: #f6ffed; }
-.ref-check { font-size: 16px; flex-shrink: 0; }
-.ref-info { min-width: 0; }
-.ref-title { font-size: 13px; font-weight: 600; color: var(--text-primary); }
-.ref-meta { font-size: 11px; color: var(--text-light); margin-top: 1px; }
-.ref-count { margin-top: 8px; font-size: 12px; color: var(--success-color); font-weight: 500; text-align: center; }
+/* --- Template Match --- */
+.tmpl-match-card {
+  margin-top: 10px;
+  padding: 12px;
+  background: var(--info-bg);
+  border: 1px solid #bae6fd;
+  border-radius: var(--radius);
+}
+.tmpl-match-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--info);
+  margin-bottom: 6px;
+}
+.tmpl-match-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tmpl-match-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.tmpl-name {
+  font-weight: 500;
+  color: var(--text);
+}
+.tmpl-score {
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 100px;
+  font-weight: 600;
+}
+.tmpl-score.high {
+  background: var(--success-bg);
+  color: var(--success);
+}
+.tmpl-score.mid {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+.tmpl-score.low {
+  background: var(--error-bg);
+  color: var(--error);
+}
+.tmpl-match-hint {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin-top: 6px;
+}
 
-/* 模板匹配 */
-.tmpl-match-card { margin-top: 10px; padding: 10px 12px; background: #f0f8ff; border: 1px solid #91d5ff; border-radius: 8px; }
-.tmpl-match-title { font-size: 12px; font-weight: 600; color: #1890ff; margin-bottom: 6px; }
-.tmpl-match-list { display: flex; flex-direction: column; gap: 4px; }
-.tmpl-match-item { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-.tmpl-name { font-weight: 500; color: var(--text-primary); }
-.tmpl-score { font-size: 11px; padding: 1px 6px; border-radius: 4px; font-weight: 600; }
-.tmpl-score.high { background: #f6ffed; color: #52c41a; }
-.tmpl-score.mid { background: #fff7e6; color: #fa8c16; }
-.tmpl-score.low { background: #fff1f0; color: #ff4d4f; }
-.tmpl-match-hint { font-size: 11px; color: var(--text-light); margin-top: 6px; }
+/* --- Outline Modal --- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(15, 23, 42, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: fadeIn 200ms var(--ease);
+  padding: 16px;
+}
+.outline-modal-card {
+  background: var(--card);
+  border-radius: var(--radius-xl);
+  padding: 24px;
+  width: 100%;
+  max-width: 600px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.15);
+  animation: slideUp 250ms var(--ease);
+}
+.outline-modal-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+.outline-modal-desc {
+  font-size: 13px;
+  color: var(--text-tertiary);
+  margin-bottom: 14px;
+}
+.outline-modal-textarea {
+  width: 100%;
+  min-height: 300px;
+  padding: 12px;
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius);
+  font-size: 13px;
+  line-height: 1.6;
+  resize: vertical;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+.outline-modal-textarea:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(37,99,235,0.1);
+  outline: none;
+}
+.outline-modal-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 16px;
+  justify-content: flex-end;
+}
+.outline-modal-actions .btn {
+  min-width: 100px;
+  text-align: center;
+}
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 
-/* 大纲预览弹窗 */
-.modal-overlay { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; animation: fadeIn 0.2s; }
-.outline-modal-card { background: var(--card-bg); border-radius: 16px; padding: 24px; width: 90%; max-width: 600px; }
-.outline-modal-title { font-size: 17px; font-weight: 700; color: var(--text-primary); margin-bottom: 6px; }
-.outline-modal-desc { font-size: 13px; color: var(--text-light); margin-bottom: 14px; }
-.outline-modal-textarea { width: 100%; min-height: 300px; padding: 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 13px; line-height: 1.6; resize: vertical; font-family: inherit; box-sizing: border-box; }
-.outline-modal-actions { display: flex; gap: 10px; margin-top: 16px; justify-content: flex-end; }
-.outline-modal-actions .btn { min-width: 100px; text-align: center; }
-@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+/* --- Reference Structure Clone --- */
+.ref-struct-desc {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+  line-height: 1.5;
+}
+.upload-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.file-name {
+  font-size: 12px;
+  color: var(--text-secondary);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.struct-analyzing {
+  display: flex;
+  align-items: center;
+  margin-top: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.struct-result {
+  margin-top: 8px;
+}
+.struct-preview {
+  max-height: 300px;
+  overflow-y: auto;
+  background: #fafafa;
+  border-radius: var(--radius);
+  padding: 12px;
+  border: 1px solid var(--card-border);
+}
+.struct-section {
+  margin-bottom: 10px;
+}
+.struct-section:last-child {
+  margin-bottom: 0;
+}
+.struct-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--primary);
+  margin-bottom: 4px;
+}
+.struct-section-body {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
 
-/* 参考小说结构克隆 */
-.ref-struct-card { border: 1px solid #b7eb8f; background: #f6ffed; }
-.ref-struct-desc { font-size: 12px; color: var(--text-light); margin-bottom: 10px; line-height: 1.5; }
-.ref-struct-card .upload-bar { display: flex; align-items: center; gap: 8px; }
-.ref-struct-card .file-name { font-size: 12px; color: var(--text-secondary); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.struct-analyzing { display: flex; align-items: center; margin-top: 8px; font-size: 13px; color: var(--text-secondary); }
-.struct-result { margin-top: 8px; }
-.struct-preview { max-height: 300px; overflow-y: auto; background: #fafafa; border-radius: 8px; padding: 10px; }
-.struct-section { margin-bottom: 10px; }
-.struct-section:last-child { margin-bottom: 0; }
-.struct-section-title { font-size: 13px; font-weight: 600; color: var(--primary-color); margin-bottom: 4px; }
-.struct-section-body { font-size: 12px; color: var(--text-secondary); line-height: 1.6; white-space: pre-wrap; }
+/* --- Checkbox Row --- */
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+.checkbox-row input[type="checkbox"] {
+  accent-color: var(--primary);
+  width: 16px;
+  height: 16px;
+}
+
 </style>

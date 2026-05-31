@@ -8,7 +8,7 @@
     <TabBar v-if="showTabBar" />
     <div v-if="showTabBar" class="global-footer">
       {{ $t('app.group') }}：<strong>1019601998</strong>
-      <span class="lang-toggle" @click="switchLang">{{ isZh ? '🌐 English' : '🌐 中文' }}</span>
+      <span class="lang-toggle" @click="switchLang">{{ isZh ? 'Switch to English' : '切换到 English' }}</span>
     </div>
 
     <!-- 公告弹窗 -->
@@ -31,7 +31,7 @@
             </div>
           </div>
           <div class="modal-footer">
-            <button class="btn btn-primary btn-block" @click="closeAnnouncement">
+            <button class="btn btn-primary btn-block btn-lg" @click="closeAnnouncement">
               {{ $t('announcement.gotIt') }}
             </button>
           </div>
@@ -63,12 +63,9 @@ watchEffect(async () => {
   }
 })
 
-// 手机切后台再回来时：验证 token 是否仍有效
 function handleVisibilityChange() {
   if (document.visibilityState === 'visible' && authStore.isLoggedIn) {
-    authStore.getProfile().catch(() => {
-      // getProfile 返回 401 时，api 拦截器会清 token 并跳转登录
-    })
+    authStore.getProfile().catch(() => {})
   }
 }
 onMounted(() => {
@@ -89,50 +86,11 @@ function switchLang() {
 </script>
 
 <style scoped>
-.app { width: 100%; height: 100%; display: flex; flex-direction: column; position: relative; }
-.global-footer {
-  position: fixed; bottom: var(--tab-height); left: 0; right: 0;
-  text-align: center; font-size: 11px; color: var(--text-light);
-  padding: 4px 0; background: var(--card-bg);
-  border-top: 1px solid var(--border-color); z-index: 999;
-  display: flex; align-items: center; justify-content: center; gap: 12px;
+.app {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  position: relative;
 }
-.global-footer strong { color: var(--primary-color); }
-.lang-toggle { cursor: pointer; color: var(--primary-color); font-weight: 500; }
-.lang-toggle:hover { text-decoration: underline; }
-
-/* 公告弹窗 */
-:global(.announcement-overlay) {
-  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0,0,0,0.5); display: flex; align-items: center;
-  justify-content: center; z-index: 9999; padding: 24px;
-}
-:global(.announcement-modal) {
-  background: white; border-radius: 16px; max-width: 360px;
-  width: 100%; overflow: hidden; animation: popIn 0.3s ease;
-}
-@keyframes popIn {
-  0% { transform: scale(0.8); opacity: 0; }
-  100% { transform: scale(1); opacity: 1; }
-}
-:global(.modal-header) {
-  text-align: center; font-size: 18px; font-weight: 700;
-  color: var(--primary-color); padding: 24px 20px 0;
-}
-:global(.modal-body) { padding: 20px; text-align: center; }
-:global(.gift-icon) { font-size: 56px; margin-bottom: 12px; animation: bounce 1s infinite; }
-@keyframes bounce {
-  0%,100% { transform: translateY(0); }
-  50% { transform: translateY(-10px); }
-}
-:global(.announce-text) { font-size: 15px; color: var(--text-secondary); margin-bottom: 8px; }
-:global(.announce-highlight) { font-size: 22px; font-weight: 700; color: var(--primary-color); padding: 10px 0; }
-:global(.announce-highlight strong) { font-size: 28px; }
-:global(.announce-detail) {
-  text-align: left; margin-top: 12px; padding: 12px;
-  background: #fff9f5; border-radius: 8px; border: 1px solid #ffe0d0;
-}
-:global(.announce-detail p) { font-size: 13px; color: var(--text-secondary); margin-bottom: 6px; line-height: 1.5; }
-:global(.announce-detail p:last-child) { margin-bottom: 0; }
-:global(.modal-footer) { padding: 0 20px 20px; }
 </style>
