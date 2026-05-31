@@ -21,3 +21,6 @@ RELEASE_NOTES.md
 DEPLOY.md
 deploy.sh
 server/scripts/
+
+# Deploy webhooks (server-specific)
+server/scripts/webhook*.js

@@ -6,8 +6,12 @@ const connectDB = require('./config/db');
 const User = require('./models/User');
 const http = require('http');
 
-// 加载环境变量
-dotenv.config({ path: path.resolve(__dirname, '.env') });
+// 加载环境变量（支持 --env test 加载 .env.test）
+const envFile = process.argv.includes('--env') && process.argv[process.argv.indexOf('--env') + 1] === 'test'
+  ? '.env.test'
+  : '.env';
+dotenv.config({ path: path.resolve(__dirname, envFile) });
+console.log(`📄 加载环境配置: ${envFile}`);
 
 // 清理残留 Chromium 进程
 const { execSync } = require('child_process');
