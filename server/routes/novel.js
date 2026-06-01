@@ -316,9 +316,12 @@ ${structureRef}
         res.write(`data: ${JSON.stringify({ type: 'status', message: '正在制定章节计划表...' })}\n\n`);
         const planPrompt = buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, structureRef);
 
-        // 用 AbortController 施加较短超时 + 心跳保证连接不断
+        // 用 AbortController 施加超时 + 心跳保证连接不断
         const planController = new AbortController();
-        const planTimeout = setTimeout(() => planController.abort(), 45000); // 45 秒超时
+        const planTimeout = setTimeout(() => {
+          console.log('章节计划表生成超时(150s)，将在重试后继续');
+          planController.abort();
+        }, 150000); // 150 秒超时
         const heartbeat = setInterval(() => {
           try { res.write(': heartbeat\n\n'); } catch { clearInterval(heartbeat); }
         }, 10000);
@@ -335,9 +338,11 @@ ${structureRef}
           await novel.save();
           const planChCount = (chapterPlan.match(/第\d+章/g) || []).length;
           res.write(`data: ${JSON.stringify({ type: 'status', message: `章节计划已制定（共 ${planChCount} 章）` })}\n\n`);
+        } else {
+          console.warn('章节计划表生成为空内容，将在无计划情况下继续');
         }
       } catch (e) {
-        console.error('章节计划生成失败:', e.message);
+        console.error('章节计划生成失败:', e.message, '继续无计划生成');
         res.write(`data: ${JSON.stringify({ type: 'status', message: '章节计划生成暂不可用，继续创作...' })}\n\n`);
       }
     }

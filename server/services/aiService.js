@@ -294,23 +294,26 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     let timeoutId;
+    let currentSignal;
     try {
       const timeoutController = new AbortController();
       timeoutId = setTimeout(() => timeoutController.abort(), 90000);
 
-      // 合并外部 signal（如 abortController.signal）和内部超时 signal
-      let combinedSignal = timeoutController.signal;
-      if (signal) {
+      // 构建本次尝试的合并 signal
+      // 关键：重试时如果外部 signal 已被 abort（如章节计划 45s 超时），
+      // 不能重复使用它（否则重试立刻失败），此时只使用内部超时 signal
+      if (signal && !signal.aborted) {
         if (typeof AbortSignal.any === 'function') {
-          combinedSignal = AbortSignal.any([signal, timeoutController.signal]);
+          currentSignal = AbortSignal.any([signal, timeoutController.signal]);
         } else {
-          // 降级：外部 signal 上注册超时 controller 的 abort
           signal.addEventListener('abort', () => timeoutController.abort(), { once: true });
-          combinedSignal = signal;
+          currentSignal = signal;
         }
+      } else {
+        currentSignal = timeoutController.signal;
       }
 
-      const response = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify(body), signal: combinedSignal });
+      const response = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify(body), signal: currentSignal });
 
       clearTimeout(timeoutId);
 
