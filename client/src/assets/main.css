@@ -47,6 +47,17 @@
   /* 过渡 */
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
   --transition: 200ms var(--ease);
+
+  /* === 兼容别名（旧版变量名→新设计系统映射） === */
+  --primary-color: var(--primary);
+  --primary-hover-color: var(--primary-hover);
+  --success-color: var(--success);
+  --warning-color: var(--warning);
+  --error-color: var(--error);
+  --border-color: var(--card-border);
+  --card-bg: var(--card);
+  --text-light: var(--text-tertiary);
+  --bg-light: var(--bg);
 }
 
 /* --- Reset & Base --- */
@@ -535,4 +546,199 @@ select:focus {
 }
 .global-footer .lang-btn:hover:not(.active) {
   color: var(--text-secondary);
+}
+
+/* --- Shared Component Patterns --- */
+
+/* Preset buttons (字数预设/润色方案/标签选择) */
+.preset-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 14px;
+  border: 1px solid var(--card-border);
+  border-radius: 100px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition);
+  background: transparent;
+  user-select: none;
+  white-space: nowrap;
+}
+.preset-btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.preset-btn.active {
+  border-color: var(--primary);
+  background: var(--primary-light);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+/* Mode radio group (整本/单章 选择) */
+.mode-radio-group {
+  display: flex;
+  gap: 10px;
+}
+.mode-radio {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 12px 10px;
+  border: 2px solid var(--card-border);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all var(--transition);
+  background: var(--bg);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  user-select: none;
+}
+.mode-radio input[type="radio"] {
+  display: none;
+}
+.mode-radio:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.mode-radio.active {
+  border-color: var(--primary);
+  background: var(--primary-light);
+  color: var(--primary);
+  font-weight: 600;
+}
+
+/* Checkbox row */
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  color: var(--text);
+}
+.checkbox-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+/* Status badges */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  padding: 2px 10px;
+  border-radius: 100px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+.status-badge.completed,
+.status-badge.done,
+.status-badge.generating {
+  background: var(--success-bg);
+  color: var(--success);
+}
+.status-badge.paused,
+.status-badge.optimizing {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+.status-badge.analyzing,
+.status-badge.processing {
+  background: var(--info-bg);
+  color: var(--info);
+}
+.status-badge.draft {
+  background: var(--bg);
+  color: var(--text-tertiary);
+}
+
+/* Upload area (drag & drop style) */
+.upload-area {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+  border: 2px dashed var(--card-border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all var(--transition);
+  background: var(--bg);
+  min-height: 120px;
+}
+.upload-area:hover {
+  border-color: var(--primary);
+  background: var(--primary-light);
+}
+.upload-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text-tertiary);
+}
+.upload-icon {
+  font-size: 36px;
+}
+.upload-file-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.upload-file-info .file-icon {
+  font-size: 28px;
+}
+.upload-file-info .file-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+/* Progress bar */
+.progress-bar {
+  width: 100%;
+  height: 6px;
+  background: var(--bg-alt);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--primary);
+  border-radius: 3px;
+  transition: width 300ms var(--ease);
+}
+
+/* Page header (standardized) */
+.page-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 14px 16px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  position: relative;
+}
+.page-header .subtitle {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-tertiary);
+  margin-top: 2px;
+}
+
+/* Presets container (tags wrap) */
+.presets-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
 }

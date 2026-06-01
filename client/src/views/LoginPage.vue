@@ -10,7 +10,7 @@
           </svg>
         </div>
         <h1 class="brand-title">{{ $t('app.title') }}</h1>
-        <p class="brand-subtitle">{{ $t('auth.loginSuccess') }}</p>
+        <p class="brand-subtitle">{{ $t('app.slogan') }}</p>
       </div>
 
       <div class="card auth-card">

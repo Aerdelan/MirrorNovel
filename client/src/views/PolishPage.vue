@@ -1,8 +1,8 @@
 <template>
   <div class="page-container polish-page">
-    <div class="page-header">
-      <h2>{{ $t('polish.title') }}</h2>
-      <p class="subtitle">{{ $t('polish.subtitle') }}</p>
+    <div class="page-header" style="flex-direction:column;gap:2px;">
+      <span>{{ $t('polish.title') }}</span>
+      <span class="subtitle">{{ $t('polish.subtitle') }}</span>
     </div>
 
     <div class="card">
