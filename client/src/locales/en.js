@@ -77,7 +77,7 @@ export default {
   generate: {
     tabGen: '✍️ Generate Novel', tabLN: '🌸 Light Novel',
     stepType: 'Select Novel Type', stepChar: 'Protagonist', stepWorld: 'World Setting', stepOutline: 'Outline', stepMode: 'Mode & Word Count',
-    maleFreq: '🚹 Male', femaleFreq: '🚺 Female',
+    maleFreq: '👨 Male', femaleFreq: '👩 Female',
     placeholderName: 'Protagonist name', placeholderWorld: 'Describe the world setting, background, rules... (optional)', placeholderOutline: 'Optional, AI will auto-generate if left empty',
     modeBook: '📚 Full Novel', modeChapter: '📄 Single Chapter',
     unitWord: 'chars', btnGenerate: '🚀 Start Writing', btnGenerating: '⏳ Generating...',

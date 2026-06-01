@@ -491,19 +491,48 @@ select:focus {
   bottom: var(--tab-height);
   left: 0;
   right: 0;
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   padding: 6px 16px;
   font-size: 11px;
   color: var(--text-tertiary);
   background: var(--card);
   border-top: 1px solid var(--card-border);
+  z-index: 999;
 }
-.global-footer .lang-toggle {
-  margin-left: 10px;
-  color: var(--primary);
-  cursor: pointer;
+.global-footer .footer-left {
+  flex-shrink: 0;
+}
+.global-footer .footer-right {
+  flex-shrink: 0;
+}
+.global-footer .lang-toggle-group {
+  display: flex;
+  gap: 2px;
+  background: var(--bg);
+  border-radius: 6px;
+  padding: 2px;
+  border: 1px solid var(--card-border);
+}
+.global-footer .lang-btn {
+  padding: 3px 10px;
+  border: none;
+  border-radius: 4px;
+  font-size: 11px;
   font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  background: transparent;
+  color: var(--text-tertiary);
+  transition: all 0.2s;
 }
-.global-footer .lang-toggle:hover {
-  text-decoration: underline;
+.global-footer .lang-btn.active {
+  background: var(--card);
+  color: var(--primary);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+}
+.global-footer .lang-btn:hover:not(.active) {
+  color: var(--text-secondary);
 }

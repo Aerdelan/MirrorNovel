@@ -56,7 +56,7 @@
             <span>🏷️ {{ (novel.tags || []).map(t => $tt(t)).join(', ') || '无标签' }}</span>
           </div>
           <div class="novel-meta" v-if="novel.gender">
-            <span>{{ novel.gender === 'male' ? '🚹 男频' : '🚺 女频' }}</span>
+            <span>{{ novel.gender === 'male' ? '👨 男频' : '👩 女频' }}</span>
             <span>📊 质量分：{{ novel.qualityScore || '待评估' }}</span>
             <span>{{ novel.vocabularyBank?.length || 0 }} 个特色词汇</span>
           </div>
@@ -77,7 +77,7 @@
           <h3>📖 {{ detailNovel.title }}</h3>
           <div class="detail-info">
             <div>{{ $t('refList.detailCategory', { cat: $tn(detailNovel.mainCategory), sub: $tn(detailNovel.subCategory) || $t('refList.general') }) }}</div>
-            <div>{{ $t('refList.detailGender', { gender: detailNovel.gender === 'male' ? $t('refList.genderMale') : $t('refList.genderFemale') }) }}</div>
+            <div>{{ $t('refList.detailGender', { gender: detailNovel.gender === 'male' ? '👨 ' + $t('refList.genderMale') : '👩 ' + $t('refList.genderFemale') }) }}</div>
             <div>{{ $t('refList.detailWords', { count: (detailNovel.originalLength || 0).toLocaleString() }) }}</div>
             <div v-if="detailNovel.tags?.length">{{ $t('refList.detailTags', { tags: detailNovel.tags.map(t => $tt(t)).join(', ') }) }}</div>
             <div><strong>质量评分：</strong><span class="quality-badge" :class="scoreClass(detailNovel.qualityScore)">{{ detailNovel.qualityScore || '未评估' }}</span></div>
@@ -143,7 +143,7 @@ const typeIcons = {
 
 const analyzedCount = computed(() => refStore.referenceList.filter(n => n.aiProcessed).length)
 
-function getGenderIcon(g) { return g === 'male' ? '🚹' : g === 'female' ? '🚺' : '' }
+function getGenderIcon(g) { return g === 'male' ? '👨' : g === 'female' ? '👩' : '' }
 function getMainIcon(name) { return typeIcons[name] || '📄' }
 function scoreClass(s) {
   if (!s) return '';

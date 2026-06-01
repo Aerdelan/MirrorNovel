@@ -33,7 +33,7 @@ export default {
   generate: {
     tabGen: '✍️ 生成小说', tabLN: '🌸 轻小说',
     stepType: '选择小说类型', stepChar: '主角设定', stepWorld: '世界观设定', stepOutline: '创作大纲', stepMode: '生成模式 & 字数设定',
-    maleFreq: '🚹 男频', femaleFreq: '🚺 女频',
+    maleFreq: '👨 男频', femaleFreq: '👩 女频',
     placeholderName: '故事主角名字', placeholderWorld: '描述故事的世界观、背景设定、特殊规则等（可选）', placeholderOutline: '可选，不填则由AI自动生成大纲',
     modeBook: '📚 生成整本', modeChapter: '📄 生成一章',
     unitWord: '字', btnGenerate: '🚀 开始创作', btnGenerating: '⏳ 生成中...',

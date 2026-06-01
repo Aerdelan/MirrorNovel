@@ -7,8 +7,15 @@
     </router-view>
     <TabBar v-if="showTabBar" />
     <div v-if="showTabBar" class="global-footer">
-      {{ $t('app.group') }}：<strong>1019601998</strong>
-      <span class="lang-toggle" @click="switchLang">{{ isZh ? 'Switch to English' : '切换到 English' }}</span>
+      <div class="footer-left">
+        {{ $t('app.group') }}：<strong>1019601998</strong>
+      </div>
+      <div class="footer-right">
+        <div class="lang-toggle-group">
+          <button class="lang-btn" :class="{ active: isZh }" @click="setLocale('zh')">中文</button>
+          <button class="lang-btn" :class="{ active: !isZh }" @click="setLocale('en')">English</button>
+        </div>
+      </div>
     </div>
 
     <!-- 公告弹窗 -->
@@ -83,6 +90,9 @@ function closeAnnouncement() {
 function switchLang() {
   setLocale(isZh.value ? 'en' : 'zh')
 }
+
+// Set i18n text methods on window for inline use
+// 语言切换已改为底部双按钮切换模式
 </script>
 
 <style scoped>
