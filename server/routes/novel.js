@@ -277,10 +277,14 @@ ${structureRef}
 
     // ====== 自动生成大纲（整本模式且用户未填写，300秒超时） ======
     let outline = req.body.outline || '';
+    let outlineHb = null;
     if (isBook && !outline) {
       res.write(`data: ${JSON.stringify({ type: 'status', message: '正在根据您的设定生成创作大纲（可能需要1-3分钟）...' })}\n\n`);
       const outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount);
       try {
+        outlineHb = setInterval(() => {
+          try { res.write(': outline-heartbeat\n\n'); } catch { clearInterval(outlineHb); }
+        }, 10000);
         const ac = new AbortController();
         const t = setTimeout(() => { try { ac.abort(); } catch {}; console.log('大纲生成超时(300s)'); }, 300000);
         const outlineResult = await streamGenerate(
@@ -288,10 +292,8 @@ ${structureRef}
           outlinePrompt, null, ac.signal,
           resolveApiConfig(req.user?.modelConfig, 'writing')
         );
-        clearTimeout(t);
+        clearTimeout(t); clearInterval(outlineHb); outlineHb = null;
         outline = outlineResult.content || '';
-        if (outline) {
-          novel.outline = outline;
           await novel.save();
           res.write(`data: ${JSON.stringify({ type: 'outline', content: outline })}\n\n`);
           res.write(`data: ${JSON.stringify({ type: 'status', message: '大纲已生成，开始创作正文...' })}\n\n`);
@@ -299,6 +301,7 @@ ${structureRef}
           throw new Error('大纲内容为空');
         }
       } catch (e) {
+        if (outlineHb) clearInterval(outlineHb);
         console.error('大纲生成失败:', e.message);
         res.write(`data: ${JSON.stringify({ type: 'status', message: '大纲生成暂不可用，继续创作...' })}\n\n`);
       }
@@ -313,11 +316,20 @@ ${structureRef}
       try {
         res.write(`data: ${JSON.stringify({ type: 'status', message: '正在制定章节计划表...' })}\n\n`);
         const planPrompt = buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, structureRef);
+
+        // 用 AbortController 施加较短超时 + 心跳保证连接不断
+        const planController = new AbortController();
+        const planTimeout = setTimeout(() => planController.abort(), 45000); // 45 秒超时
+        const heartbeat = setInterval(() => {
+          try { res.write(': heartbeat\n\n'); } catch { clearInterval(heartbeat); }
+        }, 10000);
+
         const planResult = await streamGenerate(
           '你是一位专业的小说章节规划师。你的任务是制定详细的章节计划表，确保每章有明确目标、伏笔合理铺设和回收、结局节奏自然。',
-          planPrompt, null, null,
+          planPrompt, null, planController.signal,
           resolveApiConfig(req.user?.modelConfig, 'writing')
-        );
+        ).finally(() => { clearTimeout(planTimeout); clearInterval(heartbeat); });
+
         if (planResult && planResult.content) {
           chapterPlan = planResult.content;
           novel.chapterPlan = chapterPlan;
