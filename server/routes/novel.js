@@ -266,12 +266,10 @@ ${structureRef}
     // 客户端断开（全局，优先注册防止大纲阶段丢失）
     req.on('close', async () => {
       if (!generationDone) {
-        console.log('客户端断开连接');
-        abortController.abort();
-        novel.status = 'paused';
-        await novel.save();
+        console.log(`⚠️ 客户端断开连接（currentCh=${currentChapterNum}, done=${generationDone}），继续后台生成`);
+        // 不再 abort，让生成在后台继续完成
+        // 仅标记连接已断，生成循环照常跑
         activeStreams.delete(streamKey);
-        try { res.write(`data: ${JSON.stringify({ type: 'paused' })}\n\n`); res.end(); } catch {}
       }
     });
 
@@ -351,7 +349,7 @@ ${structureRef}
       let buffer = '';
       let lastSave = 0;
 
-      res.write(`data: ${JSON.stringify({ type: 'chapter_start', chapterNumber: chNum, title: `第${chNum}章` })}\n\n`);
+      try { res.write(`data: ${JSON.stringify({ type: 'chapter_start', chapterNumber: chNum, title: `第${chNum}章` })}\n\n`); } catch {}
 
       await streamGenerate(systemPrompt, prompt, (chunk) => {
         buffer += chunk;
@@ -360,7 +358,7 @@ ${structureRef}
           Novel.findByIdAndUpdate(novel._id, { $set: { status: 'generating', currentWordCount: sw + buffer.length } }).catch(() => {});
           lastSave = Date.now();
         }
-        res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`);
+        try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
       }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'));
 
       // 工具链：去AI味 + 标点修正
@@ -381,7 +379,7 @@ ${structureRef}
       await novel.save();
       deductTokens(req.user, finalContent);
 
-      res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber: chNum, wordCount: buffer.length })}\n\n`);
+      try { res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber: chNum, wordCount: buffer.length })}\n\n`); } catch {}
       return { content: finalContent, wordCount: buffer.length };
     }
 
