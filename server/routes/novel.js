@@ -15,7 +15,12 @@ const {
   buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, extractChapterSummary,
   streamGenerate, resolveApiConfig, countTokens,
 } = require('../services/aiService');
-const { buildAugmentedContext } = require('../services/novelContext');
+const {
+  buildAugmentedContext,
+  buildContextFromDocs,
+  summarizeChapterForDoc,
+  updateForeshadowingDoc,
+} = require('../services/novelContext');
 const { processChapter } = require('../services/chapterToolchain');
 
 // 全局活跃生成流跟踪
@@ -376,8 +381,10 @@ ${structureRef}
         const planChapters = chapterPlan ? (chapterPlan.match(/第\d+章/g) || []).length : 0;
         const totalPlannedChapters = planChapters || Math.ceil(targetWordCount / chapterSize);
 
-        // 追踪上一章内容，防止重复
-        let lastChapterContent = '';
+        // ====== 持久化文档系统（替代 on-the-fly 压缩） ======
+        let fsDoc = novel.foreshadowingDoc || '';   // 伏笔追踪文档
+        let summaryDoc = novel.chapterSummaryDoc || ''; // 章节浓缩文档
+        let lastChapterContent = '';  // 用于防重复检测
 
         for (let ch = 1; ch <= maxChapters; ch++) {
           if (abortController.signal.aborted) break;
@@ -386,7 +393,11 @@ ${structureRef}
           const remaining = targetWordCount - currentTotal;
           if (remaining <= 0) break;
 
-          const distilled = buildAugmentedContext(novel.chapters);
+          // 从持久化文档构建上下文（替代 buildAugmentedContext）
+          const contextFromDocs = buildContextFromDocs(
+            summaryDoc, fsDoc, outline, chapterPlan, ch,
+            lastChapterContent ? extractChapterSummary(lastChapterContent) : ''
+          );
 
           // 从章节计划中提取当前章的描述
           let currentChapterPlan = '';
@@ -401,24 +412,14 @@ ${structureRef}
             currentTotal, targetWordCount
           );
 
-          const chPlanSection = chapterPlan ? '【章节计划表】\n' + chapterPlan + '\n' : '';
-          const thisChSection = currentChapterPlan ? '【本章计划】\n' + currentChapterPlan + '\n' : '';
-          const prevChSection = lastChapterContent
-            ? `【上一章概要】（⚠️ 当前章节的核心事件/剧情推进必须与上一章不同，不要重复）\n${extractChapterSummary(lastChapterContent)}\n`
-            : '';
-
           const chPrompt = `请继续创作这部${type.name}小说。
 
 主角：${protagonistName || '未设定'}
 世界观：${worldSetting || '自由发挥'}
-${outline ? '【创作大纲】\n' + outline + '\n' : ''}
-${chPlanSection}
-${thisChSection}
-${prevChSection}
-${storyState}
 
-已有章节摘要：
-${distilled || '（故事开始）'}
+${contextFromDocs || '（故事开始）'}
+
+${storyState}
 
 当前是第${ch}章，剩余目标约${remaining}字。
 要求：
@@ -436,11 +437,57 @@ ${distilled || '（故事开始）'}
 
           await ensureTokensLeft(req.user);
           const genResult = await generateOneChapter(ch, chPrompt);
-          // 更新上一章内容摘要用于下一章的防重复检测
+
+          // 更新持久化文档
           if (genResult && genResult.content) {
             lastChapterContent = genResult.content;
+
+            // 生成章节摘要追加到 summaryDoc
+            try {
+              const chSummary = summarizeChapterForDoc(genResult.content, ch, protagonistName);
+              if (summaryDoc) {
+                summaryDoc += '\n' + chSummary;
+              } else {
+                summaryDoc = chSummary;
+              }
+            } catch (e) {
+              console.warn('[Doc] 章节摘要生成失败:', e.message);
+            }
+
+            // 更新伏笔追踪文档
+            try {
+              fsDoc = updateForeshadowingDoc(genResult.content, ch, fsDoc);
+            } catch (e) {
+              console.warn('[Doc] 伏笔追踪更新失败:', e.message);
+            }
+
+            // 定期保存到数据库（每 3 章保存一次文档）
+            if (ch % 3 === 0) {
+              try {
+                await Novel.findByIdAndUpdate(novel._id, {
+                  $set: {
+                    foreshadowingDoc: fsDoc,
+                    chapterSummaryDoc: summaryDoc,
+                  }
+                });
+              } catch (e) {
+                console.warn('[Doc] 文档持久化失败:', e.message);
+              }
+            }
           }
           currentChapterNum = ch + 1;
+        }
+
+        // 最终保存文档
+        try {
+          await Novel.findByIdAndUpdate(novel._id, {
+            $set: {
+              foreshadowingDoc: fsDoc,
+              chapterSummaryDoc: summaryDoc,
+            }
+          });
+        } catch (e) {
+          console.warn('[Doc] 最终文档保存失败:', e.message);
         }
 
         generationDone = true;

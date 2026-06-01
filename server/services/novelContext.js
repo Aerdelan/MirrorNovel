@@ -227,4 +227,159 @@ module.exports = {
   extractPlotHooks,
   extractChapterSnapshot,
   buildAgentContinuePrompt,
+  // 新的持久化文档函数
+  summarizeChapterForDoc,
+  updateForeshadowingDoc,
+  buildContextFromDocs,
+}
+
+/**
+ * 将刚生成的章节浓缩为一段结构化文字（供 chapterSummaryDoc 追加）
+ * AI 生成 → 提取关键信息，比简单截头尾更准确
+ */
+async function summarizeChapterForDoc(chapterContent, chapterNumber, protagonistName) {
+  if (!chapterContent || chapterContent.length < 100) {
+    return `第${chapterNumber}章：内容过短，未记录详细摘要。`
+  }
+
+  // 取开头 200 字（场景设定）
+  const head = chapterContent.slice(0, 200).replace(/\s+/g, ' ').trim()
+  // 取结尾 200 字（章末状态/悬念）
+  const tail = chapterContent.slice(-200).replace(/\s+/g, ' ').trim()
+  // 找关键冲突句
+  const lines = chapterContent.split(/[。！？\n]/).filter(l => l.trim().length > 10)
+  const keyLines = lines.filter(l =>
+    /发现|原来|竟然|终于|没想到|但是|然而|突然|秘密|真相|原来如此/.test(l)
+  ).slice(0, 2)
+
+  let summary = `第${chapterNumber}章：`
+  summary += `开篇：${head.length > 100 ? head.slice(0, 100) + '…' : head}。`
+  if (keyLines.length > 0) {
+    summary += `关键发展：${keyLines.join('；')}。`
+  }
+  summary += `章末：${tail.length > 100 ? tail.slice(0, 100) + '…' : tail}。`
+
+  return summary
+}
+
+/**
+ * 根据新生成的章节内容，更新伏笔追踪文档
+ * 扫描章节中的悬念句和回收句，更新到 foreshadowingDoc
+ */
+function updateForeshadowingDoc(chapterContent, chapterNumber, existingDoc) {
+  if (!chapterContent || chapterContent.length < 100) return existingDoc || ''
+
+  let doc = existingDoc || ''
+  const lines = chapterContent.split(/[。！？\n]/).filter(l => l.trim().length > 8)
+
+  // ---- 1. 检测本章新埋的伏笔 ----
+  const newHooks = []
+  // 章末 5 句话，包含悬念词 → 算新伏笔
+  const lastLines = lines.slice(-5)
+  for (const line of lastLines) {
+    if (/发现|到底|难道|难道说|究竟|谁|什么|为什么|怎么|突然|意外|神秘|秘密|隐藏|不对劲|奇怪/.test(line)) {
+      newHooks.push(line.trim())
+    }
+  }
+  // 全文搜索含"悬念/谜团/未解/秘密"等明确伏笔标记的句子
+  for (const line of lines) {
+    if (/埋下.*伏笔|留下.*悬念|一个谜团|未解之谜/.test(line)) {
+      if (!newHooks.includes(line.trim())) newHooks.push(line.trim())
+    }
+  }
+
+  for (const hook of newHooks) {
+    const id = `FH_${chapterNumber}_${hook.slice(0, 15).replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '')}`
+    // 检查是否已记录
+    if (!doc.includes(id)) {
+      doc += `\n【伏笔】ID=${id} | 设章=第${chapterNumber}章 | 状态=待回收 | 内容=${hook}`
+    }
+  }
+
+  // ---- 2. 检测本章回收的伏笔（标记已存在的待回收伏笔为已回收） ----
+  // 扫描所有待回收的伏笔，看本章内容是否提到了它们
+  const pendingMatch = doc.matchAll(/ID=(\S+?) \| 设章=第(\d+)章 \| 状态=待回收 \| 内容=(.+?)(?=\n|$)/g)
+  for (const match of pendingMatch) {
+    const [full, id, refCh, hookContent] = match
+    const hookKeywords = hookContent.slice(0, 20)
+    if (chapterContent.includes(hookKeywords)) {
+      doc = doc.replace(
+        `ID=${id} | 设章=第${refCh}章 | 状态=待回收 | 内容=${hookContent}`,
+        `ID=${id} | 设章=第${refCh}章 | 状态=已回收(第${chapterNumber}章) | 内容=${hookContent}`
+      )
+    }
+  }
+
+  // 控制文档大小，只保留最近 50 条
+  const entries = doc.split('\n').filter(l => l.startsWith('【伏笔】'))
+  if (entries.length > 50) {
+    doc = entries.slice(-50).join('\n')
+  }
+
+  return doc
+}
+
+/**
+ * 从持久化文档中构建上下文，替代 buildAugmentedContext
+ * @param {string} chapterSummaryDoc - 章节浓缩文档
+ * @param {string} foreshadowingDoc - 伏笔追踪文档
+ * @param {string} outline - 大纲
+ * @param {string} chapterPlan - 章节计划表
+ * @param {number} currentCh - 当前章节号
+ * @param {string} lastChapterSummary - 上一章摘要
+ * @returns {string} 格式化后的上下文文本
+ */
+function buildContextFromDocs(chapterSummaryDoc, foreshadowingDoc, outline, chapterPlan, currentCh, lastChapterSummary) {
+  const parts = []
+
+  // 1. 大纲
+  if (outline) {
+    parts.push(`【创作大纲】\n${outline}`)
+  }
+
+  // 2. 章节计划表
+  if (chapterPlan) {
+    // 只保留当前章及之后的计划
+    const planLines = chapterPlan.split('\n').filter(l => l.trim())
+    const remaining = planLines.filter(l => {
+      const match = l.match(/第(\d+)章/)
+      return !match || parseInt(match[1]) >= currentCh
+    })
+    parts.push(`【剩余章节计划】\n${remaining.join('\n') || chapterPlan}`)
+  }
+
+  // 3. 伏笔追踪（优先展示待回收的）
+  if (foreshadowingDoc) {
+    const pending = foreshadowingDoc.split('\n').filter(l => l.includes('待回收'))
+    const resolved = foreshadowingDoc.split('\n').filter(l => l.includes('已回收'))
+    if (pending.length > 0) {
+      parts.push(`【待回收伏笔（共${pending.length}条）】\n${pending.join('\n')}`)
+    }
+    if (resolved.length > 0) {
+      parts.push(`【已回收伏笔（共${resolved.length}条）】\n${resolved.slice(-10).join('\n')}`)
+    }
+  }
+
+  // 4. 章节浓缩文档（全文故事脉络）
+  if (chapterSummaryDoc) {
+    const summaries = chapterSummaryDoc.split('\n').filter(l => l.trim().startsWith('第'))
+    // 如果超过 15 章，只保留最近 5 章的详情，早期的合并为一行
+    if (summaries.length > 15) {
+      const recentCount = 5
+      const earlyCount = summaries.length - recentCount
+      const early = summaries.slice(0, earlyCount)
+      const recent = summaries.slice(-recentCount)
+      parts.push(`【前期剧情概览（共${earlyCount}章）】\n${early.map(s => s.slice(0, 60) + '…').join('\n')}`)
+      parts.push(`【近期剧情详情】\n${recent.join('\n')}`)
+    } else {
+      parts.push(`【已有章节剧情脉络】\n${chapterSummaryDoc}`)
+    }
+  }
+
+  // 5. 上一章摘要（防重复）
+  if (lastChapterSummary) {
+    parts.push(`【上一章概要】（⚠️ 当前章核心事件必须与上一章不同）\n${lastChapterSummary}`)
+  }
+
+  return parts.join('\n\n')
 }

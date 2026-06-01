@@ -70,6 +70,17 @@ const novelSchema = new mongoose.Schema({
     type: String,
     default: '',
   },
+  // ====== 持久化的章节上下文文档（替代 on-the-fly 压缩） ======
+  // 伏笔追踪文档：记录每个伏笔的设章、状态、回收章
+  foreshadowingDoc: {
+    type: String,
+    default: '',
+  },
+  // 章节浓缩文档：每章生成后浓缩成一段文字，追加存储
+  chapterSummaryDoc: {
+    type: String,
+    default: '',
+  },
   chapters: [chapterSchema],
   currentChapterIndex: {
     type: Number,
