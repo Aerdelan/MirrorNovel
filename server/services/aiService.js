@@ -295,9 +295,20 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
   for (let attempt = 0; attempt <= retries; attempt++) {
     let timeoutId;
     try {
-      const controller = new AbortController();
-      timeoutId = setTimeout(() => controller.abort(), 90000);
-      const combinedSignal = controller.signal;
+      const timeoutController = new AbortController();
+      timeoutId = setTimeout(() => timeoutController.abort(), 90000);
+
+      // 合并外部 signal（如 abortController.signal）和内部超时 signal
+      let combinedSignal = timeoutController.signal;
+      if (signal) {
+        if (typeof AbortSignal.any === 'function') {
+          combinedSignal = AbortSignal.any([signal, timeoutController.signal]);
+        } else {
+          // 降级：外部 signal 上注册超时 controller 的 abort
+          signal.addEventListener('abort', () => timeoutController.abort(), { once: true });
+          combinedSignal = signal;
+        }
+      }
 
       const response = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify(body), signal: combinedSignal });
 

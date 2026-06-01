@@ -377,13 +377,20 @@ ${structureRef}
       novel.currentChapterIndex = chNum;
       novel.status = 'generating';
       await novel.save();
-      deductTokens(req.user, finalContent);
+      try { await deductTokens(req.user, finalContent); } catch (e) {
+        // 如果扣费失败（如 TOKEN_EXHAUSTED），记录下来但不中断生成流程
+        if (e.message === 'TOKEN_EXHAUSTED') {
+          console.warn(`[Token] 第${chNum}章扣费后 Token 已用完，后续循环会尽快停止`);
+        } else {
+          console.error('[Token] 扣费异常:', e.message);
+        }
+      }
 
       try { res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber: chNum, wordCount: buffer.length })}\n\n`); } catch {}
       return { content: finalContent, wordCount: buffer.length };
     }
 
-    console.log('开始正文循环生成，outline长度:', outline?.length || 0, 'aborted:', abortController.signal.aborted);
+    console.log('开始正文循环生成，outline长度:', outline?.length || 0, 'aborted:', abortController.signal.aborted, '当前章节数:', novel.chapters.length);
     try {
       if (isBook) {
         // ====== 整本模式：生成多章直到达到目标字数 ======
@@ -523,8 +530,21 @@ ${storyState}
       }
     } catch (streamError) {
       const isTokenExhausted = streamError?.message === 'TOKEN_EXHAUSTED';
-      if (isTokenExhausted) console.log('Token 配额已耗尽，停止生成');
-      else console.error('正文生成失败(详细):', streamError?.message || streamError);
+      const isAbort = streamError?.name === 'AbortError' || streamError?.message?.includes('abort');
+      if (isTokenExhausted) {
+        console.log('⚠️ Token 配额已耗尽，停止生成（novelId:', novel._id, ', completed:', novel.chapters.length, '章）');
+      } else if (isAbort) {
+        console.log('⚠️ 生成被中断/取消（novelId:', novel._id, ', completed:', novel.chapters.length, '章）');
+      } else {
+        console.error('❌ 正文生成失败(详细):', JSON.stringify({
+          novelId: novel._id,
+          chapterCount: novel.chapters.length,
+          error: streamError?.message || streamError,
+          stack: streamError?.stack?.split('\n').slice(0, 3).join(' | ') || '',
+          currentChapterNum,
+          aborted: abortController?.signal?.aborted,
+        }));
+      }
       novel.status = 'paused';
       await novel.save();
       activeStreams.delete(streamKey);
@@ -589,11 +609,9 @@ router.post('/continue/:novelId', auth, async (req, res) => {
 
     req.on('close', async () => {
       if (!generationDone) {
-        abortController.abort();
-        novel.status = 'paused';
-        await novel.save();
+        console.log(`⚠️ [Continue] 客户端断开连接（novelId=${novel._id}），继续后台生成`);
+        // 不再 abort，让生成在后台继续完成
         activeStreams.delete(streamKey);
-        try { res.write(`data: ${JSON.stringify({ type: 'paused' })}\n\n`); res.end(); } catch {}
       }
     });
 
