@@ -330,6 +330,11 @@ function updateForeshadowingDoc(chapterContent, chapterNumber, existingDoc) {
  * @returns {string} 格式化后的上下文文本
  */
 function buildContextFromDocs(chapterSummaryDoc, foreshadowingDoc, outline, chapterPlan, currentCh, lastChapterSummary) {
+  // 安全保护：老数据库可能没有这些字段
+  chapterSummaryDoc = chapterSummaryDoc || '';
+  foreshadowingDoc = foreshadowingDoc || '';
+  outline = outline || '';
+  chapterPlan = chapterPlan || '';
   const parts = []
 
   // 1. 大纲

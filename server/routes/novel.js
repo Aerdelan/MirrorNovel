@@ -294,6 +294,7 @@ ${structureRef}
         );
         clearTimeout(t); clearInterval(outlineHb); outlineHb = null;
         outline = outlineResult.content || '';
+        if (outline) {
           await novel.save();
           res.write(`data: ${JSON.stringify({ type: 'outline', content: outline })}\n\n`);
           res.write(`data: ${JSON.stringify({ type: 'status', message: '大纲已生成，开始创作正文...' })}\n\n`);
