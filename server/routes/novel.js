@@ -412,6 +412,9 @@ ${structureRef}
         for (let ch = 1; ch <= maxChapters; ch++) {
           if (abortController.signal.aborted) break;
 
+          // 每章开始前发心跳，保持 SSE 连接不超时
+          try { res.write(': chapter-heartbeat\n\n'); } catch {}
+
           const currentTotal = novel.chapters.reduce((s, c) => s + (c.wordCount || 0), 0);
           const remaining = targetWordCount - currentTotal;
           if (remaining <= 0) break;

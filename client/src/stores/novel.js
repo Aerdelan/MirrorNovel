@@ -77,7 +77,7 @@ export const useNovelStore = defineStore('novel', () => {
     }
     xhr.onloadend = () => {
       if (!xhr._aborted && onStatus) {
-        try { const ls = xhr.responseText.split('\n').filter(l => l.startsWith('data: ')); if (ls.length) { const ev = JSON.parse(ls[ls.length - 1].substring(6)); if (ev.type !== 'completed') onStatus({ type: 'completed' }) } } catch {}
+        try { const ls = xhr.responseText.split('\n').filter(l => l.startsWith('data: ')); if (ls.length) { const ev = JSON.parse(ls[ls.length - 1].substring(6)); const terminalTypes = ['completed','paused','token_exhausted','error']; if (!terminalTypes.includes(ev.type)) onStatus({ type: 'completed' }) } } catch {}
       }
     }
     xhr.send(JSON.stringify(params))
@@ -105,7 +105,7 @@ export const useNovelStore = defineStore('novel', () => {
         } catch {}
       }
     }
-    xhr.onloadend = () => { if (!xhr._aborted && onStatus) { try { const ls = xhr.responseText.split('\n').filter(l => l.startsWith('data: ')); if (ls.length) { const ev = JSON.parse(ls[ls.length - 1].substring(6)); if (ev.type !== 'completed') onStatus({ type: 'completed' }) } } catch {} } }
+    xhr.onloadend = () => { if (!xhr._aborted && onStatus) { try { const ls = xhr.responseText.split('\n').filter(l => l.startsWith('data: ')); if (ls.length) { const ev = JSON.parse(ls[ls.length - 1].substring(6)); const terminalTypes = ['completed','paused','token_exhausted','error']; if (!terminalTypes.includes(ev.type)) onStatus({ type: 'completed' }) } } catch {} } }
     xhr.send(JSON.stringify({ mode: mode || 'chapter' }))
     return xhr
   }
@@ -131,7 +131,7 @@ export const useNovelStore = defineStore('novel', () => {
         } catch {}
       }
     }
-    xhr.onloadend = () => { if (!xhr._aborted && onStatus) { try { const ls = xhr.responseText.split('\n').filter(l => l.startsWith('data: ')); if (ls.length) { const ev = JSON.parse(ls[ls.length - 1].substring(6)); if (ev.type !== 'completed') onStatus({ type: 'completed' }) } } catch {} } }
+    xhr.onloadend = () => { if (!xhr._aborted && onStatus) { try { const ls = xhr.responseText.split('\n').filter(l => l.startsWith('data: ')); if (ls.length) { const ev = JSON.parse(ls[ls.length - 1].substring(6)); const terminalTypes = ['completed','paused','token_exhausted','error']; if (!terminalTypes.includes(ev.type)) onStatus({ type: 'completed' }) } } catch {} } }
     xhr.send(JSON.stringify(params))
     return xhr
   }
@@ -157,7 +157,7 @@ export const useNovelStore = defineStore('novel', () => {
         } catch {}
       }
     }
-    xhr.onloadend = () => { if (!xhr._aborted && onStatus) { try { const ls = xhr.responseText.split('\n').filter(l => l.startsWith('data: ')); if (ls.length) { const ev = JSON.parse(ls[ls.length - 1].substring(6)); if (ev.type !== 'completed') onStatus({ type: 'completed' }) } } catch {} } }
+    xhr.onloadend = () => { if (!xhr._aborted && onStatus) { try { const ls = xhr.responseText.split('\n').filter(l => l.startsWith('data: ')); if (ls.length) { const ev = JSON.parse(ls[ls.length - 1].substring(6)); const terminalTypes = ['completed','paused','token_exhausted','error']; if (!terminalTypes.includes(ev.type)) onStatus({ type: 'completed' }) } } catch {} } }
     xhr.send(JSON.stringify(params))
     return xhr
   }
