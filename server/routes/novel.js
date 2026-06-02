@@ -1830,6 +1830,63 @@ ${partialsText}
   }
 });
 
+// ====== 章节关键字总结（用于生图） ======
+router.post('/chapter-keywords/:novelId/:chapterNumber', auth, async (req, res) => {
+  try {
+    await checkTokenBalance(req.user);
+    const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
+    if (!novel) return res.status(404).json({ message: '小说不存在' });
+
+    const chNum = parseInt(req.params.chapterNumber);
+    const chapter = novel.chapters.find(c => c.chapterNumber === chNum);
+    if (!chapter) return res.status(404).json({ message: '章节不存在' });
+
+    const content = (chapter.content || '').slice(0, 6000);
+    if (content.length < 50) return res.status(400).json({ message: '章节内容过短，无法提取关键字' });
+
+    const systemPrompt = '你是一位专业的图像关键词生成师。你的任务是从小说章节中提取两套关键字，用于 AI 图像生成软件（如 Stable Diffusion、Midjourney）。';
+
+    const userPrompt = `请从以下小说章节内容中提取两套关键字。
+
+章节内容：
+${content}
+
+请输出以下格式（不要包含其他内容）：
+
+【人物画风关键字】
+（中文输出，列出本章涉及的主要人物及其画风描述，格式：人物名: 画风关键字, 例如：主角: 少年、剑眉星目、古代侠客装、眼神坚定）
+
+【场景关键字】
+（中文输出，列出本章的主要场景及其风格描述，格式：场景名: 风格关键字, 例如：战场: 夕阳、硝烟弥漫、破败城池、史诗级、暗色调）
+
+注意：
+1. 人物关键字要突出该人物的外貌特征、服装、气质
+2. 场景关键字要突出该场景的氛围、色调、环境要素
+3. 关键字用逗号分隔，每类至少 2-3 个人物/场景
+4. 关键字可直接用于 AI 图像生成提示词的拼接`;
+
+    const result = await streamGenerate(systemPrompt, userPrompt, null, null, resolveApiConfig(req.user?.modelConfig, 'writing'));
+
+    if (!result || !result.content) {
+      return res.status(500).json({ message: '关键字生成失败' });
+    }
+
+    // 解析输出，分离人物和场景两段
+    const fullText = result.content;
+    const charMatch = fullText.match(/【人物画风关键字】\s*([\s\S]*?)(?=【场景关键字】|$)/);
+    const sceneMatch = fullText.match(/【场景关键字】\s*([\s\S]*)$/);
+
+    res.json({
+      characterKeywords: charMatch ? charMatch[1].trim() : '',
+      sceneKeywords: sceneMatch ? sceneMatch[1].trim() : '',
+      raw: fullText,
+    });
+  } catch (error) {
+    console.error('章节关键字总结失败:', error);
+    res.status(500).json({ message: '关键字生成失败', error: error.message });
+  }
+});
+
 // ====== 后台全文调优任务（断网不中断） ======
 
 /**

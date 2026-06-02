@@ -44,6 +44,29 @@
         </div>
       </Teleport>
 
+      <Teleport to="body">
+        <div v-if="showKeywordsDialog" class="gen-overlay" @click.self="showKeywordsDialog=false">
+          <div class="gen-modal kw-modal">
+            <h3>🎨 第{{ keywordsChapterNum }}章 — 生图关键字</h3>
+            <div class="kw-section">
+              <div class="kw-label">👤 人物画风关键字</div>
+              <div v-if="kwLoading" class="kw-loading">正在分析...</div>
+              <div v-else class="kw-content">{{ keywordsData.characterKeywords || '无' }}</div>
+            </div>
+            <div class="kw-section">
+              <div class="kw-label">🏞️ 场景关键字</div>
+              <div v-if="kwLoading" class="kw-loading">正在分析...</div>
+              <div v-else class="kw-content">{{ keywordsData.sceneKeywords || '无' }}</div>
+            </div>
+            <div v-if="kwError" class="kw-error">{{ kwError }}</div>
+            <div class="gf-acts">
+              <button class="btn btn-outline" @click="showKeywordsDialog=false">关闭</button>
+              <button class="btn btn-primary" :disabled="kwLoading" @click="copyKeywords">📋 复制关键字</button>
+            </div>
+          </div>
+        </div>
+      </Teleport>
+
       <div v-if="isLastChapterUnfinished" class="card action-card">
         <button class="btn btn-primary btn-block" @click="openGenSettings(lastChapterNum)">▶ 继续生成第{{ lastChapterNum }}章</button>
       </div>
@@ -75,6 +98,7 @@
               <button class="btn-ch action-edit" @click="openEdit(chapter)">{{ $t('novelDetail.btnEdit') }}</button>
               <button class="btn-ch action-del" @click="confirmDeleteChapter(chapter)">🗑 {{ $t('common.delete') }}</button>
               <button class="btn-ch action-deslop" @click="deslopChapter(chapter)">✨ 去AI味</button>
+              <button class="btn-ch action-keywords" @click="generateKeywords(chapter)">🎨 总结关键字</button>
               <button v-if="isLastUnfinished(index)" class="btn-ch action-gen" @click="openGenSettings(chapter.chapterNumber)">{{ $t('novelDetail.btnContinue') }}</button>
             </div>
           </div>
@@ -134,6 +158,13 @@ const editingChapter = ref(null)
 const editContent = ref('')
 
 const statusMap = { generating: $t('novelDetail.generating'), paused: $t('novelDetail.paused'), completed: $t('novelDetail.completed'), error: $t('bookshelf.statusError') }
+
+// 章节关键字总结
+const showKeywordsDialog = ref(false)
+const keywordsChapterNum = ref(0)
+const kwLoading = ref(false)
+const kwError = ref('')
+const keywordsData = ref({ characterKeywords: '', sceneKeywords: '' })
 
 const lastChapterNum = computed(() => novel.value?.chapters?.length || 0)
 const nextChapterNum = computed(() => lastChapterNum.value + 1)
@@ -223,6 +254,38 @@ async function deslopChapter(chapter) {
     const res = await api.post('/novel/deslop', { text: chapter.content || '' })
     if (res.data.processed) { await api.put(`/novel/${route.params.id}/chapter/${chapter.chapterNumber}`, { content: res.data.processed }); refreshNovel(); alert('✅ 去AI味完成！') }
   } catch (e) { alert('处理失败:'+(e.response?.data?.message||e.message)) }
+}
+
+async function generateKeywords(chapter) {
+  keywordsChapterNum.value = chapter.chapterNumber
+  keywordsData.value = { characterKeywords: '', sceneKeywords: '' }
+  kwError.value = ''
+  kwLoading.value = true
+  showKeywordsDialog.value = true
+  try {
+    const res = await api.post(`/novel/chapter-keywords/${route.params.id}/${chapter.chapterNumber}`)
+    keywordsData.value = res.data
+  } catch (e) {
+    kwError.value = e.response?.data?.message || e.message || '关键字生成失败'
+  } finally {
+    kwLoading.value = false
+  }
+}
+
+function copyKeywords() {
+  const text = `【人物画风关键字】\n${keywordsData.value.characterKeywords}\n\n【场景关键字】\n${keywordsData.value.sceneKeywords}`
+  navigator.clipboard.writeText(text).then(() => {
+    alert('✅ 关键字已复制到剪贴板')
+  }).catch(() => {
+    // 降级：创建临时 textarea
+    const ta = document.createElement('textarea')
+    ta.value = text
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+    alert('✅ 关键字已复制到剪贴板')
+  })
 }
 
 const deslopAllBusy = ref(false)
@@ -337,6 +400,7 @@ function goBack() { router.push('/bookshelf') }
 .action-del { color:#ff4d4f; border-color:#ff4d4f; }
 .action-gen { color:#52c41a; border-color:#52c41a; }
 .action-deslop { color:#FF6B35; border-color:#FF6B35; }
+.action-keywords { color:#8B5CF6; border-color:#8B5CF6; }
 :global(.gen-overlay) { position:fixed; top:0;left:0;right:0;bottom:0; background:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; z-index:9999; padding:20px; }
 :global(.gen-modal) { background:white; border-radius:12px; padding:24px; max-width:420px; width:100%; }
 :global(.gen-modal h3) { margin-bottom:16px; }
@@ -354,4 +418,10 @@ function goBack() { router.push('/bookshelf') }
 .cursor-blink { display:inline; animation:blink .8s step-end infinite; color:var(--primary-color); font-weight:bold; }
 @keyframes blink { 50%{opacity:0} }
 .action-card { text-align:center; }
+.kw-modal { max-width:520px; }
+.kw-section { margin-bottom:16px; }
+.kw-label { font-size:14px; font-weight:600; margin-bottom:6px; color:var(--text-primary); }
+.kw-content { font-size:13px; line-height:1.8; color:var(--text-secondary); background:#f5f3ff; border-radius:8px; padding:12px; white-space:pre-wrap; word-break:break-all; border:1px solid #e8e4f0; }
+.kw-loading { font-size:13px; color:#999; padding:12px; text-align:center; }
+.kw-error { font-size:13px; color:#ff4d4f; padding:8px 12px; background:#fff2f0; border-radius:6px; margin-bottom:12px; }
 </style>
