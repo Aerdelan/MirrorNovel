@@ -280,7 +280,7 @@ router.get('/checkin-status', auth, async (req, res) => {
 // ====== 邀请信息 ======
 router.get('/invite-info', auth, async (req, res) => {
   const user = req.user;
-  const baseUrl = process.env.FRONTEND_URL || 'http://49.51.51.253:5173';
+  const baseUrl = process.env.FRONTEND_URL || 'http://43.159.149.223:5173';
   res.json({
     inviteCode: user.inviteCode,
     inviteCount: user.inviteCount || 0,

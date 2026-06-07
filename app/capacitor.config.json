@@ -7,7 +7,7 @@
     "androidScheme": "http",
     "cleartext": true,
     "allowNavigation": [
-      "49.51.51.253:*",
+      "43.159.149.223:*",
       "localhost:*"
     ]
   },

