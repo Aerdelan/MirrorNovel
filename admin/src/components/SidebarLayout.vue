@@ -68,6 +68,7 @@ const menuItems = [
   { path: '/users', icon: '👥', label: '用户管理' },
   { path: '/novels', icon: '📖', label: '小说管理' },
   { path: '/distill', icon: '🧪', label: '蒸馏管理' },
+  { path: '/activities', icon: '🎉', label: '限免活动' },
   { path: '/templates', icon: '📋', label: '类型模板' },
   { path: '/models', icon: '⚙️', label: '模型配置' },
 ]
@@ -77,6 +78,7 @@ const pageTitles = {
   '/users': '用户管理',
   '/novels': '小说管理',
   '/distill': '蒸馏管理',
+  '/activities': '限免活动',
   '/templates': '类型模板',
   '/models': '模型配置',
 }

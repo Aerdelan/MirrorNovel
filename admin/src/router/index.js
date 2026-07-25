@@ -35,6 +35,12 @@ const routes = [
     meta: { requiresAuth: true },
   },
   {
+    path: '/activities',
+    name: 'Activities',
+    component: () => import('../views/AdminPage.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
     path: '/models',
     name: 'Models',
     component: () => import('../views/AdminPage.vue'),

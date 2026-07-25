@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
+const Activity = require('../models/Activity');
 const VerificationCode = require('../models/VerificationCode');
 const { sendVerificationCode, verifyTransporter } = require('../services/emailService');
 const jwt = require('jsonwebtoken');
@@ -194,6 +195,32 @@ router.post('/login', async (req, res) => {
     user.lastLoginAt = new Date();
     await user.save();
 
+    // 限免活动：活动期间首次登录赠送 Token
+    let activityBonus = 0;
+    try {
+      const now = new Date();
+      const activeActivity = await Activity.findOne({
+        startTime: { $lte: now },
+        endTime: { $gte: now },
+      }).sort({ startTime: -1 });
+
+      if (activeActivity) {
+        const alreadyClaimed = user.activityClaims?.some(
+          c => c.activityId && c.activityId.toString() === activeActivity._id.toString()
+        );
+        if (!alreadyClaimed) {
+          user.tokens.total = (user.tokens.total || 0) + activeActivity.tokenAmount;
+          user.activityClaims = user.activityClaims || [];
+          user.activityClaims.push({ activityId: activeActivity._id, claimedAt: new Date() });
+          await user.save();
+          activityBonus = activeActivity.tokenAmount;
+          console.log(`[限免活动] 用户 ${user.email} 登录获赠 ${activityBonus} Token`);
+        }
+      }
+    } catch (e) {
+      console.error('[限免活动] 处理失败:', e.message);
+    }
+
     // 生成JWT
     const token = jwt.sign(
       { userId: user._id },
@@ -213,6 +240,7 @@ router.post('/login', async (req, res) => {
         tokens: user.tokens,
         availableTokens: user.availableTokens,
       },
+      ...(activityBonus > 0 && { activityBonus, activityMessage: `🎉 限免活动：登录即送 ${activityBonus} Token！` }),
     });
   } catch (error) {
     console.error('登录失败:', error);

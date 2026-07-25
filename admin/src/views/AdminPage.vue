@@ -188,6 +188,43 @@
       </Teleport>
     </div>
 
+    <!-- ====== 限免活动 ====== -->
+    <div v-if="activeTab === 'activities'">
+      <!-- 创建活动 -->
+      <div class="form-card">
+        <h3 style="margin-top:0;">🎉 创建新活动</h3>
+        <div class="row"><label>活动名称</label><input v-model="acForm.name" class="input" placeholder="如：限免活动" /></div>
+        <div class="row"><label>开始时间</label><input v-model="acForm.startTime" class="input" type="datetime-local" /></div>
+        <div class="row"><label>结束时间</label><input v-model="acForm.endTime" class="input" type="datetime-local" /></div>
+        <div class="row"><label>赠送 Token</label><input v-model.number="acForm.tokenAmount" class="input" type="number" min="1" placeholder="如：50000" /></div>
+        <button class="btn btn-primary" :disabled="acSaving" @click="createActivity">{{ acSaving ? '创建中...' : '🎉 创建活动' }}</button>
+        <div v-if="acMsg" class="msg" :class="{ ok: acOk }">{{ acMsg }}</div>
+      </div>
+
+      <!-- 活动列表 -->
+      <div style="margin-top:16px;">
+        <h3>📋 活动记录</h3>
+        <div v-if="activities.length === 0" style="text-align:center;padding:40px;color:#999;">暂无活动</div>
+        <div v-for="act in activities" :key="act._id" class="act-card" style="background:#fff;border-radius:8px;padding:16px;margin-bottom:12px;border:1px solid #e8e8e8;">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <div>
+              <strong>{{ act.name }}</strong>
+              <span class="badge" :class="act.status" style="margin-left:8px;">{{ act.status==='active'?'进行中':act.status==='pending'?'待开始':'已结束' }}</span>
+            </div>
+            <div>
+              <button v-if="!act.emailSent" class="btn-sm" style="color:#1890ff;border-color:#1890ff;" :disabled="act.sending" @click="sendActivityEmail(act)">{{ act.sending?'发送中...':'📧 发送邮件通知' }}</button>
+              <span v-else class="claimed-badge">✅ 已发送邮件</span>
+            </div>
+          </div>
+          <div style="font-size:13px;color:#666;margin-top:8px;">
+            时间: {{ fmt(act.startTime) }} ~ {{ fmt(act.endTime) }}
+            | 赠送: <strong>{{ act.tokenAmount }}</strong> Token
+            | 状态: {{ act.status==='active'?'🟢 进行中':act.status==='pending'?'🟡 待开始':'🔴 已结束' }}
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ====== 模型配置 ====== -->
     <div v-if="activeTab === 'models'">
       <div class="form-card">
@@ -245,8 +282,9 @@ const now = ref(new Date().toLocaleString('zh-CN'))
 
 // 监听路由变化切换Tab
 watch(() => route.path, (p) => {
-  const tabMap = { '/dashboard':'dashboard', '/users':'users', '/novels':'novels', '/distill':'distill', '/templates':'templates', '/models':'models' }
+  const tabMap = { '/dashboard':'dashboard', '/users':'users', '/novels':'novels', '/distill':'distill', '/activities':'activities', '/templates':'templates', '/models':'models' }
   if (p === '/templates') loadTemplates()
+  if (p === '/activities') loadActivities()
   activeTab.value = tabMap[p] || 'dashboard'
 }, { immediate: true })
 
@@ -381,6 +419,54 @@ function wcRateClass(s) { if (!s?.totalChapters) return ''; const rate = s.downl
 onMounted(() => {
   loadDash(); loadUsers(); loadNovels(); loadDistillations(); loadModels(); loadUsersSimple(); loadTemplates()
 })
+
+// ====== 限免活动 ======
+const activities = ref([])
+const acForm = ref({ name: '', startTime: '', endTime: '', tokenAmount: 50000 })
+const acSaving = ref(false)
+const acMsg = ref('')
+const acOk = ref(false)
+
+async function loadActivities() {
+  try { const r = await api.get('/admin/activities'); activities.value = r.data.activities || [] }
+  catch { activities.value = [] }
+}
+
+async function createActivity() {
+  if (!acForm.value.name || !acForm.value.startTime || !acForm.value.endTime || !acForm.value.tokenAmount) {
+    acMsg.value = '请填写完整信息'; acOk.value = false; return
+  }
+  acSaving.value = true; acMsg.value = ''
+  try {
+    const r = await api.post('/admin/activities', {
+      name: acForm.value.name,
+      startTime: new Date(acForm.value.startTime).toISOString(),
+      endTime: new Date(acForm.value.endTime).toISOString(),
+      tokenAmount: acForm.value.tokenAmount,
+    })
+    acMsg.value = r.data.message; acOk.value = true
+    acForm.value = { name: '', startTime: '', endTime: '', tokenAmount: 50000 }
+    await loadActivities()
+  } catch (e) {
+    acMsg.value = e.response?.data?.message || '创建失败'
+    acOk.value = false
+  }
+  acSaving.value = false
+}
+
+async function sendActivityEmail(act) {
+  act.sending = true
+  try {
+    const r = await api.post(`/admin/activities/${act._id}/send-email`)
+    act.emailSent = true
+    act.sending = false
+    alert(r.data.message || '发送完成')
+  } catch (e) {
+    act.sending = false
+    alert('发送失败: ' + (e.response?.data?.message || e.message))
+  }
+}
+const fmt = (d) => { if (!d) return ''; const t = new Date(d); return t.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }) }
 </script>
 
 <style scoped>
@@ -415,6 +501,15 @@ tr:hover td { background: #fafafa; }
 .badge.admin { background: #fff7e6; color: #fa8c16; }
 .badge.user { background: #e6f7ff; color: #1890ff; }
 .badge.importer { background: #f6ffed; color: #52c41a; }
+.badge.active { background: #f6ffed; color: #52c41a; }
+.badge.pending { background: #fff7e6; color: #fa8c16; }
+.badge.ended { background: #f5f5f5; color: #999; }
+.btn-sm { padding: 4px 12px; font-size: 12px; border: 1px solid #d9d9d9; border-radius: 4px; background: #fff; cursor: pointer; white-space: nowrap; }
+.btn-sm:hover { border-color: #1890ff; color: #1890ff; }
+.claimed-badge { color: #52c41a; font-size: 12px; }
+.badge.active { background: #f6ffed; color: #52c41a; }
+.badge.pending { background: #fff7e6; color: #fa8c16; }
+.badge.ended { background: #f5f5f5; color: #999; }
 .claimed-badge { font-size: 11px; color: #999; }
 .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #52c41a; margin-right: 4px; }
 .dot.off { background: #d9d9d9; }

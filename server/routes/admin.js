@@ -4,6 +4,7 @@ const adminAuth = require('../middleware/adminAuth');
 const User = require('../models/User');
 const Novel = require('../models/Novel');
 const ReferenceNovel = require('../models/ReferenceNovel');
+const Activity = require('../models/Activity');
 
 // 所有管理路由需要 admin 权限
 router.use(adminAuth);
@@ -303,6 +304,103 @@ router.put('/templates', async (req, res) => {
     res.json({ message: '模板已保存', count: templates.length });
   } catch (error) {
     res.status(500).json({ message: '保存模板失败', error: error.message });
+  }
+});
+
+// ========== 7. 限免活动管理 ==========
+const { sendActivityNotification } = require('../services/emailService');
+
+// 获取活动列表
+router.get('/activities', async (req, res) => {
+  try {
+    const activities = await Activity.find().sort({ createdAt: -1 });
+    res.json({ activities });
+  } catch (error) {
+    res.status(500).json({ message: '获取活动列表失败', error: error.message });
+  }
+});
+
+// 创建活动
+router.post('/activities', async (req, res) => {
+  try {
+    const { name, startTime, endTime, tokenAmount, emailContent } = req.body;
+    if (!name || !startTime || !endTime || !tokenAmount) {
+      return res.status(400).json({ message: '请填写完整信息' });
+    }
+    if (tokenAmount < 1) {
+      return res.status(400).json({ message: 'Token 数量必须大于 0' });
+    }
+    const activity = new Activity({ name, startTime: new Date(startTime), endTime: new Date(endTime), tokenAmount, emailContent });
+    await activity.save();
+    res.status(201).json({ message: '活动创建成功', activity });
+  } catch (error) {
+    res.status(500).json({ message: '创建活动失败', error: error.message });
+  }
+});
+
+// 编辑活动
+router.put('/activities/:id', async (req, res) => {
+  try {
+    const { name, startTime, endTime, tokenAmount } = req.body;
+    const activity = await Activity.findByIdAndUpdate(req.params.id,
+      { name, startTime: startTime ? new Date(startTime) : undefined, endTime: endTime ? new Date(endTime) : undefined, tokenAmount, updatedAt: new Date() },
+      { new: true }
+    );
+    if (!activity) return res.status(404).json({ message: '活动不存在' });
+    res.json({ message: '活动已更新', activity });
+  } catch (error) {
+    res.status(500).json({ message: '更新失败', error: error.message });
+  }
+});
+
+// 发送活动通知邮件给所有用户
+router.post('/activities/:id/send-email', async (req, res) => {
+  try {
+    const activity = await Activity.findById(req.params.id);
+    if (!activity) return res.status(404).json({ message: '活动不存在' });
+    if (activity.emailSent) return res.status(400).json({ message: '邮件已发送过，请勿重复发送' });
+
+    const users = await User.find({ role: 'user' }).select('email');
+    const emails = users.map(u => u.email).filter(Boolean);
+
+    res.json({ message: `正在向 ${emails.length} 位用户发送邮件...` });
+
+    // 异步发送，不阻塞响应
+    let success = 0, failed = 0;
+    for (const email of emails) {
+      try {
+        await sendActivityNotification(email, activity);
+        success++;
+      } catch (e) {
+        failed++;
+        console.error(`[活动邮件] 发送失败 ${email}:`, e.message);
+      }
+      // 每封邮件间隔 200ms，避免 SMTP 限流
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    activity.emailSent = true;
+    activity.updatedAt = new Date();
+    await activity.save();
+    console.log(`[活动邮件] 发送完成: 成功 ${success}, 失败 ${failed}`);
+  } catch (error) {
+    console.error('[活动邮件] 发送失败:', error);
+  }
+});
+
+// 获取活动统计（已领取人数等）
+router.get('/activities/:id/stats', async (req, res) => {
+  try {
+    const activity = await Activity.findById(req.params.id);
+    if (!activity) return res.status(404).json({ message: '活动不存在' });
+
+    const claimedUsers = await User.countDocuments({
+      'activityClaims.activityId': activity._id
+    });
+
+    res.json({ claimedUsers, totalTokenGiven: claimedUsers * activity.tokenAmount });
+  } catch (error) {
+    res.status(500).json({ message: '获取统计失败', error: error.message });
   }
 });
 

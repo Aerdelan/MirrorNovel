@@ -22,6 +22,9 @@ const userSchema = new mongoose.Schema({
     totalDays: { type: Number, default: 0 },       // 累计签到天数
   },
 
+  // 限免活动领取记录
+  activityClaims: [{ activityId: { type: mongoose.Schema.Types.ObjectId, ref: 'Activity' }, claimedAt: { type: Date, default: Date.now } }],
+
   // 邀请
   inviteCode: { type: String, unique: true, sparse: true },
   invitedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
