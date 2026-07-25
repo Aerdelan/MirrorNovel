@@ -18,7 +18,6 @@
       </div>
     </div>
 
-    
     <!-- 公告弹窗 -->
     <Teleport to="body">
       <div v-if="showAnnouncement" class="announcement-overlay" @click.self="closeAnnouncement">
