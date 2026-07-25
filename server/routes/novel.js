@@ -537,7 +537,7 @@ ${storyState}
         res.end();
       }
     } catch (streamError) {
-      const isTokenExhausted = streamError?.message === 'TOKEN_EXHAUSTED';
+      const isTokenExhausted = streamError?.message === 'TOKEN_EXHAUSTED' || streamError?.message?.includes('余额不足');
       const isAbort = streamError?.name === 'AbortError' || streamError?.message?.includes('abort');
       if (isTokenExhausted) {
         console.log('⚠️ Token 配额已耗尽，停止生成（novelId:', novel._id, ', completed:', novel.chapters.length, '章）');
@@ -788,7 +788,7 @@ ${'='.repeat(40)}
         res.end();
       }
     } catch (streamError) {
-      const isTokenExhausted = streamError?.message === 'TOKEN_EXHAUSTED';
+      const isTokenExhausted = streamError?.message === 'TOKEN_EXHAUSTED' || streamError?.message?.includes('余额不足');
       if (isTokenExhausted) console.log('继续生成 Token 配额已耗尽');
       else console.error('继续生成失败:', streamError.message);
       novel.status = 'paused';
@@ -805,6 +805,9 @@ ${'='.repeat(40)}
     }
   } catch (error) {
     console.error('继续生成失败(外):', error);
+    if (error.message?.includes('余额不足')) {
+      return res.status(402).json({ message: '余额不足，请充值后再生成', error: error.message });
+    }
     res.status(500).json({ message: '继续生成失败', error: error.message });
   }
 });
@@ -938,7 +941,7 @@ router.post('/continue-import', auth, async (req, res) => {
       res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`);
       res.end();
     } catch (streamError) {
-      const isTokenExhausted = streamError?.message === 'TOKEN_EXHAUSTED';
+      const isTokenExhausted = streamError?.message === 'TOKEN_EXHAUSTED' || streamError?.message?.includes('余额不足');
       if (isTokenExhausted) console.log('续写 Token 配额已耗尽');
       else console.error('续写失败:', streamError.message);
       try { await finalSave('paused'); } catch {}
@@ -955,6 +958,9 @@ router.post('/continue-import', auth, async (req, res) => {
     }
   } catch (error) {
     console.error('续写失败:', error);
+    if (error.message?.includes('余额不足')) {
+      return res.status(402).json({ message: '余额不足，请充值后再生成', error: error.message });
+    }
     res.status(500).json({ message: '续写失败', error: error.message });
   }
 });

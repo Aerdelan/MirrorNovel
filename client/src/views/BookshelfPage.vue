@@ -189,17 +189,26 @@ function formatTime(dateStr) {
 function openNovel(novel) { router.push(`/novel/${novel._id}`) }
 function showContinueDialog(novel) { continueDialogNovel.value = novel }
 
+function isTokenExhaustedError(message) {
+  if (!message) return false
+  return message === 'TOKEN_EXHAUSTED' ||
+    message.includes('Token') ||
+    message.includes('token') ||
+    message.includes('余额不足')
+}
+
 async function startBookContinue(novel) {
   continueDialogNovel.value = null; isContinuing.value = true
   currentContinueChapter.value = 0; continueWordCount.value = 0
   try {
     await novelStore.continueGeneration(novel._id, (chunk, fullText) => { continueWordCount.value = fullText.length }, (status) => {
       if (status.type === 'chapter_start') currentContinueChapter.value = status.chapterNumber || 0
-      if (status.type === 'completed' || status.type === 'paused' || status.type === 'error') { isContinuing.value = false; novelStore.fetchBookshelf() }
+      if (status.type === 'token_exhausted') { isContinuing.value = false; novelStore.fetchBookshelf() }
+      else if (status.type === 'completed' || status.type === 'paused' || status.type === 'error') { isContinuing.value = false; novelStore.fetchBookshelf() }
     }, 'book')
   } catch (e) {
     isContinuing.value = false
-    if (e.message === 'TOKEN_EXHAUSTED' || (e.message && e.message.includes('Token'))) alert('当前token已消耗完毕，请加q群1019601998联系群主购买token')
+    if (isTokenExhaustedError(e.message)) alert('当前 Token 余额不足，请加 QQ 群 1019601998 联系群主购买 Token')
     else if (e.message !== 'paused') alert('续写失败：' + e.message)
     novelStore.fetchBookshelf()
   }

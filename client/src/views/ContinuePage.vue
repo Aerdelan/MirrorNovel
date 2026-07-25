@@ -160,6 +160,14 @@ onMounted(async () => {
 
 watch(() => novelStore.streamingText, async () => { await nextTick(); if (streamingRef.value) streamingRef.value.scrollTop = streamingRef.value.scrollHeight })
 
+function isTokenExhaustedError(message) {
+  if (!message) return false
+  return message === 'TOKEN_EXHAUSTED' ||
+    message.includes('Token') ||
+    message.includes('token') ||
+    message.includes('余额不足')
+}
+
 async function startContinue() {
   if (importedText.value.length < 50) return
   isGenerating.value = true; generationDone.value = false; wordCount.value = 0; novelStore.streamingText = ''
@@ -167,6 +175,7 @@ async function startContinue() {
     if (continueNovelId.value) {
       await novelStore.continueGeneration(continueNovelId.value, (chunk, fullText) => { wordCount.value = fullText.length }, (status) => {
         if (status.type === 'completed') { generationDone.value = true; isGenerating.value = false }
+        else if (status.type === 'token_exhausted') { isGenerating.value = false }
         else if (status.type === 'paused' || status.type === 'error') { isGenerating.value = false }
       }, genMode.value)
     } else {
@@ -179,12 +188,13 @@ async function startContinue() {
         targetWordCount: targetWordCount.value,
       }, (chunk, fullText) => { wordCount.value = fullText.length }, (status) => {
         if (status.type === 'completed') { generationDone.value = true; isGenerating.value = false }
+        else if (status.type === 'token_exhausted') { isGenerating.value = false }
         else if (status.type === 'paused' || status.type === 'error') { isGenerating.value = false }
       })
     }
   } catch (e) {
     isGenerating.value = false
-    if (e.message === 'TOKEN_EXHAUSTED' || (e.message && e.message.includes('Token'))) alert('当前token已消耗完毕，请加q群1019601998联系群主购买token')
+    if (isTokenExhaustedError(e.message)) alert('当前 Token 余额不足，请加 QQ 群 1019601998 联系群主购买 Token')
     else if (e.message !== 'paused') alert('续写失败：' + e.message)
   }
 }

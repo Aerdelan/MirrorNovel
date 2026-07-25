@@ -92,6 +92,7 @@ export const useNovelStore = defineStore('novel', () => {
     xhr.setRequestHeader('Authorization', `Bearer ${token}`)
     xhr.setRequestHeader('Content-Type', 'application/json')
     xhr._aborted = false
+    xhr._receivedTerminal = false
     let lastIndex = 0
     xhr.onprogress = () => {
       const newData = xhr.responseText.substring(lastIndex)
@@ -101,13 +102,32 @@ export const useNovelStore = defineStore('novel', () => {
         try {
           const event = JSON.parse(line.substring(6))
           if (event.type === 'content') { streamingText.value += event.content; if (onChunk) onChunk(event.content) }
-          else if (event.type === 'status' || event.type === 'chapter_start' || event.type === 'chapter_end' || event.type === 'completed' || event.type === 'paused') { if (onStatus) onStatus(event) }
+          else if (event.type === 'status' || event.type === 'chapter_start' || event.type === 'chapter_end' || event.type === 'completed' || event.type === 'paused' || event.type === 'token_exhausted') {
+            if (['completed','paused','token_exhausted','error'].includes(event.type)) xhr._receivedTerminal = true
+            if (onStatus) onStatus(event)
+          }
         } catch {}
       }
     }
-    xhr.onloadend = () => { if (!xhr._aborted && onStatus) { try { const ls = xhr.responseText.split('\n').filter(l => l.startsWith('data: ')); if (ls.length) { const ev = JSON.parse(ls[ls.length - 1].substring(6)); const terminalTypes = ['completed','paused','token_exhausted','error']; if (!terminalTypes.includes(ev.type)) onStatus({ type: 'completed' }) } } catch {} } }
     xhr.send(JSON.stringify({ mode: mode || 'chapter' }))
-    return xhr
+    return new Promise((resolve, reject) => {
+      xhr.onloadend = () => {
+        if (xhr._aborted) return resolve()
+        if (xhr.status >= 400) {
+          let message = `请求失败(${xhr.status})`
+          try { const body = JSON.parse(xhr.responseText); message = body.error || body.message || message } catch {}
+          if (onStatus) onStatus({ type: 'error', message })
+          return reject(new Error(message))
+        }
+        if (onStatus && !xhr._receivedTerminal) onStatus({ type: 'completed' })
+        resolve()
+      }
+      xhr.onerror = () => {
+        const message = '网络请求失败'
+        if (onStatus) onStatus({ type: 'error', message })
+        reject(new Error(message))
+      }
+    })
   }
 
   function startImportContinue(params, onChunk, onStatus) {
@@ -118,6 +138,7 @@ export const useNovelStore = defineStore('novel', () => {
     xhr.setRequestHeader('Authorization', `Bearer ${token}`)
     xhr.setRequestHeader('Content-Type', 'application/json')
     xhr._aborted = false
+    xhr._receivedTerminal = false
     let lastIndex = 0
     xhr.onprogress = () => {
       const newData = xhr.responseText.substring(lastIndex)
@@ -127,13 +148,32 @@ export const useNovelStore = defineStore('novel', () => {
         try {
           const event = JSON.parse(line.substring(6))
           if (event.type === 'content') { streamingText.value += event.content; if (onChunk) onChunk(event.content) }
-          else if (event.type === 'status' || event.type === 'chapter_start' || event.type === 'chapter_end' || event.type === 'completed' || event.type === 'paused') { if (onStatus) onStatus(event) }
+          else if (event.type === 'status' || event.type === 'chapter_start' || event.type === 'chapter_end' || event.type === 'completed' || event.type === 'paused' || event.type === 'token_exhausted') {
+            if (['completed','paused','token_exhausted','error'].includes(event.type)) xhr._receivedTerminal = true
+            if (onStatus) onStatus(event)
+          }
         } catch {}
       }
     }
-    xhr.onloadend = () => { if (!xhr._aborted && onStatus) { try { const ls = xhr.responseText.split('\n').filter(l => l.startsWith('data: ')); if (ls.length) { const ev = JSON.parse(ls[ls.length - 1].substring(6)); const terminalTypes = ['completed','paused','token_exhausted','error']; if (!terminalTypes.includes(ev.type)) onStatus({ type: 'completed' }) } } catch {} } }
     xhr.send(JSON.stringify(params))
-    return xhr
+    return new Promise((resolve, reject) => {
+      xhr.onloadend = () => {
+        if (xhr._aborted) return resolve()
+        if (xhr.status >= 400) {
+          let message = `请求失败(${xhr.status})`
+          try { const body = JSON.parse(xhr.responseText); message = body.error || body.message || message } catch {}
+          if (onStatus) onStatus({ type: 'error', message })
+          return reject(new Error(message))
+        }
+        if (onStatus && !xhr._receivedTerminal) onStatus({ type: 'completed' })
+        resolve()
+      }
+      xhr.onerror = () => {
+        const message = '网络请求失败'
+        if (onStatus) onStatus({ type: 'error', message })
+        reject(new Error(message))
+      }
+    })
   }
 
   // ---- 润色 ----

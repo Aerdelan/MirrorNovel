@@ -113,11 +113,13 @@
         <div class="mode-radio-group">
           <label class="mode-radio" :class="{ active: genMode === 'book' }">
             <input type="radio" v-model="genMode" value="book" />
-            <span class="mode-icon">📚</span><span class="mode-label">{{ $t('generate.modeBook') }}</span>
+            <!-- <span class="mode-icon">📚</span> -->
+            <span class="mode-label">{{ $t('generate.modeBook') }}</span>
           </label>
           <label class="mode-radio" :class="{ active: genMode === 'chapter' }">
             <input type="radio" v-model="genMode" value="chapter" />
-            <span class="mode-icon">📄</span><span class="mode-label">{{ $t('generate.modeChapter') }}</span>
+            <!-- <span class="mode-icon">📄</span> -->
+            <span class="mode-label">{{ $t('generate.modeChapter') }}</span>
           </label>
         </div>
         <div class="word-count-input" style="margin-top:12px;">
