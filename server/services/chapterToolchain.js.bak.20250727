@@ -28,25 +28,19 @@ const AI_PATTERNS = [
   /他终于明白/g, /她这才意识到/g, /这一刻终于/g,
   // v2 模板化标签
   /\w+说道/g, /\w+淡淡地说/g, /\w+冷冷地说/g,
-  // v3 漏网标记
-  /后知后觉/g, /小结一下/g, /\b小结\b/g, /愣住/g,
 ]
 
 // 上下文感知替换表（多选项，按语境随机选择）
 const CONTEXT_AWARE_REPLACEMENTS = [
   // [正则匹配, 候选替换列表, 匹配组]
-  { pattern: /仿佛/g, candidates: ['像', '跟……似的', '好像'], preferDelete: false,
-    genreOverrides: { xianxia: ['宛如', '如', '似乎', '就好似', '恰似', '（删除）'], wuxia: ['似乎', '好像', '好比', '（删除）'], gufeng: ['宛如', '如', '似乎', '恰似', '（删除）'] } },
-  { pattern: /好像/g, candidates: ['像', '跟……似的', '八成是'], preferDelete: false,
-    genreOverrides: { xianxia: ['似乎', '仿佛', '如', '好比', '（删除）'], wuxia: ['似乎', '仿佛', '好比', '（删除）'], gufeng: ['似乎', '仿佛', '如', '（删除）'] } },
+  { pattern: /仿佛/g, candidates: ['像', '跟……似的', '好像'], preferDelete: false },
+  { pattern: /好像/g, candidates: ['像', '跟……似的', '八成是'], preferDelete: false },
   { pattern: /不禁/g, candidates: ['（删除）'], preferDelete: true },
   { pattern: /不由得/g, candidates: ['（删除）'], preferDelete: true },
   { pattern: /顿时/g, candidates: ['立刻', '马上', '当下', '一下子'], preferDelete: false },
   { pattern: /瞬间/g, candidates: ['转眼', '一眨眼', '眨眼间', '眨眼工夫'], preferDelete: false },
-  { pattern: /忽然/g, candidates: ['突然', '猛一下', '冷不丁', '一扭头'], preferDelete: false,
-    genreOverrides: { xianxia: ['陡然', '骤然', '猛然', '突地', '（删除）'], wuxia: ['陡然', '猛然', '突地', '（删除）'], gufeng: ['陡然', '骤然', '忽而', '突地', '（删除）'] } },
-  { pattern: /似乎/g, candidates: ['好像', '八成是', '感觉', '（删除）'], preferDelete: true,
-    genreOverrides: { xianxia: ['仿佛', '大概', '约莫', '（删除）'], wuxia: ['仿佛', '大概', '（删除）'], gufeng: ['仿佛', '似有', '约莫', '（删除）'] } },
+  { pattern: /忽然/g, candidates: ['突然', '猛一下', '冷不丁', '一扭头'], preferDelete: false },
+  { pattern: /似乎/g, candidates: ['好像', '八成是', '感觉', '（删除）'], preferDelete: true },
   { pattern: /略显/g, candidates: ['有点', '有几分', '多少有点', '带着点'], preferDelete: false },
   { pattern: /略带/g, candidates: ['有点', '带着点', '多少有点'], preferDelete: false },
   { pattern: /眼中闪过/g, candidates: ['眼里露出', '眼神变了', '眼底一沉', '目光一凝'], preferDelete: false },
@@ -59,37 +53,21 @@ const CONTEXT_AWARE_REPLACEMENTS = [
   // v2 朱雀专项 — 连接词
   { pattern: /值得注意的是/g, candidates: ['（删除）'], preferDelete: true },
   { pattern: /不可否认/g, candidates: ['（删除）', '说实话'], preferDelete: true },
-  { pattern: /综上所述/g, candidates: ['说白了', '说穿了', '一句话', '总之'], preferDelete: false,
-    genreOverrides: { xianxia: ['（删除）'], wuxia: ['（删除）'], gufeng: ['（删除）'] } },
+  { pattern: /综上所述/g, candidates: ['说白了', '说穿了', '一句话', '总之'], preferDelete: false },
   { pattern: /与此同时/g, candidates: ['（删除）'], preferDelete: true },
+  { pattern: /总而言之/g, candidates: ['说白了', '反正', '一句话', '要说就是'], preferDelete: false },
+  { pattern: /显而易见/g, candidates: ['（删除）', '明摆着', '谁都看得出来'], preferDelete: true },
   { pattern: /众所周知/g, candidates: ['（删除）', '谁都知道'], preferDelete: true },
   { pattern: /进一步来说/g, candidates: ['（删除）'], preferDelete: true },
   { pattern: /从这个角度来看/g, candidates: ['（删除）'], preferDelete: true },
   { pattern: /基于以上分析/g, candidates: ['（删除）'], preferDelete: true },
   // v2 朱雀专项 — 假深度句（最容易触发朱雀检测但最容易被忽略）
   { pattern: /他终于明白/g, candidates: ['这才反应过来', '心里一下子明白了', '总算懂了', '（删除）'], preferDelete: false },
-  { pattern: /她这才意识到/g, candidates: ['她这才发现', '她到这时候才看清', '（删除）'], preferDelete: false,
-    genreOverrides: { xianxia: ['（删除）', '她才看清'], wuxia: ['（删除）', '她才看清'], gufeng: ['（删除）', '她才看清'] } },
-  { pattern: /这一刻终于/g, candidates: ['这一刻总算', '可算', '终于', '（删除）'], preferDelete: false,
-    genreOverrides: { xianxia: ['终于', '总算', '如今', '（删除）'], wuxia: ['终于', '总算', '（删除）'], gufeng: ['终于', '总算', '如今', '（删除）'] } },
+  { pattern: /她这才意识到/g, candidates: ['她这才发现', '她后知后觉地发现', '她到这时候才看清', '（删除）'], preferDelete: false },
+  { pattern: /这一刻终于/g, candidates: ['这一刻总算', '等了好久，终于', '到了', '（删除）'], preferDelete: false },
   { pattern: /命运如此安排/g, candidates: ['事到如今', '走到这一步', '事情都这样了', '（删除）'], preferDelete: false },
   { pattern: /生活就是这样/g, candidates: ['（删除）', '日子不就这样么'], preferDelete: true },
   { pattern: /时间会给出答案/g, candidates: ['等着瞧吧', '走着看吧', '以后再说吧', '（删除）'], preferDelete: false },
-  // v3 漏网标记替换
-  { pattern: /后知后觉/g, candidates: ['这才意识到', '才发现', '（删除）'], preferDelete: true,
-    genreOverrides: { xianxia: ['（删除）', '方才醒悟'], wuxia: ['（删除）', '方才醒悟'], gufeng: ['（删除）', '方才醒悟'] } },
-  { pattern: /小结一下/g, candidates: ['（删除）'], preferDelete: true },
-  { pattern: /小结/g, candidates: ['（删除）', '简单说'], preferDelete: true },
-  { pattern: /一股/g, candidates: ['一阵', '一种', '（删除）'], preferDelete: false,
-    genreOverrides: { xianxia: ['一阵', '（删除）'], wuxia: ['一阵', '（删除）'], gufeng: ['一阵', '（删除）'] } },
-  { pattern: /愣住/g, candidates: ['一怔', '一呆', '僵住', '呆了呆'], preferDelete: false },
-  // v3 连接词仙侠加强：仙侠体裁下所有连接词优先删除
-  { pattern: /总而言之/g, candidates: ['说白了', '反正', '一句话', '要说就是'], preferDelete: false,
-    genreOverrides: { xianxia: ['（删除）'], wuxia: ['（删除）'], gufeng: ['（删除）'] } },
-  { pattern: /显而易见/g, candidates: ['（删除）', '明摆着', '谁都看得出来'], preferDelete: true,
-    genreOverrides: { xianxia: ['（删除）'], wuxia: ['（删除）'], gufeng: ['（删除）'] } },
-  { pattern: /总而言之/g, candidates: ['说白了', '说穿了', '一句话', '总之'], preferDelete: false,
-    genreOverrides: { xianxia: ['（删除）'], wuxia: ['（删除）'], gufeng: ['（删除）'] } },
 ]
 
 /**
@@ -97,24 +75,16 @@ const CONTEXT_AWARE_REPLACEMENTS = [
  * 相比于 v1 简单暴力的字符串替换，v2 会根据语境选择不同的替换方案
  * 避免"不禁→删除"导致句子不通顺的问题
  */
-function smartDeAIfy(text, genre = '') {
+function smartDeAIfy(text) {
   if (!text) return text
 
   let result = text
-  const literaryGenres = ['xianxia', 'wuxia', 'gufeng']
-  const isLiterary = literaryGenres.includes(genre)
 
   for (const rule of CONTEXT_AWARE_REPLACEMENTS) {
     if (!rule.pattern.test(result)) continue
 
     // 重置 lastIndex（因为全局正则需要手动重置）
     rule.pattern.lastIndex = 0
-
-    // 体裁感知：古风/仙侠/武侠优先使用体裁专属候选
-    let effectiveCandidates = rule.candidates
-    if (isLiterary && rule.genreOverrides && rule.genreOverrides[genre]) {
-      effectiveCandidates = rule.genreOverrides[genre]
-    }
 
     if (rule.preferDelete) {
       // 优先删除：尝试直接删除，检查删除后语义是否完整
@@ -133,14 +103,14 @@ function smartDeAIfy(text, genre = '') {
         }
 
         // 不安全删除：用缓和的替换
-        const candidate = effectiveCandidates[Math.floor(Math.random() * effectiveCandidates.length)]
+        const candidate = rule.candidates[Math.floor(Math.random() * rule.candidates.length)]
         if (candidate === '（删除）') return ''
         return candidate
       })
     } else {
       // 非优先删除：从候选列表中随机选择替换
       result = result.replace(rule.pattern, () => {
-        const nonDeleteCandidates = effectiveCandidates.filter(c => c !== '（删除）')
+        const nonDeleteCandidates = rule.candidates.filter(c => c !== '（删除）')
         if (nonDeleteCandidates.length === 0) return ''
         return nonDeleteCandidates[Math.floor(Math.random() * nonDeleteCandidates.length)]
       })
@@ -155,92 +125,6 @@ function smartDeAIfy(text, genre = '') {
   result = result.replace(/^[，,]\s*/gm, '')
   result = result.replace(/\n[，,]\s*/g, '\n')
   result = result.replace(/\n{3,}/g, '\n\n')
-
-  // 修复替换副作用
-  result = cleanupArtifacts(result)
-
-  return result
-}
-
-/**
- * 清理替换副作用产生的文本错误（v3 新增）
- * 修复替换词导致的冗余、重复、语境不适配等副作用
- */
-function cleanupArtifacts(text) {
-  if (!text) return text
-
-  let result = text
-
-  // 1. 重复动词：感觉+意识到 / 总觉得+觉得 / 看上去+看起来
-  result = result.replace(/感觉意识到/g, '意识到')
-  result = result.replace(/感觉察觉/g, '察觉')
-  result = result.replace(/总觉得觉得/g, '总觉得')
-
-  // 2. 重复连词/副词：到了到了 / 等等等等
-  result = result.replace(/到了到了/g, '到了')
-  result = result.replace(/(\S{1,3})\1{2,}/g, (m, p1) => {
-    // 连续重复3次以上的非空白短词，保留1个
-    return p1
-  })
-
-  // 3. 删除"八成是"残留（在任何体裁中都过于口语）
-  result = result.replace(/八成是/g, '大概')
-  result = result.replace(/跟……似的/g, '像')  // 全局回退，不该出现在文学文本中
-
-  // 4. 残留的双重连接词
-  result = result.replace(/总之总之/g, '总之')
-  result = result.replace(/然而然而/g, '然而')
-
-  // 5. 强制清理残留的朱雀标记
-  const stubbornPatterns = [
-    /声音之中/g, /目光之中/g, /空气之中/g,
-    /淡淡地说/g, /冷冷地说/g, /缓缓地说/g, /轻声说道/g,
-  ]
-  for (const p of stubbornPatterns) {
-    result = result.replace(p, (m) => {
-      if (m === '声音之中') return '声音里'
-      if (m === '目光之中') return '目光里'
-      if (m === '空气之中') return '空气里'
-      if (m === '淡淡地说') return '淡淡道'
-      if (m === '冷冷地说') return '冷冷道'
-      if (m === '缓缓地说') return '缓缓道'
-      if (m === '轻声说道') return '轻声道'
-      return m
-    })
-  }
-
-  // 6. 修复替换链产生的残余错误
-  result = result.replace(/道道/g, '道')
-  result = result.replace(/淡淡地说道/g, '淡淡道')
-  result = result.replace(/说实话地说/g, '说实话，')
-  result = result.replace(/众人皆知/g, '天下皆知')
-  result = result.replace(/人人都知道/g, '谁都清楚')
-  result = result.replace(/愣住/g, '一呆')
-  // 这一瞬间→瞬间被替换成"一眨眼"后产生"这一一眨眼"
-  result = result.replace(/这一一眨眼/g, '转瞬间')
-  result = result.replace(/这一转眼/g, '转瞬间')
-  // 值得一提是→删除
-  result = result.replace(/值得一提是/g, '')
-  // 目光一凝一抹 → 目光一凝，一抹  |  眼底一沉复杂 → 眼底一沉，复杂
-  result = result.replace(/(一[凝沉闪动])([一抹一丝一缕半点])/g, '$1，$2')
-  result = result.replace(/(一[凝沉闪动])(\S)/g, (m, p1, p2) => {
-    // 如果后面紧跟汉字不是标点，加逗号
-    if (/[\u4e00-\u9fff]/.test(p2)) return p1 + '，' + p2
-    return m
-  })
-  // 残留的孤立"地说" → 删除
-  result = result.replace(/[，,]\s*地说/g, '，')
-  result = result.replace(/。地说/g, '。')
-  // "变了"后接汉字时补充逗号（眼中闪过→眼神变了/心思变了等），仅限替换链产生的上下文
-  result = result.replace(/([眼神目面心思])(变了)([\u4e00-\u9fff])/g, '$1$2，$3')
-  // 清理替换后残留的"，："和"：："相连标点
-  result = result.replace(/[，,]+[：:]/g, '：')
-  result = result.replace(/[：:]{2,}/g, '：')
-  // 删除后段落开头残留逗号、引导词删除后残留 "但，"
-  result = result.replace(/"\s*[，,]/g, '"')
-  result = result.replace(/([但不过])([，,])/g, '$1')
-  // 句号后紧跟逗号 → 只留句号
-  result = result.replace(/[。！？][，,]/g, (m) => m[0])
 
   return result
 }
@@ -487,11 +371,10 @@ function smartSplitParagraphs(text) {
  * @param {boolean} options.doPunctuation - 是否执行标点修正
  * @param {boolean} options.doAutoFormat - 是否执行自动格式化
  * @param {boolean} options.doRhythmRandomize - 是否执行段落节奏随机化（v2新增）
- * @param {string}  options.genre - 体裁（v3新增），xianxia/wuxia/gufeng 触发体裁感知替换
  * @returns {{ text: string, report: Object }}
  */
 function processChapter(text, options = {}) {
-  const { doDeAI = true, doPunctuation = true, doAutoFormat = true, doRhythmRandomize = true, genre = '' } = options
+  const { doDeAI = true, doPunctuation = true, doAutoFormat = true, doRhythmRandomize = true } = options
   if (!text) return { text: '', report: {} }
 
   let processed = text
@@ -517,7 +400,7 @@ function processChapter(text, options = {}) {
 
   if (doDeAI && shouldDeAI) {
     const before = processed.length
-    processed = smartDeAIfy(processed, genre)
+    processed = smartDeAIfy(processed)
     report.deAICount = before - processed.length
     report.zhuqueCleared = (aiFlavor.zhuqueConnectors || 0) + (aiFlavor.zhuqueFakeDepth || 0)
   }
@@ -614,7 +497,6 @@ module.exports = {
   countAIFlavor,
   smartDeAIfy,     // v2 新增：上下文感知去AI味（替代 v1 simpleDeAIfy）
   simpleDeAIfy: smartDeAIfy, // 兼容旧接口名
-  cleanupArtifacts, // v3 新增：清理替换副作用
   fixPunctuation,
   randomizeParagraphRhythm, // v2 新增：段落节奏随机化
 }
