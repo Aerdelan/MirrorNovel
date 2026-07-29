@@ -466,7 +466,6 @@ async function sendActivityEmail(act) {
  alert('发送失败: ' + (e.response?.data?.message || e.message))
  }
 }
-const fmt = (d) => { if (!d) return ''; const t = new Date(d); return t.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }) }
 </script>
 
 <style scoped>
