@@ -1,219 +1,219 @@
 <template>
-  <div class="page-container profile-page">
-    <div class="page-header">
-      <span>{{ $t('profile.title') }}</span>
-    </div>
+ <div class="page-container profile-page">
+ <div class="page-header">
+ <span>{{ $t('profile.title') }}</span>
+ </div>
 
-    <div class="profile-content">
-      <!-- 未登录 -->
-      <div v-if="!authStore.isLoggedIn" class="card not-logged-in">
-        <div class="avatar-placeholder">👤</div>
-        <div class="text" style="margin:12px 0;font-size:16px;">{{ $t('profile.loginFirst') }}</div>
-        <button class="btn btn-primary btn-block" @click="goToLogin">{{ $t('auth.login') }}</button>
-        <button class="btn btn-outline btn-block" style="margin-top:8px;" @click="goToRegister">{{ $t('auth.register') }}</button>
-      </div>
+ <div class="profile-content">
+ <!-- 未登录 -->
+ <div v-if="!authStore.isLoggedIn" class="card not-logged-in">
+ <div class="avatar-placeholder"></div>
+ <div class="text" style="margin:12px 0;font-size:16px;">{{ $t('profile.loginFirst') }}</div>
+ <button class="btn btn-primary btn-block" @click="goToLogin">{{ $t('auth.login') }}</button>
+ <button class="btn btn-outline btn-block" style="margin-top:8px;" @click="goToRegister">{{ $t('auth.register') }}</button>
+ </div>
 
-      <!-- 已登录 -->
-      <div v-else>
-        <!-- 用户信息 -->
-        <div class="card user-card">
-          <div class="avatar">{{ authStore.user?.email?.charAt(0).toUpperCase() || 'U' }}</div>
-          <div class="user-info">
-            <div class="user-name">{{ authStore.user?.nickname || '书友' }}</div>
-            <div class="user-email">{{ authStore.user?.email }}</div>
-          </div>
-        </div>
+ <!-- 已登录 -->
+ <div v-else>
+ <!-- 用户信息 -->
+ <div class="card user-card">
+ <div class="avatar">{{ authStore.user?.email?.charAt(0).toUpperCase() || 'U' }}</div>
+ <div class="user-info">
+ <div class="user-name">{{ authStore.user?.nickname || '书友' }}</div>
+ <div class="user-email">{{ authStore.user?.email }}</div>
+ </div>
+ </div>
 
-        <!-- Token 水球 -->
-        <div class="card token-card">
-          <div class="token-title">{{ $t('profile.tokenBalance') }}</div>
-          <div class="token-ball-wrapper">
-            <div class="token-ball">
-              <div class="water-wave" :style="{ height: (100 - tokenPercent) + '%' }">
-                <div class="wave wave1"></div>
-                <div class="wave wave2"></div>
-              </div>
-              <div class="token-ball-text">
-                <div class="token-num">{{ availableTokens.toLocaleString() }}</div>
-                <div class="token-label">{{ $t('profile.available') }}</div>
-              </div>
-            </div>
-          </div>
-          <div class="token-info-row">
-            <span>{{ $t('profile.total') }} {{ totalTokens.toLocaleString() }}</span>
-            <span>{{ $t('profile.used') }} {{ usedTokens.toLocaleString() }}</span>
-          </div>
-          <button class="btn btn-primary btn-block" @click="showGroupInfo = !showGroupInfo" style="margin-top:10px;">
-            {{ $t('profile.getToken') }}
-          </button>
-          <div v-if="showGroupInfo" class="group-info-card">
-            <div class="group-info-text">{{ $t('profile.tokenDesc') }}</div>
-            <div class="group-qq">{{ $t('profile.groupNum') }}</div>
-            <div class="group-hint">{{ $t('profile.groupNote') }}</div>
-          </div>
-        </div>
+ <!-- Token 水球 -->
+ <div class="card token-card">
+ <div class="token-title">{{ $t('profile.tokenBalance') }}</div>
+ <div class="token-ball-wrapper">
+ <div class="token-ball">
+ <div class="water-wave" :style="{ height: (100 - tokenPercent) + '%' }">
+ <div class="wave wave1"></div>
+ <div class="wave wave2"></div>
+ </div>
+ <div class="token-ball-text">
+ <div class="token-num">{{ availableTokens.toLocaleString() }}</div>
+ <div class="token-label">{{ $t('profile.available') }}</div>
+ </div>
+ </div>
+ </div>
+ <div class="token-info-row">
+ <span>{{ $t('profile.total') }} {{ totalTokens.toLocaleString() }}</span>
+ <span>{{ $t('profile.used') }} {{ usedTokens.toLocaleString() }}</span>
+ </div>
+ <button class="btn btn-primary btn-block" @click="showGroupInfo = !showGroupInfo" style="margin-top:10px;">
+ {{ $t('profile.getToken') }}
+ </button>
+ <div v-if="showGroupInfo" class="group-info-card">
+ <div class="group-info-text">{{ $t('profile.tokenDesc') }}</div>
+ <div class="group-qq">{{ $t('profile.groupNum') }}</div>
+ <div class="group-hint">{{ $t('profile.groupNote') }}</div>
+ </div>
+ </div>
 
-        <!-- 统计 -->
-        <div class="card stats-card">
-          <div class="section-title">{{ $t('profile.stats') }}</div>
-          <div class="stats-grid">
-            <div class="stat-item"><div class="stat-number">{{ stats.totalNovels }}</div><div class="stat-label">{{ $t('profile.totalWorks') }}</div></div>
-            <div class="stat-item"><div class="stat-number">{{ stats.totalWords }}</div><div class="stat-label">{{ $t('profile.totalWords') }}</div></div>
-            <div class="stat-item"><div class="stat-number">{{ stats.completedNovels }}</div><div class="stat-label">{{ $t('profile.completed') }}</div></div>
-            <div class="stat-item"><div class="stat-number">{{ stats.inProgressNovels }}</div><div class="stat-label">{{ $t('profile.inProgress') }}</div></div>
-          </div>
-        </div>
+ <!-- 统计 -->
+ <div class="card stats-card">
+ <div class="section-title">{{ $t('profile.stats') }}</div>
+ <div class="stats-grid">
+ <div class="stat-item"><div class="stat-number">{{ stats.totalNovels }}</div><div class="stat-label">{{ $t('profile.totalWorks') }}</div></div>
+ <div class="stat-item"><div class="stat-number">{{ stats.totalWords }}</div><div class="stat-label">{{ $t('profile.totalWords') }}</div></div>
+ <div class="stat-item"><div class="stat-number">{{ stats.completedNovels }}</div><div class="stat-label">{{ $t('profile.completed') }}</div></div>
+ <div class="stat-item"><div class="stat-number">{{ stats.inProgressNovels }}</div><div class="stat-label">{{ $t('profile.inProgress') }}</div></div>
+ </div>
+ </div>
 
-        <!-- 签到 -->
-        <div class="card checkin-card">
-          <div class="checkin-header">
-            <div class="section-title" style="margin:0;">📅 签到</div>
-            <span class="checkin-total">已签到 {{ checkinTotal }} 天</span>
-          </div>
-          <div class="checkin-streak">
-            <div v-for="d in 7" :key="d" class="checkin-day" :class="{ active: d <= checkinDayIndex, today: d === checkinDayIndex && !checkinDone, done: d <= checkinDayIndex && (d < checkinDayIndex || checkinDone) }">
-              <div class="day-icon">{{ d === 7 ? '🎁' : '📅' }}</div>
-              <div class="day-label">Day {{ d }}</div>
-              <div class="day-reward">{{ d === 7 ? '200' : '100' }}</div>
-            </div>
-          </div>
-          <button class="btn btn-primary btn-block" :disabled="checkinDone || checkining" @click="doCheckin">
-            {{ checkining ? '⏳' : checkinDone ? '✅ 已签到' : '📅 今日签到' }}
-          </button>
-          <div v-if="checkinMsg" class="checkin-msg" :class="{ ok: checkinOk }">{{ checkinMsg }}</div>
-        </div>
+ <!-- 签到 -->
+ <div class="card checkin-card">
+ <div class="checkin-header">
+ <div class="section-title" style="margin:0;"> 签到</div>
+ <span class="checkin-total">已签到 {{ checkinTotal }} 天</span>
+ </div>
+ <div class="checkin-streak">
+ <div v-for="d in 7" :key="d" class="checkin-day" :class="{ active: d <= checkinDayIndex, today: d === checkinDayIndex && !checkinDone, done: d <= checkinDayIndex && (d < checkinDayIndex || checkinDone) }">
+ <div class="day-icon">{{ d === 7 ? '' : '' }}</div>
+ <div class="day-label">Day {{ d }}</div>
+ <div class="day-reward">{{ d === 7 ? '200' : '100' }}</div>
+ </div>
+ </div>
+ <button class="btn btn-primary btn-block" :disabled="checkinDone || checkining" @click="doCheckin">
+ {{ checkining ? '⏳' : checkinDone ? ' 已签到' : ' 今日签到' }}
+ </button>
+ <div v-if="checkinMsg" class="checkin-msg" :class="{ ok: checkinOk }">{{ checkinMsg }}</div>
+ </div>
 
-        <!-- 邀请 -->
-        <div class="card invite-card">
-          <div class="section-title">👥 邀请好友</div>
-          <div class="invite-stats">
-            <div class="invite-stat"><span class="stat-num">{{ inviteInfo.inviteCount }}</span><span>已邀请</span></div>
-            <div class="invite-stat"><span class="stat-num">{{ inviteInfo.inviteRewards }}</span><span>获得 Token</span></div>
-          </div>
-          <div class="invite-code-row">
-            <span class="invite-label">邀请码</span>
-            <span class="invite-code" @click="copyInviteCode">{{ inviteInfo.inviteCode }}</span>
-            <button class="btn btn-sm btn-outline" @click="copyInviteLink">复制链接</button>
-          </div>
-          <div class="invite-qr" v-if="inviteInfo.inviteLink">
-            <img :src="'https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=' + encodeURIComponent(inviteInfo.inviteLink)" alt="QR" />
-          </div>
-          <div class="invite-hint">每邀请一位新用户注册，您可获得 <strong>2000 Token</strong></div>
-        </div>
+ <!-- 邀请 -->
+ <div class="card invite-card">
+ <div class="section-title"> 邀请好友</div>
+ <div class="invite-stats">
+ <div class="invite-stat"><span class="stat-num">{{ inviteInfo.inviteCount }}</span><span>已邀请</span></div>
+ <div class="invite-stat"><span class="stat-num">{{ inviteInfo.inviteRewards }}</span><span>获得 Token</span></div>
+ </div>
+ <div class="invite-code-row">
+ <span class="invite-label">邀请码</span>
+ <span class="invite-code" @click="copyInviteCode">{{ inviteInfo.inviteCode }}</span>
+ <button class="btn btn-sm btn-outline" @click="copyInviteLink">复制链接</button>
+ </div>
+ <div class="invite-qr" v-if="inviteInfo.inviteLink">
+ <img :src="'https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=' + encodeURIComponent(inviteInfo.inviteLink)" alt="QR" />
+ </div>
+ <div class="invite-hint">每邀请一位新用户注册，您可获得 <strong>2000 Token</strong></div>
+ </div>
 
-        <!-- 昵称 -->
-        <div class="card">
-          <div class="section-title">{{ $t('profile.editNick') }}</div>
-          <div class="nickname-edit">
-            <input v-model="newNickname" class="input" :placeholder="$t('profile.placeholderNick')" maxlength="20" />
-            <button class="btn btn-primary btn-sm" @click="updateNickname" :disabled="!newNickname.trim()">{{ $t('common.save') }}</button>
-          </div>
-        </div>
+ <!-- 昵称 -->
+ <div class="card">
+ <div class="section-title">{{ $t('profile.editNick') }}</div>
+ <div class="nickname-edit">
+ <input v-model="newNickname" class="input" :placeholder="$t('profile.placeholderNick')" maxlength="20" />
+ <button class="btn btn-primary btn-sm" @click="updateNickname" :disabled="!newNickname.trim()">{{ $t('common.save') }}</button>
+ </div>
+ </div>
 
-        <!-- 语言切换 -->
-        <div class="card">
-          <div class="section-title">{{ $t('profile.langSwitch') }}</div>
-          <div class="lang-switch-row">
-            <button class="toggle-btn" :class="{ active: isZh }" @click="setLocale('zh')">{{ $t('profile.langZh') }}</button>
-            <button class="toggle-btn" :class="{ active: !isZh }" @click="setLocale('en')">{{ $t('profile.langEn') }}</button>
-          </div>
-        </div>
+ <!-- 语言切换 -->
+ <div class="card">
+ <div class="section-title">{{ $t('profile.langSwitch') }}</div>
+ <div class="lang-switch-row">
+ <button class="toggle-btn" :class="{ active: isZh }" @click="setLocale('zh')">{{ $t('profile.langZh') }}</button>
+ <button class="toggle-btn" :class="{ active: !isZh }" @click="setLocale('en')">{{ $t('profile.langEn') }}</button>
+ </div>
+ </div>
 
-        <!-- 模型配置（仅管理员可见） -->
-        <div v-if="authStore.user?.role === 'admin'" class="card model-config-card">
-          <div class="section-title">{{ $t('profile.aiConfig') }}</div>
-          <div class="config-desc">{{ $t('profile.aiConfigDesc') }}</div>
+ <!-- 模型配置（仅管理员可见） -->
+ <div v-if="authStore.user?.role === 'admin'" class="card model-config-card">
+ <div class="section-title">{{ $t('profile.aiConfig') }}</div>
+ <div class="config-desc">{{ $t('profile.aiConfigDesc') }}</div>
 
-          <div class="form-group">
-            <label>{{ $t('profile.modelProvider') }}</label>
-            <select v-model="modelConfig.provider" class="input select-input" @change="onProviderChange">
-              <option value="default">{{ $t('profile.providerDefault') }}</option>
-              <option value="system">{{ $t('profile.providerSystem') }}</option>
-              <option value="ollama">{{ $t('profile.providerOllama') }}</option>
-              <option value="cloud">{{ $t('profile.providerCloud') }}</option>
-            </select>
-          </div>
+ <div class="form-group">
+ <label>{{ $t('profile.modelProvider') }}</label>
+ <select v-model="modelConfig.provider" class="input select-input" @change="onProviderChange">
+ <option value="default">{{ $t('profile.providerDefault') }}</option>
+ <option value="system">{{ $t('profile.providerSystem') }}</option>
+ <option value="ollama">{{ $t('profile.providerOllama') }}</option>
+ <option value="cloud">{{ $t('profile.providerCloud') }}</option>
+ </select>
+ </div>
 
-          <!-- System 提示 -->
-          <div v-if="modelConfig.provider === 'system'" class="system-info">
-            <div class="system-info-icon">💡</div>
-            <div>{{ $t('profile.systemDesc') }}</div>
-            <div class="system-price">{{ $t('profile.rate') }}</div>
-            <div class="system-balance">{{ $t('profile.balance') }}<strong>{{ availableTokens.toLocaleString() }} Token</strong></div>
-            <div class="system-group-hint" style="margin-top:8px;font-size:13px;color:var(--text-light);">
-              {{ $t('profile.buyToken') }}
-            </div>
-          </div>
+ <!-- System 提示 -->
+ <div v-if="modelConfig.provider === 'system'" class="system-info">
+ <div class="system-info-icon"></div>
+ <div>{{ $t('profile.systemDesc') }}</div>
+ <div class="system-price">{{ $t('profile.rate') }}</div>
+ <div class="system-balance">{{ $t('profile.balance') }}<strong>{{ availableTokens.toLocaleString() }} Token</strong></div>
+ <div class="system-group-hint" style="margin-top:8px;font-size:13px;color:var(--text-light);">
+ {{ $t('profile.buyToken') }}
+ </div>
+ </div>
 
-          <!-- Ollama -->
-          <template v-if="modelConfig.provider === 'ollama'">
-            <div class="form-group">
-              <label>Ollama 地址</label>
-              <input v-model="modelConfig.ollamaBaseUrl" class="input" placeholder="http://localhost:11434" />
-              <div style="font-size:12px;color:var(--text-light);margin-top:4px;">
-                如果 Ollama 在本机，先点「🖥️ 从本机刷新」（按提示开启 CORS 即可）
-              </div>
-            </div>
+ <!-- Ollama -->
+ <template v-if="modelConfig.provider === 'ollama'">
+ <div class="form-group">
+ <label>Ollama 地址</label>
+ <input v-model="modelConfig.ollamaBaseUrl" class="input" placeholder="http://localhost:11434" />
+ <div style="font-size:12px;color:var(--text-light);margin-top:4px;">
+ 如果 Ollama 在本机，先点「️ 从本机刷新」（按提示开启 CORS 即可）
+ </div>
+ </div>
 
-            <div class="form-group">
-              <label>📥 刷新模型列表</label>
-              <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-                <button class="btn btn-outline btn-sm" :disabled="ollamaLoading" @click="fetchLocalOllamaModels">
-                  🖥️ 从本机刷新
-                </button>
-                <button class="btn btn-outline btn-sm" :disabled="ollamaLoading" @click="fetchOllamaModels">
-                  🔄 从服务器刷新
-                </button>
-              </div>
-            </div>
+ <div class="form-group">
+ <label> 刷新模型列表</label>
+ <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+ <button class="btn btn-outline btn-sm" :disabled="ollamaLoading" @click="fetchLocalOllamaModels">
+ ️ 从本机刷新
+ </button>
+ <button class="btn btn-outline btn-sm" :disabled="ollamaLoading" @click="fetchOllamaModels">
+ 从服务器刷新
+ </button>
+ </div>
+ </div>
 
-            <div v-if="ollamaError" class="model-error">{{ ollamaError }}</div>
+ <div v-if="ollamaError" class="model-error">{{ ollamaError }}</div>
 
-            <div class="form-group" style="margin-top:8px;">
-              <label>📋 各角色模型（支持从下拉选择或手动输入）</label>
-              <div v-for="role in modelRoles" :key="role.key" class="form-group" style="margin-bottom:6px;">
-                <label style="font-size:13px;">{{ role.icon }} {{ $t('profile.' + role.labelKey) }}</label>
-                <div style="display:flex;gap:4px;">
-                  <input v-model="modelConfig['ollama' + role.fieldSuffix]"
-                    class="input" :placeholder="role.placeholder"
-                    :list="'ollama-models-' + role.key" />
-                  <datalist :id="'ollama-models-' + role.key">
-                    <option v-for="m in ollamaModels" :key="m.name" :value="m.name">
-                      {{ m.name }}{{ m.details ? ' (' + formatSize(m.size) + ')' : '' }}
-                    </option>
-                  </datalist>
-                </div>
-              </div>
-            </div>
-          </template>
+ <div class="form-group" style="margin-top:8px;">
+ <label> 各角色模型（支持从下拉选择或手动输入）</label>
+ <div v-for="role in modelRoles" :key="role.key" class="form-group" style="margin-bottom:6px;">
+ <label style="font-size:13px;">{{ role.icon }} {{ $t('profile.' + role.labelKey) }}</label>
+ <div style="display:flex;gap:4px;">
+ <input v-model="modelConfig['ollama' + role.fieldSuffix]"
+ class="input" :placeholder="role.placeholder"
+ :list="'ollama-models-' + role.key" />
+ <datalist :id="'ollama-models-' + role.key">
+ <option v-for="m in ollamaModels" :key="m.name" :value="m.name">
+ {{ m.name }}{{ m.details ? ' (' + formatSize(m.size) + ')' : '' }}
+ </option>
+ </datalist>
+ </div>
+ </div>
+ </div>
+ </template>
 
-          <!-- 云端自定义 -->
-          <template v-if="modelConfig.provider === 'cloud'">
-            <div class="form-group">
-              <label>API URL</label>
-              <input v-model="modelConfig.cloudBaseUrl" class="input" placeholder="https://api.siliconflow.cn/v1" />
-            </div>
-            <div class="form-group">
-              <label>API Key</label>
-              <input v-model="modelConfig.cloudApiKey" class="input" type="password" placeholder="sk-..." />
-            </div>
-            <div v-for="role in modelRoles" :key="role.key" class="form-group">
-              <label>{{ role.icon }} {{ $t('profile.' + role.labelKey) }}</label>
-              <input v-model="modelConfig['cloud' + role.fieldSuffix]" class="input" :placeholder="role.placeholder" />
-            </div>
-          </template>
+ <!-- 云端自定义 -->
+ <template v-if="modelConfig.provider === 'cloud'">
+ <div class="form-group">
+ <label>API URL</label>
+ <input v-model="modelConfig.cloudBaseUrl" class="input" placeholder="https://api.siliconflow.cn/v1" />
+ </div>
+ <div class="form-group">
+ <label>API Key</label>
+ <input v-model="modelConfig.cloudApiKey" class="input" type="password" placeholder="sk-..." />
+ </div>
+ <div v-for="role in modelRoles" :key="role.key" class="form-group">
+ <label>{{ role.icon }} {{ $t('profile.' + role.labelKey) }}</label>
+ <input v-model="modelConfig['cloud' + role.fieldSuffix]" class="input" :placeholder="role.placeholder" />
+ </div>
+ </template>
 
-          <button class="btn btn-primary btn-block" style="margin-top:14px;" :disabled="savingConfig" @click="saveConfig">
-            {{ savingConfig ? $t('common.loading') : $t('profile.saveConfig') }}
-          </button>
-          <div v-if="configMsg" class="config-msg" :class="{ ok: configMsgOk }">{{ configMsg }}</div>
-        </div>
+ <button class="btn btn-primary btn-block" style="margin-top:14px;" :disabled="savingConfig" @click="saveConfig">
+ {{ savingConfig ? $t('common.loading') : $t('profile.saveConfig') }}
+ </button>
+ <div v-if="configMsg" class="config-msg" :class="{ ok: configMsgOk }">{{ configMsg }}</div>
+ </div>
 
-        <!-- 退出登录 -->
-        <button class="btn btn-outline btn-block logout-btn" @click="handleLogout">{{ $t('auth.logout') }}</button>
-      </div>
-    </div>
-  </div>
+ <!-- 退出登录 -->
+ <button class="btn btn-outline btn-block logout-btn" @click="handleLogout">{{ $t('auth.logout') }}</button>
+ </div>
+ </div>
+ </div>
 </template>
 
 <script setup>
@@ -246,25 +246,25 @@ const totalTokens = ref(0)
 const usedTokens = ref(0)
 const availableTokens = ref(0)
 const tokenPercent = computed(() => {
-  if (totalTokens.value === 0) return 100
-  return Math.round(usedTokens.value / totalTokens.value * 100)
+ if (totalTokens.value === 0) return 100
+ return Math.round(usedTokens.value / totalTokens.value * 100)
 })
 const showGroupInfo = ref(false)
 
 // 模型角色
 const modelRoles = [
-  { key: 'outline',  icon: '📐', labelKey: 'modelOutline', fieldSuffix: 'OutlineModel',  placeholder: 'deepseek-ai/DeepSeek-V4-Flash' },
-  { key: 'writing',  icon: '✍️', labelKey: 'modelWriting', fieldSuffix: 'WritingModel',  placeholder: 'deepseek-ai/DeepSeek-V4-Flash' },
-  { key: 'polish',   icon: '✨', labelKey: 'modelPolish', fieldSuffix: 'PolishModel',   placeholder: 'deepseek-ai/DeepSeek-V4-Flash' },
-  { key: 'reasoning',icon: '🧠', labelKey: 'modelReasoning', fieldSuffix: 'ReasoningModel',placeholder: 'deepseek-ai/DeepSeek-V4-Flash' },
+ { key: 'outline', icon: '', labelKey: 'modelOutline', fieldSuffix: 'OutlineModel', placeholder: 'deepseek-ai/DeepSeek-V4-Flash' },
+ { key: 'writing', icon: '️', labelKey: 'modelWriting', fieldSuffix: 'WritingModel', placeholder: 'deepseek-ai/DeepSeek-V4-Flash' },
+ { key: 'polish', icon: '', labelKey: 'modelPolish', fieldSuffix: 'PolishModel', placeholder: 'deepseek-ai/DeepSeek-V4-Flash' },
+ { key: 'reasoning',icon: '', labelKey: 'modelReasoning', fieldSuffix: 'ReasoningModel',placeholder: 'deepseek-ai/DeepSeek-V4-Flash' },
 ]
 
 const modelConfig = ref({
-  provider: 'default',
-  ollamaBaseUrl: 'http://localhost:11434',
-  ollamaOutlineModel: '', ollamaWritingModel: '', ollamaPolishModel: '', ollamaReasoningModel: '',
-  cloudBaseUrl: 'https://api.siliconflow.cn/v1',
-  cloudApiKey: '', cloudOutlineModel: '', cloudWritingModel: '', cloudPolishModel: '', cloudReasoningModel: '',
+ provider: 'default',
+ ollamaBaseUrl: 'http://localhost:11434',
+ ollamaOutlineModel: '', ollamaWritingModel: '', ollamaPolishModel: '', ollamaReasoningModel: '',
+ cloudBaseUrl: 'https://api.siliconflow.cn/v1',
+ cloudApiKey: '', cloudOutlineModel: '', cloudWritingModel: '', cloudPolishModel: '', cloudReasoningModel: '',
 })
 const ollamaModels = ref([])
 const ollamaLoading = ref(false)
@@ -277,219 +277,219 @@ const configMsgOk = ref(false)
 const stats = ref({ totalNovels: 0, totalWords: 0, completedNovels: 0, inProgressNovels: 0 })
 
 onMounted(async () => {
-  if (!authStore.isLoggedIn) return
-  loadTokenInfo()
-  loadStats()
-  loadModelConfig()
-  loadCheckinStatus()
-  loadInviteInfo()
+ if (!authStore.isLoggedIn) return
+ loadTokenInfo()
+ loadStats()
+ loadModelConfig()
+ loadCheckinStatus()
+ loadInviteInfo()
 })
 
 // 从 keep-alive 缓存重新激活时刷新数据
 onActivated(() => {
-  if (!authStore.isLoggedIn) return
-  loadTokenInfo()
-  loadStats()
-  loadCheckinStatus()
-  loadInviteInfo()
+ if (!authStore.isLoggedIn) return
+ loadTokenInfo()
+ loadStats()
+ loadCheckinStatus()
+ loadInviteInfo()
 })
 
 async function loadCheckinStatus() {
-  try {
-    const data = await authStore.getCheckinStatus()
-    checkinDone.value = data.checkedIn
-    checkinDayIndex.value = data.dayIndex || 0
-    checkinTotal.value = data.totalDays || 0
-  } catch {}
+ try {
+ const data = await authStore.getCheckinStatus()
+ checkinDone.value = data.checkedIn
+ checkinDayIndex.value = data.dayIndex || 0
+ checkinTotal.value = data.totalDays || 0
+ } catch {}
 }
 
 async function loadInviteInfo() {
-  try {
-    inviteInfo.value = await authStore.getInviteInfo()
-  } catch {}
+ try {
+ inviteInfo.value = await authStore.getInviteInfo()
+ } catch {}
 }
 
 async function doCheckin() {
-  checkining.value = true; checkinMsg.value = ''
-  try {
-    const data = await authStore.checkin()
-    checkinDone.value = true
-    checkinDayIndex.value = data.dayIndex
-    checkinTotal.value = data.totalDays
-    checkinMsg.value = data.message
-    checkinOk.value = true
-  } catch (e) {
-    checkinMsg.value = e.response?.data?.message || '签到失败'
-    checkinOk.value = false
-  }
-  checkining.value = false
+ checkining.value = true; checkinMsg.value = ''
+ try {
+ const data = await authStore.checkin()
+ checkinDone.value = true
+ checkinDayIndex.value = data.dayIndex
+ checkinTotal.value = data.totalDays
+ checkinMsg.value = data.message
+ checkinOk.value = true
+ } catch (e) {
+ checkinMsg.value = e.response?.data?.message || '签到失败'
+ checkinOk.value = false
+ }
+ checkining.value = false
 }
 
 function copyToClipboard(text, label) {
-  // 优先使用 Clipboard API（HTTPS 环境）
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(() => {
-      alert(`${label}已复制`)
-    }).catch(() => {
-      fallbackCopy(text, label)
-    })
-  } else {
-    fallbackCopy(text, label)
-  }
+ // 优先使用 Clipboard API（HTTPS 环境）
+ if (navigator.clipboard && navigator.clipboard.writeText) {
+ navigator.clipboard.writeText(text).then(() => {
+ alert(`${label}已复制`)
+ }).catch(() => {
+ fallbackCopy(text, label)
+ })
+ } else {
+ fallbackCopy(text, label)
+ }
 }
 
 function fallbackCopy(text, label) {
-  const ta = document.createElement('textarea')
-  ta.value = text
-  ta.style.position = 'fixed'
-  ta.style.left = '-9999px'
-  ta.style.top = '-9999px'
-  document.body.appendChild(ta)
-  ta.select()
-  ta.setSelectionRange(0, text.length)
-  try {
-    document.execCommand('copy')
-    alert(`${label}已复制`)
-  } catch {
-    // 全失败时引导用户手动复制
-    prompt('请手动复制以下内容：', text)
-  }
-  document.body.removeChild(ta)
+ const ta = document.createElement('textarea')
+ ta.value = text
+ ta.style.position = 'fixed'
+ ta.style.left = '-9999px'
+ ta.style.top = '-9999px'
+ document.body.appendChild(ta)
+ ta.select()
+ ta.setSelectionRange(0, text.length)
+ try {
+ document.execCommand('copy')
+ alert(`${label}已复制`)
+ } catch {
+ // 全失败时引导用户手动复制
+ prompt('请手动复制以下内容：', text)
+ }
+ document.body.removeChild(ta)
 }
 
 function copyInviteCode() {
-  if (inviteInfo.value.inviteCode) {
-    copyToClipboard(inviteInfo.value.inviteCode, '邀请码')
-  }
+ if (inviteInfo.value.inviteCode) {
+ copyToClipboard(inviteInfo.value.inviteCode, '邀请码')
+ }
 }
 
 function copyInviteLink() {
-  if (inviteInfo.value.inviteLink) {
-    copyToClipboard(inviteInfo.value.inviteLink, '邀请链接')
-  }
+ if (inviteInfo.value.inviteLink) {
+ copyToClipboard(inviteInfo.value.inviteLink, '邀请链接')
+ }
 }
 
 async function loadTokenInfo() {
-  try {
-    const res = await authStore.getTokenInfo()
-    totalTokens.value = res.total || 0
-    usedTokens.value = res.used || 0
-    availableTokens.value = res.available || 0
-  } catch (e) { console.error('获取 Token 信息失败:', e) }
+ try {
+ const res = await authStore.getTokenInfo()
+ totalTokens.value = res.total || 0
+ usedTokens.value = res.used || 0
+ availableTokens.value = res.available || 0
+ } catch (e) { console.error('获取 Token 信息失败:', e) }
 }
 
 async function loadStats() {
-  try { stats.value = await authStore.getUserStats() }
-  catch (e) { console.error('获取统计失败:', e) }
+ try { stats.value = await authStore.getUserStats() }
+ catch (e) { console.error('获取统计失败:', e) }
 }
 
 async function loadModelConfig() {
-  try {
-    const config = await authStore.getModelConfig()
-    if (config) modelConfig.value = { ...modelConfig.value, ...config }
-  } catch (e) { console.error('加载模型配置失败:', e) }
+ try {
+ const config = await authStore.getModelConfig()
+ if (config) modelConfig.value = { ...modelConfig.value, ...config }
+ } catch (e) { console.error('加载模型配置失败:', e) }
 }
 
 function onProviderChange() {
-  configMsg.value = ''
-  if (modelConfig.value.provider === 'ollama') fetchOllamaModels()
+ configMsg.value = ''
+ if (modelConfig.value.provider === 'ollama') fetchOllamaModels()
 }
 
 async function fetchOllamaModels() {
-  ollamaLoading.value = true; ollamaError.value = ''; ollamaModels.value = []
-  try { ollamaModels.value = await authStore.fetchOllamaModels() }
-  catch (e) { ollamaError.value = e.response?.data?.message || e.message || '连接失败' }
-  ollamaLoading.value = false
+ ollamaLoading.value = true; ollamaError.value = ''; ollamaModels.value = []
+ try { ollamaModels.value = await authStore.fetchOllamaModels() }
+ catch (e) { ollamaError.value = e.response?.data?.message || e.message || '连接失败' }
+ ollamaLoading.value = false
 }
 
 async function fetchLocalOllamaModels() {
-  ollamaLoading.value = true; ollamaError.value = ''; ollamaModels.value = []
-  try {
-    // 直接从浏览器请求本机的 Ollama（绕过服务器）
-    const res = await fetch('http://localhost:11434/api/tags')
-    if (!res.ok) throw new Error(`Ollama 返回 ${res.status}`)
-    const data = await res.json()
-    ollamaModels.value = (data.models || []).map(m => ({
-      name: m.name,
-      size: m.size,
-      details: { size: m.size },
-    }))
-  } catch (e) {
-    if (e.message?.includes('Failed to fetch') || e.message?.includes('NetworkError')) {
-      ollamaError.value = '浏览器无法直接连接本机 Ollama（CORS 限制）\n\n' +
-        '解决方法（二选一）：\n' +
-        '1️⃣ 在 Ollama 终端执行：set OLLAMA_ORIGINS=*   （Windows）\n' +
-        '   或：export OLLAMA_ORIGINS=* （Mac/Linux）\n' +
-        '   然后重启 Ollama\n\n' +
-        '2️⃣ 或者使用「从服务器刷新」按钮（需在服务器上安装 Ollama）'
-    } else {
-      ollamaError.value = e.message || '连接失败'
-    }
-  }
-  ollamaLoading.value = false
+ ollamaLoading.value = true; ollamaError.value = ''; ollamaModels.value = []
+ try {
+ // 直接从浏览器请求本机的 Ollama（绕过服务器）
+ const res = await fetch('http://localhost:11434/api/tags')
+ if (!res.ok) throw new Error(`Ollama 返回 ${res.status}`)
+ const data = await res.json()
+ ollamaModels.value = (data.models || []).map(m => ({
+ name: m.name,
+ size: m.size,
+ details: { size: m.size },
+ }))
+ } catch (e) {
+ if (e.message?.includes('Failed to fetch') || e.message?.includes('NetworkError')) {
+ ollamaError.value = '浏览器无法直接连接本机 Ollama（CORS 限制）\n\n' +
+ '解决方法（二选一）：\n' +
+ '1️⃣ 在 Ollama 终端执行：set OLLAMA_ORIGINS=* （Windows）\n' +
+ ' 或：export OLLAMA_ORIGINS=* （Mac/Linux）\n' +
+ ' 然后重启 Ollama\n\n' +
+ '2️⃣ 或者使用「从服务器刷新」按钮（需在服务器上安装 Ollama）'
+ } else {
+ ollamaError.value = e.message || '连接失败'
+ }
+ }
+ ollamaLoading.value = false
 }
 
 function formatSize(size) {
-  if (!size) return ''
-  const mb = size / 1024 / 1024
-  return mb > 1024 ? (mb / 1024).toFixed(1) + 'GB' : mb.toFixed(0) + 'MB'
+ if (!size) return ''
+ const mb = size / 1024 / 1024
+ return mb > 1024 ? (mb / 1024).toFixed(1) + 'GB' : mb.toFixed(0) + 'MB'
 }
 
 async function saveConfig() {
-  savingConfig.value = true; configMsg.value = ''
-  try {
-    await authStore.saveModelConfig({
-      provider: modelConfig.value.provider,
-      ollamaBaseUrl: modelConfig.value.ollamaBaseUrl,
-      ollamaOutlineModel: modelConfig.value.ollamaOutlineModel,
-      ollamaWritingModel: modelConfig.value.ollamaWritingModel,
-      ollamaPolishModel: modelConfig.value.ollamaPolishModel,
-      ollamaReasoningModel: modelConfig.value.ollamaReasoningModel,
-      cloudBaseUrl: modelConfig.value.cloudBaseUrl,
-      cloudApiKey: modelConfig.value.cloudApiKey,
-      cloudOutlineModel: modelConfig.value.cloudOutlineModel,
-      cloudWritingModel: modelConfig.value.cloudWritingModel,
-      cloudPolishModel: modelConfig.value.cloudPolishModel,
-      cloudReasoningModel: modelConfig.value.cloudReasoningModel,
-    })
-    configMsg.value = '✅ ' + t('profile.saved')
-    configMsgOk.value = true
-  } catch (e) {
-    configMsg.value = '❌ ' + (e.response?.data?.message || e.message)
-    configMsgOk.value = false
-  }
-  savingConfig.value = false
+ savingConfig.value = true; configMsg.value = ''
+ try {
+ await authStore.saveModelConfig({
+ provider: modelConfig.value.provider,
+ ollamaBaseUrl: modelConfig.value.ollamaBaseUrl,
+ ollamaOutlineModel: modelConfig.value.ollamaOutlineModel,
+ ollamaWritingModel: modelConfig.value.ollamaWritingModel,
+ ollamaPolishModel: modelConfig.value.ollamaPolishModel,
+ ollamaReasoningModel: modelConfig.value.ollamaReasoningModel,
+ cloudBaseUrl: modelConfig.value.cloudBaseUrl,
+ cloudApiKey: modelConfig.value.cloudApiKey,
+ cloudOutlineModel: modelConfig.value.cloudOutlineModel,
+ cloudWritingModel: modelConfig.value.cloudWritingModel,
+ cloudPolishModel: modelConfig.value.cloudPolishModel,
+ cloudReasoningModel: modelConfig.value.cloudReasoningModel,
+ })
+ configMsg.value = ' ' + t('profile.saved')
+ configMsgOk.value = true
+ } catch (e) {
+ configMsg.value = ' ' + (e.response?.data?.message || e.message)
+ configMsgOk.value = false
+ }
+ savingConfig.value = false
 }
 
 function goToLogin() { router.push('/login') }
 function goToRegister() { router.push('/register') }
 async function updateNickname() {
-  if (!newNickname.value.trim()) return
-  try { await authStore.updateNickname(newNickname.value.trim()); alert(t('profile.nickUpdated')) }
-  catch (e) { alert(t('profile.nickFail') + (e.response?.data?.message || e.message)) }
+ if (!newNickname.value.trim()) return
+ try { await authStore.updateNickname(newNickname.value.trim()); alert(t('profile.nickUpdated')) }
+ catch (e) { alert(t('profile.nickFail') + (e.response?.data?.message || e.message)) }
 }
 async function handleLogout() {
-  authStore.logout()
-  router.push('/login')
+ authStore.logout()
+ router.push('/login')
 }
 </script>
 
 <style scoped>
 .profile-page { padding-top: var(--header-height); }
 .page-header {
-  position: fixed; top: 0; left: 0; right: 0; height: var(--header-height);
-  background: var(--card-bg); display: flex; align-items: center; justify-content: center;
-  font-size: 16px; font-weight: 600; border-bottom: 1px solid var(--border-color); z-index: 100;
+ position: fixed; top: 0; left: 0; right: 0; height: var(--header-height);
+ background: var(--card-bg); display: flex; align-items: center; justify-content: center;
+ font-size: 16px; font-weight: 600; border-bottom: 1px solid var(--border-color); z-index: 100;
 }
 .profile-content { padding: 8px 0; }
 .not-logged-in { text-align: center; padding: 40px 20px; }
 .avatar-placeholder { font-size: 48px; }
 .user-card { display: flex; align-items: center; gap: 14px; }
 .avatar {
-  width: 48px; height: 48px; border-radius: 50%;
-  background: linear-gradient(135deg, var(--primary-color), #ff6b6b);
-  color: white; display: flex; align-items: center; justify-content: center;
-  font-size: 20px; font-weight: 700; flex-shrink: 0;
+ width: 48px; height: 48px; border-radius: 50%;
+ background: linear-gradient(135deg, var(--primary-color), #ff6b6b);
+ color: white; display: flex; align-items: center; justify-content: center;
+ font-size: 20px; font-weight: 700; flex-shrink: 0;
 }
 .user-info { flex: 1; min-width: 0; }
 .user-name { font-size: 16px; font-weight: 600; color: var(--text-primary); }
@@ -498,17 +498,17 @@ async function handleLogout() {
 .token-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
 .token-ball-wrapper { display: flex; justify-content: center; position: relative; height: 120px; }
 .token-ball {
-  width: 120px; height: 120px; border-radius: 50%;
-  background: #e8f4f8; overflow: hidden;
-  position: relative; box-shadow: 0 4px 16px rgba(0,150,200,0.2); cursor: default;
+ width: 120px; height: 120px; border-radius: 50%;
+ background: #e8f4f8; overflow: hidden;
+ position: relative; box-shadow: 0 4px 16px rgba(0,150,200,0.2); cursor: default;
 }
 .water-wave { position: absolute; bottom: 0; left: 0; right: 0; background: linear-gradient(180deg, #40a9ff, #1890ff); transition: height 0.6s ease; }
 .wave { position: absolute; top: -8px; left: 0; right: 0; height: 16px; background: rgba(255,255,255,0.3); border-radius: 50%; }
 .wave1 { animation: waveMove 3s linear infinite; }
 .wave2 { animation: waveMove 4s linear infinite reverse; opacity: 0.5; }
 @keyframes waveMove {
-  0% { transform: translateX(-10%) rotate(0deg); }
-  100% { transform: translateX(10%) rotate(5deg); }
+ 0% { transform: translateX(-10%) rotate(0deg); }
+ 100% { transform: translateX(10%) rotate(5deg); }
 }
 .token-ball-text { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: white; text-shadow: 0 1px 4px rgba(0,0,0,0.3); z-index: 1; }
 .token-num { font-size: 26px; font-weight: 700; }

@@ -1,134 +1,134 @@
 <template>
-  <div class="novel-detail-page">
-    <div class="detail-header">
-      <button class="back-btn" @click="goBack">← {{ $t('common.close') }}</button>
-      <h2 class="detail-title">{{ novel?.title || '小说详情' }}</h2>
-    </div>
-    <div class="detail-content">
-      <div class="card summary-card">
-        <div class="summary-row"><span class="summary-label">{{ $t('novelDetail.chapter') }}</span><span>{{ novel?.novelTypeName }}</span></div>
-        <div class="summary-row"><span class="summary-label">{{ $t('generate.stepChar') }}</span><span>{{ novel?.protagonistName|| $t('novelDetail.unknown') }}</span></div>
-        <div class="summary-row"><span class="summary-label">{{ $t('bookshelf.progress') }}</span><span>{{ $t('novelDetail.outOf', { current: novel?.currentWordCount, target: novel?.targetWordCount }) }}</span></div>
-        <div class="summary-row"><span class="summary-label">{{ $t('bookshelf.chapter') }}</span><span>{{ novel?.currentChapterIndex||0 }} {{ $t('novelDetail.chapter') }}</span></div>
-        <div class="summary-row"><span class="summary-label">状态</span><span class="status-badge" :class="novel?.status">{{ statusMap[novel?.status] }}</span></div>
-      </div>
+ <div class="novel-detail-page">
+ <div class="detail-header">
+ <button class="back-btn" @click="goBack">← {{ $t('common.close') }}</button>
+ <h2 class="detail-title">{{ novel?.title || '小说详情' }}</h2>
+ </div>
+ <div class="detail-content">
+ <div class="card summary-card">
+ <div class="summary-row"><span class="summary-label">{{ $t('novelDetail.chapter') }}</span><span>{{ novel?.novelTypeName }}</span></div>
+ <div class="summary-row"><span class="summary-label">{{ $t('generate.stepChar') }}</span><span>{{ novel?.protagonistName|| $t('novelDetail.unknown') }}</span></div>
+ <div class="summary-row"><span class="summary-label">{{ $t('bookshelf.progress') }}</span><span>{{ $t('novelDetail.outOf', { current: novel?.currentWordCount, target: novel?.targetWordCount }) }}</span></div>
+ <div class="summary-row"><span class="summary-label">{{ $t('bookshelf.chapter') }}</span><span>{{ novel?.currentChapterIndex||0 }} {{ $t('novelDetail.chapter') }}</span></div>
+ <div class="summary-row"><span class="summary-label">状态</span><span class="status-badge" :class="novel?.status">{{ statusMap[novel?.status] }}</span></div>
+ </div>
 
-      <Teleport to="body">
-        <div v-if="showGenSettings" class="gen-overlay" @click.self="showGenSettings=false">
-          <div class="gen-modal">
-            <h3>⚙️ 生成设置</h3>
-            <div class="gf"><label>{{ $t('continue.wordCount') }}</label>
-              <input v-model.number="genWordCount" class="input" type="number" min="500" max="8000" step="500" />
-            </div>
-            <div class="gf"><label>生成备注</label>
-              <textarea v-model="genNotes" class="textarea" rows="3" placeholder="描述接下来要写的内容方向（选填）"></textarea>
-            </div>
-            <div class="gf-acts">
-              <button class="btn btn-outline" @click="showGenSettings=false">{{ $t('common.cancel') }}</button>
-              <button class="btn btn-primary" @click="confirmGenSettings">开始生成</button>
-            </div>
-          </div>
-        </div>
-      </Teleport>
+ <Teleport to="body">
+ <div v-if="showGenSettings" class="gen-overlay" @click.self="showGenSettings=false">
+ <div class="gen-modal">
+ <h3>️ 生成设置</h3>
+ <div class="gf"><label>{{ $t('continue.wordCount') }}</label>
+ <input v-model.number="genWordCount" class="input" type="number" min="500" max="8000" step="500" />
+ </div>
+ <div class="gf"><label>生成备注</label>
+ <textarea v-model="genNotes" class="textarea" rows="3" placeholder="描述接下来要写的内容方向（选填）"></textarea>
+ </div>
+ <div class="gf-acts">
+ <button class="btn btn-outline" @click="showGenSettings=false">{{ $t('common.cancel') }}</button>
+ <button class="btn btn-primary" @click="confirmGenSettings">开始生成</button>
+ </div>
+ </div>
+ </div>
+ </Teleport>
 
-      <Teleport to="body">
-        <div v-if="showEditModal" class="gen-overlay" @click.self="showEditModal=false">
-          <div class="gen-modal edit-modal">
-            <h3>{{ $t('novelDetail.editChapter', { num: editingChapter?.chapterNumber }) }}</h3>
-            <textarea v-model="editContent" class="textarea" rows="12"></textarea>
-            <div class="gf-acts">
-              <button class="btn btn-outline" @click="showEditModal=false">{{ $t('common.cancel') }}</button>
-              <button class="btn btn-primary" @click="saveEdit">{{ $t('common.save') }}</button>
-            </div>
-          </div>
-        </div>
-      </Teleport>
+ <Teleport to="body">
+ <div v-if="showEditModal" class="gen-overlay" @click.self="showEditModal=false">
+ <div class="gen-modal edit-modal">
+ <h3>{{ $t('novelDetail.editChapter', { num: editingChapter?.chapterNumber }) }}</h3>
+ <textarea v-model="editContent" class="textarea" rows="12"></textarea>
+ <div class="gf-acts">
+ <button class="btn btn-outline" @click="showEditModal=false">{{ $t('common.cancel') }}</button>
+ <button class="btn btn-primary" @click="saveEdit">{{ $t('common.save') }}</button>
+ </div>
+ </div>
+ </div>
+ </Teleport>
 
-      <Teleport to="body">
-        <div v-if="showKeywordsDialog" class="gen-overlay" @click.self="showKeywordsDialog=false">
-          <div class="gen-modal kw-modal">
-            <h3>🎨 第{{ keywordsChapterNum }}章 — 生图关键字</h3>
-            <div class="kw-section">
-              <div class="kw-label">👤 人物画风关键字</div>
-              <div v-if="kwLoading" class="kw-loading">正在分析...</div>
-              <div v-else class="kw-content">{{ keywordsData.characterKeywords || '无' }}</div>
-            </div>
-            <div class="kw-section">
-              <div class="kw-label">🏞️ 场景关键字</div>
-              <div v-if="kwLoading" class="kw-loading">正在分析...</div>
-              <div v-else class="kw-content">{{ keywordsData.sceneKeywords || '无' }}</div>
-            </div>
-            <div v-if="kwError" class="kw-error">{{ kwError }}</div>
-            <div class="gf-acts">
-              <button class="btn btn-outline" @click="showKeywordsDialog=false">关闭</button>
-              <button class="btn btn-primary" :disabled="kwLoading" @click="copyKeywords">📋 复制关键字</button>
-            </div>
-          </div>
-        </div>
-      </Teleport>
+ <Teleport to="body">
+ <div v-if="showKeywordsDialog" class="gen-overlay" @click.self="showKeywordsDialog=false">
+ <div class="gen-modal kw-modal">
+ <h3> 第{{ keywordsChapterNum }}章 — 生图关键字</h3>
+ <div class="kw-section">
+ <div class="kw-label"> 人物画风关键字</div>
+ <div v-if="kwLoading" class="kw-loading">正在分析...</div>
+ <div v-else class="kw-content">{{ keywordsData.characterKeywords || '无' }}</div>
+ </div>
+ <div class="kw-section">
+ <div class="kw-label">️ 场景关键字</div>
+ <div v-if="kwLoading" class="kw-loading">正在分析...</div>
+ <div v-else class="kw-content">{{ keywordsData.sceneKeywords || '无' }}</div>
+ </div>
+ <div v-if="kwError" class="kw-error">{{ kwError }}</div>
+ <div class="gf-acts">
+ <button class="btn btn-outline" @click="showKeywordsDialog=false">关闭</button>
+ <button class="btn btn-primary" :disabled="kwLoading" @click="copyKeywords"> 复制关键字</button>
+ </div>
+ </div>
+ </div>
+ </Teleport>
 
-      <div v-if="isLastChapterUnfinished" class="card action-card">
-        <button class="btn btn-primary btn-block" @click="openGenSettings(lastChapterNum)">▶ 继续生成第{{ lastChapterNum }}章</button>
-      </div>
+ <div v-if="isLastChapterUnfinished" class="card action-card">
+ <button class="btn btn-primary btn-block" @click="openGenSettings(lastChapterNum)">▶ 继续生成第{{ lastChapterNum }}章</button>
+ </div>
 
-      <div v-if="isContinuing" class="card streaming-card">
-        <div class="streaming-header">
-          <span class="section-title">📝 {{ $t('bookshelf.aiWriting') }}（第{{ continuingChapter }}章）</span>
-          <span class="generating-indicator"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
-        </div>
-        <div class="streaming-content" ref="streamingRef">
-          <div class="content-text">{{ chapterStreamingText }}</div>
-          <div class="cursor-blink">|</div>
-        </div>
-        <button class="btn btn-outline btn-sm" style="margin-top:8px;" @click="stopChapterGen">{{ $t('bookshelf.pause') }}</button>
-      </div>
+ <div v-if="isContinuing" class="card streaming-card">
+ <div class="streaming-header">
+ <span class="section-title"> {{ $t('bookshelf.aiWriting') }}（第{{ continuingChapter }}章）</span>
+ <span class="generating-indicator"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+ </div>
+ <div class="streaming-content" ref="streamingRef">
+ <div class="content-text">{{ chapterStreamingText }}</div>
+ <div class="cursor-blink">|</div>
+ </div>
+ <button class="btn btn-outline btn-sm" style="margin-top:8px;" @click="stopChapterGen">{{ $t('bookshelf.pause') }}</button>
+ </div>
 
-      <div class="card">
-        <div class="section-title">📖 章节列表</div>
-        <div v-if="!novel?.chapters?.length" class="empty-chapters">暂无章节内容</div>
-        <div v-for="(chapter, index) in novel?.chapters" :key="chapter.chapterNumber" class="chapter-item">
-          <div class="chapter-header" @click="toggleChapter(index)">
-            <span class="chapter-num">第{{ chapter.chapterNumber }}章</span>
-            <span class="chapter-words">{{ chapter.wordCount }}{{ $t('generate.wordShort') }}</span>
-            <span class="expand-icon">{{ expandedChapter===index?'▼':'▶' }}</span>
-          </div>
-          <div v-show="expandedChapter===index" class="chapter-body">
-            <div class="chapter-content">{{ chapter.content||'内容生成中...' }}</div>
-            <div class="chapter-actions">
-              <button class="btn-ch action-edit" @click="openEdit(chapter)">{{ $t('novelDetail.btnEdit') }}</button>
-              <button class="btn-ch action-del" @click="confirmDeleteChapter(chapter)">🗑 {{ $t('common.delete') }}</button>
-              <button class="btn-ch action-deslop" @click="deslopChapter(chapter)">✨ 去AI味</button>
-              <button class="btn-ch action-keywords" @click="generateKeywords(chapter)">🎨 总结关键字</button>
-              <button v-if="isLastUnfinished(index)" class="btn-ch action-gen" @click="openGenSettings(chapter.chapterNumber)">{{ $t('novelDetail.btnContinue') }}</button>
-            </div>
-          </div>
-        </div>
-      </div>
+ <div class="card">
+ <div class="section-title"> 章节列表</div>
+ <div v-if="!novel?.chapters?.length" class="empty-chapters">暂无章节内容</div>
+ <div v-for="(chapter, index) in novel?.chapters" :key="chapter.chapterNumber" class="chapter-item">
+ <div class="chapter-header" @click="toggleChapter(index)">
+ <span class="chapter-num">第{{ chapter.chapterNumber }}章</span>
+ <span class="chapter-words">{{ chapter.wordCount }}{{ $t('generate.wordShort') }}</span>
+ <span class="expand-icon">{{ expandedChapter===index?'▼':'▶' }}</span>
+ </div>
+ <div v-show="expandedChapter===index" class="chapter-body">
+ <div class="chapter-content">{{ chapter.content||'内容生成中...' }}</div>
+ <div class="chapter-actions">
+ <button class="btn-ch action-edit" @click="openEdit(chapter)">{{ $t('novelDetail.btnEdit') }}</button>
+ <button class="btn-ch action-del" @click="confirmDeleteChapter(chapter)"> {{ $t('common.delete') }}</button>
+ <button class="btn-ch action-deslop" @click="deslopChapter(chapter)"> 去AI味</button>
+ <button class="btn-ch action-keywords" @click="generateKeywords(chapter)"> 总结关键字</button>
+ <button v-if="isLastUnfinished(index)" class="btn-ch action-gen" @click="openGenSettings(chapter.chapterNumber)">{{ $t('novelDetail.btnContinue') }}</button>
+ </div>
+ </div>
+ </div>
+ </div>
 
-      <div v-if="allChaptersComplete" class="card">
-        <button class="btn btn-primary btn-block" @click="openGenSettings(nextChapterNum)">➕ 生成第{{ nextChapterNum }}章</button>
-      </div>
+ <div v-if="allChaptersComplete" class="card">
+ <button class="btn btn-primary btn-block" @click="openGenSettings(nextChapterNum)"> 生成第{{ nextChapterNum }}章</button>
+ </div>
 
-      <div class="card" style="margin-top:8px;">
-        <button class="btn btn-outline btn-block" :disabled="deslopAllBusy" @click="deslopAllChapters">
-          {{ deslopAllBusy ? '⏳ 整本去AI味中...' : '✨ 整本去AI味' }}
-        </button>
-        <div v-if="deslopAllProgress" style="margin-top:6px;font-size:12px;color:var(--text-secondary);">
-          {{ deslopAllProgress }}
-        </div>
-      </div>
+ <div class="card" style="margin-top:8px;">
+ <button class="btn btn-outline btn-block" :disabled="deslopAllBusy" @click="deslopAllChapters">
+ {{ deslopAllBusy ? '⏳ 整本去AI味中...' : ' 整本去AI味' }}
+ </button>
+ <div v-if="deslopAllProgress" style="margin-top:6px;font-size:12px;color:var(--text-secondary);">
+ {{ deslopAllProgress }}
+ </div>
+ </div>
 
-      <div class="card" style="margin-top:8px;">
-        <button class="btn btn-warning btn-block" :disabled="optimizeBusy" @click="optimizeNovel">
-          {{ optimizeBusy ? '⏳ 全文调优中...' : '📝 全文调优（修复流水账/重复/伏笔 + 去AI味）' }}
-        </button>
-        <div v-if="optimizeProgress" style="margin-top:6px;font-size:12px;color:var(--text-secondary);">
-          {{ optimizeProgress }}
-        </div>
-      </div>
-    </div>
-    <div style="height:20px;"></div>
-  </div>
+ <div class="card" style="margin-top:8px;">
+ <button class="btn btn-warning btn-block" :disabled="optimizeBusy" @click="optimizeNovel">
+ {{ optimizeBusy ? '⏳ 全文调优中...' : ' 全文调优（修复流水账/重复/伏笔 + 去AI味）' }}
+ </button>
+ <div v-if="optimizeProgress" style="margin-top:6px;font-size:12px;color:var(--text-secondary);">
+ {{ optimizeProgress }}
+ </div>
+ </div>
+ </div>
+ <div style="height:20px;"></div>
+ </div>
 </template>
 
 <script setup>
@@ -173,29 +173,29 @@ const allChaptersComplete = computed(() => { if (!novel.value) return false; ret
 function isLastUnfinished(index) { if (!novel.value || novel.value.status !== 'paused') return false; return index === novel.value.chapters.length - 1 }
 
 onMounted(async () => {
-  try {
-    novel.value = await novelStore.fetchNovelDetail(route.params.id)
-    // 检查是否有正在运行或刚完成的后台调优任务
-    if (novel.value?.optimizeTask) {
-      const task = novel.value.optimizeTask
-      if (task.status === 'analyzing' || task.status === 'optimizing') {
-        optimizeBusy.value = true
-        optimizeProgress.value = task.progress || '后台任务运行中...'
-        startPollingOptimize()
-      } else if (task.status === 'completed' && task.optimizedCount > 0) {
-        // 任务在用户离开时已完成，刷新章节内容并提示
-        refreshNovel()
-        setTimeout(() => {
-          alert('全文调优已在后台完成！' + (task.progress || ''))
-        }, 300)
-      }
-    }
-  }
-  catch { alert($t('error.unknown')); router.push('/bookshelf') }
+ try {
+ novel.value = await novelStore.fetchNovelDetail(route.params.id)
+ // 检查是否有正在运行或刚完成的后台调优任务
+ if (novel.value?.optimizeTask) {
+ const task = novel.value.optimizeTask
+ if (task.status === 'analyzing' || task.status === 'optimizing') {
+ optimizeBusy.value = true
+ optimizeProgress.value = task.progress || '后台任务运行中...'
+ startPollingOptimize()
+ } else if (task.status === 'completed' && task.optimizedCount > 0) {
+ // 任务在用户离开时已完成，刷新章节内容并提示
+ refreshNovel()
+ setTimeout(() => {
+ alert('全文调优已在后台完成！' + (task.progress || ''))
+ }, 300)
+ }
+ }
+ }
+ catch { alert($t('error.unknown')); router.push('/bookshelf') }
 })
 
 onUnmounted(() => {
-  stopPollingOptimize()
+ stopPollingOptimize()
 })
 
 watch(chapterStreamingText, async () => { await nextTick(); if (streamingRef.value) streamingRef.value.scrollTop = streamingRef.value.scrollHeight })
@@ -205,87 +205,87 @@ function openGenSettings(chapterNum) { genTargetChapter.value = chapterNum; genW
 async function confirmGenSettings() { showGenSettings.value = false; await startChapterGen(genTargetChapter.value, genWordCount.value, genNotes.value) }
 
 async function startChapterGen(chapterNum, wc, notes) {
-  isContinuing.value = true; continuingChapter.value = chapterNum; chapterStreamingText.value = ''
-  const token = localStorage.getItem('token')
-  const xhr = new XMLHttpRequest()
-  xhr.open('POST', `/api/novel/${route.params.id}/continue-chapter/${chapterNum}`)
-  xhr.setRequestHeader('Authorization', `Bearer ${token}`)
-  xhr.setRequestHeader('Content-Type', 'application/json')
-  xhr.setRequestHeader('Accept', 'text/event-stream')
-  let lastIdx = 0
-  xhr.onprogress = () => {
-    const newData = xhr.responseText.slice(lastIdx); lastIdx = xhr.responseText.length
-    const lines = newData.split('\n').filter(l => l.startsWith('data: '))
-    for (const line of lines) {
-      try {
-        const d = JSON.parse(line.slice(6))
-        if (d.type === 'content') chapterStreamingText.value += d.content
-        else if (d.type === 'completed' || d.type === 'chapter_continued' || d.type === 'paused') { isContinuing.value = false; refreshNovel() }
-        else if (d.type === 'error') { isContinuing.value = false; alert('生成失败:'+d.message) }
-      } catch {}
-    }
-  }
-  xhr.onerror = () => { isContinuing.value = false }
-  xhr.onabort = () => { isContinuing.value = false; refreshNovel() }
-  xhr.send(JSON.stringify({ wordCount: wc, notes }))
-  window.__chapterGenXHR = xhr
+ isContinuing.value = true; continuingChapter.value = chapterNum; chapterStreamingText.value = ''
+ const token = localStorage.getItem('token')
+ const xhr = new XMLHttpRequest()
+ xhr.open('POST', `/api/novel/${route.params.id}/continue-chapter/${chapterNum}`)
+ xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+ xhr.setRequestHeader('Content-Type', 'application/json')
+ xhr.setRequestHeader('Accept', 'text/event-stream')
+ let lastIdx = 0
+ xhr.onprogress = () => {
+ const newData = xhr.responseText.slice(lastIdx); lastIdx = xhr.responseText.length
+ const lines = newData.split('\n').filter(l => l.startsWith('data: '))
+ for (const line of lines) {
+ try {
+ const d = JSON.parse(line.slice(6))
+ if (d.type === 'content') chapterStreamingText.value += d.content
+ else if (d.type === 'completed' || d.type === 'chapter_continued' || d.type === 'paused') { isContinuing.value = false; refreshNovel() }
+ else if (d.type === 'error') { isContinuing.value = false; alert('生成失败:'+d.message) }
+ } catch {}
+ }
+ }
+ xhr.onerror = () => { isContinuing.value = false }
+ xhr.onabort = () => { isContinuing.value = false; refreshNovel() }
+ xhr.send(JSON.stringify({ wordCount: wc, notes }))
+ window.__chapterGenXHR = xhr
 }
 function stopChapterGen() { if (window.__chapterGenXHR) { window.__chapterGenXHR.abort(); window.__chapterGenXHR = null }; isContinuing.value = false }
 
 function openEdit(chapter) { editingChapter.value = chapter; editContent.value = chapter.content || ''; showEditModal.value = true }
 async function saveEdit() {
-  try { await api.put(`/novel/${route.params.id}/chapter/${editingChapter.value.chapterNumber}`, { content: editContent.value }); showEditModal.value = false; refreshNovel() }
-  catch (e) { alert('保存失败:'+(e.response?.data?.message||e.message)) }
+ try { await api.put(`/novel/${route.params.id}/chapter/${editingChapter.value.chapterNumber}`, { content: editContent.value }); showEditModal.value = false; refreshNovel() }
+ catch (e) { alert('保存失败:'+(e.response?.data?.message||e.message)) }
 }
 
 async function confirmDeleteChapter(ch) {
-  if (!confirm(`确定删除第${ch.chapterNumber}章吗？`)) return
-  try {
-    await api.delete(`/novel/${route.params.id}/chapter/${ch.chapterNumber}`)
-    refreshNovel()
-  } catch (e) {
-    alert('删除失败: ' + (e.response?.data?.message || e.message))
-  }
+ if (!confirm(`确定删除第${ch.chapterNumber}章吗？`)) return
+ try {
+ await api.delete(`/novel/${route.params.id}/chapter/${ch.chapterNumber}`)
+ refreshNovel()
+ } catch (e) {
+ alert('删除失败: ' + (e.response?.data?.message || e.message))
+ }
 }
 
 async function deslopChapter(chapter) {
-  if (!confirm(`对第${chapter.chapterNumber}章进行去AI味处理？`)) return
-  try {
-    const res = await api.post('/novel/deslop', { text: chapter.content || '' })
-    if (res.data.processed) { await api.put(`/novel/${route.params.id}/chapter/${chapter.chapterNumber}`, { content: res.data.processed }); refreshNovel(); alert('✅ 去AI味完成！') }
-  } catch (e) { alert('处理失败:'+(e.response?.data?.message||e.message)) }
+ if (!confirm(`对第${chapter.chapterNumber}章进行去AI味处理？`)) return
+ try {
+ const res = await api.post('/novel/deslop', { text: chapter.content || '' })
+ if (res.data.processed) { await api.put(`/novel/${route.params.id}/chapter/${chapter.chapterNumber}`, { content: res.data.processed }); refreshNovel(); alert(' 去AI味完成！') }
+ } catch (e) { alert('处理失败:'+(e.response?.data?.message||e.message)) }
 }
 
 async function generateKeywords(chapter) {
-  keywordsChapterNum.value = chapter.chapterNumber
-  keywordsData.value = { characterKeywords: '', sceneKeywords: '' }
-  kwError.value = ''
-  kwLoading.value = true
-  showKeywordsDialog.value = true
-  try {
-    const res = await api.post(`/novel/chapter-keywords/${route.params.id}/${chapter.chapterNumber}`)
-    keywordsData.value = res.data
-  } catch (e) {
-    kwError.value = e.response?.data?.message || e.message || '关键字生成失败'
-  } finally {
-    kwLoading.value = false
-  }
+ keywordsChapterNum.value = chapter.chapterNumber
+ keywordsData.value = { characterKeywords: '', sceneKeywords: '' }
+ kwError.value = ''
+ kwLoading.value = true
+ showKeywordsDialog.value = true
+ try {
+ const res = await api.post(`/novel/chapter-keywords/${route.params.id}/${chapter.chapterNumber}`)
+ keywordsData.value = res.data
+ } catch (e) {
+ kwError.value = e.response?.data?.message || e.message || '关键字生成失败'
+ } finally {
+ kwLoading.value = false
+ }
 }
 
 function copyKeywords() {
-  const text = `【人物画风关键字】\n${keywordsData.value.characterKeywords}\n\n【场景关键字】\n${keywordsData.value.sceneKeywords}`
-  navigator.clipboard.writeText(text).then(() => {
-    alert('✅ 关键字已复制到剪贴板')
-  }).catch(() => {
-    // 降级：创建临时 textarea
-    const ta = document.createElement('textarea')
-    ta.value = text
-    document.body.appendChild(ta)
-    ta.select()
-    document.execCommand('copy')
-    document.body.removeChild(ta)
-    alert('✅ 关键字已复制到剪贴板')
-  })
+ const text = `【人物画风关键字】\n${keywordsData.value.characterKeywords}\n\n【场景关键字】\n${keywordsData.value.sceneKeywords}`
+ navigator.clipboard.writeText(text).then(() => {
+ alert(' 关键字已复制到剪贴板')
+ }).catch(() => {
+ // 降级：创建临时 textarea
+ const ta = document.createElement('textarea')
+ ta.value = text
+ document.body.appendChild(ta)
+ ta.select()
+ document.execCommand('copy')
+ document.body.removeChild(ta)
+ alert(' 关键字已复制到剪贴板')
+ })
 }
 
 const deslopAllBusy = ref(false)
@@ -296,80 +296,80 @@ const optimizeProgress = ref('')
 let optimizePollTimer = null
 
 async function optimizeNovel() {
-  if (!novel.value?.chapters?.length) return alert('没有章节需要调优')
-  if (!confirm(`对《${novel.value.title}》进行全文调优？\n\nAI 将：\n1️⃣ 分析全文问题（流水账/重复/伏笔未回收）\n2️⃣ 逐章优化重写\n3️⃣ 自动去AI味\n\n任务将在后台运行，即使关闭页面或断网也不中断。\n是否继续？`)) return
-  optimizeBusy.value = true
-  optimizeProgress.value = '正在启动调优任务...'
-  try {
-    const res = await api.post(`/novel/optimize/${route.params.id}`)
-    optimizeProgress.value = '任务已启动，正在后台分析...'
-    startPollingOptimize()
-  } catch (e) {
-    alert('启动失败: ' + (e.response?.data?.message || e.message))
-    optimizeBusy.value = false
-    optimizeProgress.value = ''
-  }
+ if (!novel.value?.chapters?.length) return alert('没有章节需要调优')
+ if (!confirm(`对《${novel.value.title}》进行全文调优？\n\nAI 将：\n1️⃣ 分析全文问题（流水账/重复/伏笔未回收）\n2️⃣ 逐章优化重写\n3️⃣ 自动去AI味\n\n任务将在后台运行，即使关闭页面或断网也不中断。\n是否继续？`)) return
+ optimizeBusy.value = true
+ optimizeProgress.value = '正在启动调优任务...'
+ try {
+ const res = await api.post(`/novel/optimize/${route.params.id}`)
+ optimizeProgress.value = '任务已启动，正在后台分析...'
+ startPollingOptimize()
+ } catch (e) {
+ alert('启动失败: ' + (e.response?.data?.message || e.message))
+ optimizeBusy.value = false
+ optimizeProgress.value = ''
+ }
 }
 
 function startPollingOptimize() {
-  stopPollingOptimize()
-  optimizePollTimer = setInterval(async () => {
-    try {
-      const res = await api.post(`/novel/optimize-status/${route.params.id}`)
-      const task = res.data.task
-      if (!task || task.status === 'idle') return
-      optimizeProgress.value = task.progress || ''
-      if (task.status === 'completed') {
-        stopPollingOptimize()
-        optimizeBusy.value = false
-        optimizeProgress.value = ''
-        refreshNovel()
-        alert(task.progress || '✅ 全文调优完成！')
-      } else if (task.status === 'error') {
-        stopPollingOptimize()
-        optimizeBusy.value = false
-        optimizeProgress.value = ''
-        alert('调优失败: ' + (task.error || task.progress))
-      }
-      // 'analyzing' 和 'optimizing' 状态继续轮询
-    } catch (e) {
-      // 轮询出错不弹窗，继续尝试
-      console.error('轮询调优状态失败:', e)
-    }
-  }, 3000)
+ stopPollingOptimize()
+ optimizePollTimer = setInterval(async () => {
+ try {
+ const res = await api.post(`/novel/optimize-status/${route.params.id}`)
+ const task = res.data.task
+ if (!task || task.status === 'idle') return
+ optimizeProgress.value = task.progress || ''
+ if (task.status === 'completed') {
+ stopPollingOptimize()
+ optimizeBusy.value = false
+ optimizeProgress.value = ''
+ refreshNovel()
+ alert(task.progress || ' 全文调优完成！')
+ } else if (task.status === 'error') {
+ stopPollingOptimize()
+ optimizeBusy.value = false
+ optimizeProgress.value = ''
+ alert('调优失败: ' + (task.error || task.progress))
+ }
+ // 'analyzing' 和 'optimizing' 状态继续轮询
+ } catch (e) {
+ // 轮询出错不弹窗，继续尝试
+ console.error('轮询调优状态失败:', e)
+ }
+ }, 3000)
 }
 
 function stopPollingOptimize() {
-  if (optimizePollTimer) {
-    clearInterval(optimizePollTimer)
-    optimizePollTimer = null
-  }
+ if (optimizePollTimer) {
+ clearInterval(optimizePollTimer)
+ optimizePollTimer = null
+ }
 }
 
 async function deslopAllChapters() {
-  const chapters = novel.value?.chapters
-  if (!chapters || chapters.length === 0) return alert('没有章节需要处理')
-  if (!confirm(`对全部 ${chapters.length} 章进行整本去AI味处理？（每章单独调用AI处理，预计耗时较长）`)) return
-  deslopAllBusy.value = true
-  deslopAllProgress.value = ''
-  let success = 0, fail = 0
-  for (let i = 0; i < chapters.length; i++) {
-    const ch = chapters[i]
-    deslopAllProgress.value = `正在处理第 ${i + 1}/${chapters.length} 章...`
-    try {
-      const res = await api.post('/novel/deslop', { text: ch.content || '' })
-      if (res.data.processed) {
-        await api.put(`/novel/${route.params.id}/chapter/${ch.chapterNumber}`, { content: res.data.processed })
-        success++
-      }
-    } catch (e) {
-      fail++
-      console.error(`第${ch.chapterNumber}章去AI味失败:`, e)
-    }
-  }
-  deslopAllBusy.value = false
-  refreshNovel()
-  alert(`✅ 整本去AI味完成！成功 ${success} 章${fail ? '，失败 ' + fail + ' 章' : ''}`)
+ const chapters = novel.value?.chapters
+ if (!chapters || chapters.length === 0) return alert('没有章节需要处理')
+ if (!confirm(`对全部 ${chapters.length} 章进行整本去AI味处理？（每章单独调用AI处理，预计耗时较长）`)) return
+ deslopAllBusy.value = true
+ deslopAllProgress.value = ''
+ let success = 0, fail = 0
+ for (let i = 0; i < chapters.length; i++) {
+ const ch = chapters[i]
+ deslopAllProgress.value = `正在处理第 ${i + 1}/${chapters.length} 章...`
+ try {
+ const res = await api.post('/novel/deslop', { text: ch.content || '' })
+ if (res.data.processed) {
+ await api.put(`/novel/${route.params.id}/chapter/${ch.chapterNumber}`, { content: res.data.processed })
+ success++
+ }
+ } catch (e) {
+ fail++
+ console.error(`第${ch.chapterNumber}章去AI味失败:`, e)
+ }
+ }
+ deslopAllBusy.value = false
+ refreshNovel()
+ alert(` 整本去AI味完成！成功 ${success} 章${fail ? '，失败 ' + fail + ' 章' : ''}`)
 }
 
 async function refreshNovel() { try { novel.value = await novelStore.fetchNovelDetail(route.params.id) } catch {} }

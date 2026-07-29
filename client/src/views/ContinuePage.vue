@@ -1,96 +1,96 @@
 <template>
-  <div class="page-container continue-page">
-    <div class="card">
-      <div class="section-title">{{ $t('continue.title') }}</div>
-      <div class="upload-bar">
-        <label class="upload-btn">
-          <input type="file" accept=".txt" @change="handleFileUpload" />
-          <span>{{ $t('continue.uploadFile') }}</span>
-        </label>
-        <span v-if="fileName" class="file-name">{{ fileName }}</span>
-      </div>
-      <div class="import-area">
-        <textarea v-model="importedText" class="textarea" :placeholder="$t('continue.pasteText')" rows="8"></textarea>
-        <div class="import-hint">
-          <span>{{ $t('continue.charsInput', { count: importedText.length }) }}</span>
-          <span v-if="importedText.length < 50" style="color:var(--error-color);">{{ $t('continue.minChars') }}</span>
-        </div>
-      </div>
-    </div>
+ <div class="page-container continue-page">
+ <div class="card">
+ <div class="section-title">{{ $t('continue.title') }}</div>
+ <div class="upload-bar">
+ <label class="upload-btn">
+ <input type="file" accept=".txt" @change="handleFileUpload" />
+ <span>{{ $t('continue.uploadFile') }}</span>
+ </label>
+ <span v-if="fileName" class="file-name">{{ fileName }}</span>
+ </div>
+ <div class="import-area">
+ <textarea v-model="importedText" class="textarea" :placeholder="$t('continue.pasteText')" rows="8"></textarea>
+ <div class="import-hint">
+ <span>{{ $t('continue.charsInput', { count: importedText.length }) }}</span>
+ <span v-if="importedText.length < 50" style="color:var(--error-color);">{{ $t('continue.minChars') }}</span>
+ </div>
+ </div>
+ </div>
 
-    <div class="card">
-      <div class="section-title">{{ $t('continue.novelInfo') }}</div>
-      <div class="form-group">
-        <label>{{ $t('continue.novelName') }}</label>
-        <input v-model="title" class="input" :placeholder="$t('continue.placeholderTitle')" maxlength="50" />
-      </div>
-      <div class="form-group">
-        <label>{{ $t('continue.styleType') }}</label>
-        <select v-model="novelTypeName" class="input select-input">
-          <option value="">{{ $t('continue.selectStyle') }}</option>
-          <option v-for="t in novelStore.novelTypes" :key="t.id" :value="t.name">{{ t.icon }} {{ t.name }}</option>
-          <option value="自定义">{{ $t('continue.otherStyle') }}</option>
-        </select>
-      </div>
-    </div>
+ <div class="card">
+ <div class="section-title">{{ $t('continue.novelInfo') }}</div>
+ <div class="form-group">
+ <label>{{ $t('continue.novelName') }}</label>
+ <input v-model="title" class="input" :placeholder="$t('continue.placeholderTitle')" maxlength="50" />
+ </div>
+ <div class="form-group">
+ <label>{{ $t('continue.styleType') }}</label>
+ <select v-model="novelTypeName" class="input select-input">
+ <option value="">{{ $t('continue.selectStyle') }}</option>
+ <option v-for="t in novelStore.novelTypes" :key="t.id" :value="t.name">{{ t.icon }} {{ t.name }}</option>
+ <option value="自定义">{{ $t('continue.otherStyle') }}</option>
+ </select>
+ </div>
+ </div>
 
-    <div class="card">
-      <div class="section-title">{{ $t('continue.writeRequest') }}</div>
-      <textarea v-model="continuationRequest" class="textarea" rows="5"></textarea>
-      <div class="import-hint"><span>{{ $t('continue.requestHint') }}</span></div>
-    </div>
+ <div class="card">
+ <div class="section-title">{{ $t('continue.writeRequest') }}</div>
+ <textarea v-model="continuationRequest" class="textarea" rows="5"></textarea>
+ <div class="import-hint"><span>{{ $t('continue.requestHint') }}</span></div>
+ </div>
 
-    <div class="card">
-      <div class="section-title">{{ $t('generate.stepMode') }}</div>
-      <div class="mode-radio-group">
-        <label class="mode-radio" :class="{ active: genMode === 'book' }">
-          <input type="radio" v-model="genMode" value="book" />
-          <span>{{ $t('continue.modeBook') }}</span>
-        </label>
-        <label class="mode-radio" :class="{ active: genMode === 'chapter' }">
-          <input type="radio" v-model="genMode" value="chapter" />
-          <span>{{ $t('continue.modeChapter') }}</span>
-        </label>
-      </div>
-      <div class="mode-tip">{{ genMode === 'book' ? '一次性续写整本的全部内容' : '本次只续写一个章节的内容' }}</div>
-      <div class="word-count-input" style="margin-top:12px;">
-        <input v-model.number="targetWordCount" class="input" type="number" :min="genMode === 'chapter' ? 500 : 1000" :max="genMode === 'chapter' ? 8000 : 1000000" step="500" />
-        <span class="unit">{{ $t('generate.wordShort') }}</span>
-      </div>
-      <div class="word-count-presets">
-        <span v-for="p in activePresets" :key="p.value" class="preset-btn" :class="{ active: targetWordCount === p.value }" @click="targetWordCount = p.value">{{ p.label }}</span>
-      </div>
-    </div>
+ <div class="card">
+ <div class="section-title">{{ $t('generate.stepMode') }}</div>
+ <div class="mode-radio-group">
+ <label class="mode-radio" :class="{ active: genMode === 'book' }">
+ <input type="radio" v-model="genMode" value="book" />
+ <span>{{ $t('continue.modeBook') }}</span>
+ </label>
+ <label class="mode-radio" :class="{ active: genMode === 'chapter' }">
+ <input type="radio" v-model="genMode" value="chapter" />
+ <span>{{ $t('continue.modeChapter') }}</span>
+ </label>
+ </div>
+ <div class="mode-tip">{{ genMode === 'book' ? '一次性续写整本的全部内容' : '本次只续写一个章节的内容' }}</div>
+ <div class="word-count-input" style="margin-top:12px;">
+ <input v-model.number="targetWordCount" class="input" type="number" :min="genMode === 'chapter' ? 500 : 1000" :max="genMode === 'chapter' ? 8000 : 1000000" step="500" />
+ <span class="unit">{{ $t('generate.wordShort') }}</span>
+ </div>
+ <div class="word-count-presets">
+ <span v-for="p in activePresets" :key="p.value" class="preset-btn" :class="{ active: targetWordCount === p.value }" @click="targetWordCount = p.value">{{ p.label }}</span>
+ </div>
+ </div>
 
-    <div class="card action-card">
-      <button v-if="!isGenerating" class="btn btn-primary btn-block btn-generate" :disabled="importedText.length < 50" @click="startContinue">
-        {{ $t('continue.btnWrite') }}
-      </button>
-      <div v-else class="generating-status">
-        <div class="generating-indicator"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="indicator-text">{{ $t('continue.btnWriting') }}</span></div>
-        <div class="word-count-progress">{{ $t('bookshelf.generated', { words: wordCount }) }}</div>
-        <button class="btn btn-outline btn-sm" @click="stopContinue">⏸ {{ $t('bookshelf.pause') }}</button>
-      </div>
-    </div>
+ <div class="card action-card">
+ <button v-if="!isGenerating" class="btn btn-primary btn-block btn-generate" :disabled="importedText.length < 50" @click="startContinue">
+ {{ $t('continue.btnWrite') }}
+ </button>
+ <div v-else class="generating-status">
+ <div class="generating-indicator"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="indicator-text">{{ $t('continue.btnWriting') }}</span></div>
+ <div class="word-count-progress">{{ $t('bookshelf.generated', { words: wordCount }) }}</div>
+ <button class="btn btn-outline btn-sm" @click="stopContinue">⏸ {{ $t('bookshelf.pause') }}</button>
+ </div>
+ </div>
 
-    <div v-if="novelStore.streamingText" class="card streaming-card">
-      <div class="streaming-header">
-        <span class="section-title">{{ $t('bookshelf.write') }}{{ $t('continue.title') }}</span>
-        <span v-if="isGenerating" class="generating-indicator"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
-      </div>
-      <div class="streaming-content" ref="streamingRef">
-        <div class="content-text">{{ novelStore.streamingText }}</div>
-        <div v-if="isGenerating" class="cursor-blink">|</div>
-      </div>
-    </div>
+ <div v-if="novelStore.streamingText" class="card streaming-card">
+ <div class="streaming-header">
+ <span class="section-title">{{ $t('bookshelf.write') }}{{ $t('continue.title') }}</span>
+ <span v-if="isGenerating" class="generating-indicator"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+ </div>
+ <div class="streaming-content" ref="streamingRef">
+ <div class="content-text">{{ novelStore.streamingText }}</div>
+ <div v-if="isGenerating" class="cursor-blink">|</div>
+ </div>
+ </div>
 
-    <div v-if="generationDone" class="card done-card">
-      <div class="done-icon">✅</div>
-      <div class="done-text">{{ $t('continue.title') }}{{ $t('novelDetail.completed') }}！共 {{ wordCount }} {{ $t('generate.wordShort') }}</div>
-      <button class="btn btn-primary btn-block" @click="goToBookshelf">{{ $t('bookshelf.goGenerate') }}</button>
-    </div>
-    <div style="height:20px;"></div>
-  </div>
+ <div v-if="generationDone" class="card done-card">
+ <div class="done-icon"></div>
+ <div class="done-text">{{ $t('continue.title') }}{{ $t('novelDetail.completed') }}！共 {{ wordCount }} {{ $t('generate.wordShort') }}</div>
+ <button class="btn btn-primary btn-block" @click="goToBookshelf">{{ $t('bookshelf.goGenerate') }}</button>
+ </div>
+ <div style="height:20px;"></div>
+ </div>
 </template>
 
 <script setup>
@@ -119,84 +119,84 @@ const wordCount = ref(0)
 const streamingRef = ref(null)
 
 function handleFileUpload(e) {
-  const file = e.target.files?.[0]
-  if (!file) return
-  const ext = file.name.split('.').pop()?.toLowerCase()
-  if (ext !== 'txt') { alert('仅支持 .txt 文件'); return }
-  fileName.value = file.name
-  const reader = new FileReader()
-  reader.onload = (ev) => { importedText.value = ev.target?.result || '' }
-  reader.readAsText(file, 'UTF-8')
-  e.target.value = ''
+ const file = e.target.files?.[0]
+ if (!file) return
+ const ext = file.name.split('.').pop()?.toLowerCase()
+ if (ext !== 'txt') { alert('仅支持 .txt 文件'); return }
+ fileName.value = file.name
+ const reader = new FileReader()
+ reader.onload = (ev) => { importedText.value = ev.target?.result || '' }
+ reader.readAsText(file, 'UTF-8')
+ e.target.value = ''
 }
 
 const bookPresets = [
-  { label: '1万字', value: 10000 }, { label: '3万字', value: 30000 }, { label: '5万字', value: 50000 },
-  { label: '10万字', value: 100000 }, { label: '20万字', value: 200000 }, { label: '50万字', value: 500000 }, { label: '100万字', value: 1000000 },
+ { label: '1万字', value: 10000 }, { label: '3万字', value: 30000 }, { label: '5万字', value: 50000 },
+ { label: '10万字', value: 100000 }, { label: '20万字', value: 200000 }, { label: '50万字', value: 500000 }, { label: '100万字', value: 1000000 },
 ]
 const chapterPresets = [
-  { label: '500字', value: 500 }, { label: '1000字', value: 1000 }, { label: '2000字', value: 2000 },
-  { label: '3000字', value: 3000 }, { label: '5000字', value: 5000 }, { label: '8000字', value: 8000 },
+ { label: '500字', value: 500 }, { label: '1000字', value: 1000 }, { label: '2000字', value: 2000 },
+ { label: '3000字', value: 3000 }, { label: '5000字', value: 5000 }, { label: '8000字', value: 8000 },
 ]
 const activePresets = computed(() => genMode.value === 'book' ? bookPresets : chapterPresets)
 
 watch(genMode, (mode) => {
-  if (mode === 'chapter' && targetWordCount.value > 8000) targetWordCount.value = 3000
-  if (mode === 'book' && targetWordCount.value < 10000) targetWordCount.value = 30000
+ if (mode === 'chapter' && targetWordCount.value > 8000) targetWordCount.value = 3000
+ if (mode === 'book' && targetWordCount.value < 10000) targetWordCount.value = 30000
 })
 
 onMounted(async () => {
-  if (!authStore.isLoggedIn) { router.push('/login'); return }
-  if (novelStore.novelTypes.length === 0) await novelStore.fetchNovelTypes()
-  const prefill = novelStore.prefillContinue
-  if (prefill) {
-    importedText.value = prefill.importedText || ''
-    title.value = prefill.title || ''
-    novelTypeName.value = prefill.novelTypeName || ''
-    continueNovelId.value = prefill.novelId || ''
-    novelStore.clearPrefillContinue()
-  }
+ if (!authStore.isLoggedIn) { router.push('/login'); return }
+ if (novelStore.novelTypes.length === 0) await novelStore.fetchNovelTypes()
+ const prefill = novelStore.prefillContinue
+ if (prefill) {
+ importedText.value = prefill.importedText || ''
+ title.value = prefill.title || ''
+ novelTypeName.value = prefill.novelTypeName || ''
+ continueNovelId.value = prefill.novelId || ''
+ novelStore.clearPrefillContinue()
+ }
 })
 
 watch(() => novelStore.streamingText, async () => { await nextTick(); if (streamingRef.value) streamingRef.value.scrollTop = streamingRef.value.scrollHeight })
 
 function isTokenExhaustedError(message) {
-  if (!message) return false
-  return message === 'TOKEN_EXHAUSTED' ||
-    message.includes('Token') ||
-    message.includes('token') ||
-    message.includes('余额不足')
+ if (!message) return false
+ return message === 'TOKEN_EXHAUSTED' ||
+ message.includes('Token') ||
+ message.includes('token') ||
+ message.includes('余额不足')
 }
 
 async function startContinue() {
-  if (importedText.value.length < 50) return
-  isGenerating.value = true; generationDone.value = false; wordCount.value = 0; novelStore.streamingText = ''
-  try {
-    if (continueNovelId.value) {
-      await novelStore.continueGeneration(continueNovelId.value, (chunk, fullText) => { wordCount.value = fullText.length }, (status) => {
-        if (status.type === 'completed') { generationDone.value = true; isGenerating.value = false }
-        else if (status.type === 'token_exhausted') { isGenerating.value = false }
-        else if (status.type === 'paused' || status.type === 'error') { isGenerating.value = false }
-      }, genMode.value)
-    } else {
-      await novelStore.startImportContinue({
-        novelId: continueNovelId.value || undefined,
-        importedText: importedText.value,
-        continuationRequest: continuationRequest.value,
-        novelTypeName: novelTypeName.value,
-        title: title.value || undefined,
-        targetWordCount: targetWordCount.value,
-      }, (chunk, fullText) => { wordCount.value = fullText.length }, (status) => {
-        if (status.type === 'completed') { generationDone.value = true; isGenerating.value = false }
-        else if (status.type === 'token_exhausted') { isGenerating.value = false }
-        else if (status.type === 'paused' || status.type === 'error') { isGenerating.value = false }
-      })
-    }
-  } catch (e) {
-    isGenerating.value = false
-    if (isTokenExhaustedError(e.message)) alert('当前 Token 余额不足，请加 QQ 群 1019601998 联系群主购买 Token')
-    else if (e.message !== 'paused') alert('续写失败：' + e.message)
-  }
+ if (importedText.value.length < 50) return
+ isGenerating.value = true; generationDone.value = false; wordCount.value = 0; novelStore.streamingText = ''
+ try {
+ if (continueNovelId.value) {
+ await novelStore.continueGeneration(continueNovelId.value, (chunk, fullText) => { wordCount.value = fullText.length }, (status) => {
+ if (status.type === 'completed') { generationDone.value = true; isGenerating.value = false }
+ else if (status.type === 'token_exhausted') { isGenerating.value = false }
+ else if (status.type === 'paused' || status.type === 'error') { isGenerating.value = false }
+ }, genMode.value)
+ } else {
+ await novelStore.startImportContinue({
+ novelId: continueNovelId.value || undefined,
+ importedText: importedText.value,
+ continuationRequest: continuationRequest.value,
+ novelTypeName: novelTypeName.value,
+ title: title.value || undefined,
+ targetWordCount: targetWordCount.value,
+ }, (chunk, fullText) => { wordCount.value = fullText.length }, (status) => {
+ if (status.type === 'completed') { generationDone.value = true; isGenerating.value = false }
+ else if (status.type === 'token_exhausted') { isGenerating.value = false }
+ else if (status.type === 'paused' || status.type === 'error') { isGenerating.value = false }
+ })
+ }
+ } catch (e) {
+ isGenerating.value = false
+ if (isTokenExhaustedError(e.message)) alert('当前 Token 余额不足，请加 QQ 群 1019601998 联系群主购买 Token')
+ else if (e.message !== 'paused') alert('续写失败：' + e.message)
+ }
 }
 
 function stopContinue() { novelStore.stopGeneration(); isGenerating.value = false }

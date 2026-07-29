@@ -1,126 +1,126 @@
 <template>
-  <div class="page-container bookshelf-page">
-    <div class="page-header">
-      <span>{{ $t('bookshelf.title') }}</span>
-      <button v-if="novelStore.bookshelf.length > 0 && !batchMode" class="btn btn-sm btn-outline header-btn" @click="enterBatchMode">
-        {{ $t('bookshelf.batchExport') }}
-      </button>
-      <button v-if="batchMode" class="btn btn-sm btn-outline header-btn" @click="exitBatchMode">
-        {{ $t('bookshelf.cancel') }}
-      </button>
-    </div>
+ <div class="page-container bookshelf-page">
+ <div class="page-header">
+ <span>{{ $t('bookshelf.title') }}</span>
+ <button v-if="novelStore.bookshelf.length > 0 && !batchMode" class="btn btn-sm btn-outline header-btn" @click="enterBatchMode">
+ {{ $t('bookshelf.batchExport') }}
+ </button>
+ <button v-if="batchMode" class="btn btn-sm btn-outline header-btn" @click="exitBatchMode">
+ {{ $t('bookshelf.cancel') }}
+ </button>
+ </div>
 
-    <div v-if="batchMode && novelStore.bookshelf.length > 0" class="batch-bar">
-      <label class="batch-check-label" @click.stop>
-        <input type="checkbox" :checked="allSelected" @change="toggleSelectAll" />
-        <span>{{ $t('bookshelf.selectAll') }}</span>
-      </label>
-      <span class="batch-count">{{ $t('bookshelf.selected', { count: selectedIds.length }) }}</span>
-      <div class="batch-actions">
-        <button class="btn btn-sm btn-primary" :disabled="selectedIds.length === 0 || exporting" @click="exportSelected">
-          {{ exporting ? $t('common.loading') : $t('bookshelf.exportSelected') }}
-        </button>
-        <button class="btn btn-sm btn-primary" :disabled="exporting" @click="exportAll">
-          {{ exporting ? $t('common.loading') : $t('bookshelf.exportAll') }}
-        </button>
-      </div>
-    </div>
+ <div v-if="batchMode && novelStore.bookshelf.length > 0" class="batch-bar">
+ <label class="batch-check-label" @click.stop>
+ <input type="checkbox" :checked="allSelected" @change="toggleSelectAll" />
+ <span>{{ $t('bookshelf.selectAll') }}</span>
+ </label>
+ <span class="batch-count">{{ $t('bookshelf.selected', { count: selectedIds.length }) }}</span>
+ <div class="batch-actions">
+ <button class="btn btn-sm btn-primary" :disabled="selectedIds.length === 0 || exporting" @click="exportSelected">
+ {{ exporting ? $t('common.loading') : $t('bookshelf.exportSelected') }}
+ </button>
+ <button class="btn btn-sm btn-primary" :disabled="exporting" @click="exportAll">
+ {{ exporting ? $t('common.loading') : $t('bookshelf.exportAll') }}
+ </button>
+ </div>
+ </div>
 
-    <div class="bookshelf-content">
-      <div v-if="loading" class="empty-state">
-        <div class="loading-spinner" style="width: 32px; height: 32px;"></div>
-        <div class="text" style="margin-top: 12px;">{{ $t('common.loading') }}</div>
-      </div>
+ <div class="bookshelf-content">
+ <div v-if="loading" class="empty-state">
+ <div class="loading-spinner" style="width: 32px; height: 32px;"></div>
+ <div class="text" style="margin-top: 12px;">{{ $t('common.loading') }}</div>
+ </div>
 
-      <div v-else-if="novelStore.bookshelf.length === 0" class="empty-state">
-        <div class="icon">📖</div>
-        <div class="text">{{ $t('bookshelf.empty') }}</div>
-        <div class="text" style="font-size: 13px; margin-top: 4px;">{{ $t('bookshelf.emptyHint') }}</div>
-        <button class="btn btn-primary btn-sm" style="margin-top: 16px;" @click="goToGenerate">
-          {{ $t('bookshelf.goGenerate') }}
-        </button>
-      </div>
+ <div v-else-if="novelStore.bookshelf.length === 0" class="empty-state">
+ <div class="icon"></div>
+ <div class="text">{{ $t('bookshelf.empty') }}</div>
+ <div class="text" style="font-size: 13px; margin-top: 4px;">{{ $t('bookshelf.emptyHint') }}</div>
+ <button class="btn btn-primary btn-sm" style="margin-top: 16px;" @click="goToGenerate">
+ {{ $t('bookshelf.goGenerate') }}
+ </button>
+ </div>
 
-      <div v-else class="novel-list">
-        <div v-for="novel in novelStore.bookshelf" :key="novel._id" class="novel-card card"
-          :class="{ 'batch-mode': batchMode, selected: selectedIds.includes(novel._id) }"
-          @click="batchMode ? toggleSelect(novel._id) : openNovel(novel)">
-          <div class="novel-header">
-            <div v-if="batchMode" class="batch-check" @click.stop>
-              <input type="checkbox" :checked="selectedIds.includes(novel._id)" @change="toggleSelect(novel._id)" />
-            </div>
-            <div class="novel-icon">{{ getTypeIcon(novel.novelTypeId) }}</div>
-            <div class="novel-info">
-              <div class="novel-title">{{ novel.title || $t('bookshelf.defaultTitle') }}</div>
-              <div class="novel-type">{{ novel.novelTypeName }}</div>
-            </div>
-            <span v-if="novel.optimizeTask?.status === 'analyzing' || novel.optimizeTask?.status === 'optimizing'" class="status-badge optimizing">⏳ 调优中</span>
-            <span v-else class="status-badge" :class="novel.status">{{ statusMap[novel.status] || novel.status }}</span>
-          </div>
-          <div class="novel-meta">
-            <span>📝 {{ novel.currentWordCount }} / {{ novel.targetWordCount }} {{ $t('bookshelf.chapter') }}</span>
-            <span>📖 {{ novel.currentChapterIndex || 0 }} {{ $t('novelDetail.chapter') }}</span>
-            <span>🕐 {{ formatTime(novel.updatedAt) }}</span>
-          </div>
-          <div class="novel-actions" @click.stop>
-            <button v-if="novel.status === 'generating'" class="btn btn-sm btn-outline" @click="pauseNovel(novel)">{{ $t('bookshelf.pause') }}</button>
-            <button v-if="novel.status === 'paused'" class="btn btn-sm btn-primary" @click="showContinueDialog(novel)">{{ $t('bookshelf.resume') }}</button>
-            <button v-if="novel.status === 'completed' || novel.status === 'paused'" class="btn btn-sm btn-outline" style="color: #8B5CF6; border-color: #8B5CF6;" @click="showContinueDialog(novel)">{{ $t('bookshelf.write') }}</button>
-            <button class="btn btn-sm btn-outline" style="color: #1890ff; border-color: #1890ff;" @click.stop="editOutline(novel)">{{ $t('bookshelf.outline') }}</button>
-            <button class="btn btn-sm btn-outline" style="color: var(--primary-color); border-color: var(--primary-color);" :disabled="exporting" @click="exportSingle(novel)">{{ $t('bookshelf.export') }}</button>
-            <button class="btn btn-sm btn-outline" style="color: var(--error-color); border-color: var(--error-color);" @click="confirmDelete(novel)">{{ $t('common.delete') }}</button>
-          </div>
-        </div>
-      </div>
-    </div>
+ <div v-else class="novel-list">
+ <div v-for="novel in novelStore.bookshelf" :key="novel._id" class="novel-card card"
+ :class="{ 'batch-mode': batchMode, selected: selectedIds.includes(novel._id) }"
+ @click="batchMode ? toggleSelect(novel._id) : openNovel(novel)">
+ <div class="novel-header">
+ <div v-if="batchMode" class="batch-check" @click.stop>
+ <input type="checkbox" :checked="selectedIds.includes(novel._id)" @change="toggleSelect(novel._id)" />
+ </div>
+ <div class="novel-icon">{{ getTypeIcon(novel.novelTypeId) }}</div>
+ <div class="novel-info">
+ <div class="novel-title">{{ novel.title || $t('bookshelf.defaultTitle') }}</div>
+ <div class="novel-type">{{ novel.novelTypeName }}</div>
+ </div>
+ <span v-if="novel.optimizeTask?.status === 'analyzing' || novel.optimizeTask?.status === 'optimizing'" class="status-badge optimizing">⏳ 调优中</span>
+ <span v-else class="status-badge" :class="novel.status">{{ statusMap[novel.status] || novel.status }}</span>
+ </div>
+ <div class="novel-meta">
+ <span> {{ novel.currentWordCount }} / {{ novel.targetWordCount }} {{ $t('bookshelf.chapter') }}</span>
+ <span> {{ novel.currentChapterIndex || 0 }} {{ $t('novelDetail.chapter') }}</span>
+ <span> {{ formatTime(novel.updatedAt) }}</span>
+ </div>
+ <div class="novel-actions" @click.stop>
+ <button v-if="novel.status === 'generating'" class="btn btn-sm btn-outline" @click="pauseNovel(novel)">{{ $t('bookshelf.pause') }}</button>
+ <button v-if="novel.status === 'paused'" class="btn btn-sm btn-primary" @click="showContinueDialog(novel)">{{ $t('bookshelf.resume') }}</button>
+ <button v-if="novel.status === 'completed' || novel.status === 'paused'" class="btn btn-sm btn-outline" style="color: #8B5CF6; border-color: #8B5CF6;" @click="showContinueDialog(novel)">{{ $t('bookshelf.write') }}</button>
+ <button class="btn btn-sm btn-outline" style="color: #1890ff; border-color: #1890ff;" @click.stop="editOutline(novel)">{{ $t('bookshelf.outline') }}</button>
+ <button class="btn btn-sm btn-outline" style="color: var(--primary-color); border-color: var(--primary-color);" :disabled="exporting" @click="exportSingle(novel)">{{ $t('bookshelf.export') }}</button>
+ <button class="btn btn-sm btn-outline" style="color: var(--error-color); border-color: var(--error-color);" @click="confirmDelete(novel)">{{ $t('common.delete') }}</button>
+ </div>
+ </div>
+ </div>
+ </div>
 
-    <Teleport to="body">
-      <div v-if="outlineModal" class="outline-overlay" @click.self="outlineModal=false">
-        <div class="outline-modal">
-          <h3>{{ $t('bookshelf.editOutline') }} {{ outlineNovel?.title }}</h3>
-          <textarea v-model="outlineText" class="outline-textarea" rows="8" :placeholder="$t('bookshelf.placeholderOutline')"></textarea>
-          <div class="outline-actions">
-            <button class="btn btn-outline btn-sm" @click="outlineModal=false">{{ $t('common.cancel') }}</button>
-            <button class="btn btn-primary btn-sm" :disabled="outlineSaving" @click="saveOutline">{{ outlineSaving ? $t('common.loading') : $t('bookshelf.saveOutline') }}</button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
+ <Teleport to="body">
+ <div v-if="outlineModal" class="outline-overlay" @click.self="outlineModal=false">
+ <div class="outline-modal">
+ <h3>{{ $t('bookshelf.editOutline') }} {{ outlineNovel?.title }}</h3>
+ <textarea v-model="outlineText" class="outline-textarea" rows="8" :placeholder="$t('bookshelf.placeholderOutline')"></textarea>
+ <div class="outline-actions">
+ <button class="btn btn-outline btn-sm" @click="outlineModal=false">{{ $t('common.cancel') }}</button>
+ <button class="btn btn-primary btn-sm" :disabled="outlineSaving" @click="saveOutline">{{ outlineSaving ? $t('common.loading') : $t('bookshelf.saveOutline') }}</button>
+ </div>
+ </div>
+ </div>
+ </Teleport>
 
-    <Teleport to="body">
-      <div v-if="continueDialogNovel" class="continue-overlay" @click.self="continueDialogNovel=null">
-        <div class="continue-modal">
-          <h3>{{ $t('bookshelf.writeMode') }} {{ continueDialogNovel?.title }}</h3>
-          <p class="continue-desc">{{ $t('bookshelf.progress', { current: continueDialogNovel?.currentWordCount || 0, target: continueDialogNovel?.targetWordCount || 0 }) }}</p>
-          <div class="continue-options">
-            <button class="continue-option primary" @click="startBookContinue(continueDialogNovel)" :disabled="isContinuing">
-              <span class="option-icon">📚</span>
-              <span class="option-text">{{ $t('bookshelf.continueBook') }}</span>
-              <span class="option-desc">{{ $t('bookshelf.continueBookDesc', { count: continueDialogNovel?.targetWordCount || 0 }) }}</span>
-            </button>
-            <button class="continue-option" @click="startChapterContinue(continueDialogNovel)" :disabled="isContinuing">
-              <span class="option-icon">📄</span>
-              <span class="option-text">{{ $t('bookshelf.continueChapter') }}</span>
-              <span class="option-desc">{{ $t('bookshelf.continueChapterDesc') }}</span>
-            </button>
-          </div>
-          <button class="btn btn-outline btn-sm" style="margin-top:12px;" @click="continueDialogNovel=null">{{ $t('common.cancel') }}</button>
-        </div>
-      </div>
-    </Teleport>
+ <Teleport to="body">
+ <div v-if="continueDialogNovel" class="continue-overlay" @click.self="continueDialogNovel=null">
+ <div class="continue-modal">
+ <h3>{{ $t('bookshelf.writeMode') }} {{ continueDialogNovel?.title }}</h3>
+ <p class="continue-desc">{{ $t('bookshelf.progress', { current: continueDialogNovel?.currentWordCount || 0, target: continueDialogNovel?.targetWordCount || 0 }) }}</p>
+ <div class="continue-options">
+ <button class="continue-option primary" @click="startBookContinue(continueDialogNovel)" :disabled="isContinuing">
+ <span class="option-icon"></span>
+ <span class="option-text">{{ $t('bookshelf.continueBook') }}</span>
+ <span class="option-desc">{{ $t('bookshelf.continueBookDesc', { count: continueDialogNovel?.targetWordCount || 0 }) }}</span>
+ </button>
+ <button class="continue-option" @click="startChapterContinue(continueDialogNovel)" :disabled="isContinuing">
+ <span class="option-icon"></span>
+ <span class="option-text">{{ $t('bookshelf.continueChapter') }}</span>
+ <span class="option-desc">{{ $t('bookshelf.continueChapterDesc') }}</span>
+ </button>
+ </div>
+ <button class="btn btn-outline btn-sm" style="margin-top:12px;" @click="continueDialogNovel=null">{{ $t('common.cancel') }}</button>
+ </div>
+ </div>
+ </Teleport>
 
-    <Teleport to="body">
-      <div v-if="isContinuing" class="continue-progress-overlay">
-        <div class="continue-progress-card">
-          <div class="progress-title">{{ $t('bookshelf.aiWriting') }}</div>
-          <div v-if="currentContinueChapter" class="progress-chapter">{{ $t('bookshelf.currentChapter', { num: currentContinueChapter }) }}</div>
-          <div class="progress-word">{{ $t('bookshelf.generated', { words: continueWordCount }) }}</div>
-          <div class="progress-indicator"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
-        </div>
-      </div>
-    </Teleport>
-    <div style="height: 20px;"></div>
-  </div>
+ <Teleport to="body">
+ <div v-if="isContinuing" class="continue-progress-overlay">
+ <div class="continue-progress-card">
+ <div class="progress-title">{{ $t('bookshelf.aiWriting') }}</div>
+ <div v-if="currentContinueChapter" class="progress-chapter">{{ $t('bookshelf.currentChapter', { num: currentContinueChapter }) }}</div>
+ <div class="progress-word">{{ $t('bookshelf.generated', { words: continueWordCount }) }}</div>
+ <div class="progress-indicator"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+ </div>
+ </div>
+ </Teleport>
+ <div style="height: 20px;"></div>
+ </div>
 </template>
 
 <script setup>
@@ -150,78 +150,78 @@ const currentContinueChapter = ref(0)
 const continueWordCount = ref(0)
 
 const statusMap = {
-  generating: $t('bookshelf.statusGenerating'),
-  paused: $t('bookshelf.statusPaused'),
-  completed: $t('bookshelf.statusCompleted'),
-  error: $t('bookshelf.statusError'),
+ generating: $t('bookshelf.statusGenerating'),
+ paused: $t('bookshelf.statusPaused'),
+ completed: $t('bookshelf.statusCompleted'),
+ error: $t('bookshelf.statusError'),
 }
 
 const allSelected = computed(() => novelStore.bookshelf.length > 0 && selectedIds.value.length === novelStore.bookshelf.length)
 
 onMounted(async () => {
-  if (!authStore.isLoggedIn) { router.push('/login'); return }
-  try { await novelStore.fetchBookshelf() } catch (e) { console.error('获取书架失败:', e) }
-  loading.value = false
+ if (!authStore.isLoggedIn) { router.push('/login'); return }
+ try { await novelStore.fetchBookshelf() } catch (e) { console.error('获取书架失败:', e) }
+ loading.value = false
 })
 
 // 从 keep-alive 缓存重新激活时刷新书架数据（切换 tab 回来时）
 onActivated(async () => {
-  if (!authStore.isLoggedIn) return
-  loading.value = true
-  try { await novelStore.fetchBookshelf() } catch (e) { console.error('书架刷新失败:', e) }
-  loading.value = false
+ if (!authStore.isLoggedIn) return
+ loading.value = true
+ try { await novelStore.fetchBookshelf() } catch (e) { console.error('书架刷新失败:', e) }
+ loading.value = false
 })
 
-const typeIcons = { xianxia: '🔮', urban: '🏙️', scifi: '🚀', wuxia: '⚔️', mystery: '🔍', romance: '💕', historical: '🏛️' }
-function getTypeIcon(typeId) { return typeIcons[typeId] || '📄' }
+const typeIcons = { xianxia: '', urban: '️', scifi: '', wuxia: '️', mystery: '', romance: '', historical: '️' }
+function getTypeIcon(typeId) { return typeIcons[typeId] || '' }
 
 function formatTime(dateStr) {
-  if (!dateStr) return ''
-  const date = new Date(dateStr)
-  const now = new Date()
-  const diff = now - date
-  if (diff < 60000) return $t('bookshelf.justNow')
-  if (diff < 3600000) return $t('bookshelf.minAgo', { m: Math.floor(diff / 60000) })
-  if (diff < 86400000) return $t('bookshelf.hourAgo', { h: Math.floor(diff / 3600000) })
-  return `${date.getMonth() + 1}月${date.getDate()}日`
+ if (!dateStr) return ''
+ const date = new Date(dateStr)
+ const now = new Date()
+ const diff = now - date
+ if (diff < 60000) return $t('bookshelf.justNow')
+ if (diff < 3600000) return $t('bookshelf.minAgo', { m: Math.floor(diff / 60000) })
+ if (diff < 86400000) return $t('bookshelf.hourAgo', { h: Math.floor(diff / 3600000) })
+ return `${date.getMonth() + 1}月${date.getDate()}日`
 }
 
 function openNovel(novel) { router.push(`/novel/${novel._id}`) }
 function showContinueDialog(novel) { continueDialogNovel.value = novel }
 
 function isTokenExhaustedError(message) {
-  if (!message) return false
-  return message === 'TOKEN_EXHAUSTED' ||
-    message.includes('Token') ||
-    message.includes('token') ||
-    message.includes('余额不足')
+ if (!message) return false
+ return message === 'TOKEN_EXHAUSTED' ||
+ message.includes('Token') ||
+ message.includes('token') ||
+ message.includes('余额不足')
 }
 
 async function startBookContinue(novel) {
-  continueDialogNovel.value = null; isContinuing.value = true
-  currentContinueChapter.value = 0; continueWordCount.value = 0
-  try {
-    await novelStore.continueGeneration(novel._id, (chunk, fullText) => { continueWordCount.value = fullText.length }, (status) => {
-      if (status.type === 'chapter_start') currentContinueChapter.value = status.chapterNumber || 0
-      if (status.type === 'token_exhausted') { isContinuing.value = false; novelStore.fetchBookshelf() }
-      else if (status.type === 'completed' || status.type === 'paused' || status.type === 'error') { isContinuing.value = false; novelStore.fetchBookshelf() }
-    }, 'book')
-  } catch (e) {
-    isContinuing.value = false
-    if (isTokenExhaustedError(e.message)) alert('当前 Token 余额不足，请加 QQ 群 1019601998 联系群主购买 Token')
-    else if (e.message !== 'paused') alert('续写失败：' + e.message)
-    novelStore.fetchBookshelf()
-  }
+ continueDialogNovel.value = null; isContinuing.value = true
+ currentContinueChapter.value = 0; continueWordCount.value = 0
+ try {
+ await novelStore.continueGeneration(novel._id, (chunk, fullText) => { continueWordCount.value = fullText.length }, (status) => {
+ if (status.type === 'chapter_start') currentContinueChapter.value = status.chapterNumber || 0
+ if (status.type === 'token_exhausted') { isContinuing.value = false; novelStore.fetchBookshelf() }
+ else if (status.type === 'completed' || status.type === 'paused' || status.type === 'error') { isContinuing.value = false; novelStore.fetchBookshelf() }
+ }, 'book')
+ } catch (e) {
+ isContinuing.value = false
+ if (isTokenExhaustedError(e.message)) alert('当前 Token 余额不足，请加 QQ 群 1019601998 联系群主购买 Token')
+ else if (e.message !== 'paused') alert('续写失败：' + e.message)
+ novelStore.fetchBookshelf()
+ }
 }
 
 async function startChapterContinue(novel) {
-  continueDialogNovel.value = null
-  try {
-    const detail = await novelStore.fetchNovelDetail(novel._id)
-    const fullText = (detail.chapters || []).map(ch => `第${ch.chapterNumber}章\n${ch.content}`).join('\n\n')
-    novelStore.setPrefillContinue({ novelId: detail._id, importedText: fullText, title: detail.title, novelTypeName: detail.novelTypeName })
-    router.push('/continue')
-  } catch (e) { alert($t('error.unknown')) }
+ continueDialogNovel.value = null
+ try {
+ const detail = await novelStore.fetchNovelDetail(novel._id)
+ const fullText = (detail.chapters || []).map(ch => `第${ch.chapterNumber}章\n${ch.content}`).join('\n\n')
+ novelStore.setPrefillContinue({ novelId: detail._id, importedText: fullText, title: detail.title, novelTypeName: detail.novelTypeName })
+ router.push('/continue')
+ } catch (e) { alert($t('error.unknown')) }
 }
 
 function goToGenerate() { router.push('/generate') }
@@ -231,8 +231,8 @@ function toggleSelect(id) { const idx = selectedIds.value.indexOf(id); idx > -1 
 function toggleSelectAll() { selectedIds.value = allSelected.value ? [] : novelStore.bookshelf.map(n => n._id) }
 
 function downloadZip(novelIds, filename) {
-  const token = localStorage.getItem('token')
-  window.open(`/api/novel/export?token=${encodeURIComponent(token)}&ids=${novelIds.join(',')}`, '_blank')
+ const token = localStorage.getItem('token')
+ window.open(`/api/novel/export?token=${encodeURIComponent(token)}&ids=${novelIds.join(',')}`, '_blank')
 }
 
 function exportSingle(novel) { downloadZip([novel._id], `${(novel.title || $t('bookshelf.defaultTitle')).replace(/[<>:"/\\|?*]/g, '_').substring(0, 30)}.zip`) }
@@ -241,21 +241,21 @@ function exportAll() { const allIds = novelStore.bookshelf.map(n => n._id); down
 
 async function pauseNovel(novel) { try { await novelStore.pauseNovel(novel._id); await novelStore.fetchBookshelf() } catch (e) { alert($t('bookshelf.pause') + '失败') } }
 async function confirmDelete(novel) {
-  if (!confirm($t('bookshelf.deleteConfirm', { title: novel.title }))) return
-  try {
-    await novelStore.deleteNovel(novel._id)
-    await novelStore.fetchBookshelf()
-  } catch (e) {
-    alert('删除失败: ' + (e.response?.data?.message || e.message))
-  }
+ if (!confirm($t('bookshelf.deleteConfirm', { title: novel.title }))) return
+ try {
+ await novelStore.deleteNovel(novel._id)
+ await novelStore.fetchBookshelf()
+ } catch (e) {
+ alert('删除失败: ' + (e.response?.data?.message || e.message))
+ }
 }
 
 function editOutline(novel) { outlineNovel.value = novel; outlineText.value = novel.outline || ''; outlineModal.value = true }
 async function saveOutline() {
-  outlineSaving.value = true
-  try { await api.put(`/novel/${outlineNovel.value._id}/outline`, { outline: outlineText.value }); outlineNovel.value.outline = outlineText.value; outlineModal.value = false }
-  catch (e) { alert($t('error.unknown') + ':' + (e.response?.data?.message || e.message)) }
-  outlineSaving.value = false
+ outlineSaving.value = true
+ try { await api.put(`/novel/${outlineNovel.value._id}/outline`, { outline: outlineText.value }); outlineNovel.value.outline = outlineText.value; outlineModal.value = false }
+ catch (e) { alert($t('error.unknown') + ':' + (e.response?.data?.message || e.message)) }
+ outlineSaving.value = false
 }
 </script>
 

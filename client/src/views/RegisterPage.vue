@@ -1,48 +1,48 @@
 <template>
-  <div class="register-page">
-    <div class="auth-container">
-      <div class="auth-header">
-        <div class="auth-icon">📚</div>
-        <h1>{{ $t('auth.register') }}</h1>
-        <p>创建你的{{ $t('app.title') }}账号</p>
-      </div>
-      <div class="card auth-form">
-        <div class="form-group">
-          <label>{{ $t('auth.email') }}</label>
-          <input v-model="email" class="input" type="email" :placeholder="$t('auth.placeholderEmail')" />
-        </div>
-        <div class="form-group">
-          <label>{{ $t('auth.nickname') }}（{{ $t('common.no') }}选）</label>
-          <input v-model="nickname" class="input" :placeholder="$t('auth.placeholderNick')" maxlength="20" />
-        </div>
-        <div class="form-group">
-          <label>{{ $t('auth.password') }}</label>
-          <input v-model="password" class="input" type="password" :placeholder="$t('auth.placeholderPwdConfirm')" />
-        </div>
-        <div class="form-group">
-          <label>确认{{ $t('auth.password') }}</label>
-          <input v-model="confirmPassword" class="input" type="password" placeholder="再次输入密码" />
-        </div>
-        <div class="form-group">
-          <label>{{ $t('auth.verifyCode') }}</label>
-          <div class="code-row">
-            <input v-model="code" class="input" :placeholder="$t('auth.placeholderCode')" maxlength="6" />
-            <button class="btn btn-outline btn-sm code-btn" :disabled="codeSending || codeCountdown > 0" @click="sendCode">
-              {{ codeCountdown > 0 ? `${codeCountdown}s` : (codeSending ? $t('auth.sending') : $t('auth.getCode')) }}
-            </button>
-          </div>
-        </div>
-        <div v-if="errorMsg" class="error-msg">{{ errorMsg }}</div>
-        <button class="btn btn-primary btn-block" @click="handleRegister" :disabled="loading">
-          <span v-if="loading" class="loading-spinner"></span>
-          <span v-else>{{ $t('auth.register') }}</span>
-        </button>
-        <div class="auth-footer">
-          {{ $t('auth.hasAccount') }}<router-link to="/login">{{ $t('auth.login') }}</router-link>
-        </div>
-      </div>
-    </div>
-  </div>
+ <div class="register-page">
+ <div class="auth-container">
+ <div class="auth-header">
+ <div class="auth-icon"></div>
+ <h1>{{ $t('auth.register') }}</h1>
+ <p>创建你的{{ $t('app.title') }}账号</p>
+ </div>
+ <div class="card auth-form">
+ <div class="form-group">
+ <label>{{ $t('auth.email') }}</label>
+ <input v-model="email" class="input" type="email" :placeholder="$t('auth.placeholderEmail')" />
+ </div>
+ <div class="form-group">
+ <label>{{ $t('auth.nickname') }}（{{ $t('common.no') }}选）</label>
+ <input v-model="nickname" class="input" :placeholder="$t('auth.placeholderNick')" maxlength="20" />
+ </div>
+ <div class="form-group">
+ <label>{{ $t('auth.password') }}</label>
+ <input v-model="password" class="input" type="password" :placeholder="$t('auth.placeholderPwdConfirm')" />
+ </div>
+ <div class="form-group">
+ <label>确认{{ $t('auth.password') }}</label>
+ <input v-model="confirmPassword" class="input" type="password" placeholder="再次输入密码" />
+ </div>
+ <div class="form-group">
+ <label>{{ $t('auth.verifyCode') }}</label>
+ <div class="code-row">
+ <input v-model="code" class="input" :placeholder="$t('auth.placeholderCode')" maxlength="6" />
+ <button class="btn btn-outline btn-sm code-btn" :disabled="codeSending || codeCountdown > 0" @click="sendCode">
+ {{ codeCountdown > 0 ? `${codeCountdown}s` : (codeSending ? $t('auth.sending') : $t('auth.getCode')) }}
+ </button>
+ </div>
+ </div>
+ <div v-if="errorMsg" class="error-msg">{{ errorMsg }}</div>
+ <button class="btn btn-primary btn-block" @click="handleRegister" :disabled="loading">
+ <span v-if="loading" class="loading-spinner"></span>
+ <span v-else>{{ $t('auth.register') }}</span>
+ </button>
+ <div class="auth-footer">
+ {{ $t('auth.hasAccount') }}<router-link to="/login">{{ $t('auth.login') }}</router-link>
+ </div>
+ </div>
+ </div>
+ </div>
 </template>
 
 <script setup>
@@ -68,33 +68,33 @@ const codeSending = ref(false)
 const codeCountdown = ref(0)
 
 async function sendCode() {
-  if (!email.value) { errorMsg.value = '请先输入邮箱'; return }
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-  if (!emailRegex.test(email.value)) { errorMsg.value = $t('auth.invalidEmail'); return }
-  codeSending.value = true; errorMsg.value = ''
-  try {
-    await authStore.sendCode(email.value)
-    codeCountdown.value = 60
-    const timer = setInterval(() => { codeCountdown.value--; if (codeCountdown.value <= 0) clearInterval(timer) }, 1000)
-    alert($t('auth.codeSent'))
-  } catch (e) { errorMsg.value = e.response?.data?.message || $t('auth.codeFail') }
-  codeSending.value = false
+ if (!email.value) { errorMsg.value = '请先输入邮箱'; return }
+ const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+ if (!emailRegex.test(email.value)) { errorMsg.value = $t('auth.invalidEmail'); return }
+ codeSending.value = true; errorMsg.value = ''
+ try {
+ await authStore.sendCode(email.value)
+ codeCountdown.value = 60
+ const timer = setInterval(() => { codeCountdown.value--; if (codeCountdown.value <= 0) clearInterval(timer) }, 1000)
+ alert($t('auth.codeSent'))
+ } catch (e) { errorMsg.value = e.response?.data?.message || $t('auth.codeFail') }
+ codeSending.value = false
 }
 
 async function handleRegister() {
-  if (!email.value || !password.value || !code.value) { errorMsg.value = $t('auth.fillAll'); return }
-  if (password.value.length < 6) { errorMsg.value = $t('auth.pwdMinLen'); return }
-  if (password.value !== confirmPassword.value) { errorMsg.value = $t('auth.pwdMismatch'); return }
-  loading.value = true; errorMsg.value = ''
-  try { await authStore.register(email.value, password.value, code.value, nickname.value, inviteCode.value || undefined); router.push('/generate') }
-  catch (e) { errorMsg.value = e.response?.data?.message || $t('auth.registerFail') }
-  loading.value = false
+ if (!email.value || !password.value || !code.value) { errorMsg.value = $t('auth.fillAll'); return }
+ if (password.value.length < 6) { errorMsg.value = $t('auth.pwdMinLen'); return }
+ if (password.value !== confirmPassword.value) { errorMsg.value = $t('auth.pwdMismatch'); return }
+ loading.value = true; errorMsg.value = ''
+ try { await authStore.register(email.value, password.value, code.value, nickname.value, inviteCode.value || undefined); router.push('/generate') }
+ catch (e) { errorMsg.value = e.response?.data?.message || $t('auth.registerFail') }
+ loading.value = false
 }
 
 onMounted(() => {
-  // 读取URL中的邀请码
-  const code = route.query.invite
-  if (code) inviteCode.value = code
+ // 读取URL中的邀请码
+ const code = route.query.invite
+ if (code) inviteCode.value = code
 })
 </script>
 

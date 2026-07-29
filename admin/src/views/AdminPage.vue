@@ -1,272 +1,272 @@
 <template>
-  <SidebarLayout>
-    <!-- ====== 数据大屏 ====== -->
-    <div v-if="activeTab === 'dashboard'">
-      <div class="grid-4">
-        <div class="card"><div class="num">{{ dash.totalUsers }}</div><div class="lbl">注册用户</div></div>
-        <div class="card"><div class="num">{{ dash.totalNovels }}</div><div class="lbl">总小说</div></div>
-        <div class="card"><div class="num">{{ (dash.totalTokens/10000).toFixed(1) }}万</div><div class="lbl">充值Token</div></div>
-        <div class="card"><div class="num">{{ (dash.usedTokens/10000).toFixed(1) }}万</div><div class="lbl">消耗Token</div></div>
-      </div>
-      <div class="grid-4" style="margin-top:10px;">
-        <div class="card accent"><div class="num">{{ dash.completedNovels }}</div><div class="lbl">生成完成</div></div>
-        <div class="card accent"><div class="num">{{ dash.generatingNovels }}</div><div class="lbl">生成中/暂停</div></div>
-        <div class="card accent"><div class="num">{{ dash.recentRegistrations }}</div><div class="lbl">近7日注册</div></div>
-        <div class="card accent"><div class="num">{{ revenue }}元</div><div class="lbl">估算收入</div></div>
-      </div>
-      <div class="update-time">更新于 {{ now }}</div>
-    </div>
+ <SidebarLayout>
+ <!-- ====== 数据大屏 ====== -->
+ <div v-if="activeTab === 'dashboard'">
+ <div class="grid-4">
+ <div class="card"><div class="num">{{ dash.totalUsers }}</div><div class="lbl">注册用户</div></div>
+ <div class="card"><div class="num">{{ dash.totalNovels }}</div><div class="lbl">总小说</div></div>
+ <div class="card"><div class="num">{{ (dash.totalTokens/10000).toFixed(1) }}万</div><div class="lbl">充值Token</div></div>
+ <div class="card"><div class="num">{{ (dash.usedTokens/10000).toFixed(1) }}万</div><div class="lbl">消耗Token</div></div>
+ </div>
+ <div class="grid-4" style="margin-top:10px;">
+ <div class="card accent"><div class="num">{{ dash.completedNovels }}</div><div class="lbl">生成完成</div></div>
+ <div class="card accent"><div class="num">{{ dash.generatingNovels }}</div><div class="lbl">生成中/暂停</div></div>
+ <div class="card accent"><div class="num">{{ dash.recentRegistrations }}</div><div class="lbl">近7日注册</div></div>
+ <div class="card accent"><div class="num">{{ revenue }}元</div><div class="lbl">估算收入</div></div>
+ </div>
+ <div class="update-time">更新于 {{ now }}</div>
+ </div>
 
-    <!-- ====== 用户管理 ====== -->
-    <div v-if="activeTab === 'users'">
-      <div class="search-bar">
-        <input v-model="userQ" class="input" placeholder="搜索邮箱/昵称" @input="debounce(loadUsers,300)" />
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>邮箱</th><th>昵称</th><th>角色</th><th>邀请人</th><th>Token(剩余/总额)</th><th>进群</th><th>状态</th><th>操作</th></tr></thead>
-          <tbody>
-            <tr v-for="u in users" :key="u._id">
-              <td>{{ u.email }}</td>
-              <td>{{ u.nickname }}</td>
-              <td><span class="badge" :class="u.role">{{ u.role==='admin'?'管理员':'用户' }}</span></td>
-              <td>{{ u.invitedBy?.email || '-' }}</td>
-              <td>{{ (u.tokens?.total||0)-(u.tokens?.used||0) }}/{{ u.tokens?.total||0 }}</td>
-              <td>
-                <button v-if="!u.groupRewardClaimed" class="btn-sm btn-gift" :disabled="rewarding===u._id" @click="grantReward(u)">{{ rewarding===u._id?'...':'🎁 进群赠送' }}</button>
-                <span v-else class="claimed-badge">已领取</span>
-              </td>
-              <td><span class="dot" :class="{ off: u.disabled }"></span>{{ u.disabled ? '禁用' : '正常' }}</td>
-              <td class="acts">
-                <button class="btn-sm" @click="openEdit(u)">编辑</button>
-                <button class="btn-sm" :class="u.disabled?'green':'red'" @click="toggleDisable(u)">{{ u.disabled?'启用':'禁用' }}</button>
-                <button class="btn-sm" style="color:#722ed1;border-color:#722ed1;" @click="showInvitedUsers(u)">已邀请</button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <!-- 编辑弹窗 -->
-      <Teleport to="body">
-        <div v-if="showModal" class="overlay" @click.self="showModal=false">
-          <div class="modal">
-            <h3>编辑用户</h3>
-            <div class="row"><label>邮箱</label><span>{{ editUserData.email }}</span></div>
-            <div class="row"><label>昵称</label><input v-model="editForm.nickname" class="input" /></div>
-            <div class="row"><label>角色</label>
-              <select v-model="editForm.role" class="input"><option value="user">用户</option><option value="admin">管理员</option><option value="importer">导入员</option></select>
-            </div>
-            <div class="row"><label>追加Token</label><input v-model.number="editForm.addTokens" class="input" type="number" min="0" placeholder="0" /></div>
-            <div class="modal-acts">
-              <button class="btn btn-outline" @click="showModal=false">取消</button>
-              <button class="btn btn-primary" @click="saveUser">保存</button>
-            </div>
-          </div>
-        </div>
-      </Teleport>
-      <!-- 已邀请用户弹窗 -->
-      <Teleport to="body">
-        <div v-if="inviteModal" class="overlay" @click.self="inviteModal=false">
-          <div class="modal" style="max-width:500px;">
-            <h3>👥 {{ inviteModalUser?.email }} 的邀请记录</h3>
-            <div v-if="invitedUsers.length === 0" style="text-align:center;padding:20px;color:#999;">暂无邀请记录</div>
-            <table v-else style="width:100%;font-size:13px;">
-              <thead><tr><th>邮箱</th><th>昵称</th><th>注册时间</th></tr></thead>
-              <tbody>
-                <tr v-for="iu in invitedUsers" :key="iu._id">
-                  <td>{{ iu.email }}</td>
-                  <td>{{ iu.nickname }}</td>
-                  <td>{{ fmt(iu.createdAt) }}</td>
-                </tr>
-              </tbody>
-            </table>
-            <div class="modal-acts">
-              <button class="btn btn-outline" @click="inviteModal=false">关闭</button>
-            </div>
-          </div>
-        </div>
-      </Teleport>
-    </div>
+ <!-- ====== 用户管理 ====== -->
+ <div v-if="activeTab === 'users'">
+ <div class="search-bar">
+ <input v-model="userQ" class="input" placeholder="搜索邮箱/昵称" @input="debounce(loadUsers,300)" />
+ </div>
+ <div class="table-wrap">
+ <table>
+ <thead><tr><th>邮箱</th><th>昵称</th><th>角色</th><th>邀请人</th><th>Token(剩余/总额)</th><th>进群</th><th>状态</th><th>操作</th></tr></thead>
+ <tbody>
+ <tr v-for="u in users" :key="u._id">
+ <td>{{ u.email }}</td>
+ <td>{{ u.nickname }}</td>
+ <td><span class="badge" :class="u.role">{{ u.role==='admin'?'管理员':'用户' }}</span></td>
+ <td>{{ u.invitedBy?.email || '-' }}</td>
+ <td>{{ (u.tokens?.total||0)-(u.tokens?.used||0) }}/{{ u.tokens?.total||0 }}</td>
+ <td>
+ <button v-if="!u.groupRewardClaimed" class="btn-sm btn-gift" :disabled="rewarding===u._id" @click="grantReward(u)">{{ rewarding===u._id?'...':' 进群赠送' }}</button>
+ <span v-else class="claimed-badge">已领取</span>
+ </td>
+ <td><span class="dot" :class="{ off: u.disabled }"></span>{{ u.disabled ? '禁用' : '正常' }}</td>
+ <td class="acts">
+ <button class="btn-sm" @click="openEdit(u)">编辑</button>
+ <button class="btn-sm" :class="u.disabled?'green':'red'" @click="toggleDisable(u)">{{ u.disabled?'启用':'禁用' }}</button>
+ <button class="btn-sm" style="color:#722ed1;border-color:#722ed1;" @click="showInvitedUsers(u)">已邀请</button>
+ </td>
+ </tr>
+ </tbody>
+ </table>
+ </div>
+ <!-- 编辑弹窗 -->
+ <Teleport to="body">
+ <div v-if="showModal" class="overlay" @click.self="showModal=false">
+ <div class="modal">
+ <h3>编辑用户</h3>
+ <div class="row"><label>邮箱</label><span>{{ editUserData.email }}</span></div>
+ <div class="row"><label>昵称</label><input v-model="editForm.nickname" class="input" /></div>
+ <div class="row"><label>角色</label>
+ <select v-model="editForm.role" class="input"><option value="user">用户</option><option value="admin">管理员</option><option value="importer">导入员</option></select>
+ </div>
+ <div class="row"><label>追加Token</label><input v-model.number="editForm.addTokens" class="input" type="number" min="0" placeholder="0" /></div>
+ <div class="modal-acts">
+ <button class="btn btn-outline" @click="showModal=false">取消</button>
+ <button class="btn btn-primary" @click="saveUser">保存</button>
+ </div>
+ </div>
+ </div>
+ </Teleport>
+ <!-- 已邀请用户弹窗 -->
+ <Teleport to="body">
+ <div v-if="inviteModal" class="overlay" @click.self="inviteModal=false">
+ <div class="modal" style="max-width:500px;">
+ <h3> {{ inviteModalUser?.email }} 的邀请记录</h3>
+ <div v-if="invitedUsers.length === 0" style="text-align:center;padding:20px;color:#999;">暂无邀请记录</div>
+ <table v-else style="width:100%;font-size:13px;">
+ <thead><tr><th>邮箱</th><th>昵称</th><th>注册时间</th></tr></thead>
+ <tbody>
+ <tr v-for="iu in invitedUsers" :key="iu._id">
+ <td>{{ iu.email }}</td>
+ <td>{{ iu.nickname }}</td>
+ <td>{{ fmt(iu.createdAt) }}</td>
+ </tr>
+ </tbody>
+ </table>
+ <div class="modal-acts">
+ <button class="btn btn-outline" @click="inviteModal=false">关闭</button>
+ </div>
+ </div>
+ </div>
+ </Teleport>
+ </div>
 
-    <!-- ====== 小说管理 ====== -->
-    <div v-if="activeTab === 'novels'">
-      <div class="search-bar" style="flex-wrap:wrap;">
-        <select v-model="nFilterUser" class="input" style="max-width:180px;" @change="loadNovels">
-          <option value="">全部用户</option>
-          <option v-for="u in allU" :key="u._id" :value="u._id">{{ u.email }}</option>
-        </select>
-        <select v-model="nFilterStatus" class="input" style="max-width:120px;" @change="loadNovels">
-          <option value="">全部状态</option>
-          <option value="generating">生成中</option><option value="paused">已暂停</option><option value="completed">已完成</option>
-        </select>
-        <input v-model="nQ" class="input" placeholder="搜索标题" @input="debounce(loadNovels,300)" />
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>标题</th><th>作者</th><th>类型</th><th>字数</th><th>状态</th><th>更新</th></tr></thead>
-          <tbody>
-            <tr v-for="n in novels" :key="n._id">
-              <td>{{ n.title }}</td>
-              <td>{{ n.userId?.email||'未知' }}</td>
-              <td>{{ n.novelTypeName }}</td>
-              <td>{{ n.currentWordCount }}/{{ n.targetWordCount }}</td>
-              <td><span class="sb" :class="n.status">{{ statusMap[n.status] }}</span></td>
-              <td>{{ fmt(n.updatedAt) }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
+ <!-- ====== 小说管理 ====== -->
+ <div v-if="activeTab === 'novels'">
+ <div class="search-bar" style="flex-wrap:wrap;">
+ <select v-model="nFilterUser" class="input" style="max-width:180px;" @change="loadNovels">
+ <option value="">全部用户</option>
+ <option v-for="u in allU" :key="u._id" :value="u._id">{{ u.email }}</option>
+ </select>
+ <select v-model="nFilterStatus" class="input" style="max-width:120px;" @change="loadNovels">
+ <option value="">全部状态</option>
+ <option value="generating">生成中</option><option value="paused">已暂停</option><option value="completed">已完成</option>
+ </select>
+ <input v-model="nQ" class="input" placeholder="搜索标题" @input="debounce(loadNovels,300)" />
+ </div>
+ <div class="table-wrap">
+ <table>
+ <thead><tr><th>标题</th><th>作者</th><th>类型</th><th>字数</th><th>状态</th><th>更新</th></tr></thead>
+ <tbody>
+ <tr v-for="n in novels" :key="n._id">
+ <td>{{ n.title }}</td>
+ <td>{{ n.userId?.email||'未知' }}</td>
+ <td>{{ n.novelTypeName }}</td>
+ <td>{{ n.currentWordCount }}/{{ n.targetWordCount }}</td>
+ <td><span class="sb" :class="n.status">{{ statusMap[n.status] }}</span></td>
+ <td>{{ fmt(n.updatedAt) }}</td>
+ </tr>
+ </tbody>
+ </table>
+ </div>
+ </div>
 
-    <!-- ====== 蒸馏管理 ====== -->
-    <div v-if="activeTab === 'distill'">
-      <div class="search-bar" style="flex-wrap:wrap;">
-        <select v-model="dFilterUser" class="input" style="max-width:180px;" @change="loadDistillations">
-          <option value="">全部导入员</option>
-          <option v-for="u in allU" :key="u._id" :value="u._id">{{ u.email }}</option>
-        </select>
-        <input v-model="dQ" class="input" placeholder="搜索小说名" @input="debounce(loadDistillations,300)" />
-        <button class="btn-sm" :disabled="dSelected.length===0" @click="batchExportDistill" style="background:#e94560;color:white;border:none;">📦 批量导出</button>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th style="width:30px;"><input type="checkbox" :checked="dAllSelected" @change="dToggleAll" /></th>
-              <th>小说名</th>
-              <th>分类</th>
-              <th>导入员</th>
-              <th title="原始素材字数（成功下载的文本总字符数）">字数</th>
-              <th>质量分</th>
-              <th>AI</th>
-              <th>时间</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="d in distillations" :key="d._id">
-              <td><input type="checkbox" :checked="dSelected.includes(d._id)" @change="dToggle(d._id)" /></td>
-              <td>{{ d.title }}</td>
-              <td>{{ d.mainCategory }}{{ d.subCategory ? '/'+d.subCategory : '' }}</td>
-              <td>{{ d.userId?.email || '未知' }}</td>
-              <td>
-                <div class="wc-cell">
-                  <span class="wc-num">{{ (d.originalLength||0).toLocaleString() }}</span>
-                  <span v-if="d.downloadStats?.totalChapters" class="wc-detail" :class="wcRateClass(d.downloadStats)">
-                    ({{ d.downloadStats.downloadedChapters }}/{{ d.downloadStats.totalChapters }}章)
-                  </span>
-                </div>
-              </td>
-              <td><span class="score" :class="scoreClass(d.qualityScore)">{{ d.qualityScore || '-' }}</span></td>
-              <td><span class="dot" :class="{ off: !d.aiProcessed }"></span>{{ d.aiProcessed ? '已分析' : '未分析' }}</td>
-              <td>{{ fmt(d.createdAt) }}</td>
-              <td class="acts">
-                <button class="btn-sm" @click="viewDistillJson(d)">JSON</button>
-                <button class="btn-sm" @click="editDistill(d)">编辑</button>
-                <button class="btn-sm red" @click="deleteDistill(d)">删除</button>
-                <button class="btn-sm" style="color:#52c41a;" @click="exportDistill(d)">导出</button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+ <!-- ====== 蒸馏管理 ====== -->
+ <div v-if="activeTab === 'distill'">
+ <div class="search-bar" style="flex-wrap:wrap;">
+ <select v-model="dFilterUser" class="input" style="max-width:180px;" @change="loadDistillations">
+ <option value="">全部导入员</option>
+ <option v-for="u in allU" :key="u._id" :value="u._id">{{ u.email }}</option>
+ </select>
+ <input v-model="dQ" class="input" placeholder="搜索小说名" @input="debounce(loadDistillations,300)" />
+ <button class="btn-sm" :disabled="dSelected.length===0" @click="batchExportDistill" style="background:#e94560;color:white;border:none;"> 批量导出</button>
+ </div>
+ <div class="table-wrap">
+ <table>
+ <thead>
+ <tr>
+ <th style="width:30px;"><input type="checkbox" :checked="dAllSelected" @change="dToggleAll" /></th>
+ <th>小说名</th>
+ <th>分类</th>
+ <th>导入员</th>
+ <th title="原始素材字数（成功下载的文本总字符数）">字数</th>
+ <th>质量分</th>
+ <th>AI</th>
+ <th>时间</th>
+ <th>操作</th>
+ </tr>
+ </thead>
+ <tbody>
+ <tr v-for="d in distillations" :key="d._id">
+ <td><input type="checkbox" :checked="dSelected.includes(d._id)" @change="dToggle(d._id)" /></td>
+ <td>{{ d.title }}</td>
+ <td>{{ d.mainCategory }}{{ d.subCategory ? '/'+d.subCategory : '' }}</td>
+ <td>{{ d.userId?.email || '未知' }}</td>
+ <td>
+ <div class="wc-cell">
+ <span class="wc-num">{{ (d.originalLength||0).toLocaleString() }}</span>
+ <span v-if="d.downloadStats?.totalChapters" class="wc-detail" :class="wcRateClass(d.downloadStats)">
+ ({{ d.downloadStats.downloadedChapters }}/{{ d.downloadStats.totalChapters }}章)
+ </span>
+ </div>
+ </td>
+ <td><span class="score" :class="scoreClass(d.qualityScore)">{{ d.qualityScore || '-' }}</span></td>
+ <td><span class="dot" :class="{ off: !d.aiProcessed }"></span>{{ d.aiProcessed ? '已分析' : '未分析' }}</td>
+ <td>{{ fmt(d.createdAt) }}</td>
+ <td class="acts">
+ <button class="btn-sm" @click="viewDistillJson(d)">JSON</button>
+ <button class="btn-sm" @click="editDistill(d)">编辑</button>
+ <button class="btn-sm red" @click="deleteDistill(d)">删除</button>
+ <button class="btn-sm" style="color:#52c41a;" @click="exportDistill(d)">导出</button>
+ </td>
+ </tr>
+ </tbody>
+ </table>
+ </div>
 
-      <!-- 蒸馏JSON预览/编辑弹窗 -->
-      <Teleport to="body">
-        <div v-if="dJsonShow" class="overlay" @click.self="dJsonShow=false">
-          <div class="modal d-json-modal">
-            <h3>{{ dJsonMode==='view'?'JSON 预览':'编辑' }} - {{ dJsonData?.title }}</h3>
-            <textarea v-if="dJsonMode==='edit'" v-model="dEditContent" class="textarea" rows="15"></textarea>
-            <pre v-else class="json-view">{{ JSON.stringify(dJsonData, null, 2) }}</pre>
-            <div class="modal-acts">
-              <button class="btn btn-outline" @click="dJsonShow=false">关闭</button>
-              <button v-if="dJsonMode==='view'" class="btn btn-primary" @click="dJsonMode='edit'">编辑</button>
-              <button v-if="dJsonMode==='edit'" class="btn btn-primary" @click="saveDistillJson">保存</button>
-            </div>
-          </div>
-        </div>
-      </Teleport>
-    </div>
+ <!-- 蒸馏JSON预览/编辑弹窗 -->
+ <Teleport to="body">
+ <div v-if="dJsonShow" class="overlay" @click.self="dJsonShow=false">
+ <div class="modal d-json-modal">
+ <h3>{{ dJsonMode==='view'?'JSON 预览':'编辑' }} - {{ dJsonData?.title }}</h3>
+ <textarea v-if="dJsonMode==='edit'" v-model="dEditContent" class="textarea" rows="15"></textarea>
+ <pre v-else class="json-view">{{ JSON.stringify(dJsonData, null, 2) }}</pre>
+ <div class="modal-acts">
+ <button class="btn btn-outline" @click="dJsonShow=false">关闭</button>
+ <button v-if="dJsonMode==='view'" class="btn btn-primary" @click="dJsonMode='edit'">编辑</button>
+ <button v-if="dJsonMode==='edit'" class="btn btn-primary" @click="saveDistillJson">保存</button>
+ </div>
+ </div>
+ </div>
+ </Teleport>
+ </div>
 
-    <!-- ====== 限免活动 ====== -->
-    <div v-if="activeTab === 'activities'">
-      <!-- 创建活动 -->
-      <div class="form-card">
-        <h3 style="margin-top:0;">🎉 创建新活动</h3>
-        <div class="row"><label>活动名称</label><input v-model="acForm.name" class="input" placeholder="如：限免活动" /></div>
-        <div class="row"><label>开始时间</label><input v-model="acForm.startTime" class="input" type="datetime-local" /></div>
-        <div class="row"><label>结束时间</label><input v-model="acForm.endTime" class="input" type="datetime-local" /></div>
-        <div class="row"><label>赠送 Token</label><input v-model.number="acForm.tokenAmount" class="input" type="number" min="1" placeholder="如：50000" /></div>
-        <button class="btn btn-primary" :disabled="acSaving" @click="createActivity">{{ acSaving ? '创建中...' : '🎉 创建活动' }}</button>
-        <div v-if="acMsg" class="msg" :class="{ ok: acOk }">{{ acMsg }}</div>
-      </div>
+ <!-- ====== 限免活动 ====== -->
+ <div v-if="activeTab === 'activities'">
+ <!-- 创建活动 -->
+ <div class="form-card">
+ <h3 style="margin-top:0;"> 创建新活动</h3>
+ <div class="row"><label>活动名称</label><input v-model="acForm.name" class="input" placeholder="如：限免活动" /></div>
+ <div class="row"><label>开始时间</label><input v-model="acForm.startTime" class="input" type="datetime-local" /></div>
+ <div class="row"><label>结束时间</label><input v-model="acForm.endTime" class="input" type="datetime-local" /></div>
+ <div class="row"><label>赠送 Token</label><input v-model.number="acForm.tokenAmount" class="input" type="number" min="1" placeholder="如：50000" /></div>
+ <button class="btn btn-primary" :disabled="acSaving" @click="createActivity">{{ acSaving ? '创建中...' : ' 创建活动' }}</button>
+ <div v-if="acMsg" class="msg" :class="{ ok: acOk }">{{ acMsg }}</div>
+ </div>
 
-      <!-- 活动列表 -->
-      <div style="margin-top:16px;">
-        <h3>📋 活动记录</h3>
-        <div v-if="activities.length === 0" style="text-align:center;padding:40px;color:#999;">暂无活动</div>
-        <div v-for="act in activities" :key="act._id" class="act-card" style="background:#fff;border-radius:8px;padding:16px;margin-bottom:12px;border:1px solid #e8e8e8;">
-          <div style="display:flex;justify-content:space-between;align-items:center;">
-            <div>
-              <strong>{{ act.name }}</strong>
-              <span class="badge" :class="act.status" style="margin-left:8px;">{{ act.status==='active'?'进行中':act.status==='pending'?'待开始':'已结束' }}</span>
-            </div>
-            <div>
-              <button v-if="!act.emailSent" class="btn-sm" style="color:#1890ff;border-color:#1890ff;" :disabled="act.sending" @click="sendActivityEmail(act)">{{ act.sending?'发送中...':'📧 发送邮件通知' }}</button>
-              <span v-else class="claimed-badge">✅ 已发送邮件</span>
-            </div>
-          </div>
-          <div style="font-size:13px;color:#666;margin-top:8px;">
-            时间: {{ fmt(act.startTime) }} ~ {{ fmt(act.endTime) }}
-            | 赠送: <strong>{{ act.tokenAmount }}</strong> Token
-            | 状态: {{ act.status==='active'?'🟢 进行中':act.status==='pending'?'🟡 待开始':'🔴 已结束' }}
-          </div>
-        </div>
-      </div>
-    </div>
+ <!-- 活动列表 -->
+ <div style="margin-top:16px;">
+ <h3> 活动记录</h3>
+ <div v-if="activities.length === 0" style="text-align:center;padding:40px;color:#999;">暂无活动</div>
+ <div v-for="act in activities" :key="act._id" class="act-card" style="background:#fff;border-radius:8px;padding:16px;margin-bottom:12px;border:1px solid #e8e8e8;">
+ <div style="display:flex;justify-content:space-between;align-items:center;">
+ <div>
+ <strong>{{ act.name }}</strong>
+ <span class="badge" :class="act.status" style="margin-left:8px;">{{ act.status==='active'?'进行中':act.status==='pending'?'待开始':'已结束' }}</span>
+ </div>
+ <div>
+ <button v-if="!act.emailSent" class="btn-sm" style="color:#1890ff;border-color:#1890ff;" :disabled="act.sending" @click="sendActivityEmail(act)">{{ act.sending?'发送中...':' 发送邮件通知' }}</button>
+ <span v-else class="claimed-badge"> 已发送邮件</span>
+ </div>
+ </div>
+ <div style="font-size:13px;color:#666;margin-top:8px;">
+ 时间: {{ fmt(act.startTime) }} ~ {{ fmt(act.endTime) }}
+ | 赠送: <strong>{{ act.tokenAmount }}</strong> Token
+ | 状态: {{ act.status==='active'?' 进行中':act.status==='pending'?' 待开始':' 已结束' }}
+ </div>
+ </div>
+ </div>
+ </div>
 
-    <!-- ====== 模型配置 ====== -->
-    <div v-if="activeTab === 'models'">
-      <div class="form-card">
-        <div class="row"><label>API 地址</label><input v-model="mApi" class="input" placeholder="https://api.siliconflow.cn/v1" /></div>
-        <div class="row"><label>模型名</label><input v-model="mModel" class="input" placeholder="deepseek-ai/DeepSeek-V4-Flash" /></div>
-        <div class="row"><label>API Key</label><input v-model="mKey" class="input" type="password" placeholder="sk-..." /></div>
-        <button class="btn btn-primary" :disabled="mSaving" @click="saveModels">{{ mSaving ? '保存中...' : '💾 保存配置' }}</button>
-        <div v-if="mMsg" class="msg" :class="{ ok: mOk }">{{ mMsg }}</div>
-      </div>
-      <div class="form-card" style="margin-top:12px;">
-        <button class="btn red-btn" @click="restartServer">🔄 重启服务</button>
-        <div style="font-size:12px;color:#999;margin-top:6px;">重启 Node.js 服务（PM2 会自动恢复）</div>
-      </div>
-    </div>
+ <!-- ====== 模型配置 ====== -->
+ <div v-if="activeTab === 'models'">
+ <div class="form-card">
+ <div class="row"><label>API 地址</label><input v-model="mApi" class="input" placeholder="https://api.siliconflow.cn/v1" /></div>
+ <div class="row"><label>模型名</label><input v-model="mModel" class="input" placeholder="deepseek-ai/DeepSeek-V4-Flash" /></div>
+ <div class="row"><label>API Key</label><input v-model="mKey" class="input" type="password" placeholder="sk-..." /></div>
+ <button class="btn btn-primary" :disabled="mSaving" @click="saveModels">{{ mSaving ? '保存中...' : ' 保存配置' }}</button>
+ <div v-if="mMsg" class="msg" :class="{ ok: mOk }">{{ mMsg }}</div>
+ </div>
+ <div class="form-card" style="margin-top:12px;">
+ <button class="btn red-btn" @click="restartServer"> 重启服务</button>
+ <div style="font-size:12px;color:#999;margin-top:6px;">重启 Node.js 服务（PM2 会自动恢复）</div>
+ </div>
+ </div>
 
-    <!-- ====== 类型模板管理 ====== -->
-    <div v-if="activeTab === 'templates'">
-      <div class="search-bar" style="margin-bottom:12px;">
-        <button class="btn-sm" style="background:#1890ff;color:white;border:none;" @click="addTemplate">{{ $t('templates.add') }}</button>
-        <button class="btn-sm" style="background:#52c41a;color:white;border:none;" :disabled="!tplDirty" @click="saveTemplates">{{ tplSaving ? '保存中...' : '💾 保存全部' }}</button>
-        <span v-if="tplDirty" style="font-size:12px;color:#fa8c16;margin-left:8px;">⚠️ 有未保存的修改</span>
-        <span v-if="tplMsg" class="msg" :class="{ ok: tplOk }" style="margin-left:8px;">{{ tplMsg }}</span>
-      </div>
-      <div class="tpl-list">
-        <div v-for="(tpl, idx) in templates" :key="idx" class="tpl-card">
-          <div class="tpl-header">
-            <span class="tpl-name">{{ tpl.name }} <span class="tpl-kw-count">{{ (tpl.keywords||[]).length }}个关键词</span></span>
-            <button class="btn-sm" style="color:#ff4d4f;border-color:#ff4d4f;" @click="deleteTemplate(idx)">删除</button>
-          </div>
-          <div class="tpl-field">
-            <label class="tpl-label">匹配关键词（逗号分隔）</label>
-            <input v-model="tpl.keywordsStr" class="input tpl-input" placeholder="关键词1, 关键词2, ..." @input="tplDirty=true" />
-          </div>
-          <div class="tpl-field">
-            <label class="tpl-label">注入提示（AI 参考上下文）</label>
-            <textarea v-model="tpl.contextPrompt" class="textarea tpl-textarea" rows="4" @input="tplDirty=true"></textarea>
-          </div>
-        </div>
-      </div>
-      <div v-if="templates.length === 0" style="text-align:center;padding:40px;color:#999;">暂无模板</div>
-    </div>
-  </SidebarLayout>
+ <!-- ====== 类型模板管理 ====== -->
+ <div v-if="activeTab === 'templates'">
+ <div class="search-bar" style="margin-bottom:12px;">
+ <button class="btn-sm" style="background:#1890ff;color:white;border:none;" @click="addTemplate">{{ $t('templates.add') }}</button>
+ <button class="btn-sm" style="background:#52c41a;color:white;border:none;" :disabled="!tplDirty" @click="saveTemplates">{{ tplSaving ? '保存中...' : ' 保存全部' }}</button>
+ <span v-if="tplDirty" style="font-size:12px;color:#fa8c16;margin-left:8px;">️ 有未保存的修改</span>
+ <span v-if="tplMsg" class="msg" :class="{ ok: tplOk }" style="margin-left:8px;">{{ tplMsg }}</span>
+ </div>
+ <div class="tpl-list">
+ <div v-for="(tpl, idx) in templates" :key="idx" class="tpl-card">
+ <div class="tpl-header">
+ <span class="tpl-name">{{ tpl.name }} <span class="tpl-kw-count">{{ (tpl.keywords||[]).length }}个关键词</span></span>
+ <button class="btn-sm" style="color:#ff4d4f;border-color:#ff4d4f;" @click="deleteTemplate(idx)">删除</button>
+ </div>
+ <div class="tpl-field">
+ <label class="tpl-label">匹配关键词（逗号分隔）</label>
+ <input v-model="tpl.keywordsStr" class="input tpl-input" placeholder="关键词1, 关键词2, ..." @input="tplDirty=true" />
+ </div>
+ <div class="tpl-field">
+ <label class="tpl-label">注入提示（AI 参考上下文）</label>
+ <textarea v-model="tpl.contextPrompt" class="textarea tpl-textarea" rows="4" @input="tplDirty=true"></textarea>
+ </div>
+ </div>
+ </div>
+ <div v-if="templates.length === 0" style="text-align:center;padding:40px;color:#999;">暂无模板</div>
+ </div>
+ </SidebarLayout>
 </template>
 
 <script setup>
@@ -282,18 +282,18 @@ const now = ref(new Date().toLocaleString('zh-CN'))
 
 // 监听路由变化切换Tab
 watch(() => route.path, (p) => {
-  const tabMap = { '/dashboard':'dashboard', '/users':'users', '/novels':'novels', '/distill':'distill', '/activities':'activities', '/templates':'templates', '/models':'models' }
-  if (p === '/templates') loadTemplates()
-  if (p === '/activities') loadActivities()
-  activeTab.value = tabMap[p] || 'dashboard'
+ const tabMap = { '/dashboard':'dashboard', '/users':'users', '/novels':'novels', '/distill':'distill', '/activities':'activities', '/templates':'templates', '/models':'models' }
+ if (p === '/templates') loadTemplates()
+ if (p === '/activities') loadActivities()
+ activeTab.value = tabMap[p] || 'dashboard'
 }, { immediate: true })
 
 // ====== 仪表盘 ======
 const dash = ref({})
 const revenue = computed(() => ((dash.value.totalTokens || 0) * 15 / 1000000).toFixed(2))
 async function loadDash() {
-  try { const r = await api.get('/admin/dashboard'); dash.value = r.data }
-  catch { dash.value = { totalUsers:0, totalNovels:0, totalTokens:0, usedTokens:0, completedNovels:0, generatingNovels:0, recentRegistrations:0 } }
+ try { const r = await api.get('/admin/dashboard'); dash.value = r.data }
+ catch { dash.value = { totalUsers:0, totalNovels:0, totalTokens:0, usedTokens:0, completedNovels:0, generatingNovels:0, recentRegistrations:0 } }
 }
 const timeInt = setInterval(() => { now.value = new Date().toLocaleString('zh-CN') }, 1000)
 onUnmounted(() => clearInterval(timeInt))
@@ -301,8 +301,8 @@ onUnmounted(() => clearInterval(timeInt))
 // ====== 用户管理 ======
 const users = ref([]); const userQ = ref(''); const showModal = ref(false); const editUserData = ref({}); const editForm = ref({}); const rewarding = ref('')
 async function loadUsers() {
-  try { const r = await api.get('/admin/users', { params: { q: userQ.value } }); users.value = r.data.users || r.data }
-  catch {}
+ try { const r = await api.get('/admin/users', { params: { q: userQ.value } }); users.value = r.data.users || r.data }
+ catch {}
 }
 let debounceTimer; function debounce(fn, ms) { clearTimeout(debounceTimer); debounceTimer = setTimeout(fn, ms) }
 function openEdit(u) { editUserData.value = u; editForm.value = { nickname: u.nickname, role: u.role, addTokens: 0 }; showModal.value = true }
@@ -310,18 +310,18 @@ function openEdit(u) { editUserData.value = u; editForm.value = { nickname: u.ni
 // 已邀请用户
 const inviteModal = ref(false); const inviteModalUser = ref({}); const invitedUsers = ref([])
 async function showInvitedUsers(u) {
-  inviteModalUser.value = u; invitedUsers.value = []
-  inviteModal.value = true
-  try { const r = await api.get(`/admin/users/${u._id}/invited-users`); invitedUsers.value = r.data }
-  catch { alert('获取失败') }
+ inviteModalUser.value = u; invitedUsers.value = []
+ inviteModal.value = true
+ try { const r = await api.get(`/admin/users/${u._id}/invited-users`); invitedUsers.value = r.data }
+ catch { alert('获取失败') }
 }
 async function saveUser() {
-  try { await api.put(`/admin/users/${editUserData.value._id}`, editForm.value); showModal.value = false; loadUsers() }
-  catch (e) { alert('保存失败:' + (e.response?.data?.message || e.message)) }
+ try { await api.put(`/admin/users/${editUserData.value._id}`, editForm.value); showModal.value = false; loadUsers() }
+ catch (e) { alert('保存失败:' + (e.response?.data?.message || e.message)) }
 }
 async function toggleDisable(u) {
-  try { await api.put(`/admin/users/${u._id}`, { disabled: !u.disabled }); loadUsers() }
-  catch (e) { alert('操作失败:' + (e.response?.data?.message || e.message)) }
+ try { await api.put(`/admin/users/${u._id}`, { disabled: !u.disabled }); loadUsers() }
+ catch (e) { alert('操作失败:' + (e.response?.data?.message || e.message)) }
 }
 async function grantReward(u) { rewarding.value = u._id; try { await api.post(`/admin/users/${u._id}/group-reward`); loadUsers() } catch {}; rewarding.value = '' }
 
@@ -329,12 +329,12 @@ async function grantReward(u) { rewarding.value = u._id; try { await api.post(`/
 const novels = ref([]); const nQ = ref(''); const nFilterUser = ref(''); const nFilterStatus = ref(''); const allU = ref([])
 const statusMap = { generating:'生成中', paused:'已暂停', completed:'已完成', error:'出错了' }
 async function loadNovels() {
-  try { const r = await api.get('/admin/novels', { params: { q: nQ.value, userId: nFilterUser.value, status: nFilterStatus.value } }); novels.value = r.data.novels || r.data }
-  catch {}
+ try { const r = await api.get('/admin/novels', { params: { q: nQ.value, userId: nFilterUser.value, status: nFilterStatus.value } }); novels.value = r.data.novels || r.data }
+ catch {}
 }
 async function loadUsersSimple() {
-  try { const r = await api.get('/admin/users/simple'); allU.value = r.data }
-  catch {}
+ try { const r = await api.get('/admin/users/simple'); allU.value = r.data }
+ catch {}
 }
 
 // ====== 蒸馏管理 ======
@@ -344,8 +344,8 @@ const dJsonShow = ref(false); const dJsonData = ref({}); const dJsonMode = ref('
 function dToggleAll() { dSelected.value = dAllSelected.value ? [] : distillations.value.map(d => d._id) }
 function dToggle(id) { const i = dSelected.value.indexOf(id); i > -1 ? dSelected.value.splice(i,1) : dSelected.value.push(id) }
 async function loadDistillations() {
-  try { const r = await api.get('/admin/distillations', { params: { q: dQ.value, userId: dFilterUser.value } }); distillations.value = r.data.distillations || r.data }
-  catch {}
+ try { const r = await api.get('/admin/distillations', { params: { q: dQ.value, userId: dFilterUser.value } }); distillations.value = r.data.distillations || r.data }
+ catch {}
 }
 function viewDistillJson(d) { dJsonData.value = d; dJsonMode.value = 'view'; dJsonShow.value = true }
 async function editDistill(d) { dJsonData.value = d; dEditContent.value = JSON.stringify(d, null, 2); dJsonMode.value = 'edit'; dJsonShow.value = true }
@@ -357,14 +357,14 @@ async function batchExportDistill() { if (dSelected.value.length === 0) return; 
 // ====== 模型管理 ======
 const mApi = ref(''); const mModel = ref(''); const mKey = ref(''); const mSaving = ref(false); const mMsg = ref(''); const mOk = ref(false)
 async function loadModels() {
-  try { const r = await api.get('/admin/models'); const c = r.data; mApi.value = c.baseUrl || ''; mModel.value = c.model || ''; mKey.value = c.apiKey || '' }
-  catch {}
+ try { const r = await api.get('/admin/models'); const c = r.data; mApi.value = c.baseUrl || ''; mModel.value = c.model || ''; mKey.value = c.apiKey || '' }
+ catch {}
 }
 async function saveModels() {
-  mSaving.value = true; mMsg.value = '';
-  try { await api.put('/admin/models', { baseUrl: mApi.value, model: mModel.value, apiKey: mKey.value }); mMsg.value = '✅ 配置已保存'; mOk.value = true }
-  catch (e) { mMsg.value = '❌ ' + (e.response?.data?.message || e.message); mOk.value = false }
-  mSaving.value = false
+ mSaving.value = true; mMsg.value = '';
+ try { await api.put('/admin/models', { baseUrl: mApi.value, model: mModel.value, apiKey: mKey.value }); mMsg.value = ' 配置已保存'; mOk.value = true }
+ catch (e) { mMsg.value = ' ' + (e.response?.data?.message || e.message); mOk.value = false }
+ mSaving.value = false
 }
 function restartServer() { if (confirm('确定重启服务？')) { api.post('/admin/restart').then(() => alert('重启命令已发送')).catch(() => alert('重启失败')) } }
 
@@ -376,40 +376,40 @@ const tplMsg = ref('')
 const tplOk = ref(false)
 
 async function loadTemplates() {
-  try {
-    const r = await api.get('/admin/templates')
-    templates.value = (r.data.templates || []).map(t => ({
-      ...t,
-      keywordsStr: (t.keywords || []).join(', '),
-    }))
-    tplDirty.value = false
-  } catch {}
+ try {
+ const r = await api.get('/admin/templates')
+ templates.value = (r.data.templates || []).map(t => ({
+ ...t,
+ keywordsStr: (t.keywords || []).join(', '),
+ }))
+ tplDirty.value = false
+ } catch {}
 }
 function addTemplate() {
-  templates.value.push({ name: '新模板', keywords: [], keywordsStr: '', contextPrompt: '' })
-  tplDirty.value = true
+ templates.value.push({ name: '新模板', keywords: [], keywordsStr: '', contextPrompt: '' })
+ tplDirty.value = true
 }
 function deleteTemplate(idx) {
-  if (!confirm('删除 "' + templates.value[idx].name + '" ？')) return
-  templates.value.splice(idx, 1)
-  tplDirty.value = true
+ if (!confirm('删除 "' + templates.value[idx].name + '" ？')) return
+ templates.value.splice(idx, 1)
+ tplDirty.value = true
 }
 async function saveTemplates() {
-  tplSaving.value = true; tplMsg.value = ''; tplOk.value = false
-  try {
-    const data = templates.value.map(t => ({
-      name: t.name,
-      keywords: t.keywordsStr.split(/[,，、]/).map(s => s.trim()).filter(Boolean),
-      contextPrompt: t.contextPrompt || '',
-    }))
-    await api.put('/admin/templates', { templates: data })
-    tplMsg.value = '✅ 模板已保存'
-    tplOk.value = true; tplDirty.value = false
-  } catch (e) {
-    tplMsg.value = '❌ ' + (e.response?.data?.message || e.message)
-    tplOk.value = false
-  }
-  tplSaving.value = false
+ tplSaving.value = true; tplMsg.value = ''; tplOk.value = false
+ try {
+ const data = templates.value.map(t => ({
+ name: t.name,
+ keywords: t.keywordsStr.split(/[,，、]/).map(s => s.trim()).filter(Boolean),
+ contextPrompt: t.contextPrompt || '',
+ }))
+ await api.put('/admin/templates', { templates: data })
+ tplMsg.value = ' 模板已保存'
+ tplOk.value = true; tplDirty.value = false
+ } catch (e) {
+ tplMsg.value = ' ' + (e.response?.data?.message || e.message)
+ tplOk.value = false
+ }
+ tplSaving.value = false
 }
 
 function fmt(d) { if (!d) return ''; const date = new Date(d); return `${date.getMonth()+1}/${date.getDate()} ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}` }
@@ -417,7 +417,7 @@ function scoreClass(s) { if (!s) return ''; if (s >= 80) return 'high'; if (s >=
 function wcRateClass(s) { if (!s?.totalChapters) return ''; const rate = s.downloadedChapters / s.totalChapters; if (rate >= 0.9) return 'rate-high'; if (rate >= 0.5) return 'rate-mid'; return 'rate-low' }
 
 onMounted(() => {
-  loadDash(); loadUsers(); loadNovels(); loadDistillations(); loadModels(); loadUsersSimple(); loadTemplates()
+ loadDash(); loadUsers(); loadNovels(); loadDistillations(); loadModels(); loadUsersSimple(); loadTemplates()
 })
 
 // ====== 限免活动 ======
@@ -428,43 +428,43 @@ const acMsg = ref('')
 const acOk = ref(false)
 
 async function loadActivities() {
-  try { const r = await api.get('/admin/activities'); activities.value = r.data.activities || [] }
-  catch { activities.value = [] }
+ try { const r = await api.get('/admin/activities'); activities.value = r.data.activities || [] }
+ catch { activities.value = [] }
 }
 
 async function createActivity() {
-  if (!acForm.value.name || !acForm.value.startTime || !acForm.value.endTime || !acForm.value.tokenAmount) {
-    acMsg.value = '请填写完整信息'; acOk.value = false; return
-  }
-  acSaving.value = true; acMsg.value = ''
-  try {
-    const r = await api.post('/admin/activities', {
-      name: acForm.value.name,
-      startTime: new Date(acForm.value.startTime).toISOString(),
-      endTime: new Date(acForm.value.endTime).toISOString(),
-      tokenAmount: acForm.value.tokenAmount,
-    })
-    acMsg.value = r.data.message; acOk.value = true
-    acForm.value = { name: '', startTime: '', endTime: '', tokenAmount: 50000 }
-    await loadActivities()
-  } catch (e) {
-    acMsg.value = e.response?.data?.message || '创建失败'
-    acOk.value = false
-  }
-  acSaving.value = false
+ if (!acForm.value.name || !acForm.value.startTime || !acForm.value.endTime || !acForm.value.tokenAmount) {
+ acMsg.value = '请填写完整信息'; acOk.value = false; return
+ }
+ acSaving.value = true; acMsg.value = ''
+ try {
+ const r = await api.post('/admin/activities', {
+ name: acForm.value.name,
+ startTime: new Date(acForm.value.startTime).toISOString(),
+ endTime: new Date(acForm.value.endTime).toISOString(),
+ tokenAmount: acForm.value.tokenAmount,
+ })
+ acMsg.value = r.data.message; acOk.value = true
+ acForm.value = { name: '', startTime: '', endTime: '', tokenAmount: 50000 }
+ await loadActivities()
+ } catch (e) {
+ acMsg.value = e.response?.data?.message || '创建失败'
+ acOk.value = false
+ }
+ acSaving.value = false
 }
 
 async function sendActivityEmail(act) {
-  act.sending = true
-  try {
-    const r = await api.post(`/admin/activities/${act._id}/send-email`)
-    act.emailSent = true
-    act.sending = false
-    alert(r.data.message || '发送完成')
-  } catch (e) {
-    act.sending = false
-    alert('发送失败: ' + (e.response?.data?.message || e.message))
-  }
+ act.sending = true
+ try {
+ const r = await api.post(`/admin/activities/${act._id}/send-email`)
+ act.emailSent = true
+ act.sending = false
+ alert(r.data.message || '发送完成')
+ } catch (e) {
+ act.sending = false
+ alert('发送失败: ' + (e.response?.data?.message || e.message))
+ }
 }
 const fmt = (d) => { if (!d) return ''; const t = new Date(d); return t.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }) }
 </script>
