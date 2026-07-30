@@ -57,6 +57,8 @@ export const useNovelStore = defineStore('novel', () => {
  xhr.setRequestHeader('Content-Type', 'application/json')
  xhr._aborted = false
  let lastIndex = 0
+ let humanizedReceived = false
+ let humanizedContent = ''
  xhr.onprogress = () => {
  const newData = xhr.responseText.substring(lastIndex)
  lastIndex = xhr.responseText.length
@@ -64,16 +66,22 @@ export const useNovelStore = defineStore('novel', () => {
  for (const line of lines) {
  try {
  const event = JSON.parse(line.substring(6))
- if (event.type === 'content') { streamingText.value += event.content; if (onChunk) onChunk(event.content) }
+ if (event.type === 'content') {
+ if (!humanizedReceived) { streamingText.value += event.content; if (onChunk) onChunk(event.content) }
+ }
  else if (event.type === 'outline') { generatedOutline.value = event.content; if (onStatus) onStatus({ type: 'outline', content: event.content }) }
  else if (event.type === 'status') { if (onStatus) onStatus(event) }
  else if (event.type === 'novel_created') { if (onStatus) onStatus(event) }
- else if (event.type === 'chapter_start') { if (onStatus) onStatus(event) }
+ else if (event.type === 'chapter_start') { humanizedReceived = false; if (onStatus) onStatus(event) }
  else if (event.type === 'chapter_end') { if (onStatus) onStatus(event) }
  else if (event.type === 'completed') { if (onStatus) onStatus(event) }
  else if (event.type === 'paused' || event.type === 'token_exhausted') { if (onStatus) onStatus(event) }
+ else if (event.type === 'humanized') { humanizedReceived = true; humanizedContent = event.content; if (onStatus) onStatus(event) }
+ else if (event.type === 'error') { if (onStatus) onStatus(event) }
  } catch {}
  }
+ // 如果已收到改写内容，用改写后的文本替换显示
+ if (humanizedReceived) { streamingText.value = humanizedContent }
  }
  xhr.onloadend = () => {
  if (!xhr._aborted && onStatus) {
@@ -102,7 +110,7 @@ export const useNovelStore = defineStore('novel', () => {
  try {
  const event = JSON.parse(line.substring(6))
  if (event.type === 'content') { streamingText.value += event.content; if (onChunk) onChunk(event.content) }
- else if (event.type === 'status' || event.type === 'chapter_start' || event.type === 'chapter_end' || event.type === 'completed' || event.type === 'paused' || event.type === 'token_exhausted') {
+ else if (event.type === 'status' || event.type === 'chapter_start' || event.type === 'chapter_end' || event.type === 'completed' || event.type === 'paused' || event.type === 'token_exhausted' || event.type === 'error') {
  if (['completed','paused','token_exhausted','error'].includes(event.type)) xhr._receivedTerminal = true
  if (onStatus) onStatus(event)
  }
@@ -148,7 +156,7 @@ export const useNovelStore = defineStore('novel', () => {
  try {
  const event = JSON.parse(line.substring(6))
  if (event.type === 'content') { streamingText.value += event.content; if (onChunk) onChunk(event.content) }
- else if (event.type === 'status' || event.type === 'chapter_start' || event.type === 'chapter_end' || event.type === 'completed' || event.type === 'paused' || event.type === 'token_exhausted') {
+ else if (event.type === 'status' || event.type === 'chapter_start' || event.type === 'chapter_end' || event.type === 'completed' || event.type === 'paused' || event.type === 'token_exhausted' || event.type === 'error') {
  if (['completed','paused','token_exhausted','error'].includes(event.type)) xhr._receivedTerminal = true
  if (onStatus) onStatus(event)
  }

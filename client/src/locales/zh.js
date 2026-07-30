@@ -52,6 +52,8 @@ export default {
  outlineGenerating: ' AI 正在构思大纲...',
  // 模板匹配
  tmplMatched: ' 已匹配类型模板', tmplMatch: '匹配', tmplHint: '以上模板仅为参考，实际创作以你的世界观设定为主',
+ // 去AI化
+ btnDeslop: '去AI化', deslopResult: '去AI化结果', diffView: '改动对比', btnReset: '重新去AI化',
  },
 
  // 润色页

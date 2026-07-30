@@ -84,6 +84,10 @@
  </div>
  </div>
 
+ <div v-if="continueStatus" class="card" style="text-align:center;padding:16px;">
+ <span style="color:var(--error-color);font-size:14px;">{{ continueStatus }}</span>
+ </div>
+
  <div v-if="generationDone" class="card done-card">
  <div class="done-icon"></div>
  <div class="done-text">{{ $t('continue.title') }}{{ $t('novelDetail.completed') }}！共 {{ wordCount }} {{ $t('generate.wordShort') }}</div>
@@ -116,6 +120,7 @@ const targetWordCount = ref(30000)
 const isGenerating = ref(false)
 const generationDone = ref(false)
 const wordCount = ref(0)
+const continueStatus = ref('')
 const streamingRef = ref(null)
 
 function handleFileUpload(e) {
@@ -174,9 +179,10 @@ async function startContinue() {
  try {
  if (continueNovelId.value) {
  await novelStore.continueGeneration(continueNovelId.value, (chunk, fullText) => { wordCount.value = fullText.length }, (status) => {
- if (status.type === 'completed') { generationDone.value = true; isGenerating.value = false }
- else if (status.type === 'token_exhausted') { isGenerating.value = false }
- else if (status.type === 'paused' || status.type === 'error') { isGenerating.value = false }
+ if (status.type === 'completed') { generationDone.value = true; isGenerating.value = false; continueStatus.value = '' }
+ else if (status.type === 'token_exhausted') { isGenerating.value = false; continueStatus.value = 'Token 已用完' }
+ else if (status.type === 'error') { isGenerating.value = false; continueStatus.value = status.message || '续写失败' }
+ else if (status.type === 'paused') { isGenerating.value = false }
  }, genMode.value)
  } else {
  await novelStore.startImportContinue({
@@ -187,9 +193,10 @@ async function startContinue() {
  title: title.value || undefined,
  targetWordCount: targetWordCount.value,
  }, (chunk, fullText) => { wordCount.value = fullText.length }, (status) => {
- if (status.type === 'completed') { generationDone.value = true; isGenerating.value = false }
- else if (status.type === 'token_exhausted') { isGenerating.value = false }
- else if (status.type === 'paused' || status.type === 'error') { isGenerating.value = false }
+ if (status.type === 'completed') { generationDone.value = true; isGenerating.value = false; continueStatus.value = '' }
+ else if (status.type === 'token_exhausted') { isGenerating.value = false; continueStatus.value = 'Token 已用完' }
+ else if (status.type === 'error') { isGenerating.value = false; continueStatus.value = status.message || '续写失败' }
+ else if (status.type === 'paused') { isGenerating.value = false }
  })
  }
  } catch (e) {

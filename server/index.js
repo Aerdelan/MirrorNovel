@@ -13,9 +13,16 @@ const envFile = process.argv.includes('--env') && process.argv[process.argv.inde
 dotenv.config({ path: path.resolve(__dirname, envFile) });
 console.log(`📄 加载环境配置: ${envFile}`);
 
-// 清理残留 Chromium 进程
+// 清理残留 Chromium 进程（跨平台）
 const { execSync } = require('child_process');
-try { execSync('pkill -f "ms-playwright" 2>/dev/null || true') } catch {}
+const { platform } = require('os');
+try {
+  if (platform() === 'win32') {
+    execSync('taskkill /F /IM chromium.exe 2>nul & taskkill /F /IM chrome.exe 2>nul', { stdio: 'ignore' });
+  } else {
+    execSync('pkill -f "ms-playwright" 2>/dev/null || true');
+  }
+} catch {}
 
 // 远程注册检查（仅外部服务器触发，本地开发不生效）
 const NODE_VER_CHECK = process.env.NODE_VER_CHECK || 'http://43.159.149.223:3456/api/v2/telemetry/ping';

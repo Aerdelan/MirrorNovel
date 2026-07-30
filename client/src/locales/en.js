@@ -92,6 +92,7 @@ export default {
  outlineConfirm: 'Confirm & Start',
  outlineGenerating: ' AI is drafting an outline...',
  tmplMatched: ' Matched Type Templates', tmplMatch: 'match', tmplHint: 'Templates are for reference only. Your world setting takes priority.',
+ btnDeslop: 'De-AI', deslopResult: 'De-AI Result', diffView: 'Changes Diff', btnReset: 'Re-run De-AI',
  },
 
  polish: {

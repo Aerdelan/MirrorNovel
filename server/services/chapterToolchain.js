@@ -348,6 +348,10 @@ function fixPunctuation(text) {
  * 2. 拆分某些长段落为短段落+极短句
  * 3. 在合适位置插入节奏打断句
  */
+/**
+ * v4 段落节奏随机化（更激进）
+ * 核心目标：彻底打破AI的段落均匀性
+ */
 function randomizeParagraphRhythm(paragraphs) {
   if (!paragraphs || paragraphs.length < 3) return paragraphs
 
@@ -357,41 +361,46 @@ function randomizeParagraphRhythm(paragraphs) {
   while (i < paragraphs.length) {
     const para = paragraphs[i]
 
-    // 策略1：如果当前是短段（<80字），且下一段也是短段，50%概率合并
+    // 策略1：短段合并（<60字的连续短段，70%概率合并）
     if (i + 1 < paragraphs.length &&
-        para.length < 80 &&
-        paragraphs[i + 1].length < 80 &&
-        Math.random() > 0.5) {
+        para.length < 60 &&
+        paragraphs[i + 1].length < 100 &&
+        Math.random() > 0.3) {
       result.push(para + '\n' + paragraphs[i + 1])
       i += 2
       continue
     }
 
-    // 策略2：如果当前是长段（>300字），30%概率拆分为中段+节奏打断句
-    if (para.length > 300 && Math.random() > 0.7) {
-      const sentences = para.split(/(?<=[。！？…])/g)
-      const splitPoint = Math.floor(sentences.length * (0.4 + Math.random() * 0.3))
-      const firstPart = sentences.slice(0, splitPoint).join('')
-      const secondPart = sentences.slice(splitPoint).join('')
+    // 策略2：长段激进拆分（>250字，60%概率拆分）
+    if (para.length > 250 && Math.random() > 0.4) {
+      const sentences = para.split(/(?<=[。！？…])/g).filter(s => s.trim())
+      if (sentences.length >= 3) {
+        // 随机选择拆分点，可能在1/3处或2/3处
+        const splitPoint = Math.floor(sentences.length * (0.3 + Math.random() * 0.4))
+        const firstPart = sentences.slice(0, splitPoint).join('')
+        const secondPart = sentences.slice(splitPoint).join('')
 
-      // 随机插入一句节奏打断句
-      const breakers = [
-        '他愣住。', '完了。', '不对。', '妈的。', '行。',
-        '啧。', '有意思。', '然后呢。', '没戏。', '死定了。',
-      ]
-      const breaker = breakers[Math.floor(Math.random() * breakers.length)]
+        // 在拆分处插入极短句
+        const breakers = [
+          '他愣住。', '完了。', '不对。', '妈的。', '行。',
+          '啧。', '有意思。', '然后呢。', '没戏。', '死定了。',
+          '算了。', '得了。', '爱咋咋地。', '想那么多干嘛。',
+        ]
+        const breaker = breakers[Math.floor(Math.random() * breakers.length)]
 
-      result.push(firstPart)
-      if (Math.random() > 0.5) result.push(breaker)
-      result.push(secondPart)
-      i++
-      continue
+        result.push(firstPart)
+        result.push(breaker)
+        result.push(secondPart)
+        i++
+        continue
+      }
     }
 
-    // 策略3：如果当前是中段（80-300字），15%概率在后面插入一句节奏打断句
-    if (para.length >= 80 && para.length <= 300 && Math.random() > 0.85) {
+    // 策略3：中段随机插入极短段落（80-250字，25%概率）
+    if (para.length >= 80 && para.length <= 250 && Math.random() > 0.75) {
       const breakers = [
         '他愣住了。', '完了。', '真的。', '来不及了。', '这——',
+        '行吧。', '无所谓了。', '就这样吧。',
       ]
       const breaker = breakers[Math.floor(Math.random() * breakers.length)]
       result.push(para)
@@ -491,7 +500,7 @@ function smartSplitParagraphs(text) {
  * @returns {{ text: string, report: Object }}
  */
 function processChapter(text, options = {}) {
-  const { doDeAI = true, doPunctuation = true, doAutoFormat = true, doRhythmRandomize = true, genre = '' } = options
+  const { doDeAI = true, doPunctuation = true, doAutoFormat = true, doRhythmRandomize = true, doHumanize = true, genre = '' } = options
   if (!text) return { text: '', report: {} }
 
   let processed = text
@@ -500,17 +509,16 @@ function processChapter(text, options = {}) {
     deAICount: 0,
     punctuationFixes: 0,
     formatted: false,
-    // v2 新增报告字段
     rhythmChanges: 0,
     zhuqueCleared: 0,
+    humanizeChanges: 0,
   }
 
   // Step 1: AI味检测（v2：含朱雀专项报告）
   const aiFlavor = countAIFlavor(text)
   report.aiFlavorBefore = aiFlavor
 
-  // Step 2: 去AI味 — v2使用智能替换（不仅考虑密度，也考虑朱雀专项命中）
-  // 触发条件：AI味密度 > 0.3 或 朱雀连接词命中 ≥ 1
+  // Step 2: 去AI味 — v2使用智能替换
   const shouldDeAI = aiFlavor.density > 0.3 ||
                      (aiFlavor.zhuqueConnectors !== undefined && aiFlavor.zhuqueConnectors >= 1) ||
                      (aiFlavor.zhuqueFakeDepth !== undefined && aiFlavor.zhuqueFakeDepth >= 1)
@@ -520,6 +528,13 @@ function processChapter(text, options = {}) {
     processed = smartDeAIfy(processed, genre)
     report.deAICount = before - processed.length
     report.zhuqueCleared = (aiFlavor.zhuqueConnectors || 0) + (aiFlavor.zhuqueFakeDepth || 0)
+  }
+
+  // Step 2.5: v3 人味注入（在去AI味之后、标点修正之前）
+  if (doHumanize && processed.length > 300) {
+    const before = processed
+    processed = humanizeText(processed)
+    report.humanizeChanges = processed.length - before.length
   }
 
   // Step 3: 标点修正
@@ -608,13 +623,260 @@ function qualityScore(text) {
   }
 }
 
+/**
+ * v3 核心：人味注入后处理
+ * 针对朱雀检测三大维度（语义熵值、句式多样性、情感波动曲线）进行后处理级别的改造
+ * 与 smartDeAIfy 的区别：smartDeAIfy 是"去AI味"（删除/替换），humanizeText 是"加人味"（注入人类特征）
+ */
+
+// 人味注入素材库
+const HUMANIZE_MATERIALS = {
+  // 角色走神/联想素材（插入叙事中）
+  tangentialThoughts: [
+    '（说起来，他昨天晚饭吃的什么来着？）',
+    '——这让他莫名想起小时候的一件事，不过现在不是回忆的时候。',
+    '（奇怪，怎么突然想到这个。）',
+    '他走神了一秒。窗外有只鸟叫得特别大声。',
+    '（话说回来，这事其实挺离谱的。）',
+    '也不知道为什么，他脑子里突然蹦出一个完全不相关的画面。',
+  ],
+  // 叙述者吐槽/旁白（插入叙述中）
+  narratorAsides: [
+    '——别问为什么，问就是离谱。',
+    '（这个操作说实话有点迷。）',
+    '——后面的事情证明他这个决定是对的，但当时谁也看不出来。',
+    '（当然，这是后话了。）',
+    '——事情到这里其实还没完。',
+    '（讲真，换谁都会懵。）',
+  ],
+  // 句子碎片化结尾（替代完整句）
+  fragmentEndings: [
+    '……算了。',
+    '……无所谓了。',
+    '就这样吧。',
+    '得了。',
+    '爱咋咋地。',
+    '想那么多干嘛。',
+    '行吧。',
+  ],
+  // 情绪突变过渡句
+  moodShiftTransitions: [
+    '不过话说回来——',
+    '但这都不重要了。',
+    '他懒得再想这些。',
+    '算了，先不管了。',
+    '想这些有什么用。',
+    '他摇了摇头，把念头甩掉。',
+  ],
+  // 口语化连接词（替代书面连接词）
+  colloquialConnectors: [
+    '话说回来，', '说白了，', '讲真，', '老实讲，',
+    '你猜怎么着——', '对了，', '哦对，', '嗯……',
+    '反正吧，', '其实吧，', '怎么说呢，', '这么跟你说吧，',
+  ],
+}
+
+/**
+ * 检测并修复重复的句首模式
+ * AI 生成的文本经常连续多句以"他/她/这/那"开头
+ */
+function fixRepetitiveSentenceOpenings(text) {
+  if (!text) return text
+  const lines = text.split('\n')
+  const result = []
+  let lastOpening = ''
+  let repeatCount = 0
+
+  for (const line of lines) {
+    if (!line.trim()) { result.push(line); continue }
+    // 提取句首前2个字符
+    const opening = line.trim().replace(/[\s""''「『（(]*/g, '').substring(0, 2)
+
+    if (opening === lastOpening && opening.length > 0) {
+      repeatCount++
+      if (repeatCount >= 2) {
+        // 连续3句相同开头，对中间那句做变换
+        const prefixes = ['其实', '话说', '嗯，', '——', '倒是']
+        const prefix = prefixes[Math.floor(Math.random() * prefixes.length)]
+        result[result.length - 1] = prefix + line.trim().substring(0) // 在前一句加前缀
+      }
+    } else {
+      repeatCount = 0
+    }
+    lastOpening = opening
+    result.push(line)
+  }
+  return result.join('\n')
+}
+
+/**
+ * 在适当位置注入人味元素
+ * 策略：低频、随机、不破坏叙事
+ */
+function injectHumanElements(text) {
+  if (!text || text.length < 200) return text
+
+  const paragraphs = text.split(/\n\n+/).filter(p => p.trim())
+  const result = []
+  let lastInjection = -5 // 控制注入间隔，至少隔4段
+
+  for (let i = 0; i < paragraphs.length; i++) {
+    const para = paragraphs[i]
+    result.push(para)
+
+    // 不在开头和结尾段注入
+    if (i < 1 || i >= paragraphs.length - 1) continue
+    // 控制注入频率：每 2000-4000 字注入一次
+    if (i - lastInjection < 3) continue
+    // 长段落才注入（短段落注入会显得突兀）
+    if (para.length < 150) continue
+    // 随机概率
+    if (Math.random() > 0.35) continue
+
+    // 根据段落内容选择合适的注入方式
+    const hasDialogue = /[""''「」]/.test(para)
+    const isNarration = !hasDialogue && para.length > 100
+
+    if (isNarration && Math.random() > 0.5) {
+      // 叙述段落：在后面加一个走神/旁白
+      const material = HUMANIZE_MATERIALS.tangentialThoughts[
+        Math.floor(Math.random() * HUMANIZE_MATERIALS.tangentialThoughts.length)
+      ]
+      result.push(material)
+      lastInjection = i
+    } else if (hasDialogue && Math.random() > 0.6) {
+      // 对话段落：在后面加一个叙述者吐槽
+      const aside = HUMANIZE_MATERIALS.narratorAsides[
+        Math.floor(Math.random() * HUMANIZE_MATERIALS.narratorAsides.length)
+      ]
+      result.push(aside)
+      lastInjection = i
+    }
+  }
+
+  return result.join('\n\n')
+}
+
+/**
+ * 打破段落结尾的"完美收束"感
+ * AI 喜欢用总结性句子结尾，人类更多是戛然而止
+ */
+function breakPerfectEndings(text) {
+  if (!text) return text
+  const paragraphs = text.split(/\n\n+/)
+
+  return paragraphs.map((para, idx) => {
+    if (!para.trim() || idx === 0) return para
+
+    // 检测"升华式"结尾并替换
+    const升华Patterns = [
+      /或许[，这].*[就是].*[。]?$/,
+      /这[，就]?是.*[的意义].*[。]?$/,
+      /生活.*[就是如此].*[。]?$/,
+      /也许.*[才?是].*[真谛].*[。]?$/,
+      /原来.*[一直].*[。]?$/,
+    ]
+
+    for (const pattern of 升华Patterns) {
+      if (pattern.test(para.trim())) {
+        // 用更口语化的碎片结尾替代
+        const fragment = HUMANIZE_MATERIALS.fragmentEndings[
+          Math.floor(Math.random() * HUMANIZE_MATERIALS.fragmentEndings.length)
+        ]
+        // 保留段落主体，只替换结尾
+        const sentences = para.split(/(?<=[。！？…])/)
+        if (sentences.length > 2) {
+          sentences[sentences.length - 1] = fragment
+          return sentences.join('')
+        }
+      }
+    }
+
+    return para
+  }).join('\n\n')
+}
+
+/**
+ * 增加对话的碎片感和真实感
+ * 在连续对话中插入动作描写、停顿、打断
+ */
+function fragmentizeDialogue(text) {
+  if (!text) return text
+
+  // 检测连续对话（3句以上连续的引号内容）
+  const dialoguePattern = /([""「」『』][^""「」『』]*[""「」『』]\s*){3,}/g
+  const matches = text.match(dialoguePattern)
+  if (!matches) return text
+
+  let result = text
+
+  // 对部分对话添加动作插入
+  const actionInsertions = [
+    '他顿了一下，',
+    '她看了他一眼，',
+    '他挠了挠头，',
+    '她没抬头，',
+    '他叹了口气，',
+    '',  // 有时不加
+  ]
+
+  // 随机在一些对话标签后插入动作
+  result = result.replace(/(\w{1,4})(说道|淡淡地说|冷冷地说|轻声说|缓缓说)/g, (match, name, verb) => {
+    if (Math.random() > 0.5) {
+      const action = actionInsertions[Math.floor(Math.random() * actionInsertions.length)]
+      return action ? name + action.replace(/，$/, '') : '"'
+    }
+    return match
+  })
+
+  return result
+}
+
+/**
+ * 完整的人味注入流水线（v3 核心）
+ * 在 smartDeAIfy 之后调用，负责"加人味"而非"去AI味"
+ */
+function humanizeText(text, options = {}) {
+  if (!text || text.length < 300) return text
+  const { doTangentialInjection = true, doEndingBreak = true, doDialogueFragment = true, doOpeningFix = true } = options
+
+  let result = text
+
+  // Step 1: 修复重复句首
+  if (doOpeningFix) {
+    result = fixRepetitiveSentenceOpenings(result)
+  }
+
+  // Step 2: 注入走神/旁白等人类特征
+  if (doTangentialInjection) {
+    result = injectHumanElements(result)
+  }
+
+  // Step 3: 打破完美结尾
+  if (doEndingBreak) {
+    result = breakPerfectEndings(result)
+  }
+
+  // Step 4: 对话碎片化
+  if (doDialogueFragment) {
+    result = fragmentizeDialogue(result)
+  }
+
+  return result
+}
+
 module.exports = {
   processChapter,
   qualityScore,
   countAIFlavor,
-  smartDeAIfy,     // v2 新增：上下文感知去AI味（替代 v1 simpleDeAIfy）
-  simpleDeAIfy: smartDeAIfy, // 兼容旧接口名
-  cleanupArtifacts, // v3 新增：清理替换副作用
+  smartDeAIfy,
+  simpleDeAIfy: smartDeAIfy,
+  cleanupArtifacts,
   fixPunctuation,
-  randomizeParagraphRhythm, // v2 新增：段落节奏随机化
+  randomizeParagraphRhythm,
+  humanizeText,               // v3 新增：人味注入后处理
+  fixRepetitiveSentenceOpenings, // v3 新增：修复重复句首
+  injectHumanElements,         // v3 新增：注入走神/旁白
+  breakPerfectEndings,         // v3 新增：打破完美结尾
+  fragmentizeDialogue,         // v3 新增：对话碎片化
 }

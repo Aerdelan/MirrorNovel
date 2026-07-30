@@ -142,10 +142,41 @@
 
  <div v-if="genStatus" class="gen-status" :class="{ ok: genOk }">{{ genStatus }}</div>
 
- <div v-if="streamingText" class="card stream-card">
- <div class="section-title"> {{ $t('generate.modeBook') }}</div>
- <div class="stream-content" ref="streamRef">{{ streamingText }}</div>
+ <!-- 生成结果弹框 -->
+ <Teleport to="body">
+ <div v-if="showGenModal" class="gen-modal-overlay" @click.self="showGenModal = false">
+ <div class="gen-modal">
+ <div class="gen-modal-header">
+ <span class="gen-modal-title">{{ genModalTitle }}</span>
+ <button class="gen-modal-close" @click="showGenModal = false">&times;</button>
  </div>
+ <div class="gen-modal-body">
+ <!-- 原始生成文本 -->
+ <div class="gen-text-section" :class="{ grayed: deslopRunning || deslopDone }">
+ <div class="gen-text-label">{{ $t('generate.modeBook') }}</div>
+ <div class="gen-text-content" ref="streamRef">{{ streamingText }}</div>
+ </div>
+ <!-- 去AI化结果 -->
+ <div v-if="deslopText" class="gen-text-section deslop-section">
+ <div class="gen-text-label">{{ $t('generate.deslopResult') }}</div>
+ <div class="gen-text-content deslop-content" ref="deslopStreamRef">{{ deslopText }}</div>
+ </div>
+ <!-- Diff 对比 -->
+ <div v-if="deslopDone && diffHtml" class="gen-diff-section">
+ <div class="gen-text-label">{{ $t('generate.diffView') }}</div>
+ <div class="gen-diff-content" v-html="diffHtml"></div>
+ </div>
+ </div>
+ <div class="gen-modal-footer">
+ <button v-if="genOk && !deslopRunning && !deslopDone" class="btn btn-primary" @click="startDeslop">
+ {{ $t('generate.btnDeslop') }}
+ </button>
+ <span v-if="deslopRunning" class="deslop-status">{{ deslopStatus }}</span>
+ <button v-if="deslopDone" class="btn btn-secondary" @click="resetDeslop">{{ $t('generate.btnReset') }}</button>
+ </div>
+ </div>
+ </div>
+ </Teleport>
  </template>
 
  <!-- ==================== 轻小说 Tab ==================== -->
@@ -310,8 +341,21 @@ const generating = ref(false)
 const genStatus = ref('')
 const genOk = ref(false)
 const streamingText = ref('')
+const rawStreamingText = ref('')
 const generatedOutline = ref('')
 const outlineStreamingText = ref('')
+
+// ---- 生成弹框 ----
+const showGenModal = ref(false)
+const genModalTitle = ref('')
+
+// ---- 去AI化 ----
+const deslopRunning = ref(false)
+const deslopDone = ref(false)
+const deslopText = ref('')
+const deslopStatus = ref('')
+const deslopStreamRef = ref(null)
+const diffHtml = ref('')
 
 // 类型模板匹配
 const matchedTemplates = ref([])
@@ -445,6 +489,10 @@ async function startGen() {
 
  generating.value = true; genStatus.value = ''; genOk.value = false
  streamingText.value = ''; outlineStreamingText.value = ''
+ rawStreamingText.value = ''
+ showGenModal.value = true
+ genModalTitle.value = `${selectedType.value} - ${protagonistName.value || '未命名'}`
+ deslopDone.value = false; deslopText.value = ''; deslopRunning.value = false; diffHtml.value = ''
 
  const params = {
  novelTypeId: selectedType.value,
@@ -458,7 +506,7 @@ async function startGen() {
  }
 
  novelStore.startGeneration(params,
- (chunk) => { streamingText.value += chunk; scrollToBottom() },
+ (chunk) => { rawStreamingText.value += chunk; streamingText.value += chunk; scrollToBottom() },
  (event) => {
  if (event.type === 'outline') {
  outlineStreamingText.value = event.content
@@ -468,12 +516,19 @@ async function startGen() {
  genStatus.value = event.message
  } else if (event.type === 'chapter_start') {
  genStatus.value = `正在生成 ${event.title || '第' + event.chapterNumber + '章'}...`
+ } else if (event.type === 'humanized') {
+ // 服务器返回改写后文本，替换显示
+ streamingText.value = event.content
+ genStatus.value = `第${event.chapterNumber}章改写完成`
+ scrollToBottom()
  } else if (event.type === 'completed') {
  genStatus.value = '生成完成！'; genOk.value = true; generating.value = false
  } else if (event.type === 'paused') {
- genStatus.value = '⏸️ 已暂停'; generating.value = false
+ genStatus.value = '️ 已暂停'; generating.value = false
  } else if (event.type === 'token_exhausted') {
  genStatus.value = 'Token 已用完，请充值'; generating.value = false
+} else if (event.type === 'error') {
+ genStatus.value = ' ' + (event.message || '生成失败'); generating.value = false
  }
  }
  )
@@ -481,6 +536,102 @@ async function startGen() {
 
 function scrollToBottom() {
  nextTick(() => { if (streamRef.value) streamRef.value.scrollTop = streamRef.value.scrollHeight })
+}
+
+// ---- 去AI化 ----
+async function startDeslop() {
+ if (!streamingText.value || streamingText.value.length < 50) return
+ deslopRunning.value = true; deslopDone.value = false; deslopText.value = ''; diffHtml.value = ''
+ deslopStatus.value = '正在去AI化...'
+
+ const token = localStorage.getItem('token')
+ const xhr = new XMLHttpRequest()
+ xhr.open('POST', '/api/novel/deslop-stream')
+ xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+ xhr.setRequestHeader('Content-Type', 'application/json')
+ let lastIndex = 0
+
+ xhr.onprogress = () => {
+ const newData = xhr.responseText.substring(lastIndex)
+ lastIndex = xhr.responseText.length
+ const lines = newData.split('\n').filter(l => l.startsWith('data: '))
+ for (const line of lines) {
+ try {
+ const event = JSON.parse(line.substring(6))
+ if (event.type === 'content') {
+ deslopText.value += event.content
+ nextTick(() => { if (deslopStreamRef.value) deslopStreamRef.value.scrollTop = deslopStreamRef.value.scrollHeight })
+ } else if (event.type === 'status') {
+ deslopStatus.value = event.message
+ } else if (event.type === 'completed') {
+ deslopText.value = event.content || deslopText.value
+ deslopDone.value = true; deslopRunning.value = false
+ deslopStatus.value = '去AI化完成'
+ computeDiff()
+ } else if (event.type === 'error') {
+ deslopStatus.value = event.message || '去AI化失败'; deslopRunning.value = false
+ }
+ } catch {}
+ }
+ }
+
+ xhr.onloadend = () => {
+ if (deslopRunning.value) { deslopDone.value = true; deslopRunning.value = false; deslopStatus.value = '去AI化完成'; computeDiff() }
+ }
+ xhr.onerror = () => { deslopStatus.value = '去AI化失败'; deslopRunning.value = false }
+ xhr.send(JSON.stringify({ text: streamingText.value }))
+}
+
+function resetDeslop() {
+ deslopDone.value = false; deslopText.value = ''; deslopRunning.value = false; diffHtml.value = ''; deslopStatus.value = ''
+}
+
+// 简易 diff：逐字对比，红色=删除，绿色=新增
+function computeDiff() {
+ const oldText = streamingText.value || ''
+ const newText = deslopText.value || ''
+ if (!oldText || !newText) { diffHtml.value = ''; return }
+
+ // 基于行的简易 diff
+ const oldLines = oldText.split('\n')
+ const newLines = newText.split('\n')
+ const maxLen = Math.max(oldLines.length, newLines.length)
+ let html = ''
+
+ for (let i = 0; i < maxLen; i++) {
+ const oldLine = oldLines[i] || ''
+ const newLine = newLines[i] || ''
+ if (oldLine === newLine) {
+ html += escapeHtml(newLine) + '\n'
+ } else {
+ // 逐字符 diff
+ const diff = charDiff(oldLine, newLine)
+ html += diff + '\n'
+ }
+ }
+ diffHtml.value = html
+}
+
+function charDiff(oldStr, newStr) {
+ // 简易逐字符对比
+ let result = ''
+ const maxLen = Math.max(oldStr.length, newStr.length)
+ for (let i = 0; i < maxLen; i++) {
+ const oldChar = oldStr[i] || ''
+ const newChar = newStr[i] || ''
+ if (oldChar === newChar) {
+ result += escapeHtml(newChar)
+ } else {
+ if (oldChar) result += `<del>${escapeHtml(oldChar)}</del>`
+ if (newChar) result += `<ins>${escapeHtml(newChar)}</ins>`
+ }
+ }
+ return result
+}
+
+function escapeHtml(text) {
+ if (!text) return ''
+ return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br>')
 }
 
 // ---- 轻小说 ----
@@ -616,6 +767,8 @@ async function startLNGen() {
  lnStatus.value = '⏸️ 已暂停'; lnGenerating.value = false
  } else if (event.type === 'token_exhausted') {
  lnStatus.value = 'Token 已用完，请充值'; lnGenerating.value = false
+} else if (event.type === 'error') {
+ lnStatus.value = ' ' + (event.message || '生成失败'); lnGenerating.value = false
  }
  }
  )
@@ -1122,6 +1275,132 @@ onMounted(async () => {
  accent-color: var(--primary);
  width: 16px;
  height: 16px;
+}
+
+/* ---- 生成弹框 ---- */
+.gen-modal-overlay {
+ position: fixed;
+ top: 0; left: 0; right: 0; bottom: 0;
+ background: rgba(0,0,0,0.5);
+ z-index: 1000;
+ display: flex;
+ align-items: center;
+ justify-content: center;
+ padding: 20px;
+}
+.gen-modal {
+ background: var(--card, #fff);
+ border-radius: 12px;
+ width: 100%;
+ max-width: 900px;
+ max-height: 85vh;
+ display: flex;
+ flex-direction: column;
+ box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+ animation: slideUp 250ms ease;
+}
+.gen-modal-header {
+ display: flex;
+ align-items: center;
+ justify-content: space-between;
+ padding: 16px 20px;
+ border-bottom: 1px solid var(--card-border, #eee);
+}
+.gen-modal-title {
+ font-size: 16px;
+ font-weight: 700;
+}
+.gen-modal-close {
+ background: none;
+ border: none;
+ font-size: 24px;
+ cursor: pointer;
+ color: var(--text-tertiary, #999);
+ padding: 0 4px;
+}
+.gen-modal-close:hover { color: var(--text, #333); }
+.gen-modal-body {
+ flex: 1;
+ overflow-y: auto;
+ padding: 16px 20px;
+}
+.gen-modal-footer {
+ padding: 12px 20px;
+ border-top: 1px solid var(--card-border, #eee);
+ display: flex;
+ align-items: center;
+ gap: 12px;
+}
+
+/* 文本区域 */
+.gen-text-section {
+ margin-bottom: 16px;
+ transition: opacity 0.3s;
+}
+.gen-text-section.grayed {
+ opacity: 0.5;
+}
+.gen-text-label {
+ font-size: 13px;
+ font-weight: 600;
+ color: var(--text-secondary, #666);
+ margin-bottom: 8px;
+}
+.gen-text-content {
+ background: var(--bg-secondary, #f5f5f5);
+ border-radius: 8px;
+ padding: 12px;
+ font-size: 14px;
+ line-height: 1.8;
+ white-space: pre-wrap;
+ word-break: break-word;
+ max-height: 300px;
+ overflow-y: auto;
+}
+.deslop-section .gen-text-content {
+ background: #f0f7ff;
+ border: 1px solid #d0e3ff;
+}
+
+/* Diff 对比 */
+.gen-diff-section {
+ margin-top: 16px;
+}
+.gen-diff-content {
+ background: var(--bg-secondary, #f5f5f5);
+ border-radius: 8px;
+ padding: 12px;
+ font-size: 14px;
+ line-height: 1.8;
+ white-space: pre-wrap;
+ word-break: break-word;
+ max-height: 400px;
+ overflow-y: auto;
+}
+.gen-diff-content del {
+ background: #ffe0e0;
+ color: #c0392b;
+ text-decoration: line-through;
+ padding: 0 2px;
+ border-radius: 2px;
+}
+.gen-diff-content ins {
+ background: #e0ffe0;
+ color: #27ae60;
+ text-decoration: none;
+ padding: 0 2px;
+ border-radius: 2px;
+ font-weight: 500;
+}
+
+.deslop-status {
+ font-size: 13px;
+ color: var(--primary, #2563eb);
+}
+
+@keyframes slideUp {
+ from { transform: translateY(20px); opacity: 0; }
+ to { transform: translateY(0); opacity: 1; }
 }
 
 </style>

@@ -13,7 +13,7 @@ const {
   buildImportContinuePrompt, buildOutlinePrompt,
   buildChapterPlan, buildStoryStateSummary,
   buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, extractChapterSummary,
-  streamGenerate, resolveApiConfig, countTokens,
+  streamGenerate, resolveApiConfig, countTokens, humanizeRewrite, getFriendlyErrorMessage,
 } = require('../services/aiService');
 const {
   buildAugmentedContext,
@@ -356,6 +356,9 @@ ${structureRef}
 
       try { res.write(`data: ${JSON.stringify({ type: 'chapter_start', chapterNumber: chNum, title: `第${chNum}章` })}\n\n`); } catch {}
 
+      // v3: 每章使用不同的温度值（0.75-0.95），增加章节间的风格差异性
+      const chapterTemp = 0.75 + Math.random() * 0.2;
+
       await streamGenerate(systemPrompt, prompt, (chunk) => {
         buffer += chunk;
         if (Date.now() - lastSave > 5000) {
@@ -364,13 +367,30 @@ ${structureRef}
           lastSave = Date.now();
         }
         try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
-      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'));
-
-      // 工具链：去AI味 + 标点修正
+      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, chapterTemp);
+      
+      // 人味改写：AI生成完成后，自动改写为人类风格并保存到数据库
+      // 原始文本通过 SSE 流式展示给用户，改写后的文本保存到数据库
       let finalContent = buffer;
-      if (buffer.length > 100) {
+      if (buffer.length > 500) {
         try {
-          const { text } = processChapter(buffer);
+          res.write(`data: ${JSON.stringify({ type: 'status', message: `第${chNum}章人味改写中...` })}\n\n`);
+          const rewritten = await humanizeRewrite(buffer, resolveApiConfig(req.user?.modelConfig, 'writing'));
+          if (rewritten && rewritten.length > buffer.length * 0.3) {
+            finalContent = rewritten;
+            // 将改写后的文本也推送给前端
+            res.write(`data: ${JSON.stringify({ type: 'humanized', content: rewritten, chapterNumber: chNum })}\n\n`);
+            console.log(`[人味改写] 第${chNum}章: ${buffer.length}字 → ${rewritten.length}字`);
+          }
+        } catch (e) {
+          console.warn('[人味改写] 失败，使用原文:', e.message);
+        }
+      }
+      
+      // 基础后处理：标点修正 + 自动格式化
+      if (finalContent.length > 100) {
+        try {
+          const { text } = processChapter(finalContent, { doDeAI: true, doPunctuation: true, doHumanize: false, doAutoFormat: true });
           finalContent = text;
         } catch (e) { /* 后处理失败不影响主流程 */ }
       }
@@ -459,7 +479,8 @@ ${storyState}
 8. 每章结束时标注【未完待续】
 9. 如果剩余章节不足10章，逐步收紧节奏，开始准备结局
 10. 最后3章要给出一个有力量、有意义、不烂尾的结局
-11. ⚠️ 绝对禁止：核心剧情与上一章高度相似或完全重复，每章必须推动主线`;
+11. ⚠️ 绝对禁止：核心剧情与上一章高度相似或完全重复，每章必须推动主线
+12. ⚠️ 写作风格：像一个真正的网文作者那样写——可以有不完美的过渡、角色会走神、会突然想到无关的事、段落长短不一、对话有口语化表达。不要写得像教科书一样工整完美。`;
 
           await ensureTokensLeft(req.user);
           const genResult = await generateOneChapter(ch, chPrompt);
@@ -539,35 +560,43 @@ ${storyState}
     } catch (streamError) {
       const isTokenExhausted = streamError?.message === 'TOKEN_EXHAUSTED' || streamError?.message?.includes('余额不足');
       const isAbort = streamError?.name === 'AbortError' || streamError?.message?.includes('abort');
+      const isApiError = streamError?.isApiError;
       if (isTokenExhausted) {
         console.log('⚠️ Token 配额已耗尽，停止生成（novelId:', novel._id, ', completed:', novel.chapters.length, '章）');
       } else if (isAbort) {
         console.log('⚠️ 生成被中断/取消（novelId:', novel._id, ', completed:', novel.chapters.length, '章）');
       } else {
-        console.error('❌ 正文生成失败(详细):', JSON.stringify({
-          novelId: novel._id,
-          chapterCount: novel.chapters.length,
-          error: streamError?.message || streamError,
-          stack: streamError?.stack?.split('\n').slice(0, 3).join(' | ') || '',
-          currentChapterNum,
-          aborted: abortController?.signal?.aborted,
-        }));
+        console.error('❌ 正文生成失败:', streamError?.message || streamError);
       }
       novel.status = 'paused';
       await novel.save();
       activeStreams.delete(streamKey);
       try {
         if (isTokenExhausted) {
-          res.write(`data: ${JSON.stringify({ type: 'token_exhausted' })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: 'token_exhausted', message: 'Token 已用完，请充值后继续' })}\n\n`);
+        } else if (isApiError) {
+          // AI API 错误，发送友好提示
+          res.write(`data: ${JSON.stringify({ type: 'error', message: streamError.message || 'AI 服务暂时不可用，请稍后重试' })}\n\n`);
+        } else if (isAbort) {
+          res.write(`data: ${JSON.stringify({ type: 'paused', message: '生成已暂停' })}\n\n`);
         } else {
-          res.write(`data: ${JSON.stringify({ type: 'paused' })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: 'error', message: '生成过程中出现错误，请稍后重试' })}\n\n`);
         }
         res.end();
       } catch {}
     }
   } catch (error) {
-    console.error('生成小说失败:', error);
-    res.status(500).json({ message: '创建小说失败', error: error.message });
+    console.error('生成小说失败:', error.message);
+    // 如果 SSE 已建立，通过 SSE 发送错误
+    if (res.headersSent) {
+      try {
+        const msg = error.isApiError ? error.message : '创建小说失败，请稍后重试';
+        res.write(`data: ${JSON.stringify({ type: 'error', message: msg })}\n\n`);
+        res.end();
+      } catch {}
+    } else {
+      res.status(500).json({ message: error.isApiError ? error.message : '创建小说失败，请稍后重试' });
+    }
   }
 });
 
@@ -630,6 +659,9 @@ router.post('/continue/:novelId', auth, async (req, res) => {
 
       res.write(`data: ${JSON.stringify({ type: 'chapter_start', chapterNumber: chNum, title: `第${chNum}章` })}\n\n`);
 
+      // v3: 每章使用不同的温度值
+      const chapterTemp = 0.75 + Math.random() * 0.2;
+
       await streamGenerate(systemPrompt, prompt, (chunk) => {
         buffer += chunk;
         if (Date.now() - lastSave > 5000) {
@@ -638,13 +670,28 @@ router.post('/continue/:novelId', auth, async (req, res) => {
           lastSave = Date.now();
         }
         res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`);
-      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'));
-
-      // 工具链后处理：去AI味 + 标点修正
+      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, chapterTemp);
+      
+      // 人味改写：自动改写为人类风格并保存
       let finalContent = buffer;
-      if (buffer.length > 100) {
+      if (buffer.length > 500) {
         try {
-          const { text, report } = processChapter(buffer, { doDeAI: true, doPunctuation: true });
+          res.write(`data: ${JSON.stringify({ type: 'status', message: `第${chNum}章人味改写中...` })}\n\n`);
+          const rewritten = await humanizeRewrite(buffer, resolveApiConfig(req.user?.modelConfig, 'writing'));
+          if (rewritten && rewritten.length > buffer.length * 0.3) {
+            finalContent = rewritten;
+            res.write(`data: ${JSON.stringify({ type: 'humanized', content: rewritten, chapterNumber: chNum })}\n\n`);
+            console.log(`[人味改写] 第${chNum}章: ${buffer.length}字 → ${rewritten.length}字`);
+          }
+        } catch (e) {
+          console.warn('[人味改写] 失败，使用原文:', e.message);
+        }
+      }
+      
+      // 基础后处理
+      if (finalContent.length > 100) {
+        try {
+          const { text, report } = processChapter(finalContent, { doDeAI: true, doPunctuation: true, doHumanize: false, doAutoFormat: true });
           finalContent = text;
           if (report.deAICount > 0 || report.punctuationFixes !== 0) {
             console.log(`[Toolchain] 第${chNum}章: AI味 ${report.aiFlavorBefore?.density || 0}→${report.aiFlavorAfter?.density || 0}，去AI ${report.deAICount} 处`);
@@ -715,7 +762,8 @@ ${'='.repeat(40)}
 5. 每章要有独立的起承转合和一个小高潮
 6. 避免模板化用语和流水账式叙事，保持生动的细节描写
 7. 如有大纲请严格遵循大纲方向，同时允许合理的即兴发挥
-8. 每章结束时标注【未完待续】`;
+8. 每章结束时标注【未完待续】
+9. ⚠️ 写作风格：像一个真正的网文作者那样写——段落长短不一、对话口语化、角色会走神和说废话、叙述有个人风格。不要写得过于工整完美。`;
 
           await ensureTokensLeft(req.user);
           await generateOneChapter(ch, chPrompt);
@@ -789,6 +837,7 @@ ${'='.repeat(40)}
       }
     } catch (streamError) {
       const isTokenExhausted = streamError?.message === 'TOKEN_EXHAUSTED' || streamError?.message?.includes('余额不足');
+      const isApiError = streamError?.isApiError;
       if (isTokenExhausted) console.log('继续生成 Token 配额已耗尽');
       else console.error('继续生成失败:', streamError.message);
       novel.status = 'paused';
@@ -796,19 +845,26 @@ ${'='.repeat(40)}
       activeStreams.delete(streamKey);
       try {
         if (isTokenExhausted) {
-          res.write(`data: ${JSON.stringify({ type: 'token_exhausted' })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: 'token_exhausted', message: 'Token 已用完，请充值后继续' })}\n\n`);
+        } else if (isApiError) {
+          res.write(`data: ${JSON.stringify({ type: 'error', message: streamError.message || 'AI 服务暂时不可用，请稍后重试' })}\n\n`);
         } else {
-          res.write(`data: ${JSON.stringify({ type: 'paused' })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: 'error', message: '续写过程中出现错误，请稍后重试' })}\n\n`);
         }
         res.end();
       } catch {}
     }
   } catch (error) {
-    console.error('继续生成失败(外):', error);
+    console.error('继续生成失败:', error.message);
     if (error.message?.includes('余额不足')) {
-      return res.status(402).json({ message: '余额不足，请充值后再生成', error: error.message });
+      return res.status(402).json({ message: '余额不足，请充值后再生成' });
     }
-    res.status(500).json({ message: '继续生成失败', error: error.message });
+    const msg = error.isApiError ? error.message : '继续生成失败，请稍后重试';
+    if (res.headersSent) {
+      try { res.write(`data: ${JSON.stringify({ type: 'error', message: msg })}\n\n`); res.end(); } catch {}
+    } else {
+      res.status(500).json({ message: msg });
+    }
   }
 });
 
@@ -1443,6 +1499,113 @@ router.post('/deslop', auth, async (req, res) => {
   }
 });
 
+// ====== 去AI化（SSE流式，用于生成后的人味改写） ======
+router.post('/deslop-stream', auth, async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text || text.trim().length < 50) return res.status(400).json({ message: '文本太短' });
+
+    // 检查 Token 余额
+    await checkTokenBalance(req.user);
+
+    // SSE 设置
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    const apiConfig = resolveApiConfig(req.user?.modelConfig, 'writing');
+    const deslop = require('../config/deslop');
+    let fullContent = '';
+
+    // 第一遍：打碎段落结构
+    res.write(`data: ${JSON.stringify({ type: 'status', message: '正在改写第1遍：打碎段落结构...' })}\n\n`);
+    try {
+      const result1 = await streamGenerate(
+        '你是一个写了十年网文的作者，擅长把AI写的东西改成自己的风格。',
+        `${deslop.humanizeRewritePrompt}\n\n以下是需要改写的小说草稿：\n\n${text}`,
+        (chunk) => {
+          fullContent += chunk;
+          res.write(`data: ${JSON.stringify({ type: 'content', content: chunk, pass: 1 })}\n\n`);
+        },
+        null, apiConfig, 2, 0.92
+      );
+      if (result1 && result1.content && result1.content.length > text.length * 0.3) {
+        fullContent = result1.content;
+      } else {
+        res.write(`data: ${JSON.stringify({ type: 'error', message: '改写结果异常，使用原文' })}\n\n`);
+        res.end();
+        return;
+      }
+    } catch (e) {
+      res.write(`data: ${JSON.stringify({ type: 'error', message: e.message || '改写失败' })}\n\n`);
+      res.end();
+      return;
+    }
+
+    // 第二遍：注入人味特征
+    res.write(`data: ${JSON.stringify({ type: 'status', message: '正在改写第2遍：注入人味特征...' })}\n\n`);
+    let finalContent = '';
+    try {
+      const pass2Prompt = `你是同一个作者，现在对刚才的改写稿做最后一轮打磨。这次的重点不是结构，而是"人味"：
+
+1. 把所有书面化的词换成口语——"然而"→"不过"，"因此"→"所以"，"逐渐"→"慢慢"
+2. 在叙述中随机插入角色的走神或吐槽，用括号或破折号
+3. 把一些完整的句子改成碎片
+4. 对话中加一些口语填充词
+5. 删掉所有段尾的总结句、感悟句
+6. 长描写用口语重写，但不要删减内容——字数要和原文差不多
+7. 加入一些不完美的过渡——"话说回来""对了""哦对"
+8. 叙述者偶尔插入括号吐槽
+9. 同一段落内要有情绪变化
+
+【重要】改写后的字数必须与原文相差不超过 20%。这是打磨，不是缩写。
+
+直接输出打磨后的完整文本，不要解释。保留剧情和对话内容。
+
+以下是需要打磨的文本：
+
+${fullContent}`;
+
+      await streamGenerate(
+        '你是同一个作者，在做最后一轮打磨。',
+        pass2Prompt,
+        (chunk) => {
+          finalContent += chunk;
+          res.write(`data: ${JSON.stringify({ type: 'content', content: chunk, pass: 2 })}\n\n`);
+        },
+        null, apiConfig, 2, 0.95
+      );
+
+      if (finalContent && finalContent.length > fullContent.length * 0.3) {
+        // 后处理
+        const { text: processedText } = processChapter(finalContent, { doHumanize: true });
+        res.write(`data: ${JSON.stringify({ type: 'completed', content: processedText })}\n\n`);
+      } else {
+        const { text: processedText } = processChapter(fullContent, { doHumanize: true });
+        res.write(`data: ${JSON.stringify({ type: 'completed', content: processedText })}\n\n`);
+      }
+    } catch (e) {
+      const { text: processedText } = processChapter(fullContent, { doHumanize: true });
+      res.write(`data: ${JSON.stringify({ type: 'completed', content: processedText })}\n\n`);
+    }
+
+    // 扣除 Token
+    try { await deductTokens(req.user, finalContent || fullContent); } catch {}
+
+    res.end();
+  } catch (error) {
+    console.error('去AI化流式处理失败:', error.message);
+    if (res.headersSent) {
+      try { res.write(`data: ${JSON.stringify({ type: 'error', message: error.isApiError ? error.message : '去AI化处理失败' })}\n\n`); res.end(); } catch {}
+    } else {
+      res.status(500).json({ message: error.isApiError ? error.message : '去AI化处理失败' });
+    }
+  }
+});
+
 // ====== 润色（SSE流式，支持自定义润色方案 + Token实时消耗） ======
 router.post('/polish', auth, async (req, res) => {
   try {
@@ -1595,11 +1758,14 @@ router.post('/polish', auth, async (req, res) => {
     res.write(`data: ${JSON.stringify({ type: 'completed', totalLength: polished.length, tokenExhausted })}\n\n`);
     res.end();
   } catch (error) {
-    console.error('润色失败:', error);
+    console.error('润色失败:', error.message);
     if (error.message === 'TOKEN_EXHAUSTED' || (error.message && error.message.includes('Token 不足'))) {
       try { res.write(`data: ${JSON.stringify({ type: 'token_exhausted', message: 'Token 余额不足，请充值后重试' })}\n\n`); res.end(); } catch {}
+    } else if (error.isApiError) {
+      // AI API 错误，使用友好提示
+      try { res.write(`data: ${JSON.stringify({ type: 'error', message: error.message || 'AI 服务暂时不可用，请稍后重试' })}\n\n`); res.end(); } catch {}
     } else {
-      try { res.write(`data: ${JSON.stringify({ type: 'error', message: error.message })}\n\n`); res.end(); } catch {}
+      try { res.write(`data: ${JSON.stringify({ type: 'error', message: '润色过程中出现错误，请稍后重试' })}\n\n`); res.end(); } catch {}
     }
   }
 });

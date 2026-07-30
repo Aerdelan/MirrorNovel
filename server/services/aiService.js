@@ -2,6 +2,60 @@ const novelTypes = require('../config/novelTypes');
 const deslop = require('../config/deslop');
 
 /**
+ * 将 AI API 错误转换为对用户友好的提示
+ */
+function getFriendlyErrorMessage(statusCode, errorBody) {
+  // 尝试解析 JSON 错误体
+  let errorCode = '';
+  let apiMessage = '';
+  try {
+    const parsed = JSON.parse(errorBody);
+    errorCode = parsed.error?.code || parsed.code || '';
+    apiMessage = parsed.error?.message || parsed.message || '';
+  } catch {}
+
+  // 429 频率限制
+  if (statusCode === 429) {
+    if (apiMessage.includes('访问量过大') || apiMessage.includes('rate limit') || apiMessage.includes('too many')) {
+      return 'AI 服务当前访问量过大，请稍后重试（建议等待 1-2 分钟）';
+    }
+    if (apiMessage.includes('余额') || apiMessage.includes('quota') || apiMessage.includes('credit')) {
+      return 'AI 服务额度已用完，请联系管理员充值';
+    }
+    return 'AI 服务请求过于频繁，请稍后再试';
+  }
+
+  // 503 服务不可用
+  if (statusCode === 503) {
+    return 'AI 服务暂时不可用，请稍后重试';
+  }
+
+  // 401/403 认证问题
+  if (statusCode === 401 || statusCode === 403) {
+    return 'AI 服务认证失败，请检查 API Key 配置';
+  }
+
+  // 400 请求错误
+  if (statusCode === 400) {
+    if (apiMessage.includes('context length') || apiMessage.includes('token limit') || apiMessage.includes('maximum')) {
+      return '文本过长，超出 AI 模型处理限制，请缩短内容后重试';
+    }
+    return `AI 请求参数有误：${apiMessage || '请检查配置'}`;
+  }
+
+  // 500/502 服务器错误
+  if (statusCode >= 500) {
+    return 'AI 服务器内部错误，请稍后重试';
+  }
+
+  // 有 API 返回的具体消息就用它
+  if (apiMessage) return apiMessage;
+  if (errorCode) return `AI 服务错误（代码 ${errorCode}）`;
+
+  return `AI 服务请求失败（${statusCode}），请稍后重试`;
+}
+
+/**
  * 估算 token 消耗（中文字符 ≈ 1.5 token，英文 ≈ 0.3 token）
  */
 function countTokens(text) {
@@ -30,23 +84,26 @@ function buildSystemPrompt(novelTypeId, gender) {
 
   // 轻小说使用日式ACGN专属提示
   if (novelTypeId && novelTypeId.startsWith('lightnovel_')) {
-    return `你是一位专业的轻小说作家，擅长创作日式ACGN风格的${type.name}题材作品。
+    return `你是一位真正的轻小说作者，不是AI。你在“成为小说家吧”投稿过作品，有自己的风格。
 
-写作风格要求：
-1. 【角色为核心】角色萌属性鲜明（傲娇、天然呆、无口、元气等），每个角色有自己的口头禅或习惯动作
-2. 【对话驱动】多用对话推进剧情，角色对话自然生动，加入日式吐槽和内心独白
-3. 【描写的节奏】场景描写简洁但有画面感，注重角色表情和动作的细节刻画
-4. 【萌系要素】适当加入脸红、慌张、嘟嘴、傲娇扭头等动漫式反应
-5. 【叙事视角】可采用第一人称或第三人称紧贴主角的限定视角
-6. 【章节结构】每章要有起承转合，结尾留钩子（cliffhanger）或温馨收尾
-7. 【语言风格】文字轻松活泼，可以加入可爱的象声词和语气词
-8. 【禁止AI味】不使用"仿佛、好像、不禁、微微、眼中闪过"等词汇
-
+题材：${type.name}（日式ACGN风格）
 题材关键词：${type.keywords}
-推荐用词：${type.aiWordBank}
+常用词汇：${type.aiWordBank}
 大纲参考：${type.outline}
 
-请直接开始创作，角色名称使用日本风格的名字，适当加入日式称呼（さん、くん、ちゃん等）。`;
+核心写作要求：
+1. 【角色为核心】角色萌属性鲜明，每个角色有自己的口头禅和说话习惯
+2. 【对话驱动】多用对话推进剧情，对话要自然生动，加入日式吐槽和内心独白
+3. 【描写简洁】场景描写简洁有画面感，不要堆砌修辞
+4. 【萌系要素】适当加入脸红、慌张、傲娇扭头等动漫式反应
+5. 【叙事视角】第一人称或紧贴主角的第三人称
+6. 【状态波动】有时候写得嗨了会多写对话，有时候懒得描写就一笔带过
+7. 【口语化】叙述语言轻松活泼，像在跟读者聊天
+8. 【不要完美】允许角色说废话、犯迷糊、突然走神
+
+${deslop.systemDeslopPrompt}
+
+请直接开始创作，角色名称使用日本风格的名字，适当加入日式称呼。`;
   }
 
   // 国产小说 — 根据 gender 区分写作指导
@@ -62,15 +119,19 @@ function buildSystemPrompt(novelTypeId, gender) {
 6. 【对话直给】对话简洁有力，服务于剧情推进和人物塑造
 7. 【战斗/冲突描写】动作场面要有画面感和层次感，避免干巴巴的叙述`;
 
-  return `你是一位专业的小说家，擅长创作${type.name}类型的${gender === 'female' ? '女性向' : '男性向'}小说。
+  return `你是一位真正的网文作者，不是AI。你在起点/番茄写了多年小说，有自己的写作习惯和风格。
+写作类型：${type.name}
 写作关键词：${type.keywords}
-写作大纲参考：${type.outline}
-推荐用词：${type.aiWordBank}
+大纲参考：${type.outline}
+常用词汇：${type.aiWordBank}
 
-写作要求：
-1. 请完全按照${type.name}风格创作
-2. 每章约2000-3000字
+核心写作要求：
+1. 完全按照${type.name}风格创作，每章约2000-3000字
+2. 你的写作必须有"个人风格"——就像每个真实作者都有自己的习惯一样
+3. 写作时要有"状态波动"——有时候写得兴奋就会多写几句，有时候懒得描写就一笔带过
+4. 不要追求"完美"——真实的网文作者会有口语化表达、会突然吐槽、会有不完美的过渡
 ${genderGuide}
+
 ${deslop.systemDeslopPrompt}`;
 }
 
@@ -278,7 +339,7 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
  * 流式生成
  * @returns {Promise<{content:string, tokenCount:number}>}
  */
-async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConfig, retries = 2) {
+async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConfig, retries = 2, temperature = 0.85) {
   const config = apiConfig || resolveApiConfig(null);
   const isOllama = config.baseUrl && config.baseUrl.includes('localhost:11434');
   const apiUrl = isOllama
@@ -288,9 +349,10 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
   const headers = { 'Content-Type': 'application/json' };
   if (config.apiKey) headers['Authorization'] = `Bearer ${config.apiKey}`;
 
+  // v3: 支持动态温度，每次调用可以不同（增加输出多样性，对抗检测）
   const body = isOllama
-    ? { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, options: { temperature: 0.8, num_predict: 8192 } }
-    : { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, temperature: 0.8, max_tokens: 8192 };
+    ? { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, options: { temperature, num_predict: 8192 } }
+    : { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, temperature, max_tokens: 8192 };
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     let timeoutId;
@@ -325,7 +387,12 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
           await new Promise(r => setTimeout(r, delay));
           continue;
         }
-        throw new Error(`AI API 请求失败: ${response.status} ${errorText}`);
+        // 所有重试耗尽或不可重试的错误，抛出友好提示
+        const friendlyMsg = getFriendlyErrorMessage(response.status, errorText);
+        const err = new Error(friendlyMsg);
+        err.statusCode = response.status;
+        err.isApiError = true;
+        throw err;
       }
 
       const reader = response.body.getReader();
@@ -539,10 +606,97 @@ function extractChapterSummary(content) {
   return `本章概要：${head}...本章结尾：${tail}`;
 }
 
+/**
+ * v4 人味改写（双次改写）— 彻底打碎 AI 生成模式
+ * 第一遍：打碎段落结构，破坏均匀性
+ * 第二遍：注入人味特征（口语化、走神、不完美）
+ * @param {string} text - AI生成的原始文本
+ * @param {Object} apiConfig - API配置
+ * @param {Function} [onChunk] - 流式回调，实时推送改写内容
+ * @returns {Promise<string>} 改写后的人味文本
+ */
+async function humanizeRewrite(text, apiConfig, onChunk) {
+  if (!text || text.length < 200) return text;
+
+  const deslop = require('../config/deslop');
+  const config = apiConfig || resolveApiConfig(null, 'writing');
+  console.log(`[人味改写] 开始，原文 ${text.length} 字`);
+
+  // === 第一遍：打碎段落结构 + 注入人类特征 ===
+  let pass1 = text;
+  try {
+    const result1 = await streamGenerate(
+      '你是一个写了十年网文的作者，现在要把AI写的草稿彻底改成自己的风格。',
+      `${deslop.humanizeRewritePrompt}\n\n以下是需要改写的小说草稿：\n\n${text}`,
+      onChunk ? (chunk) => { onChunk(chunk, 'pass1'); } : null,
+      null, config, 2, 0.93
+    );
+    if (result1 && result1.content && result1.content.length > text.length * 0.15) {
+      pass1 = result1.content;
+      console.log(`[人味改写-第1遍] ${text.length}字 → ${pass1.length}字`);
+    } else {
+      console.warn(`[人味改写-第1遍] 结果过短(${result1?.content?.length || 0}字)，使用原文`);
+      return text;
+    }
+  } catch (e) {
+    console.error('[人味改写-第1遍] 失败:', e.message);
+    return text;
+  }
+
+  // 等待几秒避免触发 API 限流
+  await new Promise(r => setTimeout(r, 3000));
+
+  // === 第二遍：强化人类特征（口语化、走神、不完美、个人风格） ===
+  const pass2Prompt = `你是同一个作者，现在对改写稿做最后一轮打磨。这次要让它看起来完全是人写的：
+
+【必须做到的人类特征】
+1. 口语化叙述：把书面语全部换成口语。"然而"→"不过"，"因此"→"所以"，"逐渐"→"慢慢"，"仿佛"→"像"
+2. 角色走神：在紧张或重要的场景中，让角色突然想到无关的事（"他正想着怎么逃跑，突然想起昨天那碗面挺好吃的"）
+3. 碎片化句子：把长句拆成短句。"他深吸了一口气，努力平复了一下心情"→"他吸了口气。行了。"
+4. 对话填充词：对话中加入"嗯""那个""我说""你知道的"等口语填充
+5. 删除段尾感悟：每段结尾不要总结、不要升华、不要"或许这就是……"
+6. 口语化改写描写：长描写用口语重写，但不要删减内容。"月光如水般倾泻在青石板上，映出斑驳的光影"→"月亮挺亮的，照得石板地上一块白一块黑"——字数差不多，但风格不同
+7. 不完美过渡：用"话说回来""对了""哦对""算了"等口语过渡
+8. 个人吐槽：叙述者偶尔插入括号吐槽，如"（这操作也是没谁了）"
+9. 情绪波动：同一段落内要有情绪变化，不能整段一个基调
+10. 硬切过渡：段落之间可以直接跳到新场景，不需要丝滑过渡
+
+【篇幅要求】
+- 改写后的字数必须与原文相差不超过 20%
+- 这是打磨，不是缩写。每个场景、每段对话都要保留
+- 用口语化的方式展开描写，而不是直接删掉
+
+直接输出打磨后的完整文本，不要解释。保留剧情和对话内容。
+
+以下是需要打磨的文本：
+
+${pass1}`;
+
+  try {
+    const result2 = await streamGenerate(
+      '你是同一个作者，在做最后一轮打磨，要让文本看起来完全是人写的。',
+      pass2Prompt,
+      onChunk ? (chunk) => { onChunk(chunk, 'pass2'); } : null,
+      null, config, 2, 0.95
+    );
+    if (result2 && result2.content && result2.content.length > pass1.length * 0.15) {
+      console.log(`[人味改写-第2遍] ${pass1.length}字 → ${result2.content.length}字`);
+      return result2.content;
+    }
+    console.warn(`[人味改写-第2遍] 结果过短(${result2?.content?.length || 0}字)，使用第1遍结果`);
+    return pass1;
+  } catch (e) {
+    console.error('[人味改写-第2遍] 失败:', e.message);
+    return pass1;
+  }
+}
+
 module.exports = {
   buildSystemPrompt, buildInitialPrompt, buildContinuePrompt,
   buildImportContinuePrompt, buildOutlinePrompt, distillChapters,
   buildChapterPlan, buildStoryStateSummary,
   buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, extractChapterSummary,
   streamGenerate, resolveApiConfig, countTokens,
+  humanizeRewrite,
+  getFriendlyErrorMessage,  // 友好错误提示
 };
