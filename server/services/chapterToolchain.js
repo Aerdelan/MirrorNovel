@@ -769,15 +769,15 @@ function breakPerfectEndings(text) {
     if (!para.trim() || idx === 0) return para
 
     // 检测"升华式"结尾并替换
-    const升华Patterns = [
-      /或许[，这].*[就是].*[。]?$/,
-      /这[，就]?是.*[的意义].*[。]?$/,
+    const sublimationPatterns = [
+      /或许 [，这].*[就是].*[。]?$/,
+      /这 [，就]?是.*[的意义].*[。]?$/,
       /生活.*[就是如此].*[。]?$/,
-      /也许.*[才?是].*[真谛].*[。]?$/,
+      /也许.*[才？是].*[真谛].*[。]?$/,
       /原来.*[一直].*[。]?$/,
     ]
-
-    for (const pattern of 升华Patterns) {
+    
+    for (const pattern of sublimationPatterns) {
       if (pattern.test(para.trim())) {
         // 用更口语化的碎片结尾替代
         const fragment = HUMANIZE_MATERIALS.fragmentEndings[

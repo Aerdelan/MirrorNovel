@@ -54,7 +54,8 @@
  <div class="novel-title">{{ novel.title || $t('bookshelf.defaultTitle') }}</div>
  <div class="novel-type">{{ novel.novelTypeName }}</div>
  </div>
- <span v-if="novel.optimizeTask?.status === 'analyzing' || novel.optimizeTask?.status === 'optimizing'" class="status-badge optimizing">⏳ 调优中</span>
+ <span v-if="novel.editorialTask?.status === 'running'" class="status-badge optimizing">⏳ 编辑中</span>
+ <span v-else-if="novel.optimizeTask?.status === 'analyzing' || novel.optimizeTask?.status === 'optimizing'" class="status-badge optimizing">⏳ 调优中</span>
  <span v-else class="status-badge" :class="novel.status">{{ statusMap[novel.status] || novel.status }}</span>
  </div>
  <div class="novel-meta">
@@ -67,6 +68,7 @@
  <button v-if="novel.status === 'paused'" class="btn btn-sm btn-primary" @click="showContinueDialog(novel)">{{ $t('bookshelf.resume') }}</button>
  <button v-if="novel.status === 'completed' || novel.status === 'paused'" class="btn btn-sm btn-outline" style="color: #8B5CF6; border-color: #8B5CF6;" @click="showContinueDialog(novel)">{{ $t('bookshelf.write') }}</button>
  <button class="btn btn-sm btn-outline" style="color: #1890ff; border-color: #1890ff;" @click.stop="editOutline(novel)">{{ $t('bookshelf.outline') }}</button>
+ <button v-if="novel.status === 'completed' || novel.status === 'paused'" class="btn btn-sm btn-outline" style="color: #7c3aed; border-color: #7c3aed;" :disabled="editorialRunning" @click.stop="startEditorialBook(novel)">{{ editorialRunning ? $t('bookshelf.editorialRunning') : $t('bookshelf.editorial') }}</button>
  <button class="btn btn-sm btn-outline" style="color: var(--primary-color); border-color: var(--primary-color);" :disabled="exporting" @click="exportSingle(novel)">{{ $t('bookshelf.export') }}</button>
  <button class="btn btn-sm btn-outline" style="color: var(--error-color); border-color: var(--error-color);" @click="confirmDelete(novel)">{{ $t('common.delete') }}</button>
  </div>
@@ -110,6 +112,24 @@
  </Teleport>
 
  <Teleport to="body">
+ <div v-if="editorialRunning" class="editorial-progress-overlay">
+ <div class="editorial-progress-card">
+ <div class="progress-title">七阶段编辑引擎运行中</div>
+ <div class="progress-novel-title">{{ editorialNovelTitle }}</div>
+ <div class="progress-chapter">{{ editorialProgress }}</div>
+ <div class="editorial-stages-display">
+ <div v-for="s in editorialStageDisplay" :key="s.id" class="editorial-stage-item" :class="{ active: s.active, done: s.done, failed: s.error }">
+ <span class="stage-num">{{ s.num }}</span>
+ <span class="stage-name">{{ s.name }}{{ s.error ? '!' : '' }}</span>
+ <span v-if="s.error" class="stage-error-msg">{{ s.errorMsg }}</span>
+ </div>
+ </div>
+ <div class="progress-indicator"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+ </div>
+ </div>
+</Teleport>
+
+<Teleport to="body">
  <div v-if="isContinuing" class="continue-progress-overlay">
  <div class="continue-progress-card">
  <div class="progress-title">{{ $t('bookshelf.aiWriting') }}</div>
@@ -148,6 +168,21 @@ const continueDialogNovel = ref(null)
 const isContinuing = ref(false)
 const currentContinueChapter = ref(0)
 const continueWordCount = ref(0)
+
+// ---- 编辑引擎 ----
+const editorialRunning = ref(false)
+const editorialNovelTitle = ref('')
+const editorialProgress = ref('')
+const editorialStageDisplay = ref([
+ { id: 'analysis', num: 1, name: 'AI分析', active: false, done: false, error: false, errorMsg: '' },
+ { id: 'deAI', num: 2, name: '去AI', active: false, done: false, error: false, errorMsg: '' },
+ { id: 'rhythm', num: 3, name: '节奏', active: false, done: false, error: false, errorMsg: '' },
+ { id: 'character', num: 4, name: '人物', active: false, done: false, error: false, errorMsg: '' },
+ { id: 'style', num: 5, name: '润色', active: false, done: false, error: false, errorMsg: '' },
+ { id: 'compression', num: 6, name: '压缩', active: false, done: false, error: false, errorMsg: '' },
+ { id: 'consistency', num: 7, name: '一致性', active: false, done: false, error: false, errorMsg: '' },
+])
+let editorialPollTimer = null
 
 const statusMap = {
  generating: $t('bookshelf.statusGenerating'),
@@ -251,6 +286,68 @@ async function confirmDelete(novel) {
 }
 
 function editOutline(novel) { outlineNovel.value = novel; outlineText.value = novel.outline || ''; outlineModal.value = true }
+
+// ---- 编辑引擎 ----
+async function startEditorialBook(novel) {
+ if (!confirm(`确定要对《${novel.title}》执行七阶段编辑引擎吗？\n\n将对全部 ${novel.currentChapterIndex || 0} 章逐章执行：\n1. AI特征分析  2. 删除AI痕迹  3. 节奏重构\n4. 人物重塑  5. 风格润色  6. 字数压缩  7. 一致性检查\n\n处理时间较长，将在后台运行。`)) return
+
+ try {
+ const res = await api.post(`/novel/editorial-book/${novel._id}`)
+ if (res.data) {
+ editorialRunning.value = true
+ editorialNovelTitle.value = novel.title || '未命名'
+ editorialProgress.value = '已启动，正在处理...'
+ editorialStageDisplay.value.forEach(s => { s.active = false; s.done = false; s.error = false; s.errorMsg = '' })
+ // 开始轮询状态
+ startEditorialPolling(novel._id)
+ }
+ } catch (e) {
+ alert('启动编辑引擎失败: ' + (e.response?.data?.message || e.message))
+ }
+}
+
+function startEditorialPolling(novelId) {
+ if (editorialPollTimer) clearInterval(editorialPollTimer)
+ editorialPollTimer = setInterval(async () => {
+ try {
+ const res = await api.post(`/novel/editorial-status/${novelId}`)
+ const task = res.data?.task
+ if (!task) return
+
+ editorialProgress.value = task.progress || ''
+
+ // 更新阶段显示
+ if (task.currentStage) {
+ const stage = editorialStageDisplay.value.find(s => s.id === task.currentStage)
+ if (stage) {
+ // 检测是否失败（progress 中包含“失败”）
+ if (task.progress && task.progress.includes('失败')) {
+ stage.error = true; stage.errorMsg = task.progress; stage.active = false
+ } else {
+ editorialStageDisplay.value.forEach(s => { if (!s.error) s.active = false })
+ stage.active = true
+ const idx = editorialStageDisplay.value.findIndex(s => s.id === task.currentStage)
+ for (let i = 0; i < idx; i++) { if (!editorialStageDisplay.value[i].error) { editorialStageDisplay.value[i].done = true; editorialStageDisplay.value[i].active = false } }
+ }
+ }
+ }
+
+ if (task.status === 'completed' || task.status === 'error') {
+ clearInterval(editorialPollTimer); editorialPollTimer = null
+ editorialRunning.value = false
+ editorialStageDisplay.value.forEach(s => { if (!s.error) { s.done = true; s.active = false } })
+ await novelStore.fetchBookshelf()
+ if (task.status === 'completed') {
+ alert('编辑引擎完成！' + (task.progress || ''))
+ } else {
+ alert('编辑引擎出错: ' + (task.error || task.progress || ''))
+ }
+ }
+ } catch (e) {
+ console.error('轮询编辑引擎状态失败:', e)
+ }
+ }, 5000)
+}
 async function saveOutline() {
  outlineSaving.value = true
  try { await api.put(`/novel/${outlineNovel.value._id}/outline`, { outline: outlineText.value }); outlineNovel.value.outline = outlineText.value; outlineModal.value = false }
@@ -304,7 +401,28 @@ async function saveOutline() {
 .progress-indicator .dot:nth-child(2) { animation-delay: 0.2s; }
 .progress-indicator .dot:nth-child(3) { animation-delay: 0.4s; }
 @keyframes dotPulse { 0%,80%,100% { opacity: 0.3; transform: scale(0.8); } 40% { opacity: 1; transform: scale(1); } }
+@keyframes editorialPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+
+/* 编辑引擎进度 */
+.editorial-progress-overlay { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; }
+.editorial-progress-card { background: var(--card-bg, #fff); border-radius: 16px; padding: 28px 24px; text-align: center; min-width: 320px; max-width: 400px; }
+.editorial-progress-card .progress-title { font-size: 16px; font-weight: 700; color: #7c3aed; margin-bottom: 8px; }
+.editorial-progress-card .progress-novel-title { font-size: 13px; color: var(--text-secondary); margin-bottom: 12px; }
+.editorial-stages-display { display: flex; flex-direction: column; gap: 6px; margin: 16px 0; }
+.editorial-stage-item { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 8px; background: #f5f5f5; font-size: 13px; transition: all 0.3s; }
+.editorial-stage-item.active { background: #f5f0ff; border: 1px solid #d0c0f0; animation: editorialPulse 1.5s infinite; }
+.editorial-stage-item.done { background: #f0f7f0; border: 1px solid #c0e0c0; }
+.editorial-stage-item.failed { background: #fff5f5; border: 1px solid #ffc0c0; }
+.editorial-stage-item.failed .stage-num { background: #e74c3c; color: #fff; }
+.editorial-stage-item.failed .stage-name { color: #e74c3c; font-weight: 600; }
+.stage-error-msg { font-size: 11px; color: #c0392b; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
+.editorial-stage-item .stage-num { display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: #ddd; color: #666; font-size: 11px; font-weight: 700; flex-shrink: 0; }
+.editorial-stage-item.active .stage-num { background: #7c3aed; color: #fff; }
+.editorial-stage-item.done .stage-num { background: #27ae60; color: #fff; }
+.editorial-stage-item .stage-name { color: #666; }
+.editorial-stage-item.active .stage-name { color: #7c3aed; font-weight: 600; }
+.editorial-stage-item.done .stage-name { color: #27ae60; }
 
 /* 大纲编辑弹窗 */
 .outline-overlay { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; animation: fadeIn 0.2s; }

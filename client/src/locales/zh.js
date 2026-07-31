@@ -54,6 +54,8 @@ export default {
  tmplMatched: ' 已匹配类型模板', tmplMatch: '匹配', tmplHint: '以上模板仅为参考，实际创作以你的世界观设定为主',
  // 去AI化
  btnDeslop: '去AI化', deslopResult: '去AI化结果', diffView: '改动对比', btnReset: '重新去AI化',
+ // 编辑引擎
+ btnEditorial: '编辑引擎', editorialResult: '编辑引擎结果', btnEditorialReset: '重新编辑',
  },
 
  // 润色页
@@ -99,6 +101,7 @@ export default {
  continueChapter: '续写一章', continueChapterDesc: '跳转到续写页面，可自定义续写方向',
  aiWriting: ' AI 正在续写中...', currentChapter: '当前：第{num}章', generated: '已生成 {words} 字',
  statusGenerating: '生成中', statusPaused: '已暂停', statusCompleted: '已完成', statusError: '出错了',
+ editorial: '编辑引擎', editorialRunning: '编辑中',
  justNow: '刚刚', minAgo: '{m}分钟前', hourAgo: '{h}小时前',
  deleteConfirm: '确定要删除《{title}》吗？',
  },

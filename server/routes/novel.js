@@ -22,6 +22,7 @@ const {
   updateForeshadowingDoc,
 } = require('../services/novelContext');
 const { processChapter } = require('../services/chapterToolchain');
+const { runEditorialPipeline, STAGES } = require('../services/editorialEngine');
 
 // 全局活跃生成流跟踪
 const activeStreams = new Map();
@@ -368,29 +369,12 @@ ${structureRef}
         }
         try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
       }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, chapterTemp);
-      
-      // 人味改写：AI生成完成后，自动改写为人类风格并保存到数据库
-      // 原始文本通过 SSE 流式展示给用户，改写后的文本保存到数据库
+
+      // 基础后处理：去AI味词汇 + 标点修正 + 自动格式化
       let finalContent = buffer;
-      if (buffer.length > 500) {
+      if (buffer.length > 100) {
         try {
-          res.write(`data: ${JSON.stringify({ type: 'status', message: `第${chNum}章人味改写中...` })}\n\n`);
-          const rewritten = await humanizeRewrite(buffer, resolveApiConfig(req.user?.modelConfig, 'writing'));
-          if (rewritten && rewritten.length > buffer.length * 0.3) {
-            finalContent = rewritten;
-            // 将改写后的文本也推送给前端
-            res.write(`data: ${JSON.stringify({ type: 'humanized', content: rewritten, chapterNumber: chNum })}\n\n`);
-            console.log(`[人味改写] 第${chNum}章: ${buffer.length}字 → ${rewritten.length}字`);
-          }
-        } catch (e) {
-          console.warn('[人味改写] 失败，使用原文:', e.message);
-        }
-      }
-      
-      // 基础后处理：标点修正 + 自动格式化
-      if (finalContent.length > 100) {
-        try {
-          const { text } = processChapter(finalContent, { doDeAI: true, doPunctuation: true, doHumanize: false, doAutoFormat: true });
+          const { text } = processChapter(buffer, { doDeAI: true, doPunctuation: true, doHumanize: true, doAutoFormat: true });
           finalContent = text;
         } catch (e) { /* 后处理失败不影响主流程 */ }
       }
@@ -480,7 +464,16 @@ ${storyState}
 9. 如果剩余章节不足10章，逐步收紧节奏，开始准备结局
 10. 最后3章要给出一个有力量、有意义、不烂尾的结局
 11. ⚠️ 绝对禁止：核心剧情与上一章高度相似或完全重复，每章必须推动主线
-12. ⚠️ 写作风格：像一个真正的网文作者那样写——可以有不完美的过渡、角色会走神、会突然想到无关的事、段落长短不一、对话有口语化表达。不要写得像教科书一样工整完美。`;
+12. ⚠️ 写作风格（最重要）：你必须像一个真正的网文作者那样写，而不是AI。以下人类写作特征必须体现：
+- 段落长短差异巨大：有的一句话一段，有的十句话一段，绝对不能连续3段长度相近
+- 口语化叙述：用大白话，不用华丽修辞。"这破地方"不是"这个破旧的地方"
+- 角色会走神：紧张时突然想到无关的事，用括号插入"（对了，钥匙在哪？）"
+- 句子碎片化：长句拆成短句。"他深吸一口气平复心情"→"他吸了口气。行了。"
+- 段尾戛然而止：不要总结、不要升华、不要"或许这就是……"
+- 对话不完美：真人说话会重复、改口、答非所问
+- 情绪波动：同一段落内情绪要有变化
+- 叙述者吐槽：偶尔插入"——别问为什么，问就是我也不知道"
+- 禁用AI味词：仿佛、好像、一丝、不禁、微微、眼中闪过、嘴角勾起、心中一动`;
 
           await ensureTokensLeft(req.user);
           const genResult = await generateOneChapter(ch, chPrompt);
@@ -671,27 +664,12 @@ router.post('/continue/:novelId', auth, async (req, res) => {
         }
         res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`);
       }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, chapterTemp);
-      
-      // 人味改写：自动改写为人类风格并保存
+
+      // 基础后处理：去AI味词汇 + 标点修正 + 自动格式化
       let finalContent = buffer;
-      if (buffer.length > 500) {
+      if (buffer.length > 100) {
         try {
-          res.write(`data: ${JSON.stringify({ type: 'status', message: `第${chNum}章人味改写中...` })}\n\n`);
-          const rewritten = await humanizeRewrite(buffer, resolveApiConfig(req.user?.modelConfig, 'writing'));
-          if (rewritten && rewritten.length > buffer.length * 0.3) {
-            finalContent = rewritten;
-            res.write(`data: ${JSON.stringify({ type: 'humanized', content: rewritten, chapterNumber: chNum })}\n\n`);
-            console.log(`[人味改写] 第${chNum}章: ${buffer.length}字 → ${rewritten.length}字`);
-          }
-        } catch (e) {
-          console.warn('[人味改写] 失败，使用原文:', e.message);
-        }
-      }
-      
-      // 基础后处理
-      if (finalContent.length > 100) {
-        try {
-          const { text, report } = processChapter(finalContent, { doDeAI: true, doPunctuation: true, doHumanize: false, doAutoFormat: true });
+          const { text, report } = processChapter(buffer, { doDeAI: true, doPunctuation: true, doHumanize: true, doAutoFormat: true });
           finalContent = text;
           if (report.deAICount > 0 || report.punctuationFixes !== 0) {
             console.log(`[Toolchain] 第${chNum}章: AI味 ${report.aiFlavorBefore?.density || 0}→${report.aiFlavorAfter?.density || 0}，去AI ${report.deAICount} 处`);
@@ -2226,6 +2204,240 @@ router.post('/optimize-status/:novelId', auth, async (req, res) => {
   } catch (error) {
     console.error('查询调优状态失败:', error);
     res.status(500).json({ message: '查询调优状态失败', error: error.message });
+  }
+});
+
+// ====== 七阶段编辑引擎 ======
+
+// 单章编辑引擎（SSE 流式）
+router.post('/editorial-stream', auth, async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text || text.trim().length < 100) return res.status(400).json({ message: '文本太短（至少100字）' });
+
+    await checkTokenBalance(req.user);
+
+    // SSE 设置
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    const apiConfig = resolveApiConfig(req.user?.modelConfig, 'writing');
+
+    // 心跳
+    const heartbeat = setInterval(() => {
+      try { res.write(': editorial-heartbeat\n\n'); } catch { clearInterval(heartbeat); }
+    }, 10000);
+
+    let finalContent = '';
+
+    try {
+      const result = await runEditorialPipeline(text, {
+        apiConfig,
+        onChunk: (chunk, stageId) => {
+          if (stageId !== 'analysis') {
+            // 分析阶段不输出文本
+            finalContent += chunk;
+            res.write(`data: ${JSON.stringify({ type: 'content', content: chunk, stage: stageId })}\n\n`);
+          }
+        },
+        onStatus: (stageId, stageName, message, failed, phase) => {
+          res.write(`data: ${JSON.stringify({ type: 'status', stage: stageId, stageName, message, failed: !!failed, phase: phase || '' })}\n\n`);
+        },
+      });
+
+      clearInterval(heartbeat);
+
+      // 后处理
+      let processedContent = result.content;
+      try {
+        const { text: cleanText } = processChapter(processedContent, { doDeAI: true, doHumanize: true });
+        if (cleanText && cleanText.length > processedContent.length * 0.3) {
+          processedContent = cleanText;
+        }
+      } catch {}
+
+      // 扣费
+      try { await deductTokens(req.user, processedContent); } catch (e) {
+        console.warn('[编辑引擎] 扣费异常:', e.message);
+      }
+
+      res.write(`data: ${JSON.stringify({
+        type: 'completed',
+        content: processedContent,
+        analysis: result.analysis,
+        stageResults: result.stageResults,
+        originalLength: result.originalLength,
+        finalLength: processedContent.length,
+      })}\n\n`);
+    } catch (e) {
+      clearInterval(heartbeat);
+      res.write(`data: ${JSON.stringify({ type: 'error', message: e.message || '编辑引擎处理失败' })}\n\n`);
+    }
+
+    res.end();
+  } catch (error) {
+    console.error('编辑引擎请求失败:', error);
+    res.status(500).json({ message: '编辑引擎处理失败', error: error.message });
+  }
+});
+
+// 整本编辑引擎（后台任务）
+async function runEditorialBookTask(novelId, userId, apiConfig) {
+  try {
+    let novel = await Novel.findOne({ _id: novelId, userId });
+    if (!novel || !novel.chapters || novel.chapters.length === 0) {
+      await Novel.updateOne({ _id: novelId }, {
+        $set: { 'editorialTask.status': 'error', 'editorialTask.progress': '没有章节可处理', 'editorialTask.completedAt': new Date() }
+      });
+      return;
+    }
+
+    const totalChapters = novel.chapters.length;
+    let processedCount = 0;
+
+    await Novel.updateOne({ _id: novelId }, {
+      $set: {
+        'editorialTask.status': 'running',
+        'editorialTask.progress': `开始处理，共 ${totalChapters} 章`,
+        'editorialTask.totalChapters': totalChapters,
+        'editorialTask.currentChapter': 0,
+        'editorialTask.processedCount': 0,
+        'editorialTask.startedAt': new Date(),
+      }
+    });
+
+    for (let i = 0; i < novel.chapters.length; i++) {
+      const ch = novel.chapters[i];
+      const chNum = ch.chapterNumber;
+
+      // 更新进度
+      await Novel.updateOne({ _id: novelId }, {
+        $set: {
+          'editorialTask.currentChapter': i + 1,
+          'editorialTask.progress': `正在编辑第${chNum}章（${i + 1}/${totalChapters}）`,
+          'editorialTask.currentStage': '',
+          'editorialTask.stageName': '',
+        }
+      });
+
+      try {
+        const result = await runEditorialPipeline(ch.content || '', {
+          apiConfig,
+          onStatus: async (stageId, stageName, message) => {
+            // 更新当前阶段状态
+            await Novel.updateOne({ _id: novelId }, {
+              $set: {
+                'editorialTask.currentStage': stageId,
+                'editorialTask.stageName': stageName,
+                'editorialTask.progress': `第${chNum}章：${stageName}`,
+              }
+            });
+          },
+        });
+
+        let finalContent = result.content;
+        if (finalContent && finalContent.length > 50) {
+          // 后处理
+          try {
+            const { text: cleanText } = processChapter(finalContent, { doDeAI: true, doHumanize: true });
+            if (cleanText && cleanText.length > finalContent.length * 0.3) {
+              finalContent = cleanText;
+            }
+          } catch {}
+
+          // 保存到数据库
+          await Novel.updateOne(
+            { _id: novelId, 'chapters.chapterNumber': chNum },
+            { $set: { 'chapters.$.content': finalContent, 'chapters.$.wordCount': finalContent.length } }
+          );
+          processedCount++;
+        }
+      } catch (e) {
+        console.error(`[编辑引擎] 第${chNum}章处理失败:`, e.message);
+      }
+    }
+
+    // 更新总字数
+    novel = await Novel.findOne({ _id: novelId });
+    if (novel) {
+      const totalWords = novel.chapters.reduce((s, c) => s + (c.wordCount || 0), 0);
+      await Novel.updateOne({ _id: novelId }, {
+        $set: {
+          currentWordCount: totalWords,
+          'editorialTask.status': 'completed',
+          'editorialTask.progress': `✅ 编辑引擎完成！共处理 ${processedCount}/${totalChapters} 章`,
+          'editorialTask.processedCount': processedCount,
+          'editorialTask.completedAt': new Date(),
+        }
+      });
+    }
+  } catch (error) {
+    console.error('后台编辑引擎失败:', error);
+    try {
+      await Novel.updateOne({ _id: novelId }, {
+        $set: {
+          'editorialTask.status': 'error',
+          'editorialTask.progress': `编辑引擎失败: ${error.message}`,
+          'editorialTask.error': error.message,
+          'editorialTask.completedAt': new Date(),
+        }
+      });
+    } catch (dbError) {
+      console.error('保存编辑引擎错误状态失败:', dbError);
+    }
+  }
+}
+
+// 启动整本编辑引擎（立即返回）
+router.post('/editorial-book/:novelId', auth, async (req, res) => {
+  try {
+    const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
+    if (!novel) return res.status(404).json({ message: '小说不存在' });
+    if (!novel.chapters || novel.chapters.length === 0) return res.status(400).json({ message: '没有章节可编辑' });
+
+    // 检查是否已有任务在运行
+    if (novel.editorialTask?.status === 'running') {
+      return res.status(409).json({ message: '编辑引擎正在运行中，请等待完成' });
+    }
+
+    const apiConfig = resolveApiConfig(req.user?.modelConfig, 'writing');
+
+    // 后台执行，不 await
+    runEditorialBookTask(req.params.novelId, req.userId, apiConfig);
+
+    res.json({
+      message: '编辑引擎已启动，后台运行中',
+      novelId: req.params.novelId,
+      totalChapters: novel.chapters.length,
+    });
+  } catch (error) {
+    console.error('启动编辑引擎失败:', error);
+    res.status(500).json({ message: '启动编辑引擎失败', error: error.message });
+  }
+});
+
+// 查询编辑引擎任务状态
+router.post('/editorial-status/:novelId', auth, async (req, res) => {
+  try {
+    const novel = await Novel.findOne(
+      { _id: req.params.novelId, userId: req.userId },
+      { 'editorialTask': 1 }
+    );
+    if (!novel) return res.status(404).json({ message: '小说不存在' });
+
+    res.json({
+      task: novel.editorialTask || {
+        status: 'idle', progress: '', currentChapter: 0, totalChapters: 0,
+        currentStage: '', stageName: '', processedCount: 0, error: '',
+      }
+    });
+  } catch (error) {
+    console.error('查询编辑引擎状态失败:', error);
+    res.status(500).json({ message: '查询编辑引擎状态失败', error: error.message });
   }
 });
 

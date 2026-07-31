@@ -152,7 +152,7 @@
  </div>
  <div class="gen-modal-body">
  <!-- 原始生成文本 -->
- <div class="gen-text-section" :class="{ grayed: deslopRunning || deslopDone }">
+ <div class="gen-text-section" :class="{ grayed: deslopRunning || deslopDone || editorialRunning || editorialDone }">
  <div class="gen-text-label">{{ $t('generate.modeBook') }}</div>
  <div class="gen-text-content" ref="streamRef">{{ streamingText }}</div>
  </div>
@@ -161,6 +161,24 @@
  <div class="gen-text-label">{{ $t('generate.deslopResult') }}</div>
  <div class="gen-text-content deslop-content" ref="deslopStreamRef">{{ deslopText }}</div>
  </div>
+ <!-- 编辑引擎结果 -->
+ <div v-if="editorialText" class="gen-text-section editorial-section">
+ <div class="gen-text-label">{{ $t('generate.editorialResult') }}</div>
+ <div class="gen-text-content editorial-content" ref="editorialStreamRef">{{ editorialText }}</div>
+ </div>
+ <!-- 编辑引擎分析报告 -->
+ <div v-if="editorialDone && editorialAnalysis" class="gen-editorial-analysis">
+ <div class="gen-text-label">AI特征分析报告</div>
+ <div class="analysis-bars">
+ <div v-for="(val, key) in editorialAnalysis" :key="key" class="analysis-bar-item">
+ <span class="analysis-label">{{ analysisLabel(key) }}</span>
+ <div class="analysis-bar-track">
+ <div class="analysis-bar-fill" :style="{ width: val + '%' }" :class="val > 50 ? 'high' : 'low'"></div>
+ </div>
+ <span class="analysis-value">{{ val }}</span>
+ </div>
+ </div>
+ </div>
  <!-- Diff 对比 -->
  <div v-if="deslopDone && diffHtml" class="gen-diff-section">
  <div class="gen-text-label">{{ $t('generate.diffView') }}</div>
@@ -168,11 +186,26 @@
  </div>
  </div>
  <div class="gen-modal-footer">
- <button v-if="genOk && !deslopRunning && !deslopDone" class="btn btn-primary" @click="startDeslop">
+ <button v-if="genOk && !deslopRunning && !deslopDone && !editorialRunning && !editorialDone" class="btn btn-primary" @click="startDeslop">
  {{ $t('generate.btnDeslop') }}
  </button>
+ <button v-if="genOk && !deslopRunning && !deslopDone && !editorialRunning && !editorialDone" class="btn btn-editorial" @click="startEditorial">
+ {{ $t('generate.btnEditorial') }}
+ </button>
  <span v-if="deslopRunning" class="deslop-status">{{ deslopStatus }}</span>
+ <span v-if="editorialRunning || editorialDone" class="editorial-stage-list">
+ <span v-for="s in editorialStages" :key="s.id" class="editorial-stage-badge" :class="{ active: s.active, done: s.done, failed: s.error }" :title="s.errorMsg || ''">
+ {{ s.name }}{{ s.error ? '!' : '' }}
+ </span>
+ </span>
+ <div v-if="editorialStageErrors.length > 0" class="editorial-errors">
+ <div v-for="e in editorialStageErrors" :key="e.id" class="editorial-error-item">
+ <span class="error-stage-name">{{ e.name }}：</span>
+ <span class="error-stage-msg">{{ e.errorMsg }}</span>
+ </div>
+ </div>
  <button v-if="deslopDone" class="btn btn-secondary" @click="resetDeslop">{{ $t('generate.btnReset') }}</button>
+ <button v-if="editorialDone" class="btn btn-secondary" @click="resetEditorial">{{ $t('generate.btnEditorialReset') }}</button>
  </div>
  </div>
  </div>
@@ -357,6 +390,30 @@ const deslopStatus = ref('')
 const deslopStreamRef = ref(null)
 const diffHtml = ref('')
 
+// ---- 编辑引擎 ----
+const editorialRunning = ref(false)
+const editorialDone = ref(false)
+const editorialText = ref('')
+const editorialAnalysis = ref(null)
+const editorialStreamRef = ref(null)
+const editorialStages = ref([
+  { id: 'analysis', name: 'AI分析', active: false, done: false, error: false, errorMsg: '' },
+  { id: 'deAI', name: '去AI', active: false, done: false, error: false, errorMsg: '' },
+  { id: 'rhythm', name: '节奏', active: false, done: false, error: false, errorMsg: '' },
+  { id: 'character', name: '人物', active: false, done: false, error: false, errorMsg: '' },
+  { id: 'style', name: '润色', active: false, done: false, error: false, errorMsg: '' },
+  { id: 'compression', name: '压缩', active: false, done: false, error: false, errorMsg: '' },
+  { id: 'consistency', name: '一致性', active: false, done: false, error: false, errorMsg: '' },
+])
+const editorialStageErrors = computed(() => editorialStages.value.filter(s => s.error))
+
+const analysisLabelMap = {
+  explain: '解释型语言', sentence: '平均句式', repeat: '重复结构', flow: '流水账',
+  dialogue: '对话模板化', environment: '环境重复', transition: 'AI连接词',
+  summary: '总结结尾', worldbuilding: '世界观说明', psychology: '心理单一',
+}
+function analysisLabel(key) { return analysisLabelMap[key] || key }
+
 // 类型模板匹配
 const matchedTemplates = ref([])
 const tmplMatching = ref(false)
@@ -493,6 +550,8 @@ async function startGen() {
  showGenModal.value = true
  genModalTitle.value = `${selectedType.value} - ${protagonistName.value || '未命名'}`
  deslopDone.value = false; deslopText.value = ''; deslopRunning.value = false; diffHtml.value = ''
+ editorialDone.value = false; editorialText.value = ''; editorialRunning.value = false; editorialAnalysis.value = null
+ editorialStages.value.forEach(s => { s.active = false; s.done = false; s.error = false; s.errorMsg = '' })
 
  const params = {
  novelTypeId: selectedType.value,
@@ -584,6 +643,95 @@ async function startDeslop() {
 
 function resetDeslop() {
  deslopDone.value = false; deslopText.value = ''; deslopRunning.value = false; diffHtml.value = ''; deslopStatus.value = ''
+}
+
+// ---- 编辑引擎 ----
+async function startEditorial() {
+ if (!streamingText.value || streamingText.value.length < 100) return
+
+ // Token 消耗估算
+ const textLen = streamingText.value.length
+ // 每阶段：输入~textLen*1.5 + 系统提示~2000 + 输出~textLen*1.5 ≈ textLen*3 + 2000
+ // 7阶段总计 ≈ textLen * 21 + 14000，保守估计取 1.3 倍系数
+ const estTokens = Math.round((textLen * 21 + 14000) * 1.3)
+ const estTimeMin = Math.round(estTokens / 3000) // 约每分钟 3000 token
+
+ if (!confirm(
+ `确认执行七阶段编辑引擎？\n\n` +
+ `文本长度：${textLen} 字\n` +
+ `处理阶段：\n` +
+ `  ① AI特征分析  ② 删除AI痕迹  ③ 节奏重构\n` +
+ `  ④ 人物重塑  ⑤ 风格润色  ⑥ 字数压缩  ⑦ 一致性检查\n\n` +
+ `预计消耗 Token：约 ${(estTokens / 1000).toFixed(1)}K（${estTokens.toLocaleString()}）\n` +
+ `预计耗时：约 ${estTimeMin} 分钟\n\n` +
+ `每阶段独立调用 LLM，效果远高于单次去AI化。\n` +
+ `处理期间请勿关闭页面。`
+ )) return
+
+ editorialRunning.value = true; editorialDone.value = false; editorialText.value = ''; editorialAnalysis.value = null
+ // 重置阶段状态
+ editorialStages.value.forEach(s => { s.active = false; s.done = false; s.error = false; s.errorMsg = '' })
+
+ const token = localStorage.getItem('token')
+ const xhr = new XMLHttpRequest()
+ xhr.open('POST', '/api/novel/editorial-stream')
+ xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+ xhr.setRequestHeader('Content-Type', 'application/json')
+ let lastIndex = 0
+
+ xhr.onprogress = () => {
+ const newData = xhr.responseText.substring(lastIndex)
+ lastIndex = xhr.responseText.length
+ const lines = newData.split('\n').filter(l => l.startsWith('data: '))
+ for (const line of lines) {
+ try {
+ const event = JSON.parse(line.substring(6))
+ if (event.type === 'content') {
+ editorialText.value += event.content
+ nextTick(() => { if (editorialStreamRef.value) editorialStreamRef.value.scrollTop = editorialStreamRef.value.scrollHeight })
+ } else if (event.type === 'status') {
+ // 更新阶段状态
+ const stage = editorialStages.value.find(s => s.id === event.stage)
+ if (stage) {
+ if (event.failed) {
+ // 阶段失败
+ stage.error = true; stage.errorMsg = event.message; stage.active = false
+ } else if (event.phase === 'running') {
+ // 阶段开始
+ stage.active = true
+ const idx = editorialStages.value.findIndex(s => s.id === event.stage)
+ for (let i = 0; i < idx; i++) { if (!editorialStages.value[i].error) { editorialStages.value[i].done = true; editorialStages.value[i].active = false } }
+ } else {
+ // 阶段完成
+ stage.done = true; stage.active = false
+ }
+ }
+ } else if (event.type === 'completed') {
+ editorialText.value = event.content || editorialText.value
+ editorialAnalysis.value = event.analysis || null
+ editorialDone.value = true; editorialRunning.value = false
+ editorialStages.value.forEach(s => { if (!s.error) { s.done = true; s.active = false } })
+ } else if (event.type === 'error') {
+ editorialRunning.value = false
+ alert(event.message || '编辑引擎处理失败')
+ }
+ } catch {}
+ }
+ }
+
+ xhr.onloadend = () => {
+ if (editorialRunning.value) {
+ editorialDone.value = true; editorialRunning.value = false
+ editorialStages.value.forEach(s => { if (!s.error) { s.done = true; s.active = false } })
+ }
+ }
+ xhr.onerror = () => { editorialRunning.value = false; alert('编辑引擎请求失败') }
+ xhr.send(JSON.stringify({ text: streamingText.value }))
+}
+
+function resetEditorial() {
+ editorialDone.value = false; editorialText.value = ''; editorialRunning.value = false; editorialAnalysis.value = null
+ editorialStages.value.forEach(s => { s.active = false; s.done = false; s.error = false; s.errorMsg = '' })
 }
 
 // 简易 diff：逐字对比，红色=删除，绿色=新增
@@ -1396,6 +1544,123 @@ onMounted(async () => {
 .deslop-status {
  font-size: 13px;
  color: var(--primary, #2563eb);
+}
+
+/* ---- 编辑引擎 ---- */
+.btn-editorial {
+ background: #7c3aed !important;
+ color: #fff !important;
+ border: none;
+ padding: 8px 16px;
+ border-radius: var(--radius, 8px);
+ font-size: 14px;
+ font-weight: 600;
+ cursor: pointer;
+ transition: all 0.2s;
+}
+.btn-editorial:hover { opacity: 0.9; transform: translateY(-1px); }
+.editorial-section .gen-text-content {
+ background: #f5f0ff;
+ border: 1px solid #e0d0ff;
+}
+.editorial-stage-list {
+ display: flex;
+ flex-wrap: wrap;
+ gap: 4px;
+ align-items: center;
+}
+.editorial-stage-badge {
+ font-size: 11px;
+ padding: 2px 8px;
+ border-radius: 100px;
+ background: #f0f0f0;
+ color: #999;
+ border: 1px solid #e0e0e0;
+ transition: all 0.3s;
+}
+.editorial-stage-badge.active {
+ background: #7c3aed;
+ color: #fff;
+ border-color: #7c3aed;
+ animation: editorialPulse 1.5s infinite;
+}
+.editorial-stage-badge.done {
+ background: #e0f0e0;
+ color: #27ae60;
+ border-color: #c0e0c0;
+}
+.editorial-stage-badge.failed {
+ background: #ffe0e0;
+ color: #e74c3c;
+ border-color: #ffc0c0;
+ font-weight: 700;
+}
+.editorial-errors {
+ margin-top: 8px;
+ padding: 8px 12px;
+ background: #fff5f5;
+ border: 1px solid #ffe0e0;
+ border-radius: 8px;
+ max-height: 120px;
+ overflow-y: auto;
+}
+.editorial-error-item {
+ font-size: 12px;
+ color: #c0392b;
+ margin-bottom: 4px;
+ line-height: 1.5;
+}
+.error-stage-name { font-weight: 700; color: #e74c3c; }
+.error-stage-msg { color: #c0392b; }
+@keyframes editorialPulse {
+ 0%,100% { opacity: 1; }
+ 50% { opacity: 0.6; }
+}
+
+/* 分析报告 */
+.gen-editorial-analysis {
+ margin-top: 16px;
+ padding: 12px;
+ background: #fafafa;
+ border-radius: 8px;
+ border: 1px solid #eee;
+}
+.analysis-bars {
+ display: grid;
+ grid-template-columns: 1fr 1fr;
+ gap: 8px;
+}
+.analysis-bar-item {
+ display: flex;
+ align-items: center;
+ gap: 8px;
+ font-size: 12px;
+}
+.analysis-label {
+ width: 80px;
+ text-align: right;
+ color: #666;
+ flex-shrink: 0;
+}
+.analysis-bar-track {
+ flex: 1;
+ height: 10px;
+ background: #eee;
+ border-radius: 5px;
+ overflow: hidden;
+}
+.analysis-bar-fill {
+ height: 100%;
+ border-radius: 5px;
+ transition: width 0.5s;
+}
+.analysis-bar-fill.high { background: #e74c3c; }
+.analysis-bar-fill.low { background: #27ae60; }
+.analysis-value {
+ width: 30px;
+ color: #333;
+ font-weight: 600;
+ flex-shrink: 0;
 }
 
 @keyframes slideUp {

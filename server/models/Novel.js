@@ -86,6 +86,19 @@ const novelSchema = new mongoose.Schema({
     type: Number,
     default: 0,
   },
+  // 后台编辑引擎任务状态（七阶段编辑）
+  editorialTask: {
+    status: { type: String, enum: ['idle', 'running', 'completed', 'error'], default: 'idle' },
+    progress: { type: String, default: '' },
+    currentChapter: { type: Number, default: 0 },
+    totalChapters: { type: Number, default: 0 },
+    currentStage: { type: String, default: '' },
+    stageName: { type: String, default: '' },
+    processedCount: { type: Number, default: 0 },
+    error: { type: String, default: '' },
+    startedAt: { type: Date },
+    completedAt: { type: Date },
+  },
   // 后台调优任务状态
   optimizeTask: {
     status: { type: String, enum: ['idle', 'analyzing', 'optimizing', 'completed', 'error'], default: 'idle' },

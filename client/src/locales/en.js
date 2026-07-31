@@ -93,6 +93,7 @@ export default {
  outlineGenerating: ' AI is drafting an outline...',
  tmplMatched: ' Matched Type Templates', tmplMatch: 'match', tmplHint: 'Templates are for reference only. Your world setting takes priority.',
  btnDeslop: 'De-AI', deslopResult: 'De-AI Result', diffView: 'Changes Diff', btnReset: 'Re-run De-AI',
+ btnEditorial: 'Editorial Engine', editorialResult: 'Editorial Result', btnEditorialReset: 'Re-run Editorial',
  },
 
  polish: {
@@ -134,6 +135,7 @@ export default {
  continueChapter: 'Write One Chapter', continueChapterDesc: 'Go to continue page, customize direction',
  aiWriting: ' AI is writing...', currentChapter: 'Chapter {num}', generated: '{words} chars generated',
  statusGenerating: 'Generating', statusPaused: 'Paused', statusCompleted: 'Completed', statusError: 'Error',
+ editorial: 'Editorial', editorialRunning: 'Editing',
  justNow: 'just now', minAgo: '{m}min ago', hourAgo: '{h}hr ago',
  deleteConfirm: 'Delete "{title}"?',
  },
