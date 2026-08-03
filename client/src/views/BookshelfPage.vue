@@ -174,13 +174,10 @@ const editorialRunning = ref(false)
 const editorialNovelTitle = ref('')
 const editorialProgress = ref('')
 const editorialStageDisplay = ref([
- { id: 'analysis', num: 1, name: 'AI分析', active: false, done: false, error: false, errorMsg: '' },
- { id: 'deAI', num: 2, name: '去AI', active: false, done: false, error: false, errorMsg: '' },
- { id: 'rhythm', num: 3, name: '节奏', active: false, done: false, error: false, errorMsg: '' },
- { id: 'character', num: 4, name: '人物', active: false, done: false, error: false, errorMsg: '' },
- { id: 'style', num: 5, name: '润色', active: false, done: false, error: false, errorMsg: '' },
- { id: 'compression', num: 6, name: '压缩', active: false, done: false, error: false, errorMsg: '' },
- { id: 'consistency', num: 7, name: '一致性', active: false, done: false, error: false, errorMsg: '' },
+ { id: 'persona', num: 0, name: '人格', active: false, done: false, error: false, errorMsg: '' },
+ { id: 'structural', num: 1, name: '结构重构', active: false, done: false, error: false, errorMsg: '' },
+ { id: 'polish', num: 2, name: '风格一致性', active: false, done: false, error: false, errorMsg: '' },
+ { id: 'deAI', num: 3, name: '去AI化', active: false, done: false, error: false, errorMsg: '' },
 ])
 let editorialPollTimer = null
 

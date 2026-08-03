@@ -2238,8 +2238,8 @@ router.post('/editorial-stream', auth, async (req, res) => {
       const result = await runEditorialPipeline(text, {
         apiConfig,
         onChunk: (chunk, stageId) => {
-          if (stageId !== 'analysis') {
-            // 分析阶段不输出文本
+          if (stageId !== 'persona') {
+            // persona 阶段本地生成，不输出文本
             finalContent += chunk;
             res.write(`data: ${JSON.stringify({ type: 'content', content: chunk, stage: stageId })}\n\n`);
           }
@@ -2269,6 +2269,7 @@ router.post('/editorial-stream', auth, async (req, res) => {
         type: 'completed',
         content: processedContent,
         analysis: result.analysis,
+        persona: result.persona,
         stageResults: result.stageResults,
         originalLength: result.originalLength,
         finalLength: processedContent.length,

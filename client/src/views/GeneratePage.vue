@@ -397,13 +397,10 @@ const editorialText = ref('')
 const editorialAnalysis = ref(null)
 const editorialStreamRef = ref(null)
 const editorialStages = ref([
-  { id: 'analysis', name: 'AI分析', active: false, done: false, error: false, errorMsg: '' },
-  { id: 'deAI', name: '去AI', active: false, done: false, error: false, errorMsg: '' },
-  { id: 'rhythm', name: '节奏', active: false, done: false, error: false, errorMsg: '' },
-  { id: 'character', name: '人物', active: false, done: false, error: false, errorMsg: '' },
-  { id: 'style', name: '润色', active: false, done: false, error: false, errorMsg: '' },
-  { id: 'compression', name: '压缩', active: false, done: false, error: false, errorMsg: '' },
-  { id: 'consistency', name: '一致性', active: false, done: false, error: false, errorMsg: '' },
+  { id: 'persona', name: '人格', active: false, done: false, error: false, errorMsg: '' },
+  { id: 'structural', name: '结构重构', active: false, done: false, error: false, errorMsg: '' },
+  { id: 'polish', name: '风格一致性', active: false, done: false, error: false, errorMsg: '' },
+  { id: 'deAI', name: '去AI化', active: false, done: false, error: false, errorMsg: '' },
 ])
 const editorialStageErrors = computed(() => editorialStages.value.filter(s => s.error))
 
@@ -651,20 +648,24 @@ async function startEditorial() {
 
  // Token 消耗估算
  const textLen = streamingText.value.length
- // 每阶段：输入~textLen*1.5 + 系统提示~2000 + 输出~textLen*1.5 ≈ textLen*3 + 2000
- // 7阶段总计 ≈ textLen * 21 + 14000，保守估计取 1.3 倍系数
- const estTokens = Math.round((textLen * 21 + 14000) * 1.3)
- const estTimeMin = Math.round(estTokens / 3000) // 约每分钟 3000 token
+ // v4: persona 本地生成（0 token）
+ // 3 次 LLM 调用：每阶段输入~textLen*1.5 + 系统提示~500 + 输出~textLen*1.5 ≈ textLen*3 + 500
+ // 总计 ≈ textLen*9 + 1500，保守取 1.3 倍系数
+ const estTokens = Math.round((textLen * 9 + 1500) * 1.3)
+ const estTimeMin = Math.max(1, Math.round(estTokens / 3000))
 
  if (!confirm(
- `确认执行七阶段编辑引擎？\n\n` +
+ `确认执行编辑引擎？\n\n` +
  `文本长度：${textLen} 字\n` +
- `处理阶段：\n` +
- `  ① AI特征分析  ② 删除AI痕迹  ③ 节奏重构\n` +
- `  ④ 人物重塑  ⑤ 风格润色  ⑥ 字数压缩  ⑦ 一致性检查\n\n` +
+ `处理阶段（3次AI调用）：\n` +
+ `  ⓪ 作者人格（本地生成）\n` +
+ `  ① 结构重构（压缩+节奏+人物）\n` +
+ `  ② 风格一致性（润色+一致性检查）\n` +
+ `  ③ 去AI化（最终，注入人类特征）\n\n` +
  `预计消耗 Token：约 ${(estTokens / 1000).toFixed(1)}K（${estTokens.toLocaleString()}）\n` +
  `预计耗时：约 ${estTimeMin} 分钟\n\n` +
- `每阶段独立调用 LLM，效果远高于单次去AI化。\n` +
+ `去AI化放在最后一步，\n` +
+ `避免后续润色重新引入AI特征。\n` +
  `处理期间请勿关闭页面。`
  )) return
 
@@ -697,7 +698,10 @@ async function startEditorial() {
  // 阶段失败
  stage.error = true; stage.errorMsg = event.message; stage.active = false
  } else if (event.phase === 'running') {
- // 阶段开始
+ // 阶段开始 - 清空之前阶段的流式内容，只展示当前阶段
+ if (event.stage !== 'persona') {
+  editorialText.value = ''
+ }
  stage.active = true
  const idx = editorialStages.value.findIndex(s => s.id === event.stage)
  for (let i = 0; i < idx; i++) { if (!editorialStages.value[i].error) { editorialStages.value[i].done = true; editorialStages.value[i].active = false } }

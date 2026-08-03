@@ -350,9 +350,10 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
   if (config.apiKey) headers['Authorization'] = `Bearer ${config.apiKey}`;
 
   // v3: 支持动态温度，每次调用可以不同（增加输出多样性，对抗检测）
+  // v4: max_tokens 提升到 16384，避免长文输出被截断导致空内容
   const body = isOllama
-    ? { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, options: { temperature, num_predict: 8192 } }
-    : { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, temperature, max_tokens: 8192 };
+    ? { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, options: { temperature, num_predict: 16384 } }
+    : { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, temperature, max_tokens: 16384 };
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     let timeoutId;
@@ -435,6 +436,14 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
           }
         }
       } // while
+
+      // v4: 空输出检测 — 模型返回 200 但内容为空，视为失败并重试
+      if (!fullContent.trim() && attempt < retries) {
+        const delay = Math.pow(2, attempt) * 1500;
+        console.warn(`AI API 返回空内容，第 ${attempt + 1} 次重试，等待 ${delay}ms`);
+        await new Promise(r => setTimeout(r, delay));
+        continue;
+      }
 
       return { content: fullContent, tokenCount: countTokens(fullContent) };
 
