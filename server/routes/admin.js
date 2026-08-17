@@ -5,7 +5,7 @@ const User = require('../models/User');
 const Novel = require('../models/Novel');
 const ReferenceNovel = require('../models/ReferenceNovel');
 const Activity = require('../models/Activity');
-const { creditPoints } = require('../services/pointsService');
+const { creditPoints, adjustPointsForUser, sanitizeLedger } = require('../services/pointsService');
 const {
   PUBLIC_ROUTE_DEFINITIONS,
   FIXED_POINTS_PER_TOKENS,
@@ -125,6 +125,33 @@ router.post('/users/:id/group-reward', async (req, res) => {
     res.json({ message: '赠送成功，已发放 5000 积分', user: safe });
   } catch (error) {
     res.status(500).json({ message: '赠送失败', error: error.message });
+  }
+});
+
+router.get('/users/:id/points-ledger', async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id).select('email nickname points tokens pointsLedger');
+    if (!user) return res.status(404).json({ message: '用户不存在' });
+    res.json({ user: { id: user._id, email: user.email, nickname: user.nickname }, ledger: sanitizeLedger(user.pointsLedger) });
+  } catch (error) {
+    res.status(500).json({ message: '获取积分流水失败', error: error.message });
+  }
+});
+
+router.post('/users/:id/points-adjust', async (req, res) => {
+  try {
+    const amount = Math.trunc(Number(req.body?.amount));
+    const reason = String(req.body?.reason || '').trim();
+    if (!Number.isFinite(amount) || amount === 0) return res.status(400).json({ message: '调整积分必须是非零整数' });
+    if (!reason || reason.length > 120) return res.status(400).json({ message: '请填写 1 至 120 字的调整原因' });
+    const balance = await adjustPointsForUser(User, req.params.id, amount, {
+      reason: `admin_adjust:${reason}`,
+      referenceId: String(req.userId || req.user?._id || ''),
+    });
+    res.json({ message: '积分调整成功', balance });
+  } catch (error) {
+    const status = error.code === 'POINTS_INSUFFICIENT' ? 409 : error.message === 'user not found' ? 404 : 500;
+    res.status(status).json({ message: status === 409 ? '用户可用积分不足，无法扣减' : status === 404 ? '用户不存在' : '积分调整失败', error: error.message });
   }
 });
 
@@ -502,7 +529,9 @@ router.post('/activities', async (req, res) => {
     if (payload.totalLimit === undefined) payload.totalLimit = 0;
     if (payload.totalPointsBudget === undefined) payload.totalPointsBudget = 0;
     if (payload.enabled === undefined) payload.enabled = true;
-    if (payload.autoClaim === undefined) payload.autoClaim = payload.type === 'login';
+    if (payload.autoClaim === undefined) {
+      payload.autoClaim = ['login', 'checkin', 'writing', 'continuous', 'invite', 'new_user'].includes(payload.type);
+    }
     const activity = new Activity(payload);
     await activity.save();
     res.status(201).json({ message: '活动创建成功', activity });

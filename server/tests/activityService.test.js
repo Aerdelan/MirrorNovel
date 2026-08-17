@@ -2,12 +2,14 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const Activity = require('../models/Activity');
+const User = require('../models/User');
 const {
   ActivityClaimError,
   rewardRange,
   drawPrize,
   evaluateEligibility,
   claimActivity,
+  claimAutoActivitiesForUser,
 } = require('../services/activityService');
 
 function makeActivity(overrides = {}) {
@@ -82,12 +84,20 @@ test('eligibility enforces task progress and per-day limits', () => {
 
 test('claim reserves quota, credits points, and writes an auditable result', async () => {
   const originalFindOneAndUpdate = Activity.findOneAndUpdate;
+  const originalUserFindOneAndUpdate = User.findOneAndUpdate;
   const activity = makeActivity();
   const user = makeUser();
   let reserveUpdate;
   Activity.findOneAndUpdate = async (filter, update) => {
     reserveUpdate = { filter, update };
     return { ...activity, counters: { attempts: 1, winners: 1, pointsAwarded: 120 } };
+  };
+  User.findOneAndUpdate = async () => {
+    user.points.total += 120;
+    user.tokens.total += 120;
+    user.pointsLedger.push({ type: 'credit', points: 120, balanceAfter: 570, reason: 'activity:writing' });
+    user.activityClaims.push({ activityId: activity._id, metricValue: 1500 });
+    return user;
   };
 
   try {
@@ -107,6 +117,27 @@ test('claim reserves quota, credits points, and writes an auditable result', asy
     assert.equal(reserveUpdate.update.$inc['counters.pointsAwarded'], 120);
   } finally {
     Activity.findOneAndUpdate = originalFindOneAndUpdate;
+    User.findOneAndUpdate = originalUserFindOneAndUpdate;
+  }
+});
+
+test('automatic claims dispatch matching active event activities', async () => {
+  const originalFind = Activity.find;
+  const originalActivityUpdate = Activity.findOneAndUpdate;
+  const originalUserUpdate = User.findOneAndUpdate;
+  const activity = makeActivity({ type: 'writing', requirement: { metric: 'none', threshold: 0 } });
+  const user = makeUser();
+  Activity.find = () => ({ sort: async () => [activity] });
+  Activity.findOneAndUpdate = async () => ({ ...activity, counters: { attempts: 1, winners: 1, pointsAwarded: 120 } });
+  User.findOneAndUpdate = async () => ({ ...user, points: { version: 1, total: 620, used: 50 }, tokens: { total: 620, used: 50 } });
+  try {
+    const results = await claimAutoActivitiesForUser(user, 'writing', { metrics: { none: 0 }, allowDisconnected: true });
+    assert.equal(results.length, 1);
+    assert.equal(results[0].points, 120);
+  } finally {
+    Activity.find = originalFind;
+    Activity.findOneAndUpdate = originalActivityUpdate;
+    User.findOneAndUpdate = originalUserUpdate;
   }
 });
 

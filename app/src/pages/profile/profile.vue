@@ -52,6 +52,17 @@
           </view>
         </view>
 
+        <view class="card ledger-card">
+          <view class="ledger-header"><view class="section-title" style="margin:0;">积分流水</view><button class="refresh-button" :disabled="ledgerLoading" @click="loadPointsInfo">刷新</button></view>
+          <view v-if="ledger.length === 0" class="ledger-empty">暂无积分记录</view>
+          <view v-else class="ledger-list">
+            <view v-for="(entry, index) in ledger" :key="`${entry.createdAt}-${index}`" class="ledger-row">
+              <view><text :class="entry.type === 'credit' ? 'ledger-credit' : 'ledger-debit'">{{ entry.type === 'credit' ? '+' : '-' }}{{ Number(entry.points || 0) }}</text><text class="ledger-reason">{{ ledgerReason(entry.reason) }}</text></view>
+              <text>{{ formatLedgerTime(entry.createdAt) }}</text>
+            </view>
+          </view>
+        </view>
+
         <!-- 积分活动 -->
         <view class="card activities-card">
           <view class="activity-section-header">
@@ -226,6 +237,8 @@ const inviteInfo = ref({ inviteCode: '', inviteCount: 0, inviteRewards: 0, invit
 const totalPoints = ref(0)
 const usedPoints = ref(0)
 const availablePoints = ref(0)
+const ledger = ref([])
+const ledgerLoading = ref(false)
 const pointsPercent = computed(() => {
   if (totalPoints.value === 0) return 100
   return Math.min(100, Math.round(usedPoints.value / totalPoints.value * 100))
@@ -326,12 +339,27 @@ async function loadInviteInfo() {
 }
 
 async function loadPointsInfo() {
+  ledgerLoading.value = true
   try {
     const res = await authStore.getPointsInfo()
     totalPoints.value = res.total || 0
     usedPoints.value = res.used || 0
     availablePoints.value = res.available || 0
+    ledger.value = Array.isArray(res.ledger) ? [...res.ledger].reverse() : []
   } catch (e) { console.error('获取积分失败:', e) }
+  finally { ledgerLoading.value = false }
+}
+
+function ledgerReason(reason) {
+  const labels = { daily_checkin: '每日签到', invite_reward: '邀请奖励', group_reward: '进群奖励', purchase: '充值', novel_generation: '模型生成' }
+  if (String(reason || '').startsWith('activity:')) return '活动奖励'
+  if (String(reason || '').startsWith('admin_adjust:')) return `管理员调整：${String(reason).slice(13)}`
+  return labels[reason] || reason || '积分变动'
+}
+
+function formatLedgerTime(value) {
+  const time = new Date(value).getTime()
+  return Number.isFinite(time) ? new Date(time).toLocaleDateString('zh-CN') : ''
 }
 
 async function loadStats() {
@@ -550,6 +578,7 @@ function handleLogout() { authStore.logout(); uni.reLaunch({ url: '/pages/login/
 .group-info-text { font-size:13px;color:var(--text-secondary);margin-bottom:8px; }
 .group-qq { font-size:22px;font-weight:700;color:var(--primary-color); }
 .group-hint { font-size:12px;color:var(--text-light);margin-top:4px; }
+.ledger-card { padding:16px; }.ledger-header { display:flex;align-items:center;justify-content:space-between;gap:10px; }.ledger-list { margin-top:6px; }.ledger-row { display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--border-color);font-size:11px;color:var(--text-light); }.ledger-row:last-child { border-bottom:0; }.ledger-row > view { min-width:0;display:flex;align-items:center;gap:7px; }.ledger-credit { color:var(--success-color);font-weight:700; }.ledger-debit { color:var(--error-color);font-weight:700; }.ledger-reason { color:var(--text-secondary);overflow-wrap:anywhere; }.ledger-empty { padding:14px 0 2px;color:var(--text-light);font-size:13px;text-align:center; }
 .checkin-card { text-align:center; }
 .checkin-header { display:flex;align-items:center;justify-content:space-between;margin-bottom:12px; }
 .checkin-total { font-size:12px;color:var(--text-light); }

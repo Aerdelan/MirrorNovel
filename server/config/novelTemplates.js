@@ -307,34 +307,34 @@ module.exports = {
 
   /** 构建动态类型提示（每次调用结果不同） */
   buildTemplatePrompt(matchedTemplates, gender) {
-    const pools = this.getPools(gender || 'male')
+    const pools = module.exports.getPools(gender || 'male')
     const parts = []
 
     // 1. 加入开场方式（随机）
-    parts.push(`【开场方式参考】\n${this.pickRandom(openingVariants)}`)
+    parts.push(`【开场方式参考】\n${module.exports.pickRandom(openingVariants)}`)
 
     // 2. 加入类型特定 variant（随机选匹配的）
     for (const mt of matchedTemplates) {
       const tmpl = typeTemplates.find(t => t.name === mt.name && t.gender === (gender || 'male'))
       if (tmpl && tmpl.variants && tmpl.variants.length > 0) {
-        const v = this.pickRandom(tmpl.variants)
+        const v = module.exports.pickRandom(tmpl.variants)
         parts.push(`【${tmpl.name} 写法变体】\n焦点：${v.focus}\n主题：${v.tagline}\n世界元素：${v.worldElements}`)
       }
     }
 
     // 3. 加入爽点/看点类型（随机选2个）
-    const sats = this.pickRandomN(pools.satisfactionTypes, 2)
+    const sats = module.exports.pickRandomN(pools.satisfactionTypes, 2)
     parts.push(`【建议看点】\n${sats.map((s, i) => `${i + 1}. ${s}`).join('\n')}`)
 
     // 4. 加入节奏建议（随机选1个）
-    parts.push(`【节奏建议】\n${this.pickRandom(pools.pacingHints)}`)
+    parts.push(`【节奏建议】\n${module.exports.pickRandom(pools.pacingHints)}`)
 
     // 5. 加入文风建议（随机选1个）
-    parts.push(`【文风建议】\n${this.pickRandom(pools.toneHints)}`)
+    parts.push(`【文风建议】\n${module.exports.pickRandom(pools.toneHints)}`)
 
     // 6. 加入反转/悬念（随机选1个，50%概率）
     if (Math.random() > 0.5) {
-      parts.push(`【可选反转】\n${this.pickRandom(twistPool)}`)
+      parts.push(`【可选反转】\n${module.exports.pickRandom(twistPool)}`)
     }
 
     return parts.join('\n\n')

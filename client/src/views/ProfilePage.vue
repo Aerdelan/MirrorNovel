@@ -46,12 +46,23 @@
  <button class="btn btn-primary btn-block" @click="showGroupInfo = !showGroupInfo" style="margin-top:10px;">
  {{ $t('profile.getToken') }}
  </button>
- <div v-if="showGroupInfo" class="group-info-card">
+  <div v-if="showGroupInfo" class="group-info-card">
  <div class="group-info-text">{{ $t('profile.tokenDesc') }}</div>
  <div class="group-qq">{{ $t('profile.groupNum') }}</div>
  <div class="group-hint">{{ $t('profile.groupNote') }}</div>
- </div>
- </div>
+  </div>
+  </div>
+
+  <div class="card ledger-card">
+  <div class="ledger-heading"><div class="section-title" style="margin:0;">积分流水</div><button class="btn btn-sm btn-outline" :disabled="ledgerLoading" @click="loadTokenInfo">刷新</button></div>
+  <div v-if="ledger.length === 0" class="ledger-empty">暂无积分记录</div>
+  <div v-else class="ledger-list">
+  <div v-for="(entry, index) in ledger" :key="`${entry.createdAt}-${index}`" class="ledger-row">
+  <div><strong :class="entry.type === 'credit' ? 'ledger-credit' : 'ledger-debit'">{{ entry.type === 'credit' ? '+' : '-' }}{{ Number(entry.points || 0).toLocaleString() }}</strong><span class="ledger-reason">{{ ledgerReason(entry.reason) }}</span></div>
+  <span>{{ new Date(entry.createdAt).toLocaleString() }}</span>
+  </div>
+  </div>
+  </div>
 
  <!-- 统计 -->
  <div class="card stats-card">
@@ -214,6 +225,8 @@ const inviteInfo = ref({ inviteCode: '', inviteCount: 0, inviteRewards: 0, invit
 const totalTokens = ref(0)
 const usedTokens = ref(0)
 const availableTokens = ref(0)
+const ledger = ref([])
+const ledgerLoading = ref(false)
 const tokenPercent = computed(() => {
  if (totalTokens.value === 0) return 100
  return Math.round(usedTokens.value / totalTokens.value * 100)
@@ -417,12 +430,22 @@ function copyInviteLink() {
 }
 
 async function loadTokenInfo() {
+ ledgerLoading.value = true
  try {
  const res = await authStore.getTokenInfo()
  totalTokens.value = res.total || 0
  usedTokens.value = res.used || 0
  availableTokens.value = res.available || 0
+ ledger.value = Array.isArray(res.ledger) ? [...res.ledger].reverse() : []
  } catch (e) { console.error('获取积分信息失败:', e) }
+ finally { ledgerLoading.value = false }
+}
+
+function ledgerReason(reason) {
+ const labels = { daily_checkin: '每日签到', invite_reward: '邀请奖励', group_reward: '进群奖励', purchase: '充值', novel_generation: '模型生成' }
+ if (String(reason || '').startsWith('activity:')) return '活动奖励'
+ if (String(reason || '').startsWith('admin_adjust:')) return `管理员调整：${String(reason).slice(13)}`
+ return labels[reason] || reason || '积分变动'
 }
 
 async function loadStats() {
@@ -513,6 +536,12 @@ async function handleLogout() {
 .group-info-text { font-size: 13px; color: var(--text-secondary); margin-bottom: 8px; }
 .group-qq { font-size: 22px; font-weight: 700; color: var(--primary-color); }
 .group-hint { font-size: 12px; color: var(--text-light); margin-top: 4px; }
+.ledger-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.ledger-list { margin-top:8px; }
+.ledger-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 0; border-bottom:1px solid var(--border-color); color:var(--text-light); font-size:11px; }
+.ledger-row:last-child { border-bottom:0; }
+.ledger-row > div { min-width:0; display:flex; align-items:center; gap:8px; }
+.ledger-credit { color:var(--success-color); }.ledger-debit { color:var(--error-color); }.ledger-reason { overflow-wrap:anywhere; color:var(--text-secondary); }.ledger-empty { padding:16px 0 4px; color:var(--text-light); font-size:13px; text-align:center; }
 
 /* 签到 */
 .checkin-card { text-align: center; }

@@ -351,6 +351,11 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
  */
 async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConfig, retries = 2, temperature = 0.85) {
   const config = apiConfig || resolveApiConfig(null);
+  if (!config.baseUrl || !config.model) {
+    const error = new Error('AI 服务线路尚未配置，请联系管理员填写该线路的服务地址和模型名称');
+    error.isApiError = true;
+    throw error;
+  }
   const isOllama = config.baseUrl && config.baseUrl.includes('localhost:11434');
   const apiUrl = isOllama
     ? `${config.baseUrl.replace(/\/+$/, '')}/api/chat`

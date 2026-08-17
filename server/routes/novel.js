@@ -36,11 +36,12 @@ const {
 } = require('../services/storyState');
 const {
   calculatePointsCharge,
-  debitPoints,
+  debitPointsForUser,
   getPointsSnapshot,
   isPointsBillingRequired,
   routeIdForModelConfig,
 } = require('../services/pointsService');
+const { claimAutoActivitiesForUser } = require('../services/activityService');
 
 // 全局活跃生成流跟踪
 const activeStreams = new Map();
@@ -64,7 +65,9 @@ function getTotalPlannedChapters(planData, targetWordCount, completedChapterNumb
 
 function getChapterTemperature(contract) {
   const tension = Number(contract?.emotion?.tension || 6);
-  return Math.max(0.72, Math.min(0.86, 0.78 + (tension - 5) * 0.012));
+  const value = Math.max(0.72, Math.min(0.86, 0.78 + (tension - 5) * 0.012));
+  // Some OpenAI-compatible providers reject a temperature with over two decimals.
+  return Number(value.toFixed(2));
 }
 
 function appendChapterContextDocs(novel, content, chapterNumber, protagonistName) {
@@ -524,6 +527,8 @@ ${structureRef}
       if (chapterResult.continuity.issues.length) {
         try { res.write(`data: ${JSON.stringify({ type: 'quality_notice', chapterNumber: chNum, report: chapterResult.continuity })}\n\n`); } catch {}
       }
+      await claimAutoActivitiesForUser(req.user, 'writing');
+      await claimAutoActivitiesForUser(req.user, 'continuous');
       try { await deductTokens(req.user, chapterResult.content, `${systemPrompt}\n${prompt}`); } catch (e) {
         // 如果扣费失败（如 TOKEN_EXHAUSTED），记录下来但不中断生成流程
         if (e.message === 'TOKEN_EXHAUSTED') {
@@ -765,6 +770,8 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       if (chapterResult.continuity.issues.length) {
         try { res.write(`data: ${JSON.stringify({ type: 'quality_notice', chapterNumber: chNum, report: chapterResult.continuity })}\n\n`); } catch {}
       }
+      await claimAutoActivitiesForUser(req.user, 'writing');
+      await claimAutoActivitiesForUser(req.user, 'continuous');
       try { await deductTokens(req.user, chapterResult.content, `${systemPrompt}\n${prompt}`); } catch (error) {
         if (error.message !== 'TOKEN_EXHAUSTED') console.error('[Token] 扣费异常:', error.message);
       }
@@ -1034,7 +1041,7 @@ router.post('/continue-import', auth, async (req, res) => {
       if (!generationDone) {
         abortController.abort();
         await finalSave('paused');
-        deductTokens(req.user, chapterBuffer, `${systemPrompt}\n${userPrompt}`);
+        try { await deductTokens(req.user, chapterBuffer, `${systemPrompt}\n${userPrompt}`); } catch {}
         activeStreams.delete(streamKey);
         try { res.write(`data: ${JSON.stringify({ type: 'paused' })}\n\n`); res.end(); } catch {}
       }
@@ -1058,7 +1065,7 @@ router.post('/continue-import', auth, async (req, res) => {
 
       if (abortController.signal.aborted) {
         await finalSave('paused');
-        deductTokens(req.user, chapterBuffer, `${systemPrompt}\n${userPrompt}`);
+        try { await deductTokens(req.user, chapterBuffer, `${systemPrompt}\n${userPrompt}`); } catch {}
         activeStreams.delete(streamKey);
         return;
       }
@@ -1066,7 +1073,7 @@ router.post('/continue-import', auth, async (req, res) => {
       generationDone = true;
       activeStreams.delete(streamKey);
       await finalSave('completed');
-      deductTokens(req.user, chapterBuffer, `${systemPrompt}\n${userPrompt}`);
+      try { await deductTokens(req.user, chapterBuffer, `${systemPrompt}\n${userPrompt}`); } catch {}
 
       res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber, wordCount: chapterBuffer.length })}\n\n`);
       res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`);
@@ -1076,7 +1083,7 @@ router.post('/continue-import', auth, async (req, res) => {
       if (isTokenExhausted) console.log('续写 Token 配额已耗尽');
       else console.error('续写失败:', streamError.message);
       try { await finalSave('paused'); } catch {}
-      try { deductTokens(req.user, chapterBuffer, `${systemPrompt}\n${userPrompt}`); } catch {}
+      try { await deductTokens(req.user, chapterBuffer, `${systemPrompt}\n${userPrompt}`); } catch {}
       activeStreams.delete(streamKey);
       try {
         if (isTokenExhausted) {
@@ -1352,7 +1359,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
         abortController.abort();
         saveChapterContent(true);
         novel.status = 'paused'; await novel.save();
-        deductTokens(req.user, appendBuffer, `${systemPrompt}\n${userPrompt}`);
+        try { await deductTokens(req.user, appendBuffer, `${systemPrompt}\n${userPrompt}`); } catch {}
         try { res.write(`data: ${JSON.stringify({ type: 'paused' })}\n\n`); res.end(); } catch {}
       }
     });
@@ -1368,7 +1375,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
         activeStreams.delete(streamKey);
         saveChapterContent(true);
         novel.status = 'paused'; await novel.save();
-        deductTokens(req.user, appendBuffer, `${systemPrompt}\n${userPrompt}`);
+        try { await deductTokens(req.user, appendBuffer, `${systemPrompt}\n${userPrompt}`); } catch {}
         return;
       }
 
@@ -1377,7 +1384,9 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
       saveChapterContent(true);
       // completed 事件只表示本次指定章节续写完成，整部小说仍可继续创作。
       novel.status = 'paused'; await novel.save();
-      deductTokens(req.user, appendBuffer, `${systemPrompt}\n${userPrompt}`);
+      await claimAutoActivitiesForUser(req.user, 'writing');
+      await claimAutoActivitiesForUser(req.user, 'continuous');
+      try { await deductTokens(req.user, appendBuffer, `${systemPrompt}\n${userPrompt}`); } catch {}
 
       res.write(`data: ${JSON.stringify({ type: 'chapter_continued', chapterNumber: chNum, addedLength: appendBuffer.length })}\n\n`);
       res.write(`data: ${JSON.stringify({ type: 'completed' })}\n\n`);
@@ -1386,7 +1395,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
       activeStreams.delete(streamKey);
       saveChapterContent(true);
       novel.status = 'paused'; await novel.save();
-      deductTokens(req.user, appendBuffer, `${systemPrompt}\n${userPrompt}`);
+      try { await deductTokens(req.user, appendBuffer, `${systemPrompt}\n${userPrompt}`); } catch {}
       try { res.write(`data: ${JSON.stringify({ type: 'paused' })}\n\n`); res.end(); } catch {}
     }
   } catch (error) {
@@ -1490,9 +1499,7 @@ async function deductTokens(user, content, inputContent = '') {
   try {
     if (!user || !isPointsBillingRequired(user.modelConfig)) return null;
 
-    const freshUser = await User.findById(user._id);
-    if (!freshUser) return null;
-    return await debitPoints(freshUser, {
+    return await debitPointsForUser(User, user._id, {
       routeId: routeIdForModelConfig(user.modelConfig),
       inputTokens: countTokens(inputContent || ''),
       outputTokens: countTokens(content || ''),

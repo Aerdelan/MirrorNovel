@@ -38,7 +38,8 @@
  </td>
  <td><span class="dot" :class="{ off: u.disabled }"></span>{{ u.disabled ? '禁用' : '正常' }}</td>
  <td class="acts">
- <button class="btn-sm" @click="openEdit(u)">编辑</button>
+  <button class="btn-sm" @click="openEdit(u)">编辑</button>
+  <button class="btn-sm" @click="showPointsLedger(u)">流水</button>
  <button class="btn-sm" :class="u.disabled?'green':'red'" @click="toggleDisable(u)">{{ u.disabled?'启用':'禁用' }}</button>
  <button class="btn-sm btn-invite" @click="showInvitedUsers(u)">已邀请</button>
  </td>
@@ -56,13 +57,17 @@
  <div class="row"><label>角色</label>
  <select v-model="editForm.role" class="input"><option value="user">用户</option><option value="admin">管理员</option><option value="importer">导入员</option></select>
  </div>
- <div class="row"><label>追加积分</label><input v-model.number="editForm.addPoints" class="input" type="number" min="0" step="1" placeholder="0" /></div>
+ <div class="row"><label>积分调整</label><input v-model.number="editForm.adjustPoints" class="input" type="number" step="1" placeholder="正数发放，负数扣减" /></div>
+ <div class="row"><label>调整原因</label><input v-model.trim="editForm.adjustReason" class="input" maxlength="120" placeholder="积分调整时必填" /></div>
  <div class="modal-acts">
  <button class="btn btn-outline" @click="showModal=false">取消</button>
  <button class="btn btn-primary" @click="saveUser">保存</button>
  </div>
  </div>
  </div>
+ </Teleport>
+ <Teleport to="body">
+ <div v-if="ledgerModal" class="overlay" @click.self="ledgerModal=false"><div class="modal" style="max-width:640px;"><h3>{{ ledgerUser.email }} 的积分流水</h3><div v-if="ledgerLoading" style="padding:20px;text-align:center;">加载中...</div><div v-else-if="ledgerEntries.length===0" style="padding:20px;text-align:center;color:#888;">暂无积分记录</div><div v-else class="modal-table-wrap"><table><thead><tr><th>时间</th><th>类型</th><th>积分</th><th>余额</th><th>原因</th></tr></thead><tbody><tr v-for="(entry,index) in ledgerEntries" :key="`${entry.createdAt}-${index}`"><td>{{ formatDate(entry.createdAt) }}</td><td>{{ entry.type === 'credit' ? '收入' : '支出' }}</td><td>{{ entry.type === 'credit' ? '+' : '-' }}{{ formatNumber(entry.points) }}</td><td>{{ formatNumber(entry.balanceAfter) }}</td><td>{{ ledgerReason(entry.reason) }}</td></tr></tbody></table></div><div class="modal-acts"><button class="btn btn-outline" @click="ledgerModal=false">关闭</button></div></div></div>
  </Teleport>
  <!-- 已邀请用户弹窗 -->
  <Teleport to="body">
@@ -394,7 +399,7 @@ async function loadUsers() {
  catch {}
 }
 let debounceTimer; function debounce(fn, ms) { clearTimeout(debounceTimer); debounceTimer = setTimeout(fn, ms) }
-function openEdit(u) { editUserData.value = u; editForm.value = { nickname: u.nickname, role: u.role, addPoints: 0 }; showModal.value = true }
+ function openEdit(u) { editUserData.value = u; editForm.value = { nickname: u.nickname, role: u.role, adjustPoints: 0, adjustReason: '' }; showModal.value = true }
 
 // 已邀请用户
 const inviteModal = ref(false); const inviteModalUser = ref({}); const invitedUsers = ref([])
@@ -405,9 +410,16 @@ async function showInvitedUsers(u) {
  catch { alert('获取失败') }
 }
 async function saveUser() {
- const addPoints = Math.max(0, Math.floor(numberValue(editForm.value.addPoints, 0)))
- const payload = { nickname: editForm.value.nickname, role: editForm.value.role, addPoints, addTokens: addPoints }
- try { await api.put(`/admin/users/${editUserData.value._id}`, payload); showModal.value = false; loadUsers() }
+ const adjustPoints = Math.trunc(numberValue(editForm.value.adjustPoints, 0))
+ const payload = { nickname: editForm.value.nickname, role: editForm.value.role }
+ try {
+  await api.put(`/admin/users/${editUserData.value._id}`, payload)
+  if (adjustPoints !== 0) {
+   if (!editForm.value.adjustReason) throw new Error('积分调整必须填写原因')
+   await api.post(`/admin/users/${editUserData.value._id}/points-adjust`, { amount: adjustPoints, reason: editForm.value.adjustReason })
+  }
+  showModal.value = false; loadUsers()
+ }
  catch (e) { alert('保存失败:' + (e.response?.data?.message || e.message)) }
 }
 async function toggleDisable(u) {
@@ -421,6 +433,9 @@ async function grantReward(u) {
  catch (e) { alert('发放失败:' + (e.response?.data?.message || e.message)) }
  finally { rewarding.value = '' }
 }
+const ledgerModal = ref(false); const ledgerLoading = ref(false); const ledgerEntries = ref([]); const ledgerUser = ref({})
+async function showPointsLedger(u) { ledgerUser.value = u; ledgerEntries.value = []; ledgerModal.value = true; ledgerLoading.value = true; try { const r = await api.get(`/admin/users/${u._id}/points-ledger`); ledgerEntries.value = r.data.ledger || [] } catch (e) { alert('获取流水失败:' + (e.response?.data?.message || e.message)) } finally { ledgerLoading.value = false } }
+function ledgerReason(reason) { if (String(reason || '').startsWith('activity:')) return '活动奖励'; if (String(reason || '').startsWith('admin_adjust:')) return `管理员调整：${String(reason).slice(13)}`; return ({ daily_checkin:'每日签到', invite_reward:'邀请奖励', group_reward:'进群奖励', purchase:'充值', novel_generation:'模型生成' })[reason] || reason || '-' }
 
 // ====== 小说管理 ======
 const novels = ref([]); const nQ = ref(''); const nFilterUser = ref(''); const nFilterStatus = ref(''); const allU = ref([])
@@ -587,6 +602,7 @@ async function saveTemplates() {
 function numberValue(value, fallback = 0) { const parsed = Number(value); return Number.isFinite(parsed) ? parsed : fallback }
 function nullableNumber(value) { if (value === '' || value === null || value === undefined) return null; const parsed = Number(value); return Number.isFinite(parsed) ? parsed : null }
 function formatNumber(value) { return numberValue(value, 0).toLocaleString('zh-CN', { maximumFractionDigits: 2 }) }
+function formatDate(value) { const date = new Date(value); return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString('zh-CN') }
 function compactNumber(value) { return new Intl.NumberFormat('zh-CN', { notation: 'compact', maximumFractionDigits: 1 }).format(numberValue(value, 0)) }
 function userPoints(user) {
  const native = user?.points && (Number(user.points.version || 0) >= 1 || user.points.total !== undefined)

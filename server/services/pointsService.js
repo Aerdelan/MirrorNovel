@@ -163,6 +163,106 @@ async function debitPoints(user, usage, options = {}) {
   return { ...after, charge };
 }
 
+function accountExpressions() {
+  const native = { $gte: [{ $ifNull: ['$points.version', 0] }, 1] };
+  const total = { $cond: [native, { $ifNull: ['$points.total', 0] }, { $ifNull: ['$tokens.total', 0] }] };
+  const used = { $cond: [native, { $ifNull: ['$points.used', 0] }, { $ifNull: ['$tokens.used', 0] }] };
+  return { total, used };
+}
+
+/**
+ * Build one aggregation-pipeline update that keeps the native points account,
+ * legacy token mirror and bounded ledger in sync.  Callers add their own
+ * conditional filter so balance checks and mutation happen atomically.
+ */
+function buildPointsMutationFields(delta, entry = {}) {
+  const { total, used } = accountExpressions();
+  const nextTotal = delta > 0 ? { $add: [total, delta] } : total;
+  const nextUsed = delta < 0 ? { $add: [used, -delta] } : used;
+  const balanceAfter = { $subtract: [nextTotal, nextUsed] };
+  const ledgerEntry = {
+    type: delta >= 0 ? 'credit' : 'debit',
+    points: Math.abs(delta),
+    balanceAfter,
+    routeId: entry.routeId || '',
+    routeAlias: entry.routeAlias || '',
+    inputTokens: nonNegativeInteger(entry.inputTokens),
+    outputTokens: nonNegativeInteger(entry.outputTokens),
+    billableTokens: nonNegativeInteger(entry.billableTokens),
+    reason: String(entry.reason || (delta >= 0 ? 'manual_credit' : 'manual_debit')),
+    referenceId: String(entry.referenceId || ''),
+    createdAt: entry.createdAt || new Date(),
+  };
+  return {
+    points: { version: 1, total: nextTotal, used: nextUsed },
+    tokens: { total: nextTotal, used: nextUsed },
+    pointsLedger: {
+      $slice: [
+        { $concatArrays: [{ $ifNull: ['$pointsLedger', []] }, [ledgerEntry]] },
+        -LEDGER_LIMIT,
+      ],
+    },
+  };
+}
+
+async function debitPointsForUser(UserModel, userId, usage, options = {}) {
+  const charge = calculatePointsCharge({
+    ...usage,
+    catalog: options.catalog || usage?.catalog || createPriceCatalog(),
+  });
+  if (charge.points === 0) {
+    const user = await UserModel.findById(userId);
+    if (!user) throw new TypeError('user not found');
+    return { ...getPointsSnapshot(user), charge };
+  }
+
+  const { total, used } = accountExpressions();
+  const route = getServerRoute(charge.routeId, options.catalog || usage?.catalog || createPriceCatalog());
+  const user = await UserModel.findOneAndUpdate(
+    {
+      _id: userId,
+      $expr: { $gte: [{ $subtract: [total, used] }, charge.points] },
+    },
+    [{
+      $set: buildPointsMutationFields(-charge.points, {
+        routeId: route.id,
+        routeAlias: route.alias,
+        inputTokens: charge.inputTokens,
+        outputTokens: charge.outputTokens,
+        billableTokens: charge.billableTokens,
+        reason: options.reason || 'generation',
+        referenceId: options.referenceId,
+      }),
+    }],
+    { new: true }
+  );
+  if (user) return { ...getPointsSnapshot(user), charge };
+
+  const freshUser = await UserModel.findById(userId);
+  if (!freshUser) throw new TypeError('user not found');
+  throw new PointsInsufficientError(charge.points, getPointsSnapshot(freshUser).available);
+}
+
+async function adjustPointsForUser(UserModel, userId, amount, options = {}) {
+  const delta = Math.trunc(Number(amount));
+  if (!Number.isFinite(delta) || delta === 0) throw new RangeError('积分调整数量不能为 0');
+  const { total, used } = accountExpressions();
+  const filter = { _id: userId };
+  if (delta < 0) {
+    filter.$expr = { $gte: [{ $subtract: [total, used] }, -delta] };
+  }
+  const user = await UserModel.findOneAndUpdate(
+    filter,
+    [{ $set: buildPointsMutationFields(delta, options) }],
+    { new: true }
+  );
+  if (user) return getPointsSnapshot(user);
+
+  const freshUser = await UserModel.findById(userId);
+  if (!freshUser) throw new TypeError('user not found');
+  throw new PointsInsufficientError(-delta, getPointsSnapshot(freshUser).available);
+}
+
 function sanitizeLedger(entries) {
   return (Array.isArray(entries) ? entries : []).slice(-50).map((entry) => ({
     type: entry.type,
@@ -193,5 +293,9 @@ module.exports = {
   calculatePointsCharge,
   creditPoints,
   debitPoints,
+  accountExpressions,
+  buildPointsMutationFields,
+  debitPointsForUser,
+  adjustPointsForUser,
   sanitizeLedger,
 };

@@ -13,6 +13,8 @@ const {
   getPointsSnapshot,
   creditPoints,
   debitPoints,
+  debitPointsForUser,
+  adjustPointsForUser,
 } = require('../services/pointsService');
 
 function paidCatalog() {
@@ -122,4 +124,34 @@ test('debit rejects an unaffordable generation without changing the balance', as
   );
   assert.deepEqual(getPointsSnapshot(user), { total: 10, used: 0, available: 10 });
   assert.equal(user.pointsLedger.length, 0);
+});
+
+test('atomic debit uses a conditional user update and appends a debit ledger entry', async () => {
+  const updatedUser = { points: { version: 1, total: 2000, used: 1000 }, tokens: { total: 2000, used: 1000 } };
+  let captured;
+  const UserModel = {
+    async findOneAndUpdate(filter, pipeline) { captured = { filter, pipeline }; return updatedUser; },
+    async findById() { return updatedUser; },
+  };
+  const result = await debitPointsForUser(UserModel, 'user-1', {
+    routeId: 'normal_1', inputTokens: 10000, outputTokens: 10000, catalog: paidCatalog(),
+  }, { catalog: paidCatalog(), reason: 'test_atomic' });
+  assert.equal(result.available, 1000);
+  assert.equal(captured.filter._id, 'user-1');
+  assert.ok(captured.filter.$expr, 'available-balance check must be part of the update filter');
+  assert.equal(captured.pipeline[0].$set.pointsLedger.$slice[1], -200);
+  assert.equal(captured.pipeline[0].$set.pointsLedger.$slice[0].$concatArrays[1][0].type, 'debit');
+});
+
+test('manual adjustment uses a conditional update for debits', async () => {
+  const updatedUser = { points: { version: 1, total: 500, used: 100 }, tokens: { total: 500, used: 100 } };
+  let captured;
+  const UserModel = {
+    async findOneAndUpdate(filter, pipeline) { captured = { filter, pipeline }; return updatedUser; },
+    async findById() { return updatedUser; },
+  };
+  const result = await adjustPointsForUser(UserModel, 'user-1', -50, { reason: 'test_adjust' });
+  assert.equal(result.available, 400);
+  assert.ok(captured.filter.$expr, 'debit adjustment must check available balance atomically');
+  assert.equal(captured.pipeline[0].$set.pointsLedger.$slice[0].$concatArrays[1][0].type, 'debit');
 });

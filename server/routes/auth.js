@@ -1,13 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
-const Activity = require('../models/Activity');
 const VerificationCode = require('../models/VerificationCode');
 const { sendVerificationCode, verifyTransporter } = require('../services/emailService');
 const jwt = require('jsonwebtoken');
 const auth = require('../middleware/auth');
 const { creditPoints, getPointsSnapshot } = require('../services/pointsService');
-const { claimActivity, ActivityClaimError } = require('../services/activityService');
+const { claimAutoActivitiesForUser } = require('../services/activityService');
 const {
   getPublicRoutes,
   getServerRoute,
@@ -133,7 +132,7 @@ router.post('/register', async (req, res) => {
     }
 
     // 创建用户
-    const user = new User({
+    let user = new User({
       email,
       password,
       nickname: nickname || '书友',
@@ -151,6 +150,7 @@ router.post('/register', async (req, res) => {
           inviter.inviteCount = (inviter.inviteCount || 0) + 1;
           inviter.inviteRewards = (inviter.inviteRewards || 0) + 2000;
           await inviter.save();
+          await claimAutoActivitiesForUser(inviter, 'invite');
           user.invitedBy = inviter._id;
           await user.save();
           console.log(`[邀请] 用户 ${inviter.email} 获赠 2000 积分`);
@@ -160,6 +160,9 @@ router.post('/register', async (req, res) => {
 
     // 删除已使用的验证码
     await VerificationCode.deleteMany({ email, type: 'register' });
+
+    await claimAutoActivitiesForUser(user, 'new_user');
+    user = await User.findById(user._id);
 
     // 生成JWT
     const token = jwt.sign(
@@ -195,7 +198,7 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ message: '请输入邮箱和密码' });
     }
 
-    const user = await User.findOne({ email });
+    let user = await User.findOne({ email });
     if (!user) {
       return res.status(400).json({ message: '邮箱或密码错误' });
     }
@@ -213,30 +216,18 @@ router.post('/login', async (req, res) => {
     user.lastLoginAt = new Date();
     await user.save();
 
-    // 自动领取当前登录活动；奖励统一进入积分账本。
+    // Login activities are one event type among the shared auto-claim flow.
     let activityBonus = 0;
     let activityMessage = '';
     try {
-      const now = new Date();
-      const activeActivity = await Activity.findOne({
-        type: 'login',
-        enabled: { $ne: false },
-        autoClaim: true,
-        startTime: { $lte: now },
-        endTime: { $gte: now },
-      }).sort({ startTime: -1 });
-
-      if (activeActivity) {
-        const result = await claimActivity(activeActivity, user, { now });
-        activityBonus = result.points;
-        activityMessage = result.message;
-        console.log(`[积分活动] 用户 ${user.email} 登录参与 ${activeActivity.name}，获得 ${activityBonus} 积分`);
-      }
+      const results = await claimAutoActivitiesForUser(user, 'login');
+      activityBonus = results.reduce((sum, result) => sum + Number(result.points || 0), 0);
+      activityMessage = results.at(-1)?.message || '';
+      if (results.length) console.log(`[积分活动] 用户 ${user.email} 登录自动领取 ${results.length} 个活动，获得 ${activityBonus} 积分`);
     } catch (e) {
-      if (!(e instanceof ActivityClaimError && ['USER_LIMIT_REACHED', 'DAILY_LIMIT_REACHED'].includes(e.code))) {
-        console.error('[积分活动] 登录自动领取失败:', e.message);
-      }
+      console.error('[积分活动] 登录自动领取失败:', e.message);
     }
+    user = await User.findById(user._id);
 
     // 生成JWT
     const token = jwt.sign(
@@ -268,7 +259,7 @@ router.post('/login', async (req, res) => {
 router.post('/checkin', auth, async (req, res) => {
   try {
     const today = new Date().toISOString().slice(0, 10);
-    const user = req.user;
+    let user = req.user;
 
     if (user.checkin.lastDate === today) {
       return res.status(400).json({ message: '今天已签到' });
@@ -296,10 +287,13 @@ router.post('/checkin', auth, async (req, res) => {
     user.checkin.totalDays = (user.checkin.totalDays || 0) + 1;
     await creditPoints(user, reward, { reason: 'daily_checkin', referenceId: today, save: false });
     await user.save();
+    const activityResults = await claimAutoActivitiesForUser(user, 'checkin');
+    user = await User.findById(user._id);
 
     res.json({
       message: `签到成功！获得 ${reward} 积分`,
       reward,
+      activityBonus: activityResults.reduce((sum, result) => sum + Number(result.points || 0), 0),
       dayIndex: dayIndex + 1, // 前端显示1-7
       totalDays: user.checkin.totalDays,
       availableTokens: getPointsSnapshot(user).available,

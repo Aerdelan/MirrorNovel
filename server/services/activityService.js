@@ -1,9 +1,9 @@
 const crypto = require('crypto');
 const Activity = require('../models/Activity');
 const Novel = require('../models/Novel');
+const User = require('../models/User');
 const {
-  creditPoints,
-  ensurePointsAccount,
+  buildPointsMutationFields,
   getPointsSnapshot,
 } = require('./pointsService');
 
@@ -243,6 +243,66 @@ async function rollbackReservation(activityId, reward, won) {
   }
 }
 
+function claimsForActivityExpression(activityId, extraCondition = null) {
+  const conditions = [
+    { $eq: ['$$claim.activityId', activityId] },
+    { $ne: ['$$claim.status', 'rejected'] },
+  ];
+  if (extraCondition) conditions.push(extraCondition);
+  return {
+    $filter: {
+      input: { $ifNull: ['$activityClaims', []] },
+      as: 'claim',
+      cond: { $and: conditions },
+    },
+  };
+}
+
+function activityClaimFilter(userId, activity, now) {
+  const conditions = [];
+  const perUserLimit = Number(activity.perUserLimit || 0);
+  if (perUserLimit > 0) {
+    conditions.push({ $lt: [{ $size: claimsForActivityExpression(activity._id) }, perUserLimit] });
+  }
+  const dailyLimit = Number(activity.dailyLimit || 0);
+  if (dailyLimit > 0) {
+    const dayStart = new Date(now);
+    dayStart.setHours(0, 0, 0, 0);
+    conditions.push({
+      $lt: [
+        { $size: claimsForActivityExpression(activity._id, { $gte: ['$$claim.claimedAt', dayStart] }) },
+        dailyLimit,
+      ],
+    });
+  }
+  return conditions.length ? { _id: userId, $expr: { $and: conditions } } : { _id: userId };
+}
+
+async function persistActivityClaim(userId, activity, { now, won, reward, eligibility }) {
+  const claim = {
+    activityId: activity._id,
+    claimedAt: now,
+    status: 'completed',
+    won,
+    points: reward,
+    metric: eligibility.metric || 'none',
+    metricValue: Number(eligibility.value || 0),
+  };
+  const fields = won ? buildPointsMutationFields(reward, {
+    reason: `activity:${activity.type || 'custom'}`,
+    referenceId: activity._id,
+    createdAt: now,
+  }) : {};
+  fields.activityClaims = {
+    $concatArrays: [{ $ifNull: ['$activityClaims', []] }, [claim]],
+  };
+  return User.findOneAndUpdate(
+    activityClaimFilter(userId, activity, now),
+    [{ $set: fields }],
+    { new: true }
+  );
+}
+
 async function claimActivity(activity, user, options = {}) {
   const now = options.now || new Date();
   const metrics = options.metrics || await collectUserMetrics(user);
@@ -269,25 +329,11 @@ async function claimActivity(activity, user, options = {}) {
   }
 
   try {
-    ensurePointsAccount(user);
-    if (won) {
-      await creditPoints(user, reward, {
-        save: false,
-        reason: `activity:${activity.type || 'custom'}`,
-        referenceId: activity._id,
-      });
+    const persistedUser = await persistActivityClaim(user._id, activity, { now, won, reward, eligibility });
+    if (!persistedUser) {
+      throw new ActivityClaimError('USER_LIMIT_REACHED', '已达到本活动参与次数上限', 409);
     }
-    if (!Array.isArray(user.activityClaims)) user.activityClaims = [];
-    user.activityClaims.push({
-      activityId: activity._id,
-      claimedAt: now,
-      status: 'completed',
-      won,
-      points: reward,
-      metric: eligibility.metric || 'none',
-      metricValue: Number(eligibility.value || 0),
-    });
-    await user.save();
+    user = persistedUser;
   } catch (error) {
     await rollbackReservation(activity._id, reward, won);
     throw error;
@@ -302,6 +348,33 @@ async function claimActivity(activity, user, options = {}) {
   };
 }
 
+async function claimAutoActivitiesForUser(user, type, options = {}) {
+  if (Activity.db?.readyState !== 1 && !options.allowDisconnected) return [];
+  try {
+    const now = options.now || new Date();
+    const activities = await Activity.find({
+      type,
+      enabled: { $ne: false },
+      autoClaim: true,
+      startTime: { $lte: now },
+      endTime: { $gte: now },
+    }).sort({ startTime: -1 });
+    const results = [];
+    for (const activity of activities) {
+      try {
+        results.push(await claimActivity(activity, user, { now, metrics: options.metrics }));
+      } catch (error) {
+        if (!(error instanceof ActivityClaimError)) throw error;
+      }
+    }
+    return results;
+  } catch (error) {
+    // Activity rewards must never interrupt login, creation or a completed chapter.
+    console.error(`[Activity] ${type} auto-claim failed:`, error.message);
+    return [];
+  }
+}
+
 module.exports = {
   ACTIVITY_CATALOG,
   METRIC_LABELS,
@@ -313,4 +386,5 @@ module.exports = {
   publicActivity,
   listActivitiesForUser,
   claimActivity,
+  claimAutoActivitiesForUser,
 };

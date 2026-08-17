@@ -296,6 +296,7 @@ test('新书单章：SSE、正文、质量状态和创作状态完整落库', as
   assert.equal(novel.recentEventSignatures.length, 1);
   assert.match(novel.chapterSummaryDoc, /第1章/);
   assert.ok(state.aiCalls[0].temperature >= 0.72 && state.aiCalls[0].temperature <= 0.86);
+  assert.equal(state.aiCalls[0].temperature, Number(state.aiCalls[0].temperature.toFixed(2)));
 });
 
 test('新书整本：先落结构化计划，再严格按章生成并回收伏笔', async () => {
