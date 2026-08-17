@@ -236,6 +236,7 @@ async function startBookContinue(novel) {
  await novelStore.continueGeneration(novel._id, (chunk, fullText) => { continueWordCount.value = fullText.length }, (status) => {
  if (status.type === 'chapter_start') currentContinueChapter.value = status.chapterNumber || 0
  if (status.type === 'token_exhausted') { isContinuing.value = false; novelStore.fetchBookshelf() }
+ else if (status.type === 'plan_needs_extension') { isContinuing.value = false; alert(status.message || '缺少章节计划，请先生成或补充计划后再续写整本'); novelStore.fetchBookshelf() }
  else if (status.type === 'completed' || status.type === 'paused' || status.type === 'error') { isContinuing.value = false; novelStore.fetchBookshelf() }
  }, 'book')
  } catch (e) {

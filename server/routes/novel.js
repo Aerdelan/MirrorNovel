@@ -702,7 +702,12 @@ router.post('/continue/:novelId', auth, async (req, res) => {
     }
 
     if (novel.status === 'completed') {
-      return res.status(400).json({ message: '小说已生成完成' });
+      const targetCount = Number(novel.targetWordCount) || 50000;
+      if (getCompletedWordCount(novel) >= targetCount) {
+        return res.status(400).json({ message: '小说已生成完成' });
+      }
+      // 未达目标字数却被标记为已完成，允许继续续写
+      console.log(`[Continue] 小说 ${novel._id} 状态为已完成但未达目标字数，恢复续写`);
     }
 
     const streamKey = novel._id.toString();
@@ -784,11 +789,8 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       if (mode === 'book') {
         // ====== 整本模式：循环生成多章直到目标字数 ======
         if (!planData.chapters.length) {
-          novel.status = 'paused';
-          await novel.save();
-          activeStreams.delete(streamKey);
-          try { res.write(`data: ${JSON.stringify({ type: 'plan_needs_extension', message: '缺少有效章节计划，请先生成或补充计划后再续写整本' })}\n\n`); res.end(); } catch {}
-          return;
+          // 无章节计划的旧作品：不阻断，按主线自然推进逐章续写
+          console.log(`[Continue] 小说 ${novel._id} 无章节计划，将按主线自然续写至目标字数`);
         }
 
         const currentTotal = getCompletedWordCount(novel);
