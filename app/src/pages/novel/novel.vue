@@ -172,7 +172,7 @@ function goBack() { uni.navigateBack() }
 .chapter-content { line-height:1.8;font-size:14px;color:var(--text-secondary);white-space:pre-wrap;max-height:300px;padding:8px;background:#fafafa;border-radius:6px; }
 .chapter-actions { display:flex;gap:6px;margin-top:8px;flex-wrap:wrap; }
 .btn-ch { padding:4px 10px;border-radius:5px;font-size:12px;border:1px solid #ddd;background:white; }
-.action-edit { color:#1890ff;border-color:#1890ff; }
+.action-edit { color:var(--primary-color);border-color:var(--primary-color); }
 .action-del { color:#ff4d4f;border-color:#ff4d4f; }
 .action-deslop { color:#FF6B35;border-color:#FF6B35; }
 .gen-overlay { position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999;padding:20px; }

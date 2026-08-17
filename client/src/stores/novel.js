@@ -8,6 +8,7 @@ export const useNovelStore = defineStore('novel', () => {
  const streamingText = ref('')
  const generatedOutline = ref('')
  const prefillContinue = ref(null)
+ const activeGenerationRequest = ref(null)
 
  async function fetchTypes() {
  const res = await api.get('/novel/types')
@@ -45,13 +46,21 @@ export const useNovelStore = defineStore('novel', () => {
  function setPrefillContinue(data) { prefillContinue.value = data }
  function clearPrefillContinue() { prefillContinue.value = null }
 
- function stopGeneration() { streamingText.value = '' }
+ function stopGeneration() {
+ const request = activeGenerationRequest.value
+ if (request && request.readyState !== XMLHttpRequest.DONE) {
+ request._aborted = true
+ request.abort()
+ }
+ activeGenerationRequest.value = null
+ }
 
  // ---- 生成 ----
  function startGeneration(params, onChunk, onStatus) {
  streamingText.value = ''
  const token = localStorage.getItem('token')
  const xhr = new XMLHttpRequest()
+ activeGenerationRequest.value = xhr
  xhr.open('POST', '/api/novel/generate')
  xhr.setRequestHeader('Authorization', `Bearer ${token}`)
  xhr.setRequestHeader('Content-Type', 'application/json')
@@ -67,15 +76,16 @@ export const useNovelStore = defineStore('novel', () => {
  try {
  const event = JSON.parse(line.substring(6))
  if (event.type === 'content') {
- if (!humanizedReceived) { streamingText.value += event.content; if (onChunk) onChunk(event.content) }
+ if (!humanizedReceived) { streamingText.value += event.content; if (onChunk) onChunk(event.content, streamingText.value) }
  }
  else if (event.type === 'outline') { generatedOutline.value = event.content; if (onStatus) onStatus({ type: 'outline', content: event.content }) }
  else if (event.type === 'status') { if (onStatus) onStatus(event) }
  else if (event.type === 'novel_created') { if (onStatus) onStatus(event) }
  else if (event.type === 'chapter_start') { humanizedReceived = false; if (onStatus) onStatus(event) }
  else if (event.type === 'chapter_end') { if (onStatus) onStatus(event) }
+ else if (event.type === 'quality_notice') { if (onStatus) onStatus(event) }
  else if (event.type === 'completed') { if (onStatus) onStatus(event) }
- else if (event.type === 'paused' || event.type === 'token_exhausted') { if (onStatus) onStatus(event) }
+ else if (event.type === 'paused' || event.type === 'token_exhausted' || event.type === 'plan_needs_extension') { if (onStatus) onStatus(event) }
  else if (event.type === 'humanized') { humanizedReceived = true; humanizedContent = event.content; if (onStatus) onStatus(event) }
  else if (event.type === 'error') { if (onStatus) onStatus(event) }
  } catch {}
@@ -84,8 +94,9 @@ export const useNovelStore = defineStore('novel', () => {
  if (humanizedReceived) { streamingText.value = humanizedContent }
  }
  xhr.onloadend = () => {
+ if (activeGenerationRequest.value === xhr) activeGenerationRequest.value = null
  if (!xhr._aborted && onStatus) {
- try { const ls = xhr.responseText.split('\n').filter(l => l.startsWith('data: ')); if (ls.length) { const ev = JSON.parse(ls[ls.length - 1].substring(6)); const terminalTypes = ['completed','paused','token_exhausted','error']; if (!terminalTypes.includes(ev.type)) onStatus({ type: 'completed' }) } } catch {}
+ try { const ls = xhr.responseText.split('\n').filter(l => l.startsWith('data: ')); if (ls.length) { const ev = JSON.parse(ls[ls.length - 1].substring(6)); const terminalTypes = ['completed','paused','token_exhausted','plan_needs_extension','error']; if (!terminalTypes.includes(ev.type)) onStatus({ type: 'completed' }) } } catch {}
  }
  }
  xhr.send(JSON.stringify(params))
@@ -96,6 +107,7 @@ export const useNovelStore = defineStore('novel', () => {
  streamingText.value = ''
  const token = localStorage.getItem('token')
  const xhr = new XMLHttpRequest()
+ activeGenerationRequest.value = xhr
  xhr.open('POST', `/api/novel/continue/${novelId}`)
  xhr.setRequestHeader('Authorization', `Bearer ${token}`)
  xhr.setRequestHeader('Content-Type', 'application/json')
@@ -109,9 +121,9 @@ export const useNovelStore = defineStore('novel', () => {
  for (const line of lines) {
  try {
  const event = JSON.parse(line.substring(6))
- if (event.type === 'content') { streamingText.value += event.content; if (onChunk) onChunk(event.content) }
- else if (event.type === 'status' || event.type === 'chapter_start' || event.type === 'chapter_end' || event.type === 'completed' || event.type === 'paused' || event.type === 'token_exhausted' || event.type === 'error') {
- if (['completed','paused','token_exhausted','error'].includes(event.type)) xhr._receivedTerminal = true
+ if (event.type === 'content') { streamingText.value += event.content; if (onChunk) onChunk(event.content, streamingText.value) }
+ else if (event.type === 'status' || event.type === 'chapter_start' || event.type === 'chapter_end' || event.type === 'quality_notice' || event.type === 'completed' || event.type === 'paused' || event.type === 'token_exhausted' || event.type === 'plan_needs_extension' || event.type === 'error') {
+ if (['completed','paused','token_exhausted','plan_needs_extension','error'].includes(event.type)) xhr._receivedTerminal = true
  if (onStatus) onStatus(event)
  }
  } catch {}
@@ -120,6 +132,7 @@ export const useNovelStore = defineStore('novel', () => {
  xhr.send(JSON.stringify({ mode: mode || 'chapter' }))
  return new Promise((resolve, reject) => {
  xhr.onloadend = () => {
+ if (activeGenerationRequest.value === xhr) activeGenerationRequest.value = null
  if (xhr._aborted) return resolve()
  if (xhr.status >= 400) {
  let message = `请求失败(${xhr.status})`
@@ -142,6 +155,7 @@ export const useNovelStore = defineStore('novel', () => {
  streamingText.value = ''
  const token = localStorage.getItem('token')
  const xhr = new XMLHttpRequest()
+ activeGenerationRequest.value = xhr
  xhr.open('POST', '/api/novel/continue-import')
  xhr.setRequestHeader('Authorization', `Bearer ${token}`)
  xhr.setRequestHeader('Content-Type', 'application/json')
@@ -155,7 +169,7 @@ export const useNovelStore = defineStore('novel', () => {
  for (const line of lines) {
  try {
  const event = JSON.parse(line.substring(6))
- if (event.type === 'content') { streamingText.value += event.content; if (onChunk) onChunk(event.content) }
+ if (event.type === 'content') { streamingText.value += event.content; if (onChunk) onChunk(event.content, streamingText.value) }
  else if (event.type === 'status' || event.type === 'chapter_start' || event.type === 'chapter_end' || event.type === 'completed' || event.type === 'paused' || event.type === 'token_exhausted' || event.type === 'error') {
  if (['completed','paused','token_exhausted','error'].includes(event.type)) xhr._receivedTerminal = true
  if (onStatus) onStatus(event)
@@ -166,6 +180,7 @@ export const useNovelStore = defineStore('novel', () => {
  xhr.send(JSON.stringify(params))
  return new Promise((resolve, reject) => {
  xhr.onloadend = () => {
+ if (activeGenerationRequest.value === xhr) activeGenerationRequest.value = null
  if (xhr._aborted) return resolve()
  if (xhr.status >= 400) {
  let message = `请求失败(${xhr.status})`

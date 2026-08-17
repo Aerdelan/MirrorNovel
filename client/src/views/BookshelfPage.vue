@@ -59,16 +59,16 @@
  <span v-else class="status-badge" :class="novel.status">{{ statusMap[novel.status] || novel.status }}</span>
  </div>
  <div class="novel-meta">
- <span> {{ novel.currentWordCount }} / {{ novel.targetWordCount }} {{ $t('bookshelf.chapter') }}</span>
+ <span> {{ novel.currentWordCount }} / {{ novel.targetWordCount }} {{ $t('generate.wordShort') }}</span>
  <span> {{ novel.currentChapterIndex || 0 }} {{ $t('novelDetail.chapter') }}</span>
  <span> {{ formatTime(novel.updatedAt) }}</span>
  </div>
  <div class="novel-actions" @click.stop>
  <button v-if="novel.status === 'generating'" class="btn btn-sm btn-outline" @click="pauseNovel(novel)">{{ $t('bookshelf.pause') }}</button>
  <button v-if="novel.status === 'paused'" class="btn btn-sm btn-primary" @click="showContinueDialog(novel)">{{ $t('bookshelf.resume') }}</button>
- <button v-if="novel.status === 'completed' || novel.status === 'paused'" class="btn btn-sm btn-outline" style="color: #8B5CF6; border-color: #8B5CF6;" @click="showContinueDialog(novel)">{{ $t('bookshelf.write') }}</button>
- <button class="btn btn-sm btn-outline" style="color: #1890ff; border-color: #1890ff;" @click.stop="editOutline(novel)">{{ $t('bookshelf.outline') }}</button>
- <button v-if="novel.status === 'completed' || novel.status === 'paused'" class="btn btn-sm btn-outline" style="color: #7c3aed; border-color: #7c3aed;" :disabled="editorialRunning" @click.stop="startEditorialBook(novel)">{{ editorialRunning ? $t('bookshelf.editorialRunning') : $t('bookshelf.editorial') }}</button>
+ <button v-if="novel.status === 'completed' || novel.status === 'paused'" class="btn btn-sm btn-outline action-warm" @click="showContinueDialog(novel)">{{ $t('bookshelf.write') }}</button>
+ <button class="btn btn-sm btn-outline action-info" @click.stop="editOutline(novel)">{{ $t('bookshelf.outline') }}</button>
+ <button v-if="novel.status === 'completed' || novel.status === 'paused'" class="btn btn-sm btn-outline action-editorial" :disabled="editorialRunning" @click.stop="startEditorialBook(novel)">{{ editorialRunning ? $t('bookshelf.editorialRunning') : $t('bookshelf.editorial') }}</button>
  <button class="btn btn-sm btn-outline" style="color: var(--primary-color); border-color: var(--primary-color);" :disabled="exporting" @click="exportSingle(novel)">{{ $t('bookshelf.export') }}</button>
  <button class="btn btn-sm btn-outline" style="color: var(--error-color); border-color: var(--error-color);" @click="confirmDelete(novel)">{{ $t('common.delete') }}</button>
  </div>
@@ -240,7 +240,7 @@ async function startBookContinue(novel) {
  }, 'book')
  } catch (e) {
  isContinuing.value = false
- if (isTokenExhaustedError(e.message)) alert('当前 Token 余额不足，请加 QQ 群 1019601998 联系群主购买 Token')
+ if (isTokenExhaustedError(e.message)) alert('当前积分余额不足，请加 QQ 群 1019601998 联系群主补充积分')
  else if (e.message !== 'paused') alert('续写失败：' + e.message)
  novelStore.fetchBookshelf()
  }
@@ -357,7 +357,7 @@ async function saveOutline() {
 .bookshelf-page { padding-top: var(--header-height); }
 .page-header { position: fixed; top: 0; left: 0; right: 0; height: var(--header-height); background: var(--card-bg); display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 600; border-bottom: 1px solid var(--border-color); z-index: 100; gap: 8px; }
 .header-btn { position: absolute; right: 12px; font-size: 12px; }
-.batch-bar { position: fixed; top: var(--header-height); left: 0; right: 0; height: 44px; background: #fff5f0; border-bottom: 1px solid #ffe8d6; display: flex; align-items: center; padding: 0 12px; gap: 10px; z-index: 99; }
+.batch-bar { position: fixed; top: var(--header-height); left: 0; right: 0; height: 44px; background: var(--accent-light); border-bottom: 1px solid var(--warning-border); display: flex; align-items: center; padding: 0 12px; gap: 10px; z-index: 99; }
 .batch-check-label { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--text-secondary); cursor: pointer; user-select: none; }
 .batch-check-label input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--primary-color); }
 .batch-count { font-size: 12px; color: var(--text-light); flex-shrink: 0; }
@@ -366,7 +366,7 @@ async function saveOutline() {
 .novel-card { cursor: pointer; transition: all 0.2s; position: relative; }
 .novel-card:active { transform: scale(0.98); }
 .novel-card.batch-mode { cursor: default; }
-.novel-card.selected { border-color: var(--primary-color); background: #fff5f0; }
+.novel-card.selected { border-color: var(--primary-color); background: var(--primary-light); }
 .batch-check { display: flex; align-items: center; padding-right: 4px; }
 .batch-check input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--primary-color); cursor: pointer; }
 .novel-header { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
@@ -382,9 +382,9 @@ async function saveOutline() {
 .continue-desc { font-size: 13px; color: var(--text-light); margin: 0 0 20px; }
 .continue-options { display: flex; flex-direction: column; gap: 12px; }
 .continue-option { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 16px; border: 2px solid var(--border-color); border-radius: 12px; background: #f8f8f8; cursor: pointer; transition: all 0.2s; font-family: inherit; }
-.continue-option:hover { border-color: var(--primary-color); background: #fff5f0; }
+.continue-option:hover { border-color: var(--primary-color); background: var(--primary-light); }
 .continue-option:active { transform: scale(0.97); }
-.continue-option.primary { border-color: var(--primary-color); background: #fff5f0; }
+.continue-option.primary { border-color: var(--primary-color); background: var(--primary-light); }
 .continue-option .option-icon { font-size: 28px; }
 .continue-option .option-text { font-size: 15px; font-weight: 600; color: var(--text-primary); }
 .continue-option .option-desc { font-size: 12px; color: var(--text-light); }
@@ -404,22 +404,28 @@ async function saveOutline() {
 /* 编辑引擎进度 */
 .editorial-progress-overlay { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; }
 .editorial-progress-card { background: var(--card-bg, #fff); border-radius: 16px; padding: 28px 24px; text-align: center; min-width: 320px; max-width: 400px; }
-.editorial-progress-card .progress-title { font-size: 16px; font-weight: 700; color: #7c3aed; margin-bottom: 8px; }
+.editorial-progress-card .progress-title { font-size: 16px; font-weight: 700; color: var(--accent-hover); margin-bottom: 8px; }
 .editorial-progress-card .progress-novel-title { font-size: 13px; color: var(--text-secondary); margin-bottom: 12px; }
 .editorial-stages-display { display: flex; flex-direction: column; gap: 6px; margin: 16px 0; }
 .editorial-stage-item { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 8px; background: #f5f5f5; font-size: 13px; transition: all 0.3s; }
-.editorial-stage-item.active { background: #f5f0ff; border: 1px solid #d0c0f0; animation: editorialPulse 1.5s infinite; }
+.editorial-stage-item.active { background: var(--accent-light); border: 1px solid #f0c58d; animation: editorialPulse 1.5s infinite; }
 .editorial-stage-item.done { background: #f0f7f0; border: 1px solid #c0e0c0; }
 .editorial-stage-item.failed { background: #fff5f5; border: 1px solid #ffc0c0; }
 .editorial-stage-item.failed .stage-num { background: #e74c3c; color: #fff; }
 .editorial-stage-item.failed .stage-name { color: #e74c3c; font-weight: 600; }
 .stage-error-msg { font-size: 11px; color: #c0392b; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
 .editorial-stage-item .stage-num { display: flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: #ddd; color: #666; font-size: 11px; font-weight: 700; flex-shrink: 0; }
-.editorial-stage-item.active .stage-num { background: #7c3aed; color: #fff; }
+.editorial-stage-item.active .stage-num { background: var(--accent); color: #fff; }
 .editorial-stage-item.done .stage-num { background: #27ae60; color: #fff; }
 .editorial-stage-item .stage-name { color: #666; }
-.editorial-stage-item.active .stage-name { color: #7c3aed; font-weight: 600; }
+.editorial-stage-item.active .stage-name { color: var(--accent-hover); font-weight: 600; }
 .editorial-stage-item.done .stage-name { color: #27ae60; }
+.action-warm { color: var(--accent-hover); border-color: var(--accent); }
+.action-warm:hover:not(:disabled) { color: var(--accent-hover); border-color: var(--accent); background: var(--accent-light); }
+.action-info { color: var(--info); border-color: var(--info); }
+.action-info:hover:not(:disabled) { color: var(--info); border-color: var(--info); background: var(--info-bg); }
+.action-editorial { color: var(--accent-hover); border-color: var(--accent); }
+.action-editorial:hover:not(:disabled) { color: var(--accent-hover); border-color: var(--accent); background: var(--accent-light); }
 
 /* 大纲编辑弹窗 */
 .outline-overlay { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; animation: fadeIn 0.2s; }

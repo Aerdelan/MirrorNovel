@@ -99,7 +99,7 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.register-page { height: 100%; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, #FFF5F0 0%, #FFE8D6 100%); padding: 20px; overflow-y: auto; }
+.register-page { height: 100%; display: flex; align-items: center; justify-content: center; background: radial-gradient(circle at 80% 10%, #fff4df 0%, transparent 30%), linear-gradient(135deg, #f3f7f2 0%, #e5f0e6 100%); padding: 20px; overflow-y: auto; }
 .auth-container { width: 100%; max-width: 380px; }
 .auth-header { text-align: center; margin-bottom: 24px; }
 .auth-icon { font-size: 56px; margin-bottom: 8px; }

@@ -84,6 +84,7 @@ const verifyTransporter = async () => {
 const sendActivityNotification = async (to, activity) => {
   const startDate = new Date(activity.startTime).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
   const endDate = new Date(activity.endTime).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+  const rewardPoints = activity.rewardPoints || activity.tokenAmount || 0;
 
   const html = `
     <div style="max-width:600px;margin:0 auto;padding:20px;background:#fff;border-radius:10px;">
@@ -93,8 +94,8 @@ const sendActivityNotification = async (to, activity) => {
       <div style="padding:20px;background:#f9f9f9;border-radius:8px;">
         <p style="font-size:16px;color:#333;">亲爱的用户：</p>
         <p style="font-size:16px;color:#333;">
-          <strong>MirrorNovel生成</strong> 将举办限免活动！活动期间登录即可获赠
-          <span style="color:#FF6B35;font-weight:bold;font-size:20px;">${activity.tokenAmount}</span> Token！
+          <strong>MirrorNovel生成</strong> 将举办积分活动！完成活动条件即可获得
+          <span style="color:#FF6B35;font-weight:bold;font-size:20px;">${rewardPoints}</span> 积分！
         </p>
         <div style="text-align:center;padding:20px 0;">
           <div style="display:inline-block;background:linear-gradient(135deg,#FF6B35,#ff8f5e);color:white;padding:15px 30px;border-radius:8px;">
@@ -102,7 +103,7 @@ const sendActivityNotification = async (to, activity) => {
             <div style="font-size:16px;font-weight:bold;margin-top:5px;">${startDate} 至 ${endDate}</div>
           </div>
         </div>
-        <p style="font-size:15px;color:#555;text-align:center;">活动期间首次登录，自动赠送 <strong>${activity.tokenAmount} Token</strong></p>
+        <p style="font-size:15px;color:#555;text-align:center;">活动奖励 <strong>${rewardPoints} 积分</strong>，具体领取条件请以活动页面为准</p>
         <p style="font-size:14px;color:#999;text-align:center;margin-top:20px;">如有疑问，请加 QQ 群 1019601998 联系群主</p>
       </div>
     </div>
@@ -111,7 +112,7 @@ const sendActivityNotification = async (to, activity) => {
   const mailOptions = {
     from: `"MirrorNovel生成" <${process.env.EMAIL_USERNAME}>`,
     to,
-    subject: `🎉 【MirrorNovel生成】限免活动：登录即送 ${activity.tokenAmount} Token！`,
+    subject: `【MirrorNovel生成】积分活动：最高可得 ${rewardPoints} 积分`,
     html,
   };
 

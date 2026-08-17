@@ -1,4 +1,11 @@
 import axios from 'axios'
+import { toUserFacingMessage } from '../utils/userFacing'
+
+function sanitizeMessage(payload) {
+ if (!payload || typeof payload !== 'object' || typeof payload.message !== 'string') return payload
+ const locale = localStorage.getItem('locale') === 'en' ? 'en' : 'zh'
+ return { ...payload, message: toUserFacingMessage(payload.message, locale) }
+}
 
 const api = axios.create({
  baseURL: '/api',
@@ -23,8 +30,12 @@ api.interceptors.request.use(
 // 响应拦截器：处理401 — 软导航替代硬跳转
 let _authRedirecting = false
 api.interceptors.response.use(
- (response) => response,
+ (response) => {
+ response.data = sanitizeMessage(response.data)
+ return response
+ },
  (error) => {
+ if (error.response?.data) error.response.data = sanitizeMessage(error.response.data)
  if (error.response?.status === 401 && !_authRedirecting) {
  _authRedirecting = true
  localStorage.removeItem('token')

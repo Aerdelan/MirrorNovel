@@ -4,7 +4,7 @@
  <div class="auth-brand">
  <div class="brand-icon">
  <svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
- <rect width="48" height="48" rx="12" fill="#2563eb"/>
+ <rect width="48" height="48" rx="12" fill="#3f7d5a"/>
  <path d="M14 16h20v2H14zM14 22h20v2H14zM14 28h14v2H14z" fill="white"/>
  <path d="M33 27l5 5-5 5" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
  </svg>
@@ -83,7 +83,7 @@ async function handleLogin() {
  display: flex;
  align-items: center;
  justify-content: center;
- background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 50%, #f1f5f9 100%);
+ background: radial-gradient(circle at 18% 12%, #fff7e9 0%, transparent 32%), linear-gradient(135deg, #f3f7f2 0%, #e2efe3 50%, #f8f4ea 100%);
  padding: 24px;
 }
 .auth-container {

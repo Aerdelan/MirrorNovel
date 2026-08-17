@@ -6,6 +6,24 @@ const VerificationCode = require('../models/VerificationCode');
 const { sendVerificationCode, verifyTransporter } = require('../services/emailService');
 const jwt = require('jsonwebtoken');
 const auth = require('../middleware/auth');
+const { creditPoints, getPointsSnapshot } = require('../services/pointsService');
+const { claimActivity, ActivityClaimError } = require('../services/activityService');
+const {
+  getPublicRoutes,
+  getServerRoute,
+  toPublicModelConfig,
+} = require('../config/modelPriceCatalog');
+
+function publicPoints(user) {
+  const account = getPointsSnapshot(user);
+  return {
+    points: account,
+    availablePoints: account.available,
+    // 保留旧字段，现有客户端无需立即迁移。
+    tokens: { total: account.total, used: account.used },
+    availableTokens: account.available,
+  };
+}
 
 // 是否启用邮箱发送——如果连接不上就退化为控制台打印
 let emailEnabled = true;
@@ -120,6 +138,7 @@ router.post('/register', async (req, res) => {
       password,
       nickname: nickname || '书友',
       tokens: { total: 1000, used: 0 },
+      points: { version: 1, total: 1000, used: 0 },
     });
     await user.save();
 
@@ -128,13 +147,13 @@ router.post('/register', async (req, res) => {
       try {
         const inviter = await User.findOne({ inviteCode });
         if (inviter && inviter._id.toString() !== user._id.toString()) {
-          inviter.tokens.total = (inviter.tokens.total || 0) + 2000;
+          await creditPoints(inviter, 2000, { reason: 'invite_reward', referenceId: String(user._id) });
           inviter.inviteCount = (inviter.inviteCount || 0) + 1;
           inviter.inviteRewards = (inviter.inviteRewards || 0) + 2000;
           await inviter.save();
           user.invitedBy = inviter._id;
           await user.save();
-          console.log(`[邀请] 用户 ${inviter.email} 获赠 2000 Token`);
+          console.log(`[邀请] 用户 ${inviter.email} 获赠 2000 积分`);
         }
       } catch (e) { console.error('[邀请] 处理失败:', e.message) }
     }
@@ -158,8 +177,7 @@ router.post('/register', async (req, res) => {
         nickname: user.nickname,
         avatar: user.avatar,
         role: user.role,
-        tokens: user.tokens,
-        availableTokens: user.availableTokens,
+        ...publicPoints(user),
       },
     });
   } catch (error) {
@@ -195,30 +213,29 @@ router.post('/login', async (req, res) => {
     user.lastLoginAt = new Date();
     await user.save();
 
-    // 限免活动：活动期间首次登录赠送 Token
+    // 自动领取当前登录活动；奖励统一进入积分账本。
     let activityBonus = 0;
+    let activityMessage = '';
     try {
       const now = new Date();
       const activeActivity = await Activity.findOne({
+        type: 'login',
+        enabled: { $ne: false },
+        autoClaim: true,
         startTime: { $lte: now },
         endTime: { $gte: now },
       }).sort({ startTime: -1 });
 
       if (activeActivity) {
-        const alreadyClaimed = user.activityClaims?.some(
-          c => c.activityId && c.activityId.toString() === activeActivity._id.toString()
-        );
-        if (!alreadyClaimed) {
-          user.tokens.total = (user.tokens.total || 0) + activeActivity.tokenAmount;
-          user.activityClaims = user.activityClaims || [];
-          user.activityClaims.push({ activityId: activeActivity._id, claimedAt: new Date() });
-          await user.save();
-          activityBonus = activeActivity.tokenAmount;
-          console.log(`[限免活动] 用户 ${user.email} 登录获赠 ${activityBonus} Token`);
-        }
+        const result = await claimActivity(activeActivity, user, { now });
+        activityBonus = result.points;
+        activityMessage = result.message;
+        console.log(`[积分活动] 用户 ${user.email} 登录参与 ${activeActivity.name}，获得 ${activityBonus} 积分`);
       }
     } catch (e) {
-      console.error('[限免活动] 处理失败:', e.message);
+      if (!(e instanceof ActivityClaimError && ['USER_LIMIT_REACHED', 'DAILY_LIMIT_REACHED'].includes(e.code))) {
+        console.error('[积分活动] 登录自动领取失败:', e.message);
+      }
     }
 
     // 生成JWT
@@ -237,10 +254,9 @@ router.post('/login', async (req, res) => {
         nickname: user.nickname,
         avatar: user.avatar,
         role: user.role,
-        tokens: user.tokens,
-        availableTokens: user.availableTokens,
+        ...publicPoints(user),
       },
-      ...(activityBonus > 0 && { activityBonus, activityMessage: `🎉 限免活动：登录即送 ${activityBonus} Token！` }),
+      ...(activityBonus > 0 && { activityBonus, activityMessage: activityMessage || `登录活动赠送 ${activityBonus} 积分` }),
     });
   } catch (error) {
     console.error('登录失败:', error);
@@ -278,15 +294,16 @@ router.post('/checkin', auth, async (req, res) => {
     user.checkin.lastDate = today;
     user.checkin.dayIndex = dayIndex;
     user.checkin.totalDays = (user.checkin.totalDays || 0) + 1;
-    user.tokens.total = (user.tokens.total || 0) + reward;
+    await creditPoints(user, reward, { reason: 'daily_checkin', referenceId: today, save: false });
     await user.save();
 
     res.json({
-      message: `签到成功！获得 ${reward} Token`,
+      message: `签到成功！获得 ${reward} 积分`,
       reward,
       dayIndex: dayIndex + 1, // 前端显示1-7
       totalDays: user.checkin.totalDays,
-      availableTokens: user.availableTokens,
+      availableTokens: getPointsSnapshot(user).available,
+      availablePoints: getPointsSnapshot(user).available,
     });
   } catch (error) {
     console.error('签到失败:', error);
@@ -328,9 +345,8 @@ router.get('/profile', auth, async (req, res) => {
       role: req.user.role,
       disabled: req.user.disabled,
       createdAt: req.user.createdAt,
-      modelConfig: req.user.modelConfig || { provider: 'default' },
-      tokens: req.user.tokens,
-      availableTokens: req.user.availableTokens,
+      modelConfig: toPublicModelConfig(req.user.modelConfig),
+      ...publicPoints(req.user),
       showAnnouncement: req.user.showAnnouncement,
     },
   });
@@ -354,13 +370,16 @@ router.put('/profile', auth, async (req, res) => {
 
 // 获取模型配置
 router.get('/model-config', auth, async (req, res) => {
-  res.json({ modelConfig: req.user.modelConfig || { provider: 'default' } });
+  res.json({
+    modelConfig: toPublicModelConfig(req.user.modelConfig),
+    routes: getPublicRoutes(),
+  });
 });
 
 // 保存模型配置
 router.put('/model-config', auth, async (req, res) => {
   try {
-    const { provider, ollamaModel, cloudBaseUrl, cloudModel, cloudApiKey } = req.body;
+    const { provider } = req.body;
     
     if (provider && !['default', 'system', 'ollama', 'cloud'].includes(provider)) {
       return res.status(400).json({ message: '无效的 provider' });
@@ -374,7 +393,15 @@ router.put('/model-config', auth, async (req, res) => {
     } = req.body;
 
     const config = { provider: provider || 'default' };
-    if (provider === 'ollama') {
+    if (config.provider === 'default' || config.provider === 'system') {
+      const requestedRoute = String(req.body.routeId || 'normal_1');
+      const route = getServerRoute(requestedRoute);
+      if (route.id !== requestedRoute && route.alias !== requestedRoute) {
+        return res.status(400).json({ message: '无效的线路' });
+      }
+      config.provider = 'system';
+      config.routeId = route.id;
+    } else if (provider === 'ollama') {
       config.ollamaBaseUrl = ollamaBaseUrl || 'http://localhost:11434';
       config.ollamaOutlineModel = ollamaOutlineModel || '';
       config.ollamaWritingModel = ollamaWritingModel || '';
@@ -391,7 +418,7 @@ router.put('/model-config', auth, async (req, res) => {
 
     req.user.modelConfig = config;
     await req.user.save();
-    res.json({ message: '模型配置已保存', modelConfig: config });
+    res.json({ message: '模型配置已保存', modelConfig: toPublicModelConfig(config) });
   } catch (error) {
     res.status(500).json({ message: '保存配置失败', error: error.message });
   }
@@ -412,39 +439,45 @@ router.get('/stats', auth, async (req, res) => {
   }
 })
 
-// ---- Token / 支付 / 公告 ----
+// ---- 积分 / 支付 / 公告 ----
 
-// 获取用户 token 信息
+// 获取用户积分信息（旧路径继续兼容现有客户端）
 router.get('/tokens', auth, async (req, res) => {
+  const account = getPointsSnapshot(req.user);
   res.json({
-    total: req.user.tokens.total,
-    used: req.user.tokens.used,
-    available: req.user.availableTokens,
+    total: account.total,
+    used: account.used,
+    available: account.available,
+    points: account,
+    availablePoints: account.available,
   });
 });
 
-// 假支付：购买 token
+// 假支付：1 元兑换 1000 积分。
 router.post('/purchase', auth, async (req, res) => {
   try {
     const { amount, method } = req.body; // amount: 充值金额(元), method: 'alipay'
-    const tokenPrice = 15; // 15元/100万token
-    const tokenAmount = Math.floor((amount || 0) / tokenPrice * 1000000);
+    const paidAmount = Number(amount || 0);
+    const pointsAmount = Math.floor(paidAmount * 1000);
 
-    if (tokenAmount <= 0) {
+    if (!Number.isFinite(paidAmount) || paidAmount <= 0 || pointsAmount <= 0) {
       return res.status(400).json({ message: '充值金额无效' });
     }
 
     // 假装支付成功
-    req.user.tokens.total += tokenAmount;
-    await req.user.save();
+    const credited = await creditPoints(req.user, pointsAmount, {
+      reason: 'purchase',
+      referenceId: String(method || ''),
+    });
 
     res.json({
-      message: `充值成功！获得 ${tokenAmount.toLocaleString()} Token`,
-      total: req.user.tokens.total,
-      available: req.user.availableTokens,
-      paid: amount,
+      message: `充值成功！获得 ${pointsAmount.toLocaleString()} 积分`,
+      total: credited.total,
+      available: credited.available,
+      points: credited,
+      paid: paidAmount,
       method,
-      tokenAmount,
+      pointsAmount,
     });
   } catch (error) {
     res.status(500).json({ message: '充值失败', error: error.message });

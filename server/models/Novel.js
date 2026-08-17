@@ -5,6 +5,7 @@ const chapterSchema = new mongoose.Schema({
   title: { type: String, default: '' },
   content: { type: String, default: '' },
   wordCount: { type: Number, default: 0 },
+  qualityReport: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
   generatedAt: { type: Date, default: Date.now },
 });
 
@@ -70,6 +71,11 @@ const novelSchema = new mongoose.Schema({
     type: String,
     default: '',
   },
+  // 章节计划的可机读版本；chapterPlan 仍保留原始文本，保证旧客户端和旧数据兼容。
+  chapterPlanData: {
+    type: mongoose.Schema.Types.Mixed,
+    default: () => ({ version: 1, chapters: [] }),
+  },
   // ====== 持久化的章节上下文文档（替代 on-the-fly 压缩） ======
   // 伏笔追踪文档：记录每个伏笔的设章、状态、回收章
   foreshadowingDoc: {
@@ -81,6 +87,47 @@ const novelSchema = new mongoose.Schema({
     type: String,
     default: '',
   },
+  // 结构化创作状态。旧作品没有这些字段时，生成服务会从已有章节和文本文档渐进补全。
+  storyBible: {
+    theme: { type: String, default: '' },
+    narrativeView: { type: String, default: '' },
+    tone: { type: String, default: '' },
+    taboos: { type: [String], default: [] },
+    worldRules: { type: [String], default: [] },
+  },
+  characterStates: [{
+    name: { type: String, default: '' },
+    goal: { type: String, default: '' },
+    relationships: { type: [String], default: [] },
+    knownFacts: { type: [String], default: [] },
+    location: { type: String, default: '' },
+    emotionalState: { type: String, default: '' },
+    lastChapter: { type: Number, default: 0 },
+  }],
+  plotThreads: [{
+    id: { type: String, default: '' },
+    title: { type: String, default: '' },
+    type: { type: String, enum: ['main', 'subplot', 'relationship', 'mystery'], default: 'main' },
+    status: { type: String, enum: ['planned', 'active', 'paused', 'resolved'], default: 'planned' },
+    nextMilestone: { type: String, default: '' },
+    lastChapter: { type: Number, default: 0 },
+  }],
+  foreshadowingLedger: [{
+    id: { type: String, default: '' },
+    content: { type: String, default: '' },
+    setChapter: { type: Number, default: 0 },
+    targetChapter: { type: Number, default: 0 },
+    status: { type: String, enum: ['planned', 'pending', 'resolved', 'abandoned'], default: 'pending' },
+    resolvedChapter: { type: Number, default: 0 },
+    resolution: { type: String, default: '' },
+  }],
+  emotionCurve: [{
+    chapterNumber: { type: Number, required: true },
+    tension: { type: Number, min: 1, max: 10, default: 5 },
+    tone: { type: String, default: 'neutral' },
+    chapterRole: { type: String, default: '推进' },
+  }],
+  recentEventSignatures: { type: [String], default: [] },
   chapters: [chapterSchema],
   currentChapterIndex: {
     type: Number,

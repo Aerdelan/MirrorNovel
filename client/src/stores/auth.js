@@ -16,16 +16,28 @@ function safeToken() {
  } catch { return '' }
 }
 
+function sanitizeUserData(userData) {
+ if (!userData || typeof userData !== 'object') return userData
+ const sanitized = { ...userData }
+ const routeId = userData.modelConfig?.routeId || 'normal_1'
+ sanitized.modelConfig = {
+  provider: 'system',
+  routeId,
+  routeAlias: userData.modelConfig?.routeAlias || '',
+ }
+ return sanitized
+}
+
 export const useAuthStore = defineStore('auth', () => {
- const user = ref(safeParse('user'))
+ const user = ref(sanitizeUserData(safeParse('user')))
  const token = ref(safeToken())
 
  const isLoggedIn = computed(() => !!token.value)
 
  function setAuth(userData, authToken) {
- user.value = userData
+ user.value = sanitizeUserData(userData)
  token.value = authToken
- localStorage.setItem('user', JSON.stringify(userData))
+ localStorage.setItem('user', JSON.stringify(user.value))
  localStorage.setItem('token', authToken)
  }
 
@@ -54,8 +66,8 @@ export const useAuthStore = defineStore('auth', () => {
 
  async function getProfile() {
  const res = await api.get('/auth/profile')
- user.value = res.data.user
- localStorage.setItem('user', JSON.stringify(res.data.user))
+ user.value = sanitizeUserData(res.data.user)
+ localStorage.setItem('user', JSON.stringify(user.value))
  return res.data
  }
 
@@ -68,14 +80,9 @@ export const useAuthStore = defineStore('auth', () => {
  return res.data
  }
 
- async function fetchOllamaModels() {
- const res = await api.get('/auth/ollama/models')
- return res.data.models
- }
-
  async function getModelConfig() {
  const res = await api.get('/auth/model-config')
- return res.data.modelConfig
+ return res.data
  }
 
  async function saveModelConfig(config) {
@@ -87,15 +94,24 @@ export const useAuthStore = defineStore('auth', () => {
  return res.data
  }
 
- // Token 相关
+ // 积分账户优先使用新接口，失败时兼容旧服务端。
  async function getTokenInfo() {
- const res = await api.get('/auth/tokens')
+ let data
+ try {
+  const res = await api.get('/billing/account')
+  data = res.data.account
+ } catch {
+  const res = await api.get('/auth/tokens')
+  data = res.data.points || res.data
+ }
  if (user.value) {
- user.value.tokens = { total: res.data.total, used: res.data.used }
- user.value.availableTokens = res.data.available
+ user.value.points = { version: 1, total: data.total, used: data.used }
+ user.value.availablePoints = data.available
+ user.value.tokens = { total: data.total, used: data.used }
+ user.value.availableTokens = data.available
  localStorage.setItem('user', JSON.stringify(user.value))
  }
- return res.data
+ return data
  }
 
  // 用户统计
@@ -136,6 +152,23 @@ export const useAuthStore = defineStore('auth', () => {
  return res.data
  }
 
+ async function getActivities() {
+ const res = await api.get('/activities')
+ return res.data.activities || []
+ }
+
+ async function claimActivity(activityId) {
+ const res = await api.post(`/activities/${activityId}/claim`)
+ if (user.value && res.data.balance) {
+  user.value.points = { version: 1, total: res.data.balance.total, used: res.data.balance.used }
+  user.value.availablePoints = res.data.balance.available
+  user.value.tokens = { total: res.data.balance.total, used: res.data.balance.used }
+  user.value.availableTokens = res.data.balance.available
+  localStorage.setItem('user', JSON.stringify(user.value))
+ }
+ return res.data
+ }
+
  // 公告
  async function checkAnnouncement() {
  try {
@@ -165,7 +198,6 @@ export const useAuthStore = defineStore('auth', () => {
  sendCode,
  getProfile,
  updateProfile,
- fetchOllamaModels,
  getModelConfig,
  saveModelConfig,
  getTokenInfo,
@@ -173,6 +205,7 @@ export const useAuthStore = defineStore('auth', () => {
  purchaseTokens,
  checkin, getCheckinStatus,
  getInviteInfo,
+ getActivities, claimActivity,
  checkAnnouncement,
  dismissAnnouncement,
  logout,

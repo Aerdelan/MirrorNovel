@@ -10,25 +10,27 @@
 <style>
 /* ====== 全局变量 ====== */
 :root {
-  --primary-color: #FF6B35;
-  --primary-dark: #e55a2b;
-  --primary-light: #fff5f0;
-  --text-primary: #1a1a2e;
-  --text-secondary: #555;
-  --text-light: #999;
+  --primary-color: #3f7d5a;
+  --primary-dark: #2f6546;
+  --primary-light: #edf6ee;
+  --accent-color: #e8943a;
+  --accent-light: #fff4e5;
+  --text-primary: #26382d;
+  --text-secondary: #526359;
+  --text-light: #839087;
   --card-bg: #fff;
-  --border-color: #eee;
+  --border-color: #dfe8e0;
   --error-color: #ff4d4f;
-  --success-color: #52c41a;
+  --success-color: #4c9864;
   --header-height: 44px;
   --tab-height: 50px;
   --safe-bottom: env(safe-area-inset-bottom, 0px);
-  --shadow-sm: 0 2px 8px rgba(0,0,0,0.06);
+  --shadow-sm: 0 2px 8px rgba(47,101,70,0.08);
   --radius: 12px;
 }
 
 page {
-  background: #f5f5f7;
+  background: #f3f7f2;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
   color: var(--text-primary);
   font-size: 14px;
@@ -67,9 +69,9 @@ page {
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, var(--primary-color), #ff8a5c);
+  background: linear-gradient(135deg, var(--primary-color), #5b9a70);
   color: white;
-  box-shadow: 0 4px 12px rgba(255,107,53,0.3);
+  box-shadow: 0 4px 12px rgba(63,125,90,0.24);
 }
 
 .btn-primary[disabled] {
@@ -108,7 +110,7 @@ page {
   font-size: 15px;
   outline: none;
   box-sizing: border-box;
-  background: #f8f8fa;
+  background: #f7faf7;
   color: var(--text-primary);
   transition: border-color 0.2s;
 }
@@ -127,7 +129,7 @@ page {
   line-height: 1.6;
   outline: none;
   box-sizing: border-box;
-  background: #f8f8fa;
+  background: #f7faf7;
   font-family: inherit;
   color: var(--text-primary);
   transition: border-color 0.2s;
@@ -190,7 +192,7 @@ page {
 .loading-spinner {
   width: 32px;
   height: 32px;
-  border: 3px solid #eee;
+  border: 3px solid #e4eee5;
   border-top-color: var(--primary-color);
   border-radius: 50%;
   animation: spin 0.7s linear infinite;

@@ -1,0 +1,342 @@
+/**
+ * Structured story-state helpers for long-form generation.
+ * They deliberately tolerate legacy novels that do not yet have these fields.
+ */
+
+function toArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function splitItems(value) {
+  if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean);
+  return String(value || '').split(/[、,，；;]/).map((item) => item.trim()).filter(Boolean);
+}
+
+function normalizePlanChapter(chapter) {
+  chapter = chapter || {};
+  const rawTension = Number(chapter.tension);
+  return {
+    chapterNumber: Number(chapter.chapterNumber || chapter.number || chapter.chapter || 0),
+    wordTarget: Number(chapter.wordTarget || chapter.targetWords || chapter.wordCount || 0),
+    coreEvent: String(chapter.coreEvent || chapter.event || chapter.theme || '').trim(),
+    setHooks: splitItems(chapter.setHooks || chapter.foreshadowing || chapter.plantHooks),
+    resolveHooks: splitItems(chapter.resolveHooks || chapter.revealHooks || chapter.collectHooks),
+    characters: splitItems(chapter.characters || chapter.keyCharacters),
+    chapterRole: String(chapter.chapterRole || '').trim(),
+    // Keep an omitted tension as 0 so buildEmotionPlan can apply the story-level
+    // rhythm instead of treating every incomplete legacy plan as low pressure.
+    tension: Number.isFinite(rawTension) && rawTension > 0 ? Math.max(1, Math.min(10, rawTension)) : 0,
+    phase: String(chapter.phase || '').trim(),
+    raw: String(chapter.raw || ''),
+  };
+}
+
+/** Parse both legacy one-line plans and a JSON-shaped plan object. */
+function parseChapterPlan(rawPlan) {
+  if (!rawPlan) return { version: 1, chapters: [], phases: [] };
+  if (typeof rawPlan === 'object' && Array.isArray(rawPlan.chapters)) {
+    return {
+      version: rawPlan.version || 1,
+      phases: toArray(rawPlan.phases),
+      chapters: rawPlan.chapters.map(normalizePlanChapter).filter((item) => item.chapterNumber > 0),
+    };
+  }
+
+  // 新版计划要求 JSON；这里同时容忍模型把 JSON 包在 markdown 代码块中。
+  const rawText = String(rawPlan).trim();
+  const cleanText = rawText.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  const jsonCandidate = cleanText.match(/\{[\s\S]*\}/) || cleanText.match(/\[[\s\S]*\]/);
+  if (jsonCandidate) {
+    try {
+      const parsed = JSON.parse(jsonCandidate[0]);
+      const value = Array.isArray(parsed) ? { chapters: parsed } : parsed;
+      if (value && Array.isArray(value.chapters)) {
+        return {
+          version: value.version || 1,
+          phases: toArray(value.phases),
+          chapters: value.chapters.map(normalizePlanChapter).filter((item) => item.chapterNumber > 0),
+        };
+      }
+    } catch (_) {
+      // 计划文本不是合法 JSON 时继续使用兼容的逐行解析。
+    }
+  }
+
+  const chapters = [];
+  const phases = [];
+  let phase = '';
+  for (const rawLine of String(rawPlan).split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (/^(阶段\s*\d+|Phase\s*\d+)\s*[:：]?/i.test(line) && !/第\s*\d+\s*章/.test(line)) {
+      phase = line;
+      phases.push(line);
+      continue;
+    }
+    const match = line.match(/第\s*(\d+)\s*章\s*(?:[（(]([^）)]*)[）)])?\s*[:：]?\s*(.*)$/);
+    if (!match) continue;
+    const fields = (match[3] || '').split('|').map((item) => item.trim()).filter(Boolean);
+    const findField = (labels) => {
+      const item = fields.find((value) => new RegExp('(?:' + labels + ')\\s*[:：]', 'i').test(value));
+      return item ? item.replace(new RegExp('^.*?(?:' + labels + ')\\s*[:：]', 'i'), '').trim() : '';
+    };
+    chapters.push(normalizePlanChapter({
+      chapterNumber: Number(match[1]),
+      wordTarget: Number(((match[2] || '').match(/\d{3,6}/) || [])[0] || 0),
+      coreEvent: (fields[0] || match[3] || '').replace(/^本章(?:核心事件|主题)?\s*[:：]?/i, ''),
+      setHooks: splitItems(findField('埋伏笔|设置伏笔')),
+      resolveHooks: splitItems(findField('回收伏笔|回收')),
+      characters: splitItems(findField('关键角色|角色')),
+      chapterRole: /喘息|缓冲|休整|日常/.test(line) ? '喘息推进' : (/大结局|收束/.test(line) ? '收束' : ''),
+      phase,
+      raw: line,
+    }));
+  }
+  return { version: 1, chapters, phases };
+}
+
+function renderPlanForContext(planData, currentChapter) {
+  const plan = parseChapterPlan(planData);
+  const current = Number(currentChapter || 1);
+  return plan.chapters
+    .filter((item) => item.chapterNumber >= current)
+    .slice(0, 12)
+    .map((item) => {
+      const pieces = [
+        '第' + item.chapterNumber + '章(' + (item.wordTarget || '按节奏') + '字): ' + (item.coreEvent || '推进主线'),
+        item.setHooks.length ? '埋伏笔: ' + item.setHooks.join('、') : '',
+        item.resolveHooks.length ? '回收伏笔: ' + item.resolveHooks.join('、') : '',
+        item.characters.length ? '关键角色: ' + item.characters.join('、') : '',
+      ].filter(Boolean);
+      return pieces.join(' | ');
+    })
+    .join('\n');
+}
+
+function ensureCreativeState(novel) {
+  if (!novel.storyBible) novel.storyBible = {};
+  if (!Array.isArray(novel.characterStates)) novel.characterStates = [];
+  if (!Array.isArray(novel.plotThreads)) novel.plotThreads = [];
+  if (!Array.isArray(novel.foreshadowingLedger)) novel.foreshadowingLedger = [];
+  if (!Array.isArray(novel.emotionCurve)) novel.emotionCurve = [];
+  if (!Array.isArray(novel.recentEventSignatures)) novel.recentEventSignatures = [];
+  return novel;
+}
+
+function initializeCreativeState(novel) {
+  ensureCreativeState(novel);
+  if (!novel.storyBible.theme) novel.storyBible.theme = String(novel.outline || '').slice(0, 160);
+  if (!novel.storyBible.tone) novel.storyBible.tone = novel.novelTypeName || '由故事场景自然决定';
+  if (!novel.storyBible.narrativeView) novel.storyBible.narrativeView = '与主角贴近的有限视角';
+  if (!novel.plotThreads.length) {
+    novel.plotThreads.push({
+      id: 'main',
+      title: '主线',
+      type: 'main',
+      status: 'active',
+      nextMilestone: '按照大纲推进主角的核心目标',
+      lastChapter: 0,
+    });
+  }
+  return novel;
+}
+
+function inferStoryWeight(novel) {
+  const text = [novel.novelTypeName, novel.outline, novel.worldSetting].filter(Boolean).join(' ');
+  if (/悲剧|虐|黑暗|悬疑|惊悚|末日|战争|犯罪|沉重|复仇/.test(text)) return 'heavy';
+  if (/轻松|喜剧|搞笑|甜|治愈|校园日常/.test(text)) return 'light';
+  return 'balanced';
+}
+
+/**
+ * Schedule a breathing chapter after sustained pressure.  The final 15% keeps
+ * only a short emotional release instead of a full detour from the resolution.
+ */
+function buildEmotionPlan(novel, chapterNumber, totalChapters, planChapter) {
+  initializeCreativeState(novel);
+  planChapter = planChapter || {};
+  const history = novel.emotionCurve.slice(-4);
+  const highPressure = history.length >= 3 && history.slice(-3).every((item) => Number(item.tension) >= 7);
+  const average = history.length ? history.reduce((sum, item) => sum + Number(item.tension || 5), 0) / history.length : 5;
+  const nearEnding = chapterNumber > Math.ceil(totalChapters * 0.85);
+  const requestedBreath = /喘息|缓冲|休整|日常|breath|relief/i.test(String(planChapter.chapterRole || ''));
+  const isBreath = !nearEnding && (requestedBreath || highPressure || average >= 7.2);
+  const baseTension = chapterNumber <= totalChapters * 0.2 ? 5 : chapterNumber <= totalChapters * 0.65 ? 6 : nearEnding ? 8 : 7;
+  const plannedTension = Number(planChapter.tension) || (isBreath ? 4 : baseTension);
+  const tension = isBreath
+    ? Math.max(2, Math.min(5, plannedTension))
+    : Math.max(2, Math.min(10, plannedTension));
+  const weight = inferStoryWeight(novel);
+  return {
+    tension,
+    isBreath,
+    chapterRole: isBreath ? '喘息推进' : (planChapter.chapterRole || (nearEnding ? '收束' : '主线推进')),
+    tone: isBreath
+      ? (weight === 'heavy' ? '压抑中的短暂温情、生活细节或黑色幽默，不破坏题材重量' : '轻松，但必须带来关系、信息或伏笔推进')
+      : (weight === 'heavy' ? '克制具体，避免连续高强度煽情' : '随场景自然变化，避免整章同一情绪'),
+  };
+}
+
+function buildChapterContract(options) {
+  options = options || {};
+  const novel = initializeCreativeState(options.novel || {});
+  const chapterNumber = Number(options.chapterNumber || 1);
+  const totalChapters = Number(options.totalChapters || chapterNumber);
+  const plan = options.planData && options.planData.chapters ? options.planData : parseChapterPlan(options.planData || novel.chapterPlan || '');
+  const planChapter = plan.chapters.find((item) => item.chapterNumber === chapterNumber) || {};
+  const emotion = buildEmotionPlan(novel, chapterNumber, totalChapters, planChapter);
+  const previous = options.previousChapter;
+  // Do not show future planned hooks as if they were already present in the
+  // narrative. The current chapter receives its own setHooks separately.
+  const pendingHooks = novel.foreshadowingLedger
+    .filter((item) => item.status === 'pending' || (item.status === 'planned' && Number(item.setChapter || 0) < chapterNumber))
+    .slice(0, 8);
+  const mustAdvance = novel.plotThreads.filter((item) => ['active', 'planned'].includes(item.status) && item.nextMilestone).slice(0, 3);
+  const mustNot = ['不要复述上一章已经完成的核心事件', '不要在一章内同时解决所有主线和伏笔'];
+  novel.recentEventSignatures.slice(-5).forEach((event) => mustNot.push('不要重复事件：' + String(event).slice(0, 80)));
+  if (emotion.isBreath) mustNot.push('不要用突兀搞笑抵消题材基调，也不要写成没有信息增量的纯日常');
+  return {
+    chapterNumber,
+    totalChapters,
+    wordTarget: planChapter.wordTarget || Math.max(1600, Math.min(4200, Math.floor((options.targetWords || novel.targetWordCount || 50000) / Math.max(1, totalChapters)))),
+    coreEvent: planChapter.coreEvent || '承接上一章造成的新问题，做出一个不可逆的选择并留下下一步行动',
+    phase: planChapter.phase || '',
+    characters: planChapter.characters || [],
+    setHooks: planChapter.setHooks || [],
+    resolveHooks: planChapter.resolveHooks || [],
+    pendingHooks,
+    mustAdvance,
+    previousEnd: previous ? String(previous.content || '').slice(-260).replace(/\s+/g, ' ').trim() : '故事开场，建立人物的当下处境。',
+    mustNot,
+    emotion,
+    progress: String(options.currentWords || 0) + '/' + String(options.targetWords || novel.targetWordCount || 50000),
+  };
+}
+
+function renderChapterContract(contract) {
+  if (!contract) return '';
+  const list = (items) => items && items.length ? items.join('；') : '无';
+  const pending = (contract.pendingHooks || []).map((item) => (item.id || '伏笔') + '：' + item.content).join('；') || '无';
+  const advance = (contract.mustAdvance || []).map((item) => (item.title || item.id) + ' → ' + item.nextMilestone).join('；') || '至少推进一条主线或关系线';
+  return [
+    '【本章契约｜第' + contract.chapterNumber + '章】',
+    '唯一核心事件：' + contract.coreEvent,
+    '章节功能：' + contract.emotion.chapterRole + (contract.phase ? '（' + contract.phase + '）' : ''),
+    '情绪目标：压力 ' + contract.emotion.tension + '/10；' + contract.emotion.tone,
+    '必须承接的上一章状态：' + contract.previousEnd,
+    '必须推进的剧情线：' + advance,
+    '本章角色：' + list(contract.characters),
+    '本章埋设伏笔：' + list(contract.setHooks),
+    '本章应回收伏笔：' + list(contract.resolveHooks),
+    '已存在的待回收伏笔：' + pending,
+    '明确禁止：' + contract.mustNot.join('；'),
+    '本章目标字数：约' + contract.wordTarget + '字；全书进度：' + contract.progress,
+    contract.emotion.isBreath
+      ? '喘息章规则：让读者缓一口气，但必须通过对话、物件、关系变化或新信息推进故事。'
+      : '节奏规则：保留情绪落差，结尾留下具体的下一步，而不是抽象总结。',
+  ].join('\n');
+}
+
+function extractEventSignature(content) {
+  const sentences = String(content || '').split(/[。！？!?\n]/).map((item) => item.trim()).filter((item) => item.length >= 12);
+  const candidates = sentences.filter((item) => /决定|答应|拒绝|发现|进入|离开|追|救|杀|签|拿到|失去|冲突|秘密|选择|面对|返回|逃/.test(item));
+  return (candidates[0] || sentences[0] || '').replace(/\s/g, '').slice(0, 120);
+}
+
+function similarityByChunks(leftText, rightText) {
+  const makeSet = (value) => new Set(String(value || '').replace(/\s/g, '').match(/[\u4e00-\u9fffA-Za-z0-9]{4}/g) || []);
+  const left = makeSet(leftText);
+  const right = makeSet(rightText);
+  if (!left.size || !right.size) return 0;
+  let common = 0;
+  for (const chunk of left) if (right.has(chunk)) common++;
+  return common / Math.max(left.size, right.size);
+}
+
+function checkChapterContinuity(content, previousChapter, contract) {
+  const issues = [];
+  const text = String(content || '').trim();
+  if (text.length < Math.max(500, ((contract && contract.wordTarget) || 1600) * 0.35)) issues.push('章节明显短于目标，可能未完成契约');
+  if (previousChapter && similarityByChunks(text, previousChapter.content) > 0.42) issues.push('与上一章存在较高事件或措辞重复风险');
+  if (contract && contract.coreEvent) {
+    const terms = contract.coreEvent.split(/[，。；、：:（）()\s]/).filter((item) => item.length >= 2).slice(0, 4);
+    if (terms.length >= 2 && terms.every((term) => !text.includes(term))) issues.push('正文未明显执行本章核心事件');
+  }
+  if ((text.match(/仿佛|好像|不禁|微微|一丝|眼中闪过|嘴角勾起|心中一动/g) || []).length >= 6) issues.push('高频模板化修辞偏多');
+  return { score: Math.max(0, 100 - issues.length * 20), issues, eventSignature: extractEventSignature(text) };
+}
+
+function updateCreativeState(novel, chapterNumber, content, contract, continuity) {
+  initializeCreativeState(novel);
+  continuity = continuity || {};
+  const signature = continuity.eventSignature || extractEventSignature(content);
+  novel.recentEventSignatures = novel.recentEventSignatures.filter((item) => item !== signature).concat(signature).filter(Boolean).slice(-8);
+  const emotion = (contract && contract.emotion) || buildEmotionPlan(novel, chapterNumber, (contract && contract.totalChapters) || chapterNumber, {});
+  const record = novel.emotionCurve.find((item) => item.chapterNumber === chapterNumber);
+  if (record) Object.assign(record, { tension: emotion.tension, tone: emotion.tone, chapterRole: emotion.chapterRole });
+  else novel.emotionCurve.push({ chapterNumber, tension: emotion.tension, tone: emotion.tone, chapterRole: emotion.chapterRole });
+  const addHook = (hook) => {
+    const value = String(hook || '').trim();
+    if (!value) return;
+    const id = 'FH_' + chapterNumber + '_' + value.slice(0, 18).replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '');
+    const existing = novel.foreshadowingLedger.find((item) => item.id === id || (item.content && item.content.slice(0, 12) === value.slice(0, 12)));
+    if (existing) {
+      // A hook planned from the outline becomes pending only when its setup chapter is written.
+      if (existing.status === 'planned' && Number(existing.setChapter) === Number(chapterNumber)) existing.status = 'pending';
+    } else {
+      novel.foreshadowingLedger.push({ id, content: value, setChapter: chapterNumber, targetChapter: 0, status: 'pending' });
+    }
+  };
+  ((contract && contract.setHooks) || []).forEach(addHook);
+  const compact = String(content || '').replace(/\s/g, '');
+  const resolvedByContract = ((contract && contract.resolveHooks) || []).map((item) => String(item || '').replace(/\s/g, '')).filter(Boolean);
+  novel.foreshadowingLedger.forEach((hook) => {
+    if (!['pending', 'planned'].includes(hook.status)) return;
+    const targetChapter = Number(hook.targetChapter || 0);
+    if (targetChapter > 0 && Number(chapterNumber) < targetChapter) return;
+    const key = String(hook.content || '').replace(/\s/g, '').slice(0, 12);
+    const scheduled = resolvedByContract.some((item) => item.includes(key) || key.includes(item.slice(0, 12)));
+    if (key.length >= 6 && chapterNumber > Number(hook.setChapter || 0) && (compact.includes(key) || (scheduled && compact.includes(key.slice(0, 6))))) {
+      hook.status = 'resolved';
+      hook.resolvedChapter = chapterNumber;
+      hook.resolution = extractEventSignature(content).slice(0, 120);
+    }
+  });
+  return novel;
+}
+
+function seedPlannedHooks(novel, planData) {
+  initializeCreativeState(novel);
+  const chapters = planData && Array.isArray(planData.chapters) ? planData.chapters : [];
+  for (const plan of chapters) {
+    for (const hook of plan.setHooks || []) {
+      const value = String(hook || '').trim();
+      if (!value) continue;
+      const id = 'PLAN_' + plan.chapterNumber + '_' + value.slice(0, 18).replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '');
+      const laterResolution = chapters.find((candidate) => Number(candidate.chapterNumber) > Number(plan.chapterNumber) && (candidate.resolveHooks || []).some((item) => {
+        const resolved = String(item || '').replace(/\s/g, '');
+        const hook = value.replace(/\s/g, '');
+        return resolved && (resolved.includes(hook.slice(0, 8)) || hook.includes(resolved.slice(0, 8)));
+      }));
+      if (!novel.foreshadowingLedger.some((item) => item.id === id || (item.content && item.content.slice(0, 12) === value.slice(0, 12)))) {
+        novel.foreshadowingLedger.push({ id, content: value, setChapter: plan.chapterNumber, targetChapter: laterResolution ? laterResolution.chapterNumber : 0, status: 'planned' });
+      }
+    }
+  }
+  return novel;
+}
+
+module.exports = {
+  normalizePlanChapter,
+  parseChapterPlan,
+  renderPlanForContext,
+  ensureCreativeState,
+  initializeCreativeState,
+  buildEmotionPlan,
+  buildChapterContract,
+  renderChapterContract,
+  extractEventSignature,
+  checkChapterContinuity,
+  updateCreativeState,
+  seedPlannedHooks,
+};

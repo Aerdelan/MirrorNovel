@@ -147,7 +147,7 @@
  </div>
 
  <!-- === Step 2b: 番茄小说下载 === -->
- <div class="card fanqie-card" style="border-color:#b7eb8f;">
+ <div class="card fanqie-card" style="border-color: var(--success-border);">
  <div class="section-title">③ 下载番茄小说（纯下载，不蒸馏）</div>
  <div class="fanqie-desc">输入 Book ID 和章节数，下载为 .txt 文件</div>
  <div class="fanqie-input-row" style="margin-bottom:8px;">
@@ -504,12 +504,12 @@ onMounted(async () => {
 .section-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
 
 /* 小说类型切换 */
-.ln-toggle-card { border: 2px solid #ffd591; background: linear-gradient(135deg, #fff7e6, #fffbe6); }
+.ln-toggle-card { border: 2px solid var(--warning-border); background: linear-gradient(135deg, var(--accent-light), #fffaf0); }
 .novel-type-toggle { display: flex; gap: 10px; }
-.toggle-btn { flex: 1; padding: 12px; border: 2px solid var(--border-color); border-radius: 10px; font-size: 14px; font-weight: 600; background: #f8f8f8; cursor: pointer; font-family: inherit; transition: all 0.2s; }
-.toggle-btn.active { border-color: var(--primary-color); background: #fff5f0; }
-.toggle-btn:first-child.active { border-color: #52c41a; background: #f6ffed; }
-.toggle-btn:last-child.active { border-color: #fa8c16; background: #fff7e6; }
+.toggle-btn { flex: 1; padding: 12px; border: 2px solid var(--border-color); border-radius: 10px; font-size: 14px; font-weight: 600; background: var(--bg); cursor: pointer; font-family: inherit; transition: all 0.2s; }
+.toggle-btn.active { border-color: var(--primary-color); background: var(--primary-light); }
+.toggle-btn:first-child.active { border-color: var(--success); background: var(--success-bg); }
+.toggle-btn:last-child.active { border-color: var(--accent); background: var(--accent-light); }
 .ln-type-hint { margin-top: 8px; font-size: 12px; color: var(--text-light); text-align: center; }
 
 /* 性别切换 */
@@ -519,11 +519,11 @@ onMounted(async () => {
 .gender-tabs button {
  flex: 1; padding: 10px; border: 2px solid var(--border-color);
  border-radius: 10px; font-size: 14px; font-weight: 600;
- background: #f8f8f8; cursor: pointer; transition: all 0.2s;
+ background: var(--bg); cursor: pointer; transition: all 0.2s;
  font-family: inherit;
 }
 .gender-tabs button.active {
- border-color: var(--primary-color); background: #fff5f0;
+ border-color: var(--primary-color); background: var(--primary-light);
 }
 
 /* 搜索框 */
@@ -552,12 +552,12 @@ onMounted(async () => {
 .main-cat-btn {
  display: flex; flex-direction: column; align-items: center; gap: 4px;
  padding: 10px 14px; border: 2px solid var(--border-color);
- border-radius: 10px; background: #f8f8f8; cursor: pointer;
+ border-radius: 10px; background: var(--bg); cursor: pointer;
  transition: all 0.2s; flex-shrink: 0; font-family: inherit;
 }
 .main-cat-btn:hover { border-color: var(--primary-light); }
 .main-cat-btn.active {
- border-color: var(--primary-color); background: #fff5f0;
+ border-color: var(--primary-color); background: var(--primary-light);
 }
 .main-cat-icon { font-size: 22px; }
 .main-cat-name { font-size: 12px; font-weight: 500; color: var(--text-secondary); white-space: nowrap; }
@@ -572,23 +572,23 @@ onMounted(async () => {
  cursor: pointer; transition: all 0.15s; user-select: none;
 }
 .chip:hover { border-color: var(--primary-color); color: var(--primary-color); }
-.chip.active { border-color: var(--primary-color); background: #fff5f0; color: var(--primary-color); font-weight: 600; }
-.tag-chip { background: #f0f5ff; border-color: #d6e4ff; }
-.tag-chip.active { background: #e6f7ff; border-color: #1890ff; color: #1890ff; }
+.chip.active { border-color: var(--primary-color); background: var(--primary-light); color: var(--primary-color); font-weight: 600; }
+.tag-chip { background: var(--info-bg); border-color: var(--info-border); }
+.tag-chip.active { background: var(--primary-light); border-color: var(--primary); color: var(--primary); }
 
 /* 已选 */
 .selected-info {
  font-size: 13px; color: var(--primary-color); font-weight: 500;
- padding: 8px; background: #fff5f0; border-radius: 6px; text-align: center;
+ padding: 8px; background: var(--primary-light); border-radius: 6px; text-align: center;
 }
 
 /* 上传区域 */
 .upload-area {
  border: 2px dashed var(--border-color); border-radius: 12px;
  padding: 24px; text-align: center; cursor: pointer;
- transition: all 0.2s; background: #fafafa;
+ transition: all 0.2s; background: var(--bg);
 }
-.upload-area:hover { border-color: var(--primary-color); background: #fff5f0; }
+.upload-area:hover { border-color: var(--primary-color); background: var(--primary-light); }
 .upload-placeholder { color: var(--text-secondary); }
 .upload-icon { font-size: 36px; margin-bottom: 8px; }
 .upload-hint { font-size: 12px; color: var(--text-light); margin-top: 4px; }
@@ -604,18 +604,18 @@ onMounted(async () => {
 
 /* Cookie 设置 */
 .cookie-card {
- border: 2px solid #bae0ff; background: linear-gradient(135deg, #f0f8ff, #e6f2ff);
+ border: 2px solid var(--info-border); background: linear-gradient(135deg, var(--info-bg), #f3faf5);
 }
 .cookie-help {
  color: var(--primary-color); cursor: pointer; font-size: 12px; margin-left: 6px;
  text-decoration: underline;
 }
 .cookie-tips {
- font-size: 12px; color: var(--text-secondary); background: #f8f8f8;
+ font-size: 12px; color: var(--text-secondary); background: var(--bg-alt);
  border-radius: 6px; padding: 10px 14px; margin-bottom: 10px; line-height: 1.8;
 }
 .cookie-tips code {
- background: #e8e8e8; padding: 1px 5px; border-radius: 3px; font-size: 11px;
+ background: var(--bg-alt); padding: 1px 5px; border-radius: 3px; font-size: 11px;
 }
 .cookie-status-row {
  display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 13px;
@@ -623,19 +623,19 @@ onMounted(async () => {
 .cookie-ok { color: var(--success-color); font-weight: 500; }
 .cookie-none { color: var(--error-color); font-weight: 500; }
 .btn-cookie {
- background: #1890ff; color: white; border: none;
+ background: var(--info); color: white; border: none;
  padding: 8px 16px; border-radius: 8px; font-size: 13px; cursor: pointer; font-family: inherit;
  white-space: nowrap;
 }
 .btn-cookie:disabled { background: #ccc; cursor: default; }
-.btn-cookie:hover:not(:disabled) { background: #40a9ff; }
+.btn-cookie:hover:not(:disabled) { background: var(--primary-hover); }
 .btn-text { background: none; border: none; color: var(--text-light); cursor: pointer; font-size: 12px; text-decoration: underline; }
 .btn-text:hover { color: var(--error-color); }
 
 /* 番茄预览 */
 .fanqie-preview {
- margin-top: 10px; padding: 10px 14px; background: #fff; border-radius: 8px;
- border: 1px solid #ffe0d0; font-size: 13px;
+ margin-top: 10px; padding: 10px 14px; background: var(--card); border-radius: 8px;
+ border: 1px solid var(--warning-border); font-size: 13px;
 }
 .preview-row { display: flex; gap: 8px; margin-bottom: 4px; }
 .preview-row:last-child { margin-bottom: 0; }
@@ -645,7 +645,7 @@ onMounted(async () => {
 
 /* 番茄导入 */
 .fanqie-card {
- border: 2px solid #ffe0d0; background: linear-gradient(135deg, #fff8f5, #fff0e8);
+ border: 2px solid var(--warning-border); background: linear-gradient(135deg, var(--accent-light), #fff8ed);
 }
 .fanqie-desc { font-size: 12px; color: var(--text-light); margin-bottom: 12px; }
 .fanqie-input-row { display: flex; gap: 8px; }
@@ -661,9 +661,9 @@ onMounted(async () => {
 .fanqie-progress .dot:nth-child(2) { animation-delay: 0.2s; }
 .fanqie-progress .dot:nth-child(3) { animation-delay: 0.4s; }
 .fanqie-progress-text { font-size: 13px; color: var(--text-secondary); }
-.btn-success { background: #52c41a; color: white; border: none; padding: 8px 16px; border-radius: 8px; font-size: 13px; cursor: pointer; font-family: inherit; }
+.btn-success { background: var(--success); color: white; border: none; padding: 8px 16px; border-radius: 8px; font-size: 13px; cursor: pointer; font-family: inherit; }
 .btn-success:disabled { background: #ccc; cursor: default; }
-.btn-success:hover:not(:disabled) { background: #73d13d; }
+.btn-success:hover:not(:disabled) { background: var(--primary-hover); }
 @keyframes dotPulse {
  0%, 80%, 100% { opacity: 0.3; transform: scale(0.8); }
  40% { opacity: 1; transform: scale(1); }

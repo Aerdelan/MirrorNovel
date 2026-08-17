@@ -88,7 +88,7 @@ function navigate(path) {
  padding-bottom: env(safe-area-inset-bottom, 0);
  backdrop-filter: blur(12px);
  -webkit-backdrop-filter: blur(12px);
- background: rgba(255, 255, 255, 0.95);
+ background: rgba(255, 253, 249, 0.94);
 }
 .nav-item {
  display: flex;

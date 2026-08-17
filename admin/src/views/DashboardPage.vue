@@ -23,8 +23,8 @@
  <div class="grid-4">
  <div class="card"><div class="num">{{ dash.totalUsers }}</div><div class="lbl">注册用户</div></div>
  <div class="card"><div class="num">{{ dash.totalNovels }}</div><div class="lbl">总小说</div></div>
- <div class="card"><div class="num">{{ (dash.totalTokens/10000).toFixed(1) }}万</div><div class="lbl">充值Token</div></div>
- <div class="card"><div class="num">{{ (dash.usedTokens/10000).toFixed(1) }}万</div><div class="lbl">消耗Token</div></div>
+ <div class="card"><div class="num">{{ ((dash.totalPoints ?? dash.totalTokens ?? 0)/10000).toFixed(1) }}万</div><div class="lbl">发放积分</div></div>
+ <div class="card"><div class="num">{{ ((dash.usedPoints ?? dash.usedTokens ?? 0)/10000).toFixed(1) }}万</div><div class="lbl">消耗积分</div></div>
  </div>
  <div class="grid-4" style="margin-top:10px;">
  <div class="card accent"><div class="num">{{ dash.completedNovels }}</div><div class="lbl">生成完成</div></div>
@@ -42,13 +42,13 @@
  </div>
  <div class="table-wrap">
  <table>
- <thead><tr><th>邮箱</th><th>昵称</th><th>角色</th><th>Token(剩余/总额)</th><th>进群</th><th>状态</th><th>操作</th></tr></thead>
+ <thead><tr><th>邮箱</th><th>昵称</th><th>角色</th><th>积分（可用 / 总额）</th><th>进群</th><th>状态</th><th>操作</th></tr></thead>
  <tbody>
  <tr v-for="u in users" :key="u._id">
  <td>{{ u.email }}</td>
  <td>{{ u.nickname }}</td>
  <td><span class="badge" :class="u.role">{{ u.role==='admin'?'管理员':'用户' }}</span></td>
- <td>{{ (u.tokens?.total||0)-(u.tokens?.used||0) }}/{{ u.tokens?.total||0 }}</td>
+ <td>{{ userPoints(u).available }}/{{ userPoints(u).total }}</td>
  <td>
  <button v-if="!u.groupRewardClaimed" class="btn-sm btn-gift" :disabled="rewarding===u._id" @click="grantReward(u)">{{ rewarding===u._id?'...':' 进群赠送' }}</button>
  <span v-else class="claimed-badge">已领取</span>
@@ -73,7 +73,7 @@
  <div class="row"><label>角色</label>
  <select v-model="editForm.role" class="input"><option value="user">用户</option><option value="admin">管理员</option><option value="importer">导入员</option></select>
  </div>
- <div class="row"><label>追加Token</label><input v-model.number="editForm.addTokens" class="input" type="number" min="0" placeholder="0" /></div>
+ <div class="row"><label>追加积分</label><input v-model.number="editForm.addPoints" class="input" type="number" min="0" placeholder="0" /></div>
  <div class="modal-acts">
  <button class="btn btn-outline" @click="showModal=false">取消</button>
  <button class="btn btn-primary" @click="saveUser">保存</button>
@@ -121,7 +121,7 @@
  <option v-for="u in allU" :key="u._id" :value="u._id">{{ u.email }}</option>
  </select>
  <input v-model="dQ" class="input" placeholder="搜索小说名" @input="debounce(loadDistillations,300)" />
- <button class="btn-sm" :disabled="dSelected.length===0" @click="batchExportDistill" style="background:#e94560;color:white;border:none;"> 批量导出</button>
+ <button class="btn-sm" :disabled="dSelected.length===0" @click="batchExportDistill" style="background:var(--sun-600);color:white;border:none;"> 批量导出</button>
  </div>
  <div class="table-wrap">
  <table>
@@ -152,7 +152,7 @@
  <button class="btn-sm" @click="viewDistillJson(d)">JSON</button>
  <button class="btn-sm" @click="editDistill(d)">编辑</button>
  <button class="btn-sm red" @click="deleteDistill(d)">删除</button>
- <button class="btn-sm" style="color:#52c41a;" @click="exportDistill(d)">导出</button>
+ <button class="btn-sm" style="color:var(--forest-700);" @click="exportDistill(d)">导出</button>
  </td>
  </tr>
  </tbody>
@@ -237,10 +237,10 @@ const tabs = [
 const statusMap = { generating: '生成中', paused: '已暂停', completed: '已完成', error: '出错' }
 
 // ====== 仪表盘 ======
-const dash = reactive({ totalUsers:0,totalNovels:0,totalTokens:0,usedTokens:0,recentRegistrations:0,completedNovels:0,generatingNovels:0 })
+const dash = reactive({ totalUsers:0,totalNovels:0,totalPoints:0,usedPoints:0,recentRegistrations:0,completedNovels:0,generatingNovels:0 })
 const revenue = ref(0)
 async function loadDash() {
- try { const r=await api.get('/admin/dashboard'); Object.assign(dash,r.data); revenue.value=Math.round((dash.totalTokens/1000000)*15) } catch {}
+ try { const r=await api.get('/admin/dashboard'); Object.assign(dash,r.data); revenue.value=Math.round((dash.totalPoints ?? dash.totalTokens ?? 0)/1000) } catch {}
 }
 
 // ====== 用户 ======
@@ -248,14 +248,23 @@ const users = ref([])
 const userQ = ref('')
 const showModal = ref(false)
 const editUserData = ref(null)
-const editForm = reactive({ nickname:'', role:'user', addTokens:0 })
+const editForm = reactive({ nickname:'', role:'user', addPoints:0 })
 const rewarding = ref('')
+
+function userPoints(user) {
+ const account = user?.points && (Number(user.points.version || 0) >= 1 || user.points.total !== undefined)
+  ? user.points
+  : (user?.tokens || {})
+ const total = Math.max(0, Number(account.total) || 0)
+ const used = Math.min(total, Math.max(0, Number(account.used) || 0))
+ return { total, available: Math.max(0, Number(user?.availablePoints ?? (total - used)) || 0) }
+}
 
 async function loadUsers() {
  try { const r=await api.get('/admin/users',{params:{keyword:userQ.value}}); users.value=r.data.users } catch {}
 }
 function openEdit(u) {
- editUserData.value=u; editForm.nickname=u.nickname; editForm.role=u.role; editForm.addTokens=0; showModal.value=true
+ editUserData.value=u; editForm.nickname=u.nickname; editForm.role=u.role; editForm.addPoints=0; showModal.value=true
 }
 async function saveUser() {
  try { await api.put(`/admin/users/${editUserData.value._id}`,{...editForm}); showModal.value=false; loadUsers() }
@@ -265,7 +274,7 @@ async function toggleDisable(u) {
  try { await api.put(`/admin/users/${u._id}`,{disabled:!u.disabled}); loadUsers() } catch {}
 }
 async function grantReward(u) {
- if (!confirm(`确认给 ${u.email} 赠送 5000 Token（进群奖励）？`)) return
+ if (!confirm(`确认给 ${u.email} 赠送 5000 积分（进群奖励）？`)) return
  rewarding.value = u._id
  try {
  await api.post(`/admin/users/${u._id}/group-reward`)
@@ -416,31 +425,32 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.admin-page { height:100%; display:flex; flex-direction:column; background:#f0f2f5; }
+.admin-page { height:100%; display:flex; flex-direction:column; background:var(--canvas); }
 
 .topbar {
  display:flex; align-items:center; padding:12px 16px;
- background:#1a1a2e; color:white; gap:12px;
+ background:var(--forest-900); color:white; gap:12px;
 }
 .topbar h2 { flex:1; font-size:16px; }
 .topbar-right { display:flex; align-items:center; gap:10px; }
 .admin-name { font-size:12px; opacity:0.8; }
-.logout-btn { background:none; border:1px solid #555; color:#aaa; padding:4px 12px; border-radius:4px; cursor:pointer; font-size:12px; }
-.logout-btn:hover { color:white; border-color:#e94560; }
+.logout-btn { background:none; border:1px solid rgba(255,255,255,.35); color:rgba(255,255,255,.78); padding:4px 12px; border-radius:4px; cursor:pointer; font-size:12px; }
+.logout-btn:hover { color:white; border-color:var(--sun-500); }
 
-.tabs { display:flex; background:#16213e; }
+.tabs { display:flex; background:var(--forest-800); }
 .tab {
  flex:1; padding:12px 4px; border:none; background:transparent;
  color:#8899aa; font-size:12px; cursor:pointer; white-space:nowrap;
  border-bottom:3px solid transparent; transition:all .2s;
 }
-.tab.active { color:#e94560; border-bottom-color:#e94560; background:rgba(233,69,96,0.08); }
+.tab.active { color:var(--sun-500); border-bottom-color:var(--sun-500); background:rgba(232,148,58,.1); }
 
 .body { flex:1; overflow-y:auto; padding:12px; }
 
 .grid-4 { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; }
-.card { background:white; border-radius:10px; padding:16px 8px; text-align:center; }
-.card.accent { background:linear-gradient(135deg,#667eea,#764ba2); color:white; }
+.card { background:white; border:1px solid var(--border); border-radius:8px; padding:16px 8px; text-align:center; }
+.card.accent { background:var(--forest-700); color:white; }
+.card.accent:nth-child(even) { background:var(--sun-600); }
 .num { font-size:22px; font-weight:700; }
 .lbl { font-size:11px; opacity:0.8; margin-top:4px; }
 .update-time { text-align:center; font-size:11px; color:#999; margin-top:12px; }
@@ -448,53 +458,68 @@ onMounted(async () => {
 .search-bar { display:flex; gap:8px; margin-bottom:10px; }
 .search-bar .input { font-size:13px; padding:8px 12px; border:1px solid #ddd; border-radius:6px; outline:none; }
 
-.table-wrap { background:white; border-radius:10px; overflow-x:auto; }
-table { width:100%; border-collapse:collapse; font-size:12px; }
+.table-wrap { background:white; border:1px solid var(--border); border-radius:8px; overflow-x:auto; }
+table { width:100%; min-width:720px; border-collapse:collapse; font-size:12px; }
 th { background:#f5f5f5; padding:10px 8px; text-align:left; font-weight:600; white-space:nowrap; }
 td { padding:10px 8px; border-bottom:1px solid #eee; }
 .acts { display:flex; gap:4px; }
 .btn-sm { padding:3px 8px; border:1px solid #ddd; border-radius:4px; font-size:11px; cursor:pointer; background:white; }
-.btn-sm.red { color:#e94560; border-color:#e94560; }
-.btn-sm.green { color:#52c41a; border-color:#52c41a; }
-.btn-sm.btn-gift { color:#FF6B35; border-color:#FF6B35; }
+.btn-sm.red { color:var(--danger); border-color:var(--danger); }
+.btn-sm.green { color:var(--forest-700); border-color:var(--forest-700); }
+.btn-sm.btn-gift { color:var(--sun-700); border-color:var(--sun-600); }
 .claimed-badge { font-size:11px; color:#999; }
 .badge { padding:1px 6px; border-radius:3px; font-size:11px; }
-.badge.admin { background:#fff0f0; color:#e94560; }
-.badge.user { background:#f0f5ff; color:#1890ff; }
-.dot { display:inline-block; width:6px; height:6px; border-radius:50%; background:#52c41a; margin-right:4px; }
-.dot.off { background:#ff4d4f; }
+.badge.admin { background:var(--sun-100); color:var(--sun-700); }
+.badge.user { background:var(--forest-100); color:var(--forest-800); }
+.dot { display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--forest-600); margin-right:4px; }
+.dot.off { background:#a5afa8; }
 .sb { padding:1px 6px; border-radius:3px; font-size:11px; }
-.sb.generating { background:#e6f7ff; color:#1890ff; }
-.sb.paused { background:#fff7e6; color:#fa8c16; }
-.sb.completed { background:#f6ffed; color:#52c41a; }
+.sb.generating { background:var(--forest-100); color:var(--forest-800); }
+.sb.paused { background:var(--sun-100); color:var(--sun-700); }
+.sb.completed { background:#e2f2e7; color:#2c6b49; }
 
 .overlay { position:fixed; top:0;left:0;right:0;bottom:0; background:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; z-index:9999; padding:20px; }
-.modal { background:white; border-radius:12px; padding:24px; max-width:400px; width:100%; }
+.modal { background:white; border-radius:8px; padding:24px; max-width:400px; width:100%; max-height:calc(100dvh - 40px); overflow:auto; }
 .modal h3 { margin-bottom:16px; }
 .row { margin-bottom:12px; }
 .row label { display:block; font-size:12px; color:#666; margin-bottom:4px; }
 .row .input { width:100%; padding:8px 12px; border:1px solid #ddd; border-radius:6px; font-size:13px; outline:none; }
 .modal-acts { display:flex; gap:8px; margin-top:16px; }
 .modal-acts button { flex:1; padding:10px; border:none; border-radius:8px; font-size:14px; cursor:pointer; }
-.btn-primary { background:#e94560; color:white; }
+.btn-primary { background:var(--forest-700); color:white; }
 .btn-primary:disabled { background:#ccc; }
 .btn-outline { background:white; border:1px solid #ddd; }
-.btn-red { background:#ff4d4f; color:white; border:none; }
+.btn-red { background:var(--danger); color:white; border:none; }
 
-.model-box { background:white; border-radius:10px; padding:20px; }
+.model-box { background:white; border:1px solid var(--border); border-radius:8px; padding:20px; }
 .key-r { display:flex; gap:6px; }
 .key-r .input { flex:1; }
 .acts { display:flex; gap:8px; margin-top:16px; }
 .acts button { flex:1; padding:10px; border:none; border-radius:8px; font-size:13px; cursor:pointer; }
 .msg { margin-top:10px; padding:8px; border-radius:6px; font-size:13px; text-align:center; }
-.msg.ok { background:#f6ffed; color:#52c41a; border:1px solid #b7eb8f; }
+.msg.ok { background:var(--forest-100); color:var(--forest-700); border:1px solid #a9ceb6; }
 .score { padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
-.score.high { background:#f6ffed; color:#52c41a; }
-.score.mid { background:#fff7e6; color:#fa8c16; }
-.score.low { background:#fff1f0; color:#ff4d4f; }
+.score.high { background:var(--forest-100); color:var(--forest-700); }
+.score.mid { background:var(--sun-100); color:var(--sun-700); }
+.score.low { background:var(--danger-soft); color:var(--danger); }
 .json-preview {
- background:#1a1a2e; color:#e6e6e6; padding:16px; border-radius:8px;
+ background:var(--forest-950); color:#eaf4ed; padding:16px; border-radius:8px;
  font-size:12px; line-height:1.5; max-height:400px; overflow:auto;
  white-space:pre-wrap; word-break:break-all; font-family:monospace;
+}
+
+@media (max-width: 900px) {
+ .grid-4 { grid-template-columns:repeat(2,minmax(0,1fr)); }
+ .tabs { overflow-x:auto; }
+ .tab { flex:0 0 auto; min-width:112px; }
+}
+
+@media (max-width: 520px) {
+ .topbar { align-items:flex-start; flex-direction:column; }
+ .topbar-right { width:100%; justify-content:space-between; }
+ .search-bar { flex-wrap:wrap; }
+ .search-bar .input, .search-bar button { width:100%; max-width:none !important; }
+ .overlay { align-items:flex-end; padding:0; }
+ .modal { max-width:none; border-radius:8px 8px 0 0; }
 }
 </style>

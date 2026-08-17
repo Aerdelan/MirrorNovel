@@ -1,4 +1,5 @@
 import { API_BASE } from '../utils/apiUrl'
+import { toUserFacingMessage } from '../utils/userFacing'
 
 function getToken() {
   try { if (uni.getStorageSync) return uni.getStorageSync('token') || '' } catch {}
@@ -22,8 +23,12 @@ function request(method, url, data, options = {}) {
           clearAuthAndRedirect()
           return reject(new Error('未登录'))
         }
-        if (res.statusCode >= 200 && res.statusCode < 300) resolve(res.data)
-        else reject(new Error(res.data?.message || `请求失败(${res.statusCode})`))
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          const responseData = res.data && typeof res.data === 'object' && typeof res.data.message === 'string'
+            ? { ...res.data, message: toUserFacingMessage(res.data.message) }
+            : res.data
+          resolve(responseData)
+        } else reject(new Error(toUserFacingMessage(res.data?.message || `请求失败(${res.statusCode})`)))
       },
       fail: (err) => reject(new Error(err.errMsg || '网络请求失败')),
     })

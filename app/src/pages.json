@@ -60,12 +60,12 @@
   "globalStyle": {
     "navigationBarTextStyle": "black",
     "navigationBarTitleText": "番茄小说",
-    "navigationBarBackgroundColor": "#F8F8F8",
-    "backgroundColor": "#F8F8F8"
+    "navigationBarBackgroundColor": "#F3F7F2",
+    "backgroundColor": "#F3F7F2"
   },
   "tabBar": {
     "color": "#999",
-    "selectedColor": "#FF6B35",
+    "selectedColor": "#3F7D5A",
     "backgroundColor": "#ffffff",
     "borderStyle": "black",
     "list": [

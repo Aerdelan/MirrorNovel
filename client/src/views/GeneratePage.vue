@@ -153,7 +153,7 @@
  <div class="gen-modal-body">
  <!-- 原始生成文本 -->
  <div class="gen-text-section" :class="{ grayed: deslopRunning || deslopDone || editorialRunning || editorialDone }">
- <div class="gen-text-label">{{ $t('generate.modeBook') }}</div>
+ <div class="gen-text-label">{{ genMode === 'chapter' ? $t('generate.modeChapter') : $t('generate.modeBook') }}</div>
  <div class="gen-text-content" ref="streamRef">{{ streamingText }}</div>
  </div>
  <!-- 去AI化结果 -->
@@ -572,6 +572,9 @@ async function startGen() {
  genStatus.value = event.message
  } else if (event.type === 'chapter_start') {
  genStatus.value = `正在生成 ${event.title || '第' + event.chapterNumber + '章'}...`
+ } else if (event.type === 'quality_notice') {
+ const issues = event.report?.issues?.join('；') || '章节存在连贯性风险，已记录供后续章节参考'
+ genStatus.value = `第${event.chapterNumber}章质量提示：${issues}`
  } else if (event.type === 'humanized') {
  // 服务器返回改写后文本，替换显示
  streamingText.value = event.content
@@ -582,7 +585,9 @@ async function startGen() {
  } else if (event.type === 'paused') {
  genStatus.value = '️ 已暂停'; generating.value = false
  } else if (event.type === 'token_exhausted') {
- genStatus.value = 'Token 已用完，请充值'; generating.value = false
+ genStatus.value = '积分已用完，请充值'; generating.value = false
+ } else if (event.type === 'plan_needs_extension') {
+ genStatus.value = event.message || '章节计划需要扩展'; generating.value = false
 } else if (event.type === 'error') {
  genStatus.value = ' ' + (event.message || '生成失败'); generating.value = false
  }
@@ -652,6 +657,7 @@ async function startEditorial() {
  // 3 次 LLM 调用：每阶段输入~textLen*1.5 + 系统提示~500 + 输出~textLen*1.5 ≈ textLen*3 + 500
  // 总计 ≈ textLen*9 + 1500，保守取 1.3 倍系数
  const estTokens = Math.round((textLen * 9 + 1500) * 1.3)
+ const estPoints = Math.ceil(estTokens / 20)
  const estTimeMin = Math.max(1, Math.round(estTokens / 3000))
 
  if (!confirm(
@@ -662,7 +668,8 @@ async function startEditorial() {
  `  ① 结构重构（压缩+节奏+人物）\n` +
  `  ② 风格一致性（润色+一致性检查）\n` +
  `  ③ 去AI化（最终，注入人类特征）\n\n` +
- `预计消耗 Token：约 ${(estTokens / 1000).toFixed(1)}K（${estTokens.toLocaleString()}）\n` +
+ `预计积分（普通线路参考）：约 ${estPoints.toLocaleString()}\n` +
+ `VIP/SVIP 线路按实际输入、输出成本与倍率结算\n` +
  `预计耗时：约 ${estTimeMin} 分钟\n\n` +
  `去AI化放在最后一步，\n` +
  `避免后续润色重新引入AI特征。\n` +
@@ -913,12 +920,17 @@ async function startLNGen() {
  lnStatus.value = event.message
  } else if (event.type === 'chapter_start') {
  lnStatus.value = `正在生成 ${event.title || '第' + event.chapterNumber + '章'}...`
+ } else if (event.type === 'quality_notice') {
+ const issues = event.report?.issues?.join('；') || '章节存在连贯性风险，已记录供后续章节参考'
+ lnStatus.value = `第${event.chapterNumber}章质量提示：${issues}`
  } else if (event.type === 'completed') {
  lnStatus.value = '生成完成！'; lnOk.value = true; lnGenerating.value = false
  } else if (event.type === 'paused') {
  lnStatus.value = '⏸️ 已暂停'; lnGenerating.value = false
  } else if (event.type === 'token_exhausted') {
- lnStatus.value = 'Token 已用完，请充值'; lnGenerating.value = false
+ lnStatus.value = '积分已用完，请充值'; lnGenerating.value = false
+ } else if (event.type === 'plan_needs_extension') {
+ lnStatus.value = event.message || '章节计划需要扩展'; lnGenerating.value = false
 } else if (event.type === 'error') {
  lnStatus.value = ' ' + (event.message || '生成失败'); lnGenerating.value = false
  }
@@ -1034,7 +1046,7 @@ onMounted(async () => {
 }
 .type-card:hover {
  border-color: var(--primary);
- box-shadow: 0 2px 8px rgba(37, 99, 235, 0.08);
+ box-shadow: 0 2px 8px rgba(63, 125, 90, 0.12);
 }
 .type-card.selected {
  border-color: var(--primary);
@@ -1169,8 +1181,8 @@ onMounted(async () => {
 
 /* --- Reference Style Matching --- */
 .ln-ref-card {
- border-color: #a7f3d0;
- background: #ecfdf5;
+ border-color: var(--success-border);
+ background: var(--success-bg);
 }
 .ln-ref-desc {
  font-size: 12px;
@@ -1241,7 +1253,7 @@ onMounted(async () => {
  margin-top: 10px;
  padding: 12px;
  background: var(--info-bg);
- border: 1px solid #bae6fd;
+ border: 1px solid var(--info-border);
  border-radius: var(--radius);
 }
 .tmpl-match-title {
@@ -1335,7 +1347,7 @@ onMounted(async () => {
 }
 .outline-modal-textarea:focus {
  border-color: var(--primary);
- box-shadow: 0 0 0 3px rgba(37,99,235,0.1);
+ box-shadow: 0 0 0 3px rgba(63,125,90,0.14);
  outline: none;
 }
 .outline-modal-actions {
@@ -1510,8 +1522,8 @@ onMounted(async () => {
  overflow-y: auto;
 }
 .deslop-section .gen-text-content {
- background: #f0f7ff;
- border: 1px solid #d0e3ff;
+ background: var(--info-bg);
+ border: 1px solid var(--info-border);
 }
 
 /* Diff 对比 */
@@ -1547,12 +1559,12 @@ onMounted(async () => {
 
 .deslop-status {
  font-size: 13px;
- color: var(--primary, #2563eb);
+ color: var(--primary);
 }
 
 /* ---- 编辑引擎 ---- */
 .btn-editorial {
- background: #7c3aed !important;
+ background: var(--accent) !important;
  color: #fff !important;
  border: none;
  padding: 8px 16px;
@@ -1564,8 +1576,8 @@ onMounted(async () => {
 }
 .btn-editorial:hover { opacity: 0.9; transform: translateY(-1px); }
 .editorial-section .gen-text-content {
- background: #f5f0ff;
- border: 1px solid #e0d0ff;
+ background: var(--accent-light);
+ border: 1px solid var(--warning-border);
 }
 .editorial-stage-list {
  display: flex;
@@ -1583,15 +1595,15 @@ onMounted(async () => {
  transition: all 0.3s;
 }
 .editorial-stage-badge.active {
- background: #7c3aed;
+ background: var(--accent);
  color: #fff;
- border-color: #7c3aed;
+ border-color: var(--accent);
  animation: editorialPulse 1.5s infinite;
 }
 .editorial-stage-badge.done {
- background: #e0f0e0;
- color: #27ae60;
- border-color: #c0e0c0;
+ background: var(--success-bg);
+ color: var(--success);
+ border-color: var(--success-border);
 }
 .editorial-stage-badge.failed {
  background: #ffe0e0;

@@ -419,7 +419,7 @@ function randomizeParagraphRhythm(paragraphs) {
 /**
  * 自动格式化章节文本：分段 + 首行缩进 + 段落间距 + 段落节奏随机化
  */
-function autoFormat(text) {
+function autoFormat(text, options = {}) {
   if (!text || text.length < 20) return text
 
   let processed = text
@@ -442,8 +442,8 @@ function autoFormat(text) {
     paragraphs = [processed.trim()]
   }
 
-  // v2：段落节奏随机化
-  const randomized = randomizeParagraphRhythm(paragraphs)
+  // 生成主链路默认只做稳定格式化；随机断句会损伤人物语气和严肃题材节奏。
+  const randomized = options.randomize === true ? randomizeParagraphRhythm(paragraphs) : paragraphs
 
   const formatted = randomized.map(p => {
     if (p.startsWith('\u3000\u3000')) return p
@@ -500,7 +500,7 @@ function smartSplitParagraphs(text) {
  * @returns {{ text: string, report: Object }}
  */
 function processChapter(text, options = {}) {
-  const { doDeAI = true, doPunctuation = true, doAutoFormat = true, doRhythmRandomize = true, doHumanize = true, genre = '' } = options
+  const { doDeAI = true, doPunctuation = true, doAutoFormat = true, doRhythmRandomize = false, doHumanize = false, genre = '' } = options
   if (!text) return { text: '', report: {} }
 
   let processed = text
@@ -533,7 +533,7 @@ function processChapter(text, options = {}) {
   // Step 2.5: v3 人味注入（在去AI味之后、标点修正之前）
   if (doHumanize && processed.length > 300) {
     const before = processed
-    processed = humanizeText(processed)
+    processed = humanizeText(processed, { doTangentialInjection: false, doEndingBreak: false, doDialogueFragment: false })
     report.humanizeChanges = processed.length - before.length
   }
 
@@ -547,7 +547,7 @@ function processChapter(text, options = {}) {
   // Step 4: 自动格式化 + 段落节奏随机化
   if (doAutoFormat) {
     const before = processed
-    processed = autoFormat(processed)
+    processed = autoFormat(processed, { randomize: doRhythmRandomize })
     report.formatted = (processed !== before)
     report.rhythmChanges = doRhythmRandomize ? 1 : 0
   }
@@ -838,7 +838,7 @@ function fragmentizeDialogue(text) {
  */
 function humanizeText(text, options = {}) {
   if (!text || text.length < 300) return text
-  const { doTangentialInjection = true, doEndingBreak = true, doDialogueFragment = true, doOpeningFix = true } = options
+  const { doTangentialInjection = false, doEndingBreak = false, doDialogueFragment = false, doOpeningFix = true } = options
 
   let result = text
 

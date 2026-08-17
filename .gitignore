@@ -1,5 +1,7 @@
 node_modules/
 dist/
+.npm-cache/
+.tmp/
 .env
 app/android/.gradle/
 app/android/app/build/

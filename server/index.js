@@ -53,6 +53,17 @@ function _startVerCheck() { if (!_regTimer) { _checkVer(); _regTimer = setInterv
 const startApp = async () => {
   await connectDB();
 
+  // Load the private route/model/cost mapping before handling AI requests.
+  try {
+    const SysConfig = require('./models/SysConfig');
+    const pricingConfig = await SysConfig.findOne({ key: 'points_price_catalog' });
+    if (pricingConfig?.value) {
+      process.env.POINTS_PRICE_CATALOG_JSON = JSON.stringify(pricingConfig.value);
+    }
+  } catch (error) {
+    console.warn('[Points] 无法加载数据库线路计价，暂用环境变量配置:', error.message);
+  }
+
   // 版本检查（仅公共网络触发）
   _startVerCheck();
 
@@ -67,6 +78,7 @@ const startApp = async () => {
         nickname: process.env.ADMIN_NICKNAME || '超级管理员',
         role: 'admin',
         tokens: { total: 999999999, used: 0 },
+        points: { version: 1, total: 999999999, used: 0 },
       });
       console.log(`✅ 管理员账号已创建: ${adminEmail}`);
     } else {
@@ -87,6 +99,8 @@ const startApp = async () => {
   app.use('/api/novel', require('./routes/novel'));
   app.use('/api/admin', require('./routes/admin'));
   app.use('/api/reference', require('./routes/reference'));
+  app.use('/api/billing', require('./routes/billing'));
+  app.use('/api/activities', require('./routes/activity'));
 
   // 健康检查
   app.get('/api/health', (req, res) => {

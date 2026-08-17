@@ -27,7 +27,7 @@ export default {
  tab: { generate: '生成', polish: '润色', profile: '我的', bookshelf: '书架', distill: '蒸馏' },
 
  // 公告弹窗
- announcement: { title: ' 欢迎使用MirrorNovel生成', desc: '加官方QQ群 1019601998 联系管理员', claim: '免费领取 5,000 Token', tip1: ' 进群后发送：我的用户名 {email}', tip2: ' Token 自动到账，可用于系统模型生成', tip3: ' 1 Token ≈ 1 字输出，5000 Token 可生成约 5000 字', gotIt: '我知道了' },
+ announcement: { title: ' 欢迎使用MirrorNovel生成', desc: '加官方QQ群 1019601998 联系管理员', claim: '免费领取 5,000 积分', tip1: ' 进群后发送：我的用户名 {email}', tip2: ' 积分自动到账，可用于小说生成', tip3: ' 1 积分约对应 1 字输出，5000 积分可生成约 5000 字', gotIt: '我知道了' },
 
  // 生成页
  generate: {
@@ -37,7 +37,7 @@ export default {
  placeholderName: '故事主角名字', placeholderWorld: '描述故事的世界观、背景设定、特殊规则等（可选）', placeholderOutline: '可选，不填则由AI自动生成大纲',
  modeBook: ' 生成整本', modeChapter: ' 生成一章',
  unitWord: '字', btnGenerate: ' 开始创作', btnGenerating: '⏳ 生成中...',
- statusGenerating: '大纲生成中...', statusDone: ' 生成完成！', statusPaused: '⏸️ 已暂停', statusExhausted: '️ Token 已用完，请充值',
+ statusGenerating: '大纲生成中...', statusDone: ' 生成完成！', statusPaused: '⏸️ 已暂停', statusExhausted: '️ 积分已用完，请补充积分',
  selectedType: ' 已选择：{name}',
  // 轻小说
  lnStepType: '选择轻小说类型', lnStepChar: '角色设定', lnStepWorld: '世界观 / 背景设定', lnStepMode: '生成模式 & 字数设定',
@@ -60,7 +60,7 @@ export default {
 
  // 润色页
  polish: {
- title: ' 润色文本', subtitle: '对小说文本进行润色优化，支持自定义润色方案和去AI味处理',
+ title: ' 润色文本', resultTitle: '润色结果', subtitle: '对小说文本进行润色优化，支持自定义润色方案和去AI味处理',
  stepInput: '选择输入方式（二选一）', stepText: '输入需要润色的文本', stepFile: '上传需要润色的 .txt 文件', stepScheme: '润色方案', stepOption: '附加选项',
  modeText: '⌨️ 输入文本', modeFile: ' 上传文件',
  placeholderText: '粘贴需要润色的小说文本...', placeholderCustom: '自定义润色要求...',
@@ -75,15 +75,16 @@ export default {
  // 我的
  profile: {
  title: ' 我的', loginFirst: '登录后解锁全部功能',
- tokenBalance: ' Token 余额', available: '可用 Token', total: '总额', used: '已用',
- getToken: ' 加群联系群主获取 Token', tokenDesc: 'Token 用完或需要更多 Token，请加 QQ 群联系群主：', groupNum: '群号：1019601998', groupNote: '加群时请备注"MirrorNovel"',
+ tokenBalance: ' 积分余额', available: '可用积分', total: '总积分', used: '已使用', pointsUnit: '积分',
+ getToken: ' 加群联系群主获取积分', tokenDesc: '积分不足或需要补充积分，请加 QQ 群联系群主：', groupNum: '群号：1019601998', groupNote: '加群时请备注"MirrorNovel"',
  stats: '创作统计', totalWorks: '总作品', totalWords: '总字数', completed: '已完成', inProgress: '进行中',
  editNick: '修改昵称', placeholderNick: '输入新昵称',
- aiConfig: 'AI 模型配置', aiConfigDesc: '可为 大纲/写作/润色/推理 分别指定不同模型',
- modelProvider: '模型来源', providerDefault: '默认（系统配置）', providerSystem: '系统代购（按 Token 计费 ¥15/百万）', providerOllama: '本地 Ollama', providerCloud: '云端自定义',
- systemDesc: '使用系统提供的高性能模型，按实际输出 Token 计费', rate: '费率：15 元 / 100万 Token', balance: '当前余额：', buyToken: '购买 Token 请加 QQ 群 1019601998',
- modelOutline: '大纲模型', modelWriting: '写作模型', modelPolish: '润色模型', modelReasoning: '推理模型',
- refreshModels: ' 刷新模型列表',
+ aiConfig: '生成线路配置', aiConfigDesc: '选择小说生成所使用的服务线路，保存后对后续任务生效', routeSelect: '生成线路', routeCurrent: '当前线路',
+ modelProvider: '生成线路', providerDefault: '普通线路模型一', providerSystem: '普通线路模型二', providerOllama: '高级线路模型一', providerCloud: 'VIP线路模型', providerSvip: 'SVIP线路模型',
+ systemDesc: '使用系统提供的稳定生成线路，按实际输出量扣除积分', rate: '扣费：按实际生成字数折算积分', balance: '当前积分：', buyToken: '补充积分请加 QQ 群 1019601998',
+ modelOutline: '大纲线路', modelWriting: '写作线路', modelPolish: '润色线路', modelReasoning: '推理线路',
+ lineStandardOne: '普通线路模型一', lineStandardTwo: '普通线路模型二', lineAdvancedOne: '高级线路模型一', lineVip: 'VIP线路模型', lineSvip: 'SVIP线路模型', lineFollowDefault: '跟随默认线路',
+ refreshModels: ' 刷新线路列表',
  saveConfig: ' 保存配置', saved: ' 配置已保存', nickUpdated: '昵称已更新', nickFail: '更新失败：',
  // 语言切换
  langSwitch: ' 语言', langZh: '中文', langEn: 'English',
@@ -115,13 +116,16 @@ export default {
  writeRequest: '️ 续写要求', placeholderRequest: '描述你想要的续写方向（如：主角觉醒隐藏力量、揭开身世之谜等）',
  requestHint: '留空则AI自动续写',
  modeBook: ' 续写整本', modeChapter: ' 续写一章',
+ modeBookHint: '按章节计划连续续写，直到达到目标字数或需要补充计划',
+ modeChapterHint: '本次只续写一个章节，完成后可继续调整方向',
  wordCount: '目标字数', btnWrite: ' 开始续写', btnWriting: '⏳ 续写中...',
  chapter: '第{num}章', chapterGenerating: '正在生成 第{num}章...',
+ resultTitle: '续写结果', completedMessage: '续写已完成，共 {count} 字', backBookshelf: '返回书架',
  },
 
  // 小说详情
  novelDetail: {
- unknown: '未知', freeSetting: '自由发挥', outOf: '{current}/{target} 字',
+ unknown: '未知', freeSetting: '自由发挥', type: '类型', wordCount: '字数', chapterCount: '章节数', outOf: '{current}/{target} 字',
  chapter: '章', btnEdit: '️ 编辑', btnContinue: '继续生成', btnSave: ' 保存',
  placeholderEdit: '编辑章节内容...', editChapter: '编辑 第{num}章',
  completed: '已完成', generating: '生成中', paused: '已暂停',

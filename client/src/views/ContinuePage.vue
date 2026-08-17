@@ -52,7 +52,7 @@
  <span>{{ $t('continue.modeChapter') }}</span>
  </label>
  </div>
- <div class="mode-tip">{{ genMode === 'book' ? '一次性续写整本的全部内容' : '本次只续写一个章节的内容' }}</div>
+ <div class="mode-tip">{{ $t(genMode === 'book' ? 'continue.modeBookHint' : 'continue.modeChapterHint') }}</div>
  <div class="word-count-input" style="margin-top:12px;">
  <input v-model.number="targetWordCount" class="input" type="number" :min="genMode === 'chapter' ? 500 : 1000" :max="genMode === 'chapter' ? 8000 : 1000000" step="500" />
  <span class="unit">{{ $t('generate.wordShort') }}</span>
@@ -75,7 +75,7 @@
 
  <div v-if="novelStore.streamingText" class="card streaming-card">
  <div class="streaming-header">
- <span class="section-title">{{ $t('bookshelf.write') }}{{ $t('continue.title') }}</span>
+ <span class="section-title">{{ $t('continue.resultTitle') }}</span>
  <span v-if="isGenerating" class="generating-indicator"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
  </div>
  <div class="streaming-content" ref="streamingRef">
@@ -90,8 +90,8 @@
 
  <div v-if="generationDone" class="card done-card">
  <div class="done-icon"></div>
- <div class="done-text">{{ $t('continue.title') }}{{ $t('novelDetail.completed') }}！共 {{ wordCount }} {{ $t('generate.wordShort') }}</div>
- <button class="btn btn-primary btn-block" @click="goToBookshelf">{{ $t('bookshelf.goGenerate') }}</button>
+ <div class="done-text">{{ $t('continue.completedMessage', { count: wordCount }) }}</div>
+ <button class="btn btn-primary btn-block" @click="goToBookshelf">{{ $t('continue.backBookshelf') }}</button>
  </div>
  <div style="height:20px;"></div>
  </div>
@@ -151,6 +151,10 @@ watch(genMode, (mode) => {
 })
 
 onMounted(async () => {
+ novelStore.streamingText = ''
+ generationDone.value = false
+ continueStatus.value = ''
+ wordCount.value = 0
  if (!authStore.isLoggedIn) { router.push('/login'); return }
  if (novelStore.novelTypes.length === 0) await novelStore.fetchNovelTypes()
  const prefill = novelStore.prefillContinue
@@ -180,7 +184,9 @@ async function startContinue() {
  if (continueNovelId.value) {
  await novelStore.continueGeneration(continueNovelId.value, (chunk, fullText) => { wordCount.value = fullText.length }, (status) => {
  if (status.type === 'completed') { generationDone.value = true; isGenerating.value = false; continueStatus.value = '' }
- else if (status.type === 'token_exhausted') { isGenerating.value = false; continueStatus.value = 'Token 已用完' }
+ else if (status.type === 'quality_notice') { continueStatus.value = `第${status.chapterNumber}章质量提示：${status.report?.issues?.join('；') || '已记录连贯性风险'}` }
+ else if (status.type === 'plan_needs_extension') { isGenerating.value = false; continueStatus.value = status.message || '章节计划需要扩展' }
+ else if (status.type === 'token_exhausted') { isGenerating.value = false; continueStatus.value = '积分已用完' }
  else if (status.type === 'error') { isGenerating.value = false; continueStatus.value = status.message || '续写失败' }
  else if (status.type === 'paused') { isGenerating.value = false }
  }, genMode.value)
@@ -194,19 +200,26 @@ async function startContinue() {
  targetWordCount: targetWordCount.value,
  }, (chunk, fullText) => { wordCount.value = fullText.length }, (status) => {
  if (status.type === 'completed') { generationDone.value = true; isGenerating.value = false; continueStatus.value = '' }
- else if (status.type === 'token_exhausted') { isGenerating.value = false; continueStatus.value = 'Token 已用完' }
+ else if (status.type === 'token_exhausted') { isGenerating.value = false; continueStatus.value = '积分已用完' }
  else if (status.type === 'error') { isGenerating.value = false; continueStatus.value = status.message || '续写失败' }
  else if (status.type === 'paused') { isGenerating.value = false }
  })
  }
  } catch (e) {
  isGenerating.value = false
- if (isTokenExhaustedError(e.message)) alert('当前 Token 余额不足，请加 QQ 群 1019601998 联系群主购买 Token')
+ if (isTokenExhaustedError(e.message)) alert('当前积分余额不足，请加 QQ 群 1019601998 联系群主补充积分')
  else if (e.message !== 'paused') alert('续写失败：' + e.message)
  }
 }
 
-function stopContinue() { novelStore.stopGeneration(); isGenerating.value = false }
+async function stopContinue() {
+ novelStore.stopGeneration()
+ isGenerating.value = false
+ continueStatus.value = '已暂停'
+ if (continueNovelId.value) {
+ try { await novelStore.pauseNovel(continueNovelId.value) } catch {}
+ }
+}
 function goToBookshelf() { router.push('/bookshelf') }
 </script>
 
@@ -216,8 +229,8 @@ function goToBookshelf() { router.push('/bookshelf') }
 .import-area .textarea { min-height: 140px; font-family: inherit; }
 .import-hint { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-light); margin-top: 6px; }
 .upload-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-.upload-btn { display: inline-flex; align-items: center; gap: 4px; padding: 8px 16px; border: 2px dashed var(--primary-color); border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--primary-color); background: #fff5f0; transition: all 0.2s; }
-.upload-btn:hover { background: #ffe8d6; }
+.upload-btn { display: inline-flex; align-items: center; gap: 4px; padding: 8px 16px; border: 2px dashed var(--primary-color); border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--primary-color); background: var(--primary-light); transition: all 0.2s; }
+.upload-btn:hover { background: var(--primary-subtle); }
 .upload-btn input { display: none; }
 .file-name { font-size: 12px; color: var(--text-secondary); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .form-group { margin-bottom: 14px; }
@@ -228,23 +241,23 @@ function goToBookshelf() { router.push('/bookshelf') }
 .unit { font-size: 15px; color: var(--text-secondary); }
 .word-count-presets { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .preset-btn { padding: 4px 12px; border: 1px solid var(--border-color); border-radius: 16px; font-size: 12px; color: var(--text-secondary); cursor: pointer; transition: all 0.2s; }
-.preset-btn.active { border-color: var(--primary-color); color: var(--primary-color); background: #fff5f0; }
+.preset-btn.active { border-color: var(--primary-color); color: var(--primary-color); background: var(--primary-light); }
 .action-card { text-align: center; }
 .btn-generate { font-size: 18px; padding: 14px; }
 .generating-status { display: flex; flex-direction: column; align-items: center; gap: 10px; }
 .word-count-progress { font-size: 13px; color: var(--text-secondary); }
 .streaming-card { max-height: 400px; display: flex; flex-direction: column; }
 .streaming-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-.streaming-content { flex: 1; overflow-y: auto; max-height: 320px; background: #fafafa; border-radius: 8px; padding: 16px; line-height: 1.8; font-size: 14px; white-space: pre-wrap; word-wrap: break-word; }
+.streaming-content { flex: 1; overflow-y: auto; max-height: 320px; background: var(--bg); border-radius: 8px; padding: 16px; line-height: 1.8; font-size: 14px; white-space: pre-wrap; word-wrap: break-word; }
 .content-text { display: inline; }
 .cursor-blink { display: inline; animation: blink 0.8s step-end infinite; color: var(--primary-color); font-weight: bold; }
 @keyframes blink { 50% { opacity: 0; } }
-.done-card { text-align: center; background: linear-gradient(135deg, #f6ffed, #fff7e6); }
+.done-card { text-align: center; background: linear-gradient(135deg, var(--success-bg), var(--accent-light)); }
 .done-icon { font-size: 40px; margin-bottom: 8px; }
 .done-text { font-size: 16px; font-weight: 600; color: var(--success-color); margin-bottom: 12px; }
 .mode-radio-group { display: flex; gap: 10px; margin-bottom: 8px; }
-.mode-radio { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 12px; border: 2px solid var(--border-color); border-radius: 10px; cursor: pointer; transition: all 0.2s; background: #f8f8f8; }
-.mode-radio.active { border-color: var(--primary-color); background: #fff5f0; }
+.mode-radio { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 12px; border: 2px solid var(--border-color); border-radius: 10px; cursor: pointer; transition: all 0.2s; background: var(--bg); }
+.mode-radio.active { border-color: var(--primary-color); background: var(--primary-light); }
 .mode-radio input { display: none; }
 .mode-tip { font-size: 12px; color: var(--text-light); }
 </style>

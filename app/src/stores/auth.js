@@ -29,16 +29,29 @@ function safeRemove(key) {
   }
 }
 
+const PUBLIC_ROUTE_IDS = new Set(['normal_1', 'normal_2', 'advanced_1', 'vip', 'svip'])
+
+function sanitizeUserData(userData) {
+  if (!userData || typeof userData !== 'object') return userData
+  const { modelConfig, tokens: _legacyTokens, availableTokens: _legacyAvailable, ...publicUser } = userData
+  const routeId = PUBLIC_ROUTE_IDS.has(modelConfig?.routeId) ? modelConfig.routeId : 'normal_1'
+  return { ...publicUser, modelConfig: { routeId } }
+}
+
 export const useAuthStore = defineStore('auth', () => {
-  const user = ref(safeGet('user'))
+  const cachedUser = sanitizeUserData(safeGet('user'))
+  const user = ref(cachedUser)
   const token = ref(safeGet('token') || '')
+
+  if (cachedUser) safeSet('user', cachedUser)
 
   const isLoggedIn = computed(() => !!token.value)
 
   function setAuth(userData, authToken) {
-    user.value = userData
+    const publicUser = sanitizeUserData(userData)
+    user.value = publicUser
     token.value = authToken
-    safeSet('user', userData)
+    safeSet('user', publicUser)
     safeSet('token', authToken)
   }
 
@@ -52,13 +65,13 @@ export const useAuthStore = defineStore('auth', () => {
   async function login(email, password) {
     const res = await api.post('/auth/login', { email, password })
     setAuth(res.user, res.token)
-    return res
+    return { ...res, user: user.value }
   }
 
   async function register(email, password, code, nickname, inviteCode) {
     const res = await api.post('/auth/register', { email, password, code, nickname, inviteCode })
     setAuth(res.user, res.token)
-    return res
+    return { ...res, user: user.value }
   }
 
   async function sendCode(email) {
@@ -67,9 +80,9 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function getProfile() {
     const res = await api.get('/auth/profile')
-    user.value = res.user
-    safeSet('user', res.user)
-    return res
+    user.value = sanitizeUserData(res.user)
+    safeSet('user', user.value)
+    return { ...res, user: user.value }
   }
 
   async function updateNickname(nickname) {
@@ -81,33 +94,62 @@ export const useAuthStore = defineStore('auth', () => {
     return res
   }
 
-  async function fetchOllamaModels() {
-    const res = await api.get('/auth/ollama/models')
-    return res.models
-  }
-
   async function getModelConfig() {
-    const res = await api.get('/auth/model-config')
-    return res
+    const [config, billing] = await Promise.all([
+      api.get('/auth/model-config'),
+      api.get('/billing/routes').catch(() => ({ routes: [] })),
+    ])
+    const routeId = PUBLIC_ROUTE_IDS.has(config?.modelConfig?.routeId) ? config.modelConfig.routeId : 'normal_1'
+    const sourceRoutes = Array.isArray(billing?.routes) && billing.routes.length
+      ? billing.routes
+      : (config?.routes || [])
+    return {
+      modelConfig: { routeId },
+      routes: sourceRoutes
+        .map(route => route?.id || route?.routeId)
+        .filter(id => PUBLIC_ROUTE_IDS.has(id))
+        .map(id => ({ id })),
+    }
   }
 
   async function saveModelConfig(config) {
-    const res = await api.put('/auth/model-config', config)
+    const res = await api.put('/auth/model-config', { routeId: config?.routeId || 'normal_1' })
+    const routeId = PUBLIC_ROUTE_IDS.has(res?.modelConfig?.routeId) ? res.modelConfig.routeId : 'normal_1'
     if (user.value) {
-      user.value.modelConfig = res.modelConfig
+      user.value.modelConfig = { routeId }
       safeSet('user', user.value)
     }
-    return res
+    return { message: res?.message || '', modelConfig: { routeId } }
   }
 
-  async function getTokenInfo() {
-    const res = await api.get('/auth/tokens')
+  function normalizePoints(payload) {
+    const account = payload?.account || payload?.points || payload || {}
+    const total = Number(account.total || 0)
+    const used = Number(account.used || 0)
+    const available = Number(account.available ?? payload?.availablePoints ?? payload?.available ?? Math.max(0, total - used))
+    return { total, used, available }
+  }
+
+  async function getPointsInfo() {
+    let res
+    try {
+      res = await api.get('/billing/account')
+    } catch {
+      // 兼容尚未升级 billing 路由的旧服务端。
+      res = await api.get('/auth/tokens')
+    }
+    const points = normalizePoints(res)
     if (user.value) {
-      user.value.tokens = { total: res.total, used: res.used }
-      user.value.availableTokens = res.available
+      user.value.points = { total: points.total, used: points.used }
+      user.value.availablePoints = points.available
       safeSet('user', user.value)
     }
-    return res
+    return { ...points, ledger: Array.isArray(res?.ledger) ? res.ledger : [] }
+  }
+
+  // 旧页面调用兼容；返回值已经统一为积分。
+  async function getTokenInfo() {
+    return getPointsInfo()
   }
 
   async function getUserStats() {
@@ -117,7 +159,7 @@ export const useAuthStore = defineStore('auth', () => {
   async function checkin() {
     const res = await api.post('/auth/checkin')
     if (user.value) {
-      user.value.availableTokens = res.availableTokens
+      user.value.availablePoints = res.availablePoints ?? res.availableTokens ?? user.value.availablePoints
       safeSet('user', user.value)
     }
     return res
@@ -129,6 +171,21 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function getInviteInfo() {
     return api.get('/auth/invite-info')
+  }
+
+  async function getActivities() {
+    const res = await api.get('/activities')
+    return Array.isArray(res?.activities) ? res.activities : []
+  }
+
+  async function claimActivity(activityId) {
+    const res = await api.post(`/activities/${encodeURIComponent(activityId)}/claim`)
+    if (user.value && res?.balance) {
+      user.value.points = { total: res.balance.total || 0, used: res.balance.used || 0 }
+      user.value.availablePoints = res.balance.available || 0
+      safeSet('user', user.value)
+    }
+    return res
   }
 
   async function checkAnnouncement() {
@@ -153,9 +210,10 @@ export const useAuthStore = defineStore('auth', () => {
   return {
     user, token, isLoggedIn,
     login, register, sendCode, getProfile, updateNickname,
-    fetchOllamaModels, getModelConfig, saveModelConfig,
-    getTokenInfo, getUserStats,
+    getModelConfig, saveModelConfig,
+    getPointsInfo, getTokenInfo, getUserStats,
     checkin, getCheckinStatus, getInviteInfo,
+    getActivities, claimActivity,
     checkAnnouncement, dismissAnnouncement,
     logout, setAuth, clearAuth,
   }

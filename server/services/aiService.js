@@ -1,5 +1,6 @@
 const novelTypes = require('../config/novelTypes');
 const deslop = require('../config/deslop');
+const { getServerRoute } = require('../config/modelPriceCatalog');
 
 /**
  * 将 AI API 错误转换为对用户友好的提示
@@ -80,26 +81,30 @@ function countTokens(text) {
  */
 function buildSystemPrompt(novelTypeId, gender) {
   const type = novelTypes.find(t => t.id === novelTypeId || t.name === novelTypeId);
-  if (!type) return '你是一位专业的小说家，擅长创作各种类型的小说。';
+  if (!type) {
+    return `你是一位专业的小说作者。先确认既有文本的叙事视角、叙事距离和语言气质，再沿用同一套作者声线继续创作。
+
+${deslop.systemDeslopPrompt}`;
+  }
 
   // 轻小说使用日式ACGN专属提示
   if (novelTypeId && novelTypeId.startsWith('lightnovel_')) {
-    return `你是一位真正的轻小说作者，不是AI。你在“成为小说家吧”投稿过作品，有自己的风格。
+    return `你是一位成熟的轻小说作者。你会从题材、人物关系和既有文本中提炼稳定的作者声线，并在全篇保持一致。
 
 题材：${type.name}（日式ACGN风格）
 题材关键词：${type.keywords}
-常用词汇：${type.aiWordBank}
+题材语汇参考（只在具体语境成立时使用，禁止堆砌）：${type.aiWordBank}
 大纲参考：${type.outline}
 
 核心写作要求：
-1. 【角色为核心】角色萌属性鲜明，每个角色有自己的口头禅和说话习惯
-2. 【对话驱动】多用对话推进剧情，对话要自然生动，加入日式吐槽和内心独白
+1. 【角色为核心】角色的辨识度来自成长背景、当前目标、性格弱点和彼此关系，不靠重复口头禅或标签化萌属性
+2. 【对话驱动】对话必须推进事件、关系或认知；允许日式轻喜剧节奏，但笑点必须从人物处境和关系摩擦中自然产生
 3. 【描写简洁】场景描写简洁有画面感，不要堆砌修辞
-4. 【萌系要素】适当加入脸红、慌张、傲娇扭头等动漫式反应
+4. 【情绪可信】用人物当下的选择、动作和潜台词表现情绪，避免批量套用脸红、慌张、傲娇扭头等固定反应
 5. 【叙事视角】第一人称或紧贴主角的第三人称
-6. 【状态波动】有时候写得嗨了会多写对话，有时候懒得描写就一笔带过
-7. 【口语化】叙述语言轻松活泼，像在跟读者聊天
-8. 【不要完美】允许角色说废话、犯迷糊、突然走神
+6. 【场景节奏】段落和句子长度服从场景功能：行动可以利落，观察、判断和关系变化可以适当展开
+7. 【语言气质】叙述语言轻松活泼，但不让叙述者随机插话，不用无关吐槽破坏沉浸
+8. 【轻重平衡】沉重段落后的轻松片段必须同时推进关系、信息或伏笔，不能只为调节气氛而插入笑话
 
 ${deslop.systemDeslopPrompt}
 
@@ -108,28 +113,28 @@ ${deslop.systemDeslopPrompt}
 
   // 国产小说 — 根据 gender 区分写作指导
   const genderGuide = gender === 'female' ? `
-3. 【情感刻画优先】细腻描写人物的内心活动和情感变化，动作和环境为情感服务
-4. 【关系驱动】以人物关系的演变推动剧情，注重互动中的微妙张力
-5. 【氛围营造】场景描写要有氛围感和画面感，烘托情绪基调
-6. 【对话与潜台词】对话不仅是信息传递，更是情感交流和关系博弈的载体
-7. 【爽点节奏】虐心的桥段后必有甜宠回馈，保持"先苦后甜"的情感节奏` : `
-3. 【节奏紧凑】保持张弛有度的叙事节奏，每章至少有一个小高潮或悬念钩子
-4. 【爽点明确】每一段剧情都要有明确的"爽点"（升级/打脸/收获/揭秘）
-5. 【世界观清晰】逐步展开世界观设定，通过剧情自然带出而非大段说明
-6. 【对话直给】对话简洁有力，服务于剧情推进和人物塑造
-7. 【战斗/冲突描写】动作场面要有画面感和层次感，避免干巴巴的叙述`;
+5. 【情感刻画优先】细腻描写人物的内心活动和情感变化，动作和环境为情感服务
+6. 【关系驱动】以人物关系的演变推动剧情，注重互动中的微妙张力
+7. 【氛围营造】场景描写要有氛围感和画面感，烘托情绪基调
+8. 【对话与潜台词】对话不仅是信息传递，更是情感交流和关系博弈的载体
+9. 【轻重节奏】沉重情节后可以留出关系缓冲，但不强制发糖；轻松片段仍要推进关系、信息或伏笔` : `
+5. 【节奏紧凑】保持张弛有度，每章都要有实质变化；悬念和高潮应由当前因果自然累积，不机械卡点
+6. 【回报可信】升级、反击、收获或揭秘必须来自人物此前的选择与代价，不要求每段都安排爽点
+7. 【世界观清晰】逐步展开世界观设定，通过剧情自然带出而非大段说明
+8. 【对话直给】对话简洁有力，服务于剧情推进和人物塑造
+9. 【战斗/冲突描写】动作场面要有画面感和层次感，避免干巴巴的叙述`;
 
-  return `你是一位真正的网文作者，不是AI。你在起点/番茄写了多年小说，有自己的写作习惯和风格。
+  return `你是一位成熟的网文作者。你会从题材、人物关系和既有文本中提炼稳定的作者声线，并在全篇保持一致。
 写作类型：${type.name}
 写作关键词：${type.keywords}
 大纲参考：${type.outline}
-常用词汇：${type.aiWordBank}
+题材语汇参考（只在具体语境成立时使用，禁止堆砌）：${type.aiWordBank}
 
 核心写作要求：
-1. 完全按照${type.name}风格创作，每章约2000-3000字
-2. 你的写作必须有"个人风格"——就像每个真实作者都有自己的习惯一样
-3. 写作时要有"状态波动"——有时候写得兴奋就会多写几句，有时候懒得描写就一笔带过
-4. 不要追求"完美"——真实的网文作者会有口语化表达、会突然吐槽、会有不完美的过渡
+1. 按照${type.name}的题材规律创作，并遵循当前章节任务给出的目标篇幅
+2. 从既有文本提炼叙事视角、叙事距离、用词密度和句法节奏，后续章节不要随机更换作者声线
+3. 用人物的具体观察、选择、动作和潜台词承载情绪，让每个场景都产生可追踪的因果变化
+4. 段落和句长由场景决定，不设置机械比例，不为显得随意而故意走神、吐槽、硬切或制造语病
 ${genderGuide}
 
 ${deslop.systemDeslopPrompt}`;
@@ -298,10 +303,12 @@ ${targetHint}
  * 根据用户配置和模型类型获取 API 请求参数
  */
 function resolveApiConfig(userModelConfig, modelType = 'writing') {
+  const managedRoute = getServerRoute(userModelConfig?.routeId);
   const defaults = {
-    baseUrl: process.env.AI_API_BASE,
-    apiKey: process.env.AI_API_KEY,
-    model: process.env.AI_MODEL,
+    baseUrl: managedRoute.baseUrl,
+    apiKey: managedRoute.apiKey,
+    model: managedRoute.model,
+    routeId: managedRoute.id,
   };
 
   if (!userModelConfig || userModelConfig.provider === 'default' || userModelConfig.provider === 'system') {
@@ -316,7 +323,7 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
 
   if (userModelConfig.provider === 'ollama') {
     const model = userModelConfig[`ollama${fieldSuffix}`];
-    if (!model) return defaults;
+    if (!model) throw new Error('本地模型配置不完整，请先选择模型');
     return {
       baseUrl: userModelConfig.ollamaBaseUrl || 'http://localhost:11434',
       apiKey: '', model,
@@ -325,10 +332,13 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
 
   if (userModelConfig.provider === 'cloud') {
     const model = userModelConfig[`cloud${fieldSuffix}`];
-    if (!model) return defaults;
+    if (!userModelConfig.cloudBaseUrl || !userModelConfig.cloudApiKey || !model) {
+      throw new Error('自备云模型配置不完整，请填写地址、密钥和模型');
+    }
     return {
-      baseUrl: userModelConfig.cloudBaseUrl || defaults.baseUrl,
-      apiKey: userModelConfig.cloudApiKey || defaults.apiKey, model,
+      baseUrl: userModelConfig.cloudBaseUrl,
+      apiKey: userModelConfig.cloudApiKey,
+      model,
     };
   }
 
@@ -349,7 +359,7 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
   const headers = { 'Content-Type': 'application/json' };
   if (config.apiKey) headers['Authorization'] = `Bearer ${config.apiKey}`;
 
-  // v3: 支持动态温度，每次调用可以不同（增加输出多样性，对抗检测）
+  // 支持按任务传入温度；续写可保留创造性，校稿任务使用更低温度减少事实漂移。
   // v4: max_tokens 提升到 16384，避免长文输出被截断导致空内容
   const body = isOllama
     ? { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, options: { temperature, num_predict: 16384 } }
@@ -484,23 +494,32 @@ ${outline || '无大纲，请自行规划故事'}`;
 ${structureRef}`;
   }
 
-  planPrompt += `\n\n请按以下格式输出【章节计划表】（每章一行，不要额外解释）：
-
-【章节计划表】
-阶段1: [阶段名称](第X-Y章) — [一句话概括本阶段]
-第1章([字数]字): [本章核心事件] | 埋伏笔: [伏笔1],[伏笔2] | 回收伏笔: [伏笔1] | 关键角色: [角色]
-第2章([字数]字): [本章核心事件] | 埋伏笔: [伏笔3] | 回收伏笔: [伏笔2] | 关键角色: [角色]
-...
-阶段2: [阶段名称](第X-Y章) — [一句话概括]
-...
+  planPrompt += `\n\n请只输出合法 JSON，不要 Markdown、不要解释、不要代码块。输出结构如下：
+{
+  "version": 1,
+  "phases": ["阶段名称（第1-5章）：本阶段目的"],
+  "chapters": [
+    {
+      "chapterNumber": 1,
+      "wordTarget": 3000,
+      "phase": "阶段名称",
+      "coreEvent": "本章唯一、不可与相邻章节重复的核心事件",
+      "setHooks": ["本章新埋的具体伏笔"],
+      "resolveHooks": ["本章明确回收的既有伏笔"],
+      "characters": ["本章关键角色"],
+      "chapterRole": "主线推进/关系推进/信息揭示/喘息推进/收束",
+      "tension": 1
+    }
+  ]
+}
 
 关键规则：
-1. 每个伏笔设置后，必须在后续某章中标明"回收伏笔: [该伏笔]"
-2. 最后5-8章集中回收所有遗留伏笔，确保结局不烂尾
-3. 重要转折所在的章标 ★转折点
-4. 每章字数3000-5000字
-5. 总章节数控制在${estChapters}章左右
-6. 用"大结局"标注最后一章`;
+1. 每个伏笔设置后，必须在后续某章的 resolveHooks 中写出同一伏笔名称；最后 5-8 章集中回收，不留悬空线索。
+2. 每章只能有一个核心事件，不能把多个大转折塞进同一章；相邻章节的 coreEvent 不得重复。
+3. tension 是 1-10。连续 3 章 tension 不得都高于 7；在非结局段可安排 "喘息推进"，但它仍要推进关系、信息或伏笔。
+4. 沉重、悬疑、悲剧题材的喘息章只可使用温情、生活细节或黑色幽默，不能突然变成纯搞笑日常。
+5. 每章字数 2000-4200，总章数约 ${estChapters} 章；最后一章 chapterRole 为 "收束"，完整回收主线。
+6. 所有数组都必须存在；没有内容时返回 []。`;
 
   return planPrompt;
 }
@@ -616,9 +635,9 @@ function extractChapterSummary(content) {
 }
 
 /**
- * v4 人味改写（双次改写）— 彻底打碎 AI 生成模式
- * 第一遍：打碎段落结构，破坏均匀性
- * 第二遍：注入人味特征（口语化、走神、不完美）
+ * 双轮叙事改写。
+ * 第一遍：在事实、视角和篇幅不变的前提下去除模板化表达。
+ * 第二遍：以原文为事实基准，复核作者声线、人物声音和场景节奏。
  * @param {string} text - AI生成的原始文本
  * @param {Object} apiConfig - API配置
  * @param {Function} [onChunk] - 流式回调，实时推送改写内容
@@ -631,20 +650,26 @@ async function humanizeRewrite(text, apiConfig, onChunk) {
   const config = apiConfig || resolveApiConfig(null, 'writing');
   console.log(`[人味改写] 开始，原文 ${text.length} 字`);
 
-  // === 第一遍：打碎段落结构 + 注入人类特征 ===
+  const hasAcceptableLength = (candidate, source) => {
+    if (!candidate || !source) return false;
+    const ratio = candidate.trim().length / source.trim().length;
+    return ratio >= 0.8 && ratio <= 1.2;
+  };
+
+  // === 第一遍：保真重写，去除模板化表达 ===
   let pass1 = text;
   try {
     const result1 = await streamGenerate(
-      '你是一个写了十年网文的作者，现在要把AI写的草稿彻底改成自己的风格。',
+      '你是一位资深小说文字编辑。你的首要职责是守住原文事实、情节、视角、作者声线和篇幅，只修正削弱叙事可信度的表达。',
       `${deslop.humanizeRewritePrompt}\n\n以下是需要改写的小说草稿：\n\n${text}`,
       onChunk ? (chunk) => { onChunk(chunk, 'pass1'); } : null,
-      null, config, 2, 0.93
+      null, config, 2, 0.72
     );
-    if (result1 && result1.content && result1.content.length > text.length * 0.15) {
+    if (result1 && hasAcceptableLength(result1.content, text)) {
       pass1 = result1.content;
       console.log(`[人味改写-第1遍] ${text.length}字 → ${pass1.length}字`);
     } else {
-      console.warn(`[人味改写-第1遍] 结果过短(${result1?.content?.length || 0}字)，使用原文`);
+      console.warn(`[人味改写-第1遍] 篇幅漂移(${result1?.content?.length || 0}字)，使用原文`);
       return text;
     }
   } catch (e) {
@@ -655,44 +680,44 @@ async function humanizeRewrite(text, apiConfig, onChunk) {
   // 等待几秒避免触发 API 限流
   await new Promise(r => setTimeout(r, 3000));
 
-  // === 第二遍：强化人类特征（口语化、走神、不完美、个人风格） ===
-  const pass2Prompt = `你是同一个作者，现在对改写稿做最后一轮打磨。这次要让它看起来完全是人写的：
+  // === 第二遍：以原文为基准做连续性与声线复核 ===
+  const pass2Prompt = `你是同一位小说编辑。请对候选稿做最后一轮校稿，原文是唯一的事实基准。
 
-【必须做到的人类特征】
-1. 口语化叙述：把书面语全部换成口语。"然而"→"不过"，"因此"→"所以"，"逐渐"→"慢慢"，"仿佛"→"像"
-2. 角色走神：在紧张或重要的场景中，让角色突然想到无关的事（"他正想着怎么逃跑，突然想起昨天那碗面挺好吃的"）
-3. 碎片化句子：把长句拆成短句。"他深吸了一口气，努力平复了一下心情"→"他吸了口气。行了。"
-4. 对话填充词：对话中加入"嗯""那个""我说""你知道的"等口语填充
-5. 删除段尾感悟：每段结尾不要总结、不要升华、不要"或许这就是……"
-6. 口语化改写描写：长描写用口语重写，但不要删减内容。"月光如水般倾泻在青石板上，映出斑驳的光影"→"月亮挺亮的，照得石板地上一块白一块黑"——字数差不多，但风格不同
-7. 不完美过渡：用"话说回来""对了""哦对""算了"等口语过渡
-8. 个人吐槽：叙述者偶尔插入括号吐槽，如"（这操作也是没谁了）"
-9. 情绪波动：同一段落内要有情绪变化，不能整段一个基调
-10. 硬切过渡：段落之间可以直接跳到新场景，不需要丝滑过渡
+【保真优先级】
+1. 保留原文的角色、身份、关系、地点、时间顺序、道具、行动结果、线索、伏笔、揭示和结尾落点，不增加原文没有的事件或设定。
+2. 保持原文的叙事人称、视角人物、叙事距离和时态。候选稿若发生视角漂移或替人物补写其不可能知道的信息，必须恢复。
+3. 保留每场戏和每段对话的核心意图；可以调整措辞，不得改变人物选择、信息量和因果关系。
+4. 最终篇幅保持在原文的 80%-120%，这是校稿，不是扩写、缩写或另写一版。
 
-【篇幅要求】
-- 改写后的字数必须与原文相差不超过 20%
-- 这是打磨，不是缩写。每个场景、每段对话都要保留
-- 用口语化的方式展开描写，而不是直接删掉
+【只处理确有问题之处】
+1. 统一作者声线。沿用原文已经建立的词汇密度、叙述温度和幽默尺度，不擅自换成编辑自己的文风。
+2. 把空泛判断、重复解释和套话改成视角人物当下能感知的具体观察、动作或选择，但细节必须与场景有关。
+3. 检查动作、反应与结果之间的因果；检查对话是否有目标、回避、试探或潜台词，而不是轮流说明剧情。
+4. 人物声音来自其背景、目标、情绪和彼此关系，不统一添加口头禅、填充词、粗口或碎片句。
+5. 句长和段落长度服从场景：动作需要清楚，犹豫需要停顿，关系变化需要留白。不要按比例拆段或机械追求长短交替。
+6. 沉重题材中的轻松只能来自人物关系或处境，并且要推进关系、信息或伏笔；不要在创伤、危险或哀痛中随机插入笑话。
+7. 禁止为了显得像真人而加入无关走神、叙述者吐槽、括号旁白、固定口头禅、故意语病、错误标点或突兀硬切。
 
-直接输出打磨后的完整文本，不要解释。保留剧情和对话内容。
+若候选稿已经符合要求，保留原句。直接输出完整终稿，不要解释、标题或修改说明。
 
-以下是需要打磨的文本：
+【原文：事实与叙事基准】
+${text}
 
+【第一轮候选稿】
 ${pass1}`;
 
   try {
     const result2 = await streamGenerate(
-      '你是同一个作者，在做最后一轮打磨，要让文本看起来完全是人写的。',
+      '你是一位谨慎的小说终审编辑。先保证事实、情节、视角、声线和篇幅不漂移，再做最少且必要的语言调整。',
       pass2Prompt,
       onChunk ? (chunk) => { onChunk(chunk, 'pass2'); } : null,
-      null, config, 2, 0.95
+      null, config, 2, 0.55
     );
-    if (result2 && result2.content && result2.content.length > pass1.length * 0.15) {
+    if (result2 && hasAcceptableLength(result2.content, text)) {
       console.log(`[人味改写-第2遍] ${pass1.length}字 → ${result2.content.length}字`);
       return result2.content;
     }
-    console.warn(`[人味改写-第2遍] 结果过短(${result2?.content?.length || 0}字)，使用第1遍结果`);
+    console.warn(`[人味改写-第2遍] 篇幅漂移(${result2?.content?.length || 0}字)，使用第1遍结果`);
     return pass1;
   } catch (e) {
     console.error('[人味改写-第2遍] 失败:', e.message);

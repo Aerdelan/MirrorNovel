@@ -6,10 +6,10 @@
  </div>
  <div class="detail-content">
  <div class="card summary-card">
- <div class="summary-row"><span class="summary-label">{{ $t('novelDetail.chapter') }}</span><span>{{ novel?.novelTypeName }}</span></div>
+ <div class="summary-row"><span class="summary-label">{{ $t('novelDetail.type') }}</span><span>{{ novel?.novelTypeName }}</span></div>
  <div class="summary-row"><span class="summary-label">{{ $t('generate.stepChar') }}</span><span>{{ novel?.protagonistName|| $t('novelDetail.unknown') }}</span></div>
- <div class="summary-row"><span class="summary-label">{{ $t('bookshelf.progress') }}</span><span>{{ $t('novelDetail.outOf', { current: novel?.currentWordCount, target: novel?.targetWordCount }) }}</span></div>
- <div class="summary-row"><span class="summary-label">{{ $t('bookshelf.chapter') }}</span><span>{{ novel?.currentChapterIndex||0 }} {{ $t('novelDetail.chapter') }}</span></div>
+ <div class="summary-row"><span class="summary-label">{{ $t('novelDetail.wordCount') }}</span><span>{{ $t('novelDetail.outOf', { current: novel?.currentWordCount, target: novel?.targetWordCount }) }}</span></div>
+ <div class="summary-row"><span class="summary-label">{{ $t('novelDetail.chapterCount') }}</span><span>{{ novel?.currentChapterIndex||0 }} {{ $t('novelDetail.chapter') }}</span></div>
  <div class="summary-row"><span class="summary-label">状态</span><span class="status-badge" :class="novel?.status">{{ statusMap[novel?.status] }}</span></div>
  </div>
 
@@ -393,14 +393,14 @@ function goBack() { router.push('/bookshelf') }
 .chapter-words { font-size:12px; color:var(--text-light); }
 .expand-icon { font-size:10px; color:var(--text-light); }
 .chapter-body { padding:0 0 12px; }
-.chapter-content { line-height:1.8; font-size:14px; color:var(--text-secondary); white-space:pre-wrap; max-height:300px; overflow-y:auto; padding:8px; background:#fafafa; border-radius:6px; }
+.chapter-content { line-height:1.8; font-size:14px; color:var(--text-secondary); white-space:pre-wrap; max-height:300px; overflow-y:auto; padding:8px; background:var(--bg); border-radius:6px; }
 .chapter-actions { display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; }
-.btn-ch { padding:4px 10px; border-radius:5px; font-size:12px; cursor:pointer; border:1px solid #ddd; background:white; }
-.action-edit { color:#1890ff; border-color:#1890ff; }
+.btn-ch { padding:4px 10px; border-radius:5px; font-size:12px; cursor:pointer; border:1px solid var(--card-border); background:var(--card); }
+.action-edit { color:var(--info); border-color:var(--info); }
 .action-del { color:#ff4d4f; border-color:#ff4d4f; }
-.action-gen { color:#52c41a; border-color:#52c41a; }
-.action-deslop { color:#FF6B35; border-color:#FF6B35; }
-.action-keywords { color:#8B5CF6; border-color:#8B5CF6; }
+.action-gen { color:var(--success); border-color:var(--success); }
+.action-deslop { color:var(--accent-hover); border-color:var(--accent); }
+.action-keywords { color:var(--primary); border-color:var(--primary); }
 :global(.gen-overlay) { position:fixed; top:0;left:0;right:0;bottom:0; background:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; z-index:9999; padding:20px; }
 :global(.gen-modal) { background:white; border-radius:12px; padding:24px; max-width:420px; width:100%; }
 :global(.gen-modal h3) { margin-bottom:16px; }
@@ -421,7 +421,7 @@ function goBack() { router.push('/bookshelf') }
 .kw-modal { max-width:520px; }
 .kw-section { margin-bottom:16px; }
 .kw-label { font-size:14px; font-weight:600; margin-bottom:6px; color:var(--text-primary); }
-.kw-content { font-size:13px; line-height:1.8; color:var(--text-secondary); background:#f5f3ff; border-radius:8px; padding:12px; white-space:pre-wrap; word-break:break-all; border:1px solid #e8e4f0; }
+.kw-content { font-size:13px; line-height:1.8; color:var(--text-secondary); background:var(--primary-light); border-radius:8px; padding:12px; white-space:pre-wrap; word-break:break-all; border:1px solid var(--primary-subtle); }
 .kw-loading { font-size:13px; color:#999; padding:12px; text-align:center; }
 .kw-error { font-size:13px; color:#ff4d4f; padding:8px 12px; background:#fff2f0; border-radius:6px; margin-bottom:12px; }
 </style>

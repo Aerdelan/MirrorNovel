@@ -55,7 +55,7 @@
  </label>
  </div>
 
- <!-- Token 余额显示 -->
+ <!-- 积分余额显示 -->
  <div v-if="polishing || polishCompleted" class="card token-indicator">
  <div class="token-row">
  <span class="token-label">{{ $t('profile.tokenBalance') }}</span>
@@ -73,8 +73,8 @@
  {{ polishMode === 'text' ? $t('polish.hintText') : $t('polish.hintFile') }}
  </div>
 
- <div v-if="polishing" class="card polish-stream-card">
- <div class="section-title"> {{ $t('polish.title') }}</div>
+ <div v-if="polishing || polishCompleted" class="card polish-stream-card">
+ <div class="section-title">{{ polishing ? $t('polish.title') : $t('polish.resultTitle') }}</div>
  <div class="polish-status">{{ polishStatusText }}</div>
  <div class="polish-progress-bar" v-if="polishProgress > 0">
  <div class="progress-fill" :style="{ width: polishProgress + '%' }"></div>
@@ -153,16 +153,16 @@ function startPolish() {
  if (event.type === 'token_info') {
  tokenAvailable.value = event.available
  } else if (event.type === 'completed') {
- polishStatusText.value = $t('polish.statusDone', { count: polishedText.length })
+ polishStatusText.value = $t('polish.statusDone', { count: polishedText.value.length })
  polishProgress.value = 100; polishCompleted.value = true; polishing.value = false
- // 刷新 Token 信息
+ // 刷新积分信息
  authStore.getTokenInfo().catch(() => {})
  } else if (event.type === 'token_exhausted') {
  if (polishedText.value.length > 0) {
- polishStatusText.value = '️ Token 已用完，已保留当前润色结果'
+ polishStatusText.value = '积分已用完，已保留当前润色结果'
  polishCompleted.value = true
  } else {
- polishStatusText.value = '️ ' + (event.message || 'Token 余额不足')
+ polishStatusText.value = event.message || '积分余额不足'
  }
  polishProgress.value = 100; polishing.value = false
  authStore.getTokenInfo().catch(() => {})
@@ -192,9 +192,9 @@ function downloadPolish() {
 .mode-radio-group { display: flex; gap: 10px; }
 .mode-radio { flex: 1; padding: 10px; border: 2px solid var(--border-color); border-radius: 10px; cursor: pointer; text-align: center; transition: all 0.15s; font-size: 14px; font-weight: 500; }
 .mode-radio input { display: none; }
-.mode-radio.active { border-color: var(--primary-color); background: #fff5f0; }
-.upload-area { border: 2px dashed var(--border-color); border-radius: 12px; padding: 24px; text-align: center; cursor: pointer; transition: all 0.2s; background: #fafafa; }
-.upload-area:hover { border-color: var(--primary-color); background: #fff5f0; }
+.mode-radio.active { border-color: var(--primary-color); background: var(--primary-light); }
+.upload-area { border: 2px dashed var(--border-color); border-radius: 12px; padding: 24px; text-align: center; cursor: pointer; transition: all 0.2s; background: var(--bg); }
+.upload-area:hover { border-color: var(--primary-color); background: var(--primary-light); }
 .upload-placeholder { color: var(--text-secondary); }
 .upload-icon { font-size: 36px; margin-bottom: 8px; }
 .upload-file-info { display: flex; align-items: center; gap: 8px; justify-content: center; }
@@ -202,20 +202,20 @@ function downloadPolish() {
 .file-name { font-size: 14px; font-weight: 500; color: var(--text-primary); }
 .polish-presets { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
 .preset-btn { padding: 4px 12px; border: 1px solid var(--border-color); border-radius: 14px; font-size: 12px; cursor: pointer; transition: all 0.15s; color: var(--text-secondary); }
-.preset-btn.active { border-color: var(--primary-color); background: #fff5f0; color: var(--primary-color); font-weight: 600; }
+.preset-btn.active { border-color: var(--primary-color); background: var(--primary-light); color: var(--primary-color); font-weight: 600; }
 .preset-btn:hover { border-color: var(--primary-color); }
 .btn-lg { padding: 14px; font-size: 16px; }
-.polish-stream-card { background: #f0f8ff; border-color: #91d5ff; }
+.polish-stream-card { background: var(--info-bg); border-color: var(--info-border); }
 .polish-status { font-size: 13px; color: var(--text-secondary); margin-bottom: 8px; }
-.polish-preview { font-size: 13px; line-height: 1.6; color: var(--text-secondary); max-height: 200px; overflow-y: auto; background: #f8f8f8; padding: 10px; border-radius: 8px; white-space: pre-wrap; }
-.polish-progress-bar { height: 6px; background: #e8e8e8; border-radius: 3px; margin-bottom: 10px; overflow: hidden; }
-.progress-fill { height: 100%; background: linear-gradient(90deg, #1890ff, #40a9ff); border-radius: 3px; transition: width 0.3s ease; }
+.polish-preview { font-size: 13px; line-height: 1.6; color: var(--text-secondary); max-height: 200px; overflow-y: auto; background: var(--bg); padding: 10px; border-radius: 8px; white-space: pre-wrap; }
+.polish-progress-bar { height: 6px; background: var(--bg-alt); border-radius: 3px; margin-bottom: 10px; overflow: hidden; }
+.progress-fill { height: 100%; background: linear-gradient(90deg, var(--primary), var(--accent)); border-radius: 3px; transition: width 0.3s ease; }
 .checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 14px; cursor: pointer; }
 .checkbox-row input { width: 16px; height: 16px; cursor: pointer; }
-.btn-success { background: #52c41a; color: white; border: none; padding: 14px 24px; border-radius: 10px; font-size: 16px; cursor: pointer; font-family: inherit; }
-.btn-success:hover { background: #73d13d; }
+.btn-success { background: var(--success); color: white; border: none; padding: 14px 24px; border-radius: 10px; font-size: 16px; cursor: pointer; font-family: inherit; }
+.btn-success:hover { background: var(--primary-hover); }
 .polish-hint { text-align: center; font-size: 13px; color: var(--text-light); margin-top: 8px; }
-.token-indicator { padding: 10px 16px; background: #f6ffed; border: 1px solid #b7eb8f; }
+.token-indicator { padding: 10px 16px; background: var(--success-bg); border: 1px solid var(--success-border); }
 .token-row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
 .token-value strong { color: var(--primary-color); font-size: 15px; }
 .token-consuming { color: var(--text-light); font-size: 12px; }

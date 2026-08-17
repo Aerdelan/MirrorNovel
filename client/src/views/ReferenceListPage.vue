@@ -190,7 +190,7 @@ onMounted(async () => {
 .empty-text { margin-top: 12px; color: var(--text-secondary); }
 .stats-bar {
  display: flex; gap: 16px; font-size: 13px; color: var(--text-light);
- padding: 8px 12px; background: #f8f8f8; border-radius: 8px; margin-bottom: 8px;
+ padding: 8px 12px; background: var(--bg); border-radius: 8px; margin-bottom: 8px;
 }
 
 .novel-card { cursor: pointer; }
@@ -198,18 +198,18 @@ onMounted(async () => {
 .novel-icon { font-size: 24px; }
 .novel-info { flex: 1; min-width: 0; }
 .novel-title { font-size: 15px; font-weight: 600; color: var(--text-primary); display: flex; align-items: center; gap: 6px; }
-.ln-badge { font-size: 10px; background: #fff7e6; color: #fa8c16; padding: 1px 6px; border-radius: 8px; font-weight: 500; white-space: nowrap; }
+.ln-badge { font-size: 10px; background: var(--accent-light); color: var(--accent-hover); padding: 1px 6px; border-radius: 8px; font-weight: 500; white-space: nowrap; }
 .novel-category { font-size: 12px; color: var(--text-light); margin-top: 2px; }
 .header-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
 
 .status-badge { font-size: 11px; padding: 2px 8px; border-radius: 8px; }
-.status-badge.completed { background: #f6ffed; color: #52c41a; }
-.status-badge.paused { background: #fff7e6; color: #faad14; }
+.status-badge.completed { background: var(--success-bg); color: var(--success); }
+.status-badge.paused { background: var(--warning-bg); color: var(--warning); }
 
 .quality-badge { font-size: 12px; padding: 1px 8px; border-radius: 10px; font-weight: 600; }
-.quality-badge.high { background: #f6ffed; color: #52c41a; }
-.quality-badge.mid { background: #fff7e6; color: #fa8c16; }
-.quality-badge.low { background: #fff1f0; color: #ff4d4f; }
+.quality-badge.high { background: var(--success-bg); color: var(--success); }
+.quality-badge.mid { background: var(--warning-bg); color: var(--accent-hover); }
+.quality-badge.low { background: var(--error-bg); color: var(--error); }
 
 .novel-meta { display: flex; gap: 12px; font-size: 12px; color: var(--text-light); flex-wrap: wrap; margin-top: 2px; }
 .novel-actions { margin-top: 8px; display: flex; gap: 8px; }
@@ -231,13 +231,13 @@ onMounted(async () => {
 .detail-label { font-size: 14px; font-weight: 600; margin-bottom: 6px; color: var(--text-primary); }
 .detail-text { font-size: 13px; color: var(--text-secondary); line-height: 1.7; white-space: pre-wrap; }
 .detail-excerpt {
- background: #fafafa; border-radius: 8px; padding: 10px; margin-bottom: 8px;
+ background: var(--bg); border-radius: 8px; padding: 10px; margin-bottom: 8px;
 }
 .excerpt-num { font-size: 12px; font-weight: 600; color: var(--primary-color); margin-bottom: 4px; }
 .excerpt-text { font-size: 13px; color: var(--text-secondary); line-height: 1.6; }
 .detail-tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .vocab-tag {
- padding: 3px 10px; background: #f0f5ff; border: 1px solid #d6e4ff;
- border-radius: 12px; font-size: 12px; color: #1890ff;
+ padding: 3px 10px; background: var(--info-bg); border: 1px solid var(--info-border);
+ border-radius: 12px; font-size: 12px; color: var(--info);
 }
 </style>

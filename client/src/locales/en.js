@@ -72,7 +72,7 @@ export default {
  auth: { login: 'Login', register: 'Register', logout: 'Logout', email: 'Email', password: 'Password', nickname: 'Nickname', verifyCode: 'Verification Code', getCode: 'Get Code', sending: 'Sending...', placeholderEmail: 'Enter email', placeholderPwd: 'Enter password', placeholderNick: 'Pick a nickname', placeholderPwdConfirm: 'At least 6 characters', placeholderCode: 'Enter code', needAccount: "Don't have an account? ", hasAccount: 'Already have an account? ', loginSuccess: 'Login to continue', fillAll: 'Please fill in all fields', invalidEmail: 'Please enter a valid email', codeSent: 'Verification code sent to your email', codeFail: 'Failed to send code', pwdMinLen: 'Password must be at least 6 characters', pwdMismatch: 'Passwords do not match', loginFail: 'Login failed', registerFail: 'Registration failed', backHome: 'Back to Home' },
  tab: { generate: 'Generate', polish: 'Polish', profile: 'Profile', bookshelf: 'Bookshelf', distill: 'Distill' },
 
- announcement: { title: ' Welcome to MirrorNovel', desc: 'Join QQ Group 1019601998 to contact admin', claim: 'Claim Free 5,000 Tokens', tip1: ' Send this after joining: My username {email}', tip2: ' Tokens are credited automatically for system model generation', tip3: ' 1 Token ≈ 1 Chinese character output', gotIt: 'Got it!' },
+ announcement: { title: ' Welcome to MirrorNovel', desc: 'Join QQ Group 1019601998 to contact admin', claim: 'Claim 5,000 Free Points', tip1: ' Send this after joining: My username {email}', tip2: ' Points are credited automatically for novel generation', tip3: ' 1 Point is approximately 1 Chinese character of output', gotIt: 'Got it!' },
 
  generate: {
  tabGen: '️ Generate Novel', tabLN: ' Light Novel',
@@ -81,7 +81,7 @@ export default {
  placeholderName: 'Protagonist name', placeholderWorld: 'Describe the world setting, background, rules... (optional)', placeholderOutline: 'Optional, AI will auto-generate if left empty',
  modeBook: ' Full Novel', modeChapter: ' Single Chapter',
  unitWord: 'chars', btnGenerate: ' Start Writing', btnGenerating: '⏳ Generating...',
- statusGenerating: 'Generating outline...', statusDone: ' Complete!', statusPaused: '⏸️ Paused', statusExhausted: '️ Token depleted, please recharge',
+ statusGenerating: 'Generating outline...', statusDone: ' Complete!', statusPaused: '⏸️ Paused', statusExhausted: '️ Points depleted, please add more',
  selectedType: ' Selected: {name}',
  lnStepType: 'Select Light Novel Type', lnStepChar: 'Character Setup', lnStepWorld: 'World / Background', lnStepMode: 'Mode & Word Count',
  lnPlaceholderName: 'Character name (Japanese style, e.g. Yuma Sato)', lnPlaceholderWorld: 'Describe the world setting... (optional)',
@@ -97,7 +97,7 @@ export default {
  },
 
  polish: {
- title: ' Polish Text', subtitle: 'Optimize your novel text with custom polish schemes and de-AI processing',
+ title: ' Polish Text', resultTitle: 'Polished Result', subtitle: 'Optimize your novel text with custom polish schemes and de-AI processing',
  stepInput: 'Choose Input Method', stepText: 'Enter Text to Polish', stepFile: 'Upload .txt File', stepScheme: 'Polish Scheme', stepOption: 'Extra Options',
  modeText: '⌨️ Text Input', modeFile: ' File Upload',
  placeholderText: 'Paste the text to polish...', placeholderCustom: 'Custom polish requirements...',
@@ -111,15 +111,16 @@ export default {
 
  profile: {
  title: ' Profile', loginFirst: 'Login to unlock all features',
- tokenBalance: ' Token Balance', available: 'Available', total: 'Total', used: 'Used',
- getToken: ' Join group to get Tokens', tokenDesc: 'When tokens run out, join QQ group to contact admin:', groupNum: 'Group: 1019601998', groupNote: '备注请注明"MirrorNovel"',
+ tokenBalance: ' Points Balance', available: 'Available Points', total: 'Total Points', used: 'Used', pointsUnit: 'Points',
+ getToken: ' Join group to get Points', tokenDesc: 'When Points run low, join the QQ group to contact the admin:', groupNum: 'Group: 1019601998', groupNote: 'Please mention "MirrorNovel" when joining',
  stats: 'Writing Stats', totalWorks: 'Works', totalWords: 'Words', completed: 'Completed', inProgress: 'In Progress',
  editNick: 'Edit Nickname', placeholderNick: 'Enter new nickname',
- aiConfig: 'AI Model Config', aiConfigDesc: 'Assign different models for Outline/Writing/Polish/Reasoning',
- modelProvider: 'Provider', providerDefault: 'Default (System)', providerSystem: 'System (Token-based ¥15/1M)', providerOllama: 'Local Ollama', providerCloud: 'Custom Cloud',
- systemDesc: 'Use high-performance system models, billed by actual Token usage', rate: 'Rate: ¥15 / 1M Tokens', balance: 'Balance: ', buyToken: 'Buy Tokens: Join QQ Group 1019601998',
- modelOutline: 'Outline Model', modelWriting: 'Writing Model', modelPolish: 'Polish Model', modelReasoning: 'Reasoning Model',
- refreshModels: ' Refresh Models',
+ aiConfig: 'Generation Route Config', aiConfigDesc: 'Choose the service route used for future generation tasks', routeSelect: 'Generation Route', routeCurrent: 'Current Route',
+ modelProvider: 'Generation Route', providerDefault: 'Standard Route Model 1', providerSystem: 'Standard Route Model 2', providerOllama: 'Advanced Route Model 1', providerCloud: 'VIP Route Model', providerSvip: 'SVIP Route Model',
+ systemDesc: 'Use the stable system generation route, billed in Points by actual output', rate: 'Usage: Points are calculated from generated text', balance: 'Current Points: ', buyToken: 'Add Points: Join QQ Group 1019601998',
+ modelOutline: 'Outline Route', modelWriting: 'Writing Route', modelPolish: 'Polish Route', modelReasoning: 'Reasoning Route',
+ lineStandardOne: 'Standard Route Model 1', lineStandardTwo: 'Standard Route Model 2', lineAdvancedOne: 'Advanced Route Model 1', lineVip: 'VIP Route Model', lineSvip: 'SVIP Route Model', lineFollowDefault: 'Follow Default Route',
+ refreshModels: ' Refresh Route List',
  saveConfig: ' Save Config', saved: ' Config saved', nickUpdated: 'Nickname updated', nickFail: 'Update failed: ',
  langSwitch: ' Language', langZh: '中文', langEn: 'English',
  },
@@ -148,12 +149,15 @@ export default {
  writeRequest: '️ Writing Request', placeholderRequest: 'Describe the direction (e.g. protagonist awakens hidden power, reveals birth secret, etc.)',
  requestHint: 'Leave empty for AI to auto-continue',
  modeBook: ' Continue Full Novel', modeChapter: ' One Chapter',
+ modeBookHint: 'Continue from the chapter plan until the target length is reached or the plan needs extending',
+ modeChapterHint: 'Write one chapter now, then adjust the direction before continuing',
  wordCount: 'Target Words', btnWrite: ' Start Writing', btnWriting: '⏳ Writing...',
  chapter: 'Chapter {num}', chapterGenerating: 'Generating Chapter {num}...',
+ resultTitle: 'Continuation Result', completedMessage: 'Continuation complete, {count} characters generated', backBookshelf: 'Back to Bookshelf',
  },
 
  novelDetail: {
- unknown: 'Unknown', freeSetting: 'Free', outOf: '{current}/{target} chars',
+ unknown: 'Unknown', freeSetting: 'Free', type: 'Type', wordCount: 'Words', chapterCount: 'Chapters', outOf: '{current}/{target} chars',
  chapter: 'ch', btnEdit: '️ Edit', btnContinue: 'Continue', btnSave: ' Save',
  placeholderEdit: 'Edit chapter content...', editChapter: 'Edit Chapter {num}',
  completed: 'Completed', generating: 'Generating', paused: 'Paused',

@@ -237,7 +237,7 @@ module.exports = {
  * 将刚生成的章节浓缩为一段结构化文字（供 chapterSummaryDoc 追加）
  * AI 生成 → 提取关键信息，比简单截头尾更准确
  */
-async function summarizeChapterForDoc(chapterContent, chapterNumber, protagonistName) {
+function summarizeChapterForDoc(chapterContent, chapterNumber, protagonistName) {
   if (!chapterContent || chapterContent.length < 100) {
     return `第${chapterNumber}章：内容过短，未记录详细摘要。`
   }
