@@ -789,8 +789,15 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       if (mode === 'book') {
         // ====== 整本模式：循环生成多章直到目标字数 ======
         if (!planData.chapters.length) {
-          // 无章节计划的旧作品：不阻断，按主线自然推进逐章续写
-          console.log(`[Continue] 小说 ${novel._id} 无章节计划，将按主线自然续写至目标字数`);
+          // 整本续写必须有可机读计划，避免无约束循环和重复剧情。
+          novel.status = 'paused';
+          await novel.save();
+          activeStreams.delete(streamKey);
+          try {
+            res.write(`data: ${JSON.stringify({ type: 'plan_needs_extension', message: '缺少章节计划，已暂停续写，请先补充或重新生成章节计划' })}\n\n`);
+            res.end();
+          } catch {}
+          return;
         }
 
         const currentTotal = getCompletedWordCount(novel);
