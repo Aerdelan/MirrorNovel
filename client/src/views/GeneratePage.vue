@@ -129,6 +129,10 @@
  <div class="word-count-presets">
  <span v-for="p in activePresets" :key="p.value" class="preset-btn" :class="{ active: targetWordCount === p.value }" @click="targetWordCount = p.value">{{ p.label }}</span>
  </div>
+ <label class="expert-mode-toggle">
+ <input type="checkbox" v-model="expertMode" />
+ <span><strong>{{ $t('generate.expertMode') }}</strong><small>{{ $t('generate.expertModeDesc') }}</small></span>
+ </label>
  </div>
 
  <button class="btn btn-primary btn-block btn-lg" :disabled="generating || !selectedType" @click="startGen">
@@ -205,7 +209,15 @@
  </div>
  </div>
  <button v-if="deslopDone" class="btn btn-secondary" @click="resetDeslop">{{ $t('generate.btnReset') }}</button>
+ <button v-if="deslopDone && genMode === 'chapter'" class="btn btn-primary" :disabled="generatedApplyBusy" @click="applyGeneratedResult('deslop')">
+ {{ generatedApplyBusy ? $t('generate.applying') : $t('generate.applyDeslop') }}
+ </button>
  <button v-if="editorialDone" class="btn btn-secondary" @click="resetEditorial">{{ $t('generate.btnEditorialReset') }}</button>
+ <button v-if="editorialDone && genMode === 'chapter'" class="btn btn-primary" :disabled="generatedApplyBusy" @click="applyGeneratedResult('editorial')">
+ {{ generatedApplyBusy ? $t('generate.applying') : $t('generate.applyEditorial') }}
+ </button>
+ <span v-if="(deslopDone || editorialDone) && genMode === 'book'" class="generated-apply-hint">{{ $t('generate.applyBookHint') }}</span>
+ <span v-if="generatedApplyMessage" class="generated-apply-message">{{ generatedApplyMessage }}</span>
  </div>
  </div>
  </div>
@@ -281,6 +293,10 @@
  <div class="word-count-presets">
  <span v-for="p in lnActivePresets" :key="p.value" class="preset-btn" :class="{ active: lnTargetWordCount === p.value }" @click="lnTargetWordCount = p.value">{{ p.label }}</span>
  </div>
+ <label class="expert-mode-toggle">
+ <input type="checkbox" v-model="lnExpertMode" />
+ <span><strong>{{ $t('generate.expertMode') }}</strong><small>{{ $t('generate.expertModeDesc') }}</small></span>
+ </label>
  </div>
 
  <button class="btn btn-primary btn-block btn-lg" :disabled="lnGenerating || !lnSelectedType" @click="startLNGen">
@@ -344,6 +360,7 @@ const worldSetting = ref('')
 const outline = ref('')
 const genMode = ref('book')
 const targetWordCount = ref(50000)
+const expertMode = ref(false)
 
 // ---- 参考小说结构克隆 ----
 const structFileInput = ref(null)
@@ -381,6 +398,10 @@ const outlineStreamingText = ref('')
 // ---- 生成弹框 ----
 const showGenModal = ref(false)
 const genModalTitle = ref('')
+const generatedNovelId = ref('')
+const generatedChapterNumber = ref(0)
+const generatedApplyBusy = ref(false)
+const generatedApplyMessage = ref('')
 
 // ---- 去AI化 ----
 const deslopRunning = ref(false)
@@ -544,6 +565,8 @@ async function startGen() {
  generating.value = true; genStatus.value = ''; genOk.value = false
  streamingText.value = ''; outlineStreamingText.value = ''
  rawStreamingText.value = ''
+ generatedNovelId.value = ''; generatedChapterNumber.value = 0
+ generatedApplyBusy.value = false; generatedApplyMessage.value = ''
  showGenModal.value = true
  genModalTitle.value = `${selectedType.value} - ${protagonistName.value || '未命名'}`
  deslopDone.value = false; deslopText.value = ''; deslopRunning.value = false; diffHtml.value = ''
@@ -556,6 +579,7 @@ async function startGen() {
  worldSetting: worldSetting.value,
  targetWordCount: targetWordCount.value,
  mode: genMode.value,
+ expertMode: expertMode.value,
  outline: outline.value,
  referenceIds: genSelectedRefs.value.length > 0 ? genSelectedRefs.value : undefined,
  structureRef: useStructureRef.value && structResult.value ? structResult.value : undefined,
@@ -568,6 +592,9 @@ async function startGen() {
  outlineStreamingText.value = event.content
  } else if (event.type === 'novel_created') {
  genStatus.value = '大纲生成中...'
+ generatedNovelId.value = event.novelId || generatedNovelId.value
+ } else if (event.type === 'chapter_end') {
+ generatedChapterNumber.value = Number(event.chapterNumber || generatedChapterNumber.value)
  } else if (event.type === 'status') {
  genStatus.value = event.message
  } else if (event.type === 'chapter_start') {
@@ -580,6 +607,10 @@ async function startGen() {
  streamingText.value = event.content
  genStatus.value = `第${event.chapterNumber}章改写完成`
  scrollToBottom()
+ } else if (event.type === 'expert_revision') {
+  streamingText.value = event.content || streamingText.value
+  genStatus.value = `第${event.chapterNumber}章已完成专家复核`
+  scrollToBottom()
  } else if (event.type === 'completed') {
  genStatus.value = '生成完成！'; genOk.value = true; generating.value = false
  } else if (event.type === 'paused') {
@@ -645,6 +676,31 @@ async function startDeslop() {
 
 function resetDeslop() {
  deslopDone.value = false; deslopText.value = ''; deslopRunning.value = false; diffHtml.value = ''; deslopStatus.value = ''
+}
+
+async function applyGeneratedResult(kind) {
+ if (genMode.value !== 'chapter') {
+ generatedApplyMessage.value = $t('generate.applyBookHint')
+ return
+ }
+ const content = kind === 'editorial' ? editorialText.value : deslopText.value
+ if (!generatedNovelId.value || !generatedChapterNumber.value || !content.trim()) {
+ generatedApplyMessage.value = $t('generate.applyUnavailable')
+ return
+ }
+ if (!confirm($t(kind === 'editorial' ? 'generate.applyEditorialConfirm' : 'generate.applyDeslopConfirm'))) return
+
+ generatedApplyBusy.value = true
+ generatedApplyMessage.value = ''
+ try {
+ await api.put(`/novel/${generatedNovelId.value}/chapter/${generatedChapterNumber.value}`, { content })
+ streamingText.value = content
+ generatedApplyMessage.value = $t('generate.applied')
+ } catch (error) {
+ generatedApplyMessage.value = error.response?.data?.message || error.message || $t('generate.applyFailed')
+ } finally {
+ generatedApplyBusy.value = false
+ }
 }
 
 // ---- 编辑引擎 ----
@@ -808,6 +864,7 @@ const lnCharTrait = ref('')
 const lnWorldSetting = ref('')
 const lnGenMode = ref('book')
 const lnTargetWordCount = ref(50000)
+const lnExpertMode = ref(false)
 const lnGenerating = ref(false)
 const lnStatus = ref('')
 const lnOk = ref(false)
@@ -904,6 +961,7 @@ async function startLNGen() {
  })(),
  targetWordCount: lnTargetWordCount.value,
  mode: lnGenMode.value,
+ expertMode: lnExpertMode.value,
  outline: lnOutline,
  referenceIds: lnSelectedRefs.value.length > 0 ? lnSelectedRefs.value : undefined,
  structureRef: useStructureRef.value && structResult.value ? structResult.value : undefined,
@@ -923,6 +981,9 @@ async function startLNGen() {
  } else if (event.type === 'quality_notice') {
  const issues = event.report?.issues?.join('；') || '章节存在连贯性风险，已记录供后续章节参考'
  lnStatus.value = `第${event.chapterNumber}章质量提示：${issues}`
+ } else if (event.type === 'expert_revision') {
+  lnStreamingText.value = event.content || lnStreamingText.value
+  lnStatus.value = `第${event.chapterNumber}章已完成专家复核`
  } else if (event.type === 'completed') {
  lnStatus.value = '生成完成！'; lnOk.value = true; lnGenerating.value = false
  } else if (event.type === 'paused') {
@@ -1110,6 +1171,11 @@ onMounted(async () => {
  gap: 8px;
 }
 .word-count-input .input { flex: 1; }
+.expert-mode-toggle { display: flex; align-items: flex-start; gap: 8px; margin-top: 14px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--primary-light); cursor: pointer; }
+.expert-mode-toggle input { margin-top: 3px; flex: 0 0 auto; }
+.expert-mode-toggle span { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.expert-mode-toggle strong { color: var(--text-primary); font-size: 13px; }
+.expert-mode-toggle small { color: var(--text-light); font-size: 11px; line-height: 1.45; }
 .unit {
  font-size: 14px;
  color: var(--text-tertiary);
@@ -1493,8 +1559,16 @@ onMounted(async () => {
  border-top: 1px solid var(--card-border, #eee);
  display: flex;
  align-items: center;
+ flex-wrap: wrap;
  gap: 12px;
 }
+
+.generated-apply-hint,
+.generated-apply-message {
+ font-size: 12px;
+ color: var(--text-secondary, #666);
+}
+.generated-apply-message { color: var(--success, #2e8b57); }
 
 /* 文本区域 */
 .gen-text-section {

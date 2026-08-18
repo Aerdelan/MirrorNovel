@@ -177,6 +177,83 @@ function buildEmotionPlan(novel, chapterNumber, totalChapters, planChapter) {
   };
 }
 
+/**
+ * Rebalance the remaining manuscript budget for each planned chapter.  Plans
+ * produced by a model often contain an inaccurate total, so the relative
+ * chapter weights are preserved while the absolute target follows the book.
+ */
+function getAdaptiveChapterWordTarget(options) {
+  options = options || {};
+  const plan = options.planData && options.planData.chapters
+    ? options.planData
+    : parseChapterPlan(options.planData || '');
+  const chapterNumber = Number(options.chapterNumber || 1);
+  const targetWords = Math.max(1, Number(options.targetWords || 50000));
+  const currentWords = Math.max(0, Number(options.currentWords || 0));
+  const remainingPlan = plan.chapters.filter((item) => Number(item.chapterNumber) >= chapterNumber);
+  const currentPlan = remainingPlan.find((item) => Number(item.chapterNumber) === chapterNumber) || {};
+  const remainingChapters = Math.max(1, remainingPlan.length || Number(options.totalChapters || 1) - chapterNumber + 1);
+  const remainingWords = targetWords - currentWords;
+
+  // Once the requested length has been reached, still reserve enough room to
+  // execute unvisited plan chapters and land the ending instead of stopping in
+  // the middle of the plot.
+  if (remainingWords <= 0) {
+    return Math.max(1200, Math.min(2400, Number(currentPlan.wordTarget) || 1800));
+  }
+
+  // A legacy plan may contain only the active final chapter. In that case
+  // there is no remaining distribution to rebalance, so honor its explicit
+  // budget instead of inflating it against the whole-book target.
+  if (remainingPlan.length <= 1 && Number(currentPlan.wordTarget) > 0) {
+    return Number(currentPlan.wordTarget);
+  }
+
+  const fallbackWeight = Math.max(1200, Math.floor(remainingWords / remainingChapters));
+  const weights = remainingPlan.map((item) => Number(item.wordTarget) || fallbackWeight);
+  const totalWeight = weights.reduce((sum, value) => sum + value, 0) || remainingChapters * fallbackWeight;
+  const currentWeight = Number(currentPlan.wordTarget) || fallbackWeight;
+  const weightedTarget = Math.round(remainingWords * currentWeight / totalWeight);
+  const minTarget = Math.max(500, Math.min(1800, Math.floor(remainingWords / remainingChapters * 0.6)));
+  const maxTarget = Math.max(2600, Math.min(5200, Math.ceil(remainingWords / remainingChapters * 1.75)));
+  return Math.max(minTarget, Math.min(maxTarget, weightedTarget));
+}
+
+function getChapterOutputTokenLimit(wordTarget) {
+  // Chinese prose normally consumes more tokens than characters on the
+  // configured providers. This cap prevents one abnormal chapter from using a
+  // large share of a long-book budget while leaving reasonable headroom.
+  const target = Math.max(1, Number(wordTarget) || 1800);
+  return Math.max(2200, Math.min(7600, Math.ceil(target * 1.35)));
+}
+
+/** Return the concrete blockers that prevent a planned long-form work ending. */
+function assessStoryCompletion(novel, planData, targetWords) {
+  const plan = planData && planData.chapters ? planData : parseChapterPlan(planData || novel.chapterPlan || '');
+  const plannedNumbers = plan.chapters.map((chapter) => Number(chapter.chapterNumber)).filter(Boolean);
+  const writtenNumbers = new Set(toArray(novel.chapters).map((chapter) => Number(chapter.chapterNumber)).filter(Boolean));
+  const missingChapters = plannedNumbers.filter((number) => !writtenNumbers.has(number));
+  const finalPlannedChapter = plannedNumbers.length ? Math.max(...plannedNumbers) : 0;
+  const unresolvedHooks = toArray(novel.foreshadowingLedger)
+    .filter((hook) => {
+      const targetChapter = Number(hook.targetChapter || 0);
+      return targetChapter > 0 && targetChapter <= finalPlannedChapter && hook.status !== 'resolved' && hook.status !== 'abandoned';
+    })
+    .map((hook) => String(hook.content || hook.id || '未命名伏笔'));
+  const currentWords = toArray(novel.chapters).reduce((sum, chapter) => sum + Number(chapter.wordCount || 0), 0);
+  const wordTarget = Math.max(1, Number(targetWords || novel.targetWordCount || 50000));
+  const wordTargetReached = currentWords >= wordTarget;
+
+  return {
+    complete: Boolean(plannedNumbers.length) && missingChapters.length === 0 && wordTargetReached && unresolvedHooks.length === 0,
+    currentWords,
+    wordTarget,
+    wordTargetReached,
+    missingChapters,
+    unresolvedHooks,
+  };
+}
+
 function buildChapterContract(options) {
   options = options || {};
   const novel = initializeCreativeState(options.novel || {});
@@ -195,10 +272,17 @@ function buildChapterContract(options) {
   const mustNot = ['不要复述上一章已经完成的核心事件', '不要在一章内同时解决所有主线和伏笔'];
   novel.recentEventSignatures.slice(-5).forEach((event) => mustNot.push('不要重复事件：' + String(event).slice(0, 80)));
   if (emotion.isBreath) mustNot.push('不要用突兀搞笑抵消题材基调，也不要写成没有信息增量的纯日常');
+  const wordTarget = Number(options.wordTarget) || getAdaptiveChapterWordTarget({
+    planData: plan,
+    chapterNumber,
+    totalChapters,
+    currentWords: options.currentWords,
+    targetWords: options.targetWords || novel.targetWordCount,
+  });
   return {
     chapterNumber,
     totalChapters,
-    wordTarget: planChapter.wordTarget || Math.max(1600, Math.min(4200, Math.floor((options.targetWords || novel.targetWordCount || 50000) / Math.max(1, totalChapters)))),
+    wordTarget,
     coreEvent: planChapter.coreEvent || '承接上一章造成的新问题，做出一个不可逆的选择并留下下一步行动',
     phase: planChapter.phase || '',
     characters: planChapter.characters || [],
@@ -333,6 +417,9 @@ module.exports = {
   ensureCreativeState,
   initializeCreativeState,
   buildEmotionPlan,
+  getAdaptiveChapterWordTarget,
+  getChapterOutputTokenLimit,
+  assessStoryCompletion,
   buildChapterContract,
   renderChapterContract,
   extractEventSignature,

@@ -20,6 +20,8 @@ const {
   buildContextFromDocs,
   summarizeChapterForDoc,
   updateForeshadowingDoc,
+  buildContextMemoryCheckpoint,
+  selectRelevantHistory,
 } = require('../services/novelContext');
 const { processChapter } = require('../services/chapterToolchain');
 const { runEditorialPipeline, STAGES } = require('../services/editorialEngine');
@@ -33,6 +35,8 @@ const {
   updateCreativeState,
   renderPlanForContext,
   seedPlannedHooks,
+  getChapterOutputTokenLimit,
+  assessStoryCompletion,
 } = require('../services/storyState');
 const {
   calculatePointsCharge,
@@ -84,6 +88,125 @@ function appendChapterContextDocs(novel, content, chapterNumber, protagonistName
   } catch (error) {
     console.warn('[Doc] 伏笔追踪更新失败:', error.message);
   }
+
+  // Build a cheap local checkpoint every six chapters. This adds no model
+  // call or billing and is safe for old novels that do not have the field.
+  if (Number(chapterNumber) % 6 === 0 || !novel.contextMemory?.checkpointChapter) {
+    try {
+      novel.contextMemory = buildContextMemoryCheckpoint({
+        chapters: novel.chapters,
+        chapterSummaryDoc: novel.chapterSummaryDoc,
+        foreshadowingDoc: novel.foreshadowingDoc,
+        storyBible: novel.storyBible,
+        characterStates: novel.characterStates,
+        plotThreads: novel.plotThreads,
+        foreshadowingLedger: novel.foreshadowingLedger,
+        chapterNumber,
+        previousMemory: novel.contextMemory || {},
+      });
+      novel.markModified('contextMemory');
+    } catch (error) {
+      console.warn('[Doc] 阶段记忆检查点更新失败:', error.message);
+    }
+  }
+}
+
+async function runExpertReview({ user, content, contract, signal, onStatus }) {
+  const original = String(content || '').trim();
+  if (original.length < 500) return { content: original, review: null };
+
+  // Keep the review prompt below the model context limit when a writing
+  // route returns an unexpectedly large chapter. Preserve both the opening
+  // and ending so the expert can still assess setup and chapter落点.
+  const reviewSource = original.length > 16000
+    ? `${original.slice(0, 8000)}\n\n[中段正文已省略，仅用于审稿上下文控制]\n\n${original.slice(-8000)}`
+    : original;
+
+  const reviewPrompt = `请作为小说连续性与叙事质量审稿专家，审查下面刚生成的第${contract?.chapterNumber || '?'}章。
+
+【本章契约】
+${renderChapterContract(contract)}
+
+【审查重点】
+1. 人物的身份、目标、关系、位置和已知信息是否前后一致
+2. 是否执行了本章唯一核心事件，并产生了具体后果
+3. 是否出现与前文重复、突兀转折、因果断裂或设定冲突
+4. 伏笔、线索和章末状态是否被错误解决或遗忘
+5. 是否存在流水账、模板化表达、所有角色同声同气等问题
+
+请最后输出“综合评分：X/10”，并在评分低于7分时列出最多3条最需要修复的问题。只审查，不要改写正文。
+
+【正文】
+${reviewSource}`;
+
+  onStatus && onStatus(`推理专家正在审查第${contract?.chapterNumber || ''}章...`);
+  let reviewResult;
+  try {
+    await ensureTokensLeft(user);
+    reviewResult = await streamGenerate(
+      '你是一位严格但克制的小说连续性审稿专家。事实一致性优先于华丽表达。',
+      reviewPrompt,
+      null,
+      signal,
+      resolveApiConfig(user?.modelConfig, 'reasoning'),
+      1,
+      0.25,
+      1200,
+      45000
+    );
+    try { await deductTokens(user, reviewResult.content, reviewPrompt, 'reasoning'); } catch (error) {
+      if (error.message !== 'TOKEN_EXHAUSTED') console.warn('[Expert] 审稿扣费失败:', error.message);
+    }
+  } catch (error) {
+    console.warn('[Expert] 审稿失败，保留原稿:', error.message);
+    return { content: original, review: null };
+  }
+
+  const reviewText = String(reviewResult?.content || '').trim();
+  const scoreMatch = reviewText.match(/(?:综合评分|评分)[^0-9]{0,12}(10|[1-9])\s*(?:\/\s*10|分)?/i);
+  const score = scoreMatch ? Number(scoreMatch[1]) : null;
+  const report = { score, summary: reviewText.slice(0, 1200) };
+  if (!score || score >= 7) return { content: original, review: report };
+
+  // Do not ask the polish route to rewrite an oversized chapter. Returning
+  // the original is safer than truncating or sending another over-limit
+  // request; the review remains available for a later manual pass.
+  if (original.length > 24000) return { content: original, review: report };
+
+  const revisePrompt = `请根据审稿意见修订下面这一章，只修复明确的问题，不改变核心事件、人物选择、伏笔安排和章末落点。
+
+【审稿意见】
+${reviewText.slice(0, 1800)}
+
+【原章节】
+${original}
+
+直接输出修订后的完整章节，不要解释，不要添加标题。`;
+  onStatus && onStatus(`润色专家正在修订第${contract?.chapterNumber || ''}章...`);
+  try {
+    await ensureTokensLeft(user);
+    const revised = await streamGenerate(
+      '你是一位谨慎的小说润色修订专家。保留事实和剧情，只修复审稿意见指出的问题。',
+      revisePrompt,
+      null,
+      signal,
+      resolveApiConfig(user?.modelConfig, 'polish'),
+      1,
+      0.55,
+      getChapterOutputTokenLimit(Math.ceil(original.length * 0.9)),
+      60000
+    );
+    const revisedText = String(revised?.content || '').trim();
+    if (revisedText.length >= Math.max(500, original.length * 0.55)) {
+      try { await deductTokens(user, revisedText, revisePrompt, 'polish'); } catch (error) {
+        if (error.message !== 'TOKEN_EXHAUSTED') console.warn('[Expert] 修订扣费失败:', error.message);
+      }
+      return { content: revisedText, review: report };
+    }
+  } catch (error) {
+    console.warn('[Expert] 修订失败，保留原稿:', error.message);
+  }
+  return { content: original, review: report };
 }
 
 function finalizeGeneratedChapter({ novel, chapterNumber, rawContent, contract, protagonistName, status = 'generating' }) {
@@ -236,7 +359,7 @@ ${structureRef}
 
     const result = await streamGenerate(
       systemPrompt, outlinePrompt, null, null,
-      resolveApiConfig(req.user?.modelConfig, 'writing')
+      resolveApiConfig(req.user?.modelConfig, 'outline')
     );
 
     const outline = result.content || '';
@@ -272,6 +395,7 @@ router.post('/generate', auth, async (req, res) => {
 
     const mode = req.body.mode || 'book';
     const isBook = mode === 'book';
+    const expertMode = req.body.expertMode === true || req.body.expertMode === 'true' || req.body.expertMode === 1;
     const structureRef = req.body.structureRef || '';
 
     // 如果启用了参考结构，强制使用参考小说的世界观设定
@@ -289,6 +413,7 @@ router.post('/generate', auth, async (req, res) => {
       novelTypeId, novelTypeName: type.name,
       protagonistName: protagonistName || '', worldSetting: worldSetting || '',
       targetWordCount,
+      expertMode,
       status: 'generating', batchIndex: 0,
     });
 
@@ -419,7 +544,7 @@ ${structureRef}
         const outlineResult = await streamGenerate(
           '你是一位专业的小说大纲策划师。',
           outlinePrompt, null, ac.signal,
-          resolveApiConfig(req.user?.modelConfig, 'writing')
+          resolveApiConfig(req.user?.modelConfig, 'outline')
         );
         clearTimeout(t); clearInterval(outlineHb); outlineHb = null;
         outline = outlineResult.content || '';
@@ -461,7 +586,7 @@ ${structureRef}
         const planResult = await streamGenerate(
           '你是一位专业的小说章节规划师。你的任务是制定详细的章节计划表，确保每章有明确目标、伏笔合理铺设和回收、结局节奏自然。',
           planPrompt, null, planController.signal,
-          resolveApiConfig(req.user?.modelConfig, 'writing')
+          resolveApiConfig(req.user?.modelConfig, 'reasoning')
         ).finally(() => { clearTimeout(planTimeout); clearInterval(heartbeat); });
 
         if (planResult && planResult.content) {
@@ -514,15 +639,34 @@ ${structureRef}
       await streamGenerate(systemPrompt, prompt, (chunk) => {
         buffer += chunk;
         try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
-      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, chapterTemp);
+      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget));
+
+      let chapterContent = buffer;
+      let expertReview = null;
+      if (expertMode) {
+        const expertResult = await runExpertReview({
+          user: req.user, novel, content: buffer, contract, signal: abortController.signal,
+          onStatus: (message) => { try { res.write(`data: ${JSON.stringify({ type: 'status', message })}\n\n`); } catch {} },
+        });
+        chapterContent = expertResult.content;
+        expertReview = expertResult.review;
+        if (chapterContent !== buffer) {
+          try { res.write(`data: ${JSON.stringify({ type: 'expert_revision', chapterNumber: chNum, content: chapterContent })}\n\n`); } catch {}
+        }
+      }
 
       const chapterResult = finalizeGeneratedChapter({
         novel,
         chapterNumber: chNum,
-        rawContent: buffer,
+        rawContent: chapterContent,
         contract,
         protagonistName,
       });
+      if (expertReview) {
+        const savedChapter = novel.chapters[novel.chapters.length - 1];
+        savedChapter.qualityReport.expert = expertReview;
+        novel.markModified('chapters');
+      }
       await novel.save();
       if (chapterResult.continuity.issues.length) {
         try { res.write(`data: ${JSON.stringify({ type: 'quality_notice', chapterNumber: chNum, report: chapterResult.continuity })}\n\n`); } catch {}
@@ -556,9 +700,6 @@ ${structureRef}
           try { res.write(': chapter-heartbeat\n\n'); } catch {}
 
           const currentTotal = getCompletedWordCount(novel);
-          const remaining = targetWordCount - currentTotal;
-          if (remaining <= 0) break;
-
           const contract = buildChapterContract({
             novel,
             chapterNumber: ch,
@@ -572,7 +713,16 @@ ${structureRef}
           // 近期摘要和伏笔来自已落库状态；计划单独以紧凑结构注入。
           const contextFromDocs = buildContextFromDocs(
             novel.chapterSummaryDoc, novel.foreshadowingDoc, outline, '', ch,
-            lastChapterContent ? extractChapterSummary(lastChapterContent) : ''
+            lastChapterContent ? extractChapterSummary(lastChapterContent) : '',
+            {
+              contextMemory: novel.contextMemory,
+              relevantHistory: selectRelevantHistory(
+                novel.chapters,
+                [contract.coreEvent, ...(contract.characters || []), ...(contract.setHooks || []), ...(contract.resolveHooks || [])].join(' '),
+                { currentChapter: ch, maxChapters: 4, maxChars: 1800 }
+              ),
+              maxChars: 14000,
+            }
           );
 
           const chPrompt = `请继续创作这部${type.name}小说。
@@ -588,7 +738,7 @@ ${renderPlanForContext(planData, ch) || '按故事主线自然推进。'}
 
 ${renderChapterContract(contract)}
 
-当前剩余目标约${remaining}字。
+          当前总字数：${currentTotal}/${targetWordCount}。即使总字数已经达到目标，也必须完成本章计划与所有后续章节，不能提前写结局。
 写作要求：
 1. 只完成本章的唯一核心事件，并让因果、人物选择和章末状态自然衔接。
 2. 用具体动作、感官和可见后果推进，不复述前情，不用抽象总结代替戏剧动作。
@@ -610,11 +760,16 @@ ${renderChapterContract(contract)}
           return;
         }
 
-        if (planData.chapters.length && getCompletedWordCount(novel) < targetWordCount * 0.72) {
+        const completion = assessStoryCompletion(novel, planData, targetWordCount);
+        if (!completion.complete) {
           novel.status = 'paused';
           await novel.save();
           activeStreams.delete(streamKey);
-          try { res.write(`data: ${JSON.stringify({ type: 'plan_needs_extension', message: '计划章节已写完但目标字数不足，为避免无计划扩写，已暂停等待扩展计划' })}\n\n`); res.end(); } catch {}
+          const blockers = [];
+          if (!completion.wordTargetReached) blockers.push(`当前 ${completion.currentWords}/${completion.wordTarget} 字，仍未达到目标字数`);
+          if (completion.missingChapters.length) blockers.push(`尚未执行计划第 ${completion.missingChapters.join('、')} 章`);
+          if (completion.unresolvedHooks.length) blockers.push(`仍有 ${completion.unresolvedHooks.length} 条计划伏笔未回收`);
+          try { res.write(`data: ${JSON.stringify({ type: 'plan_needs_extension', message: `${blockers.join('；')}。已暂停，请扩展或修订章节计划后继续。` })}\n\n`); res.end(); } catch {}
           return;
         }
 
@@ -762,15 +917,34 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       await streamGenerate(systemPrompt, prompt, (chunk) => {
         buffer += chunk;
         try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
-      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, chapterTemp);
+      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget));
+
+      let chapterContent = buffer;
+      let expertReview = null;
+      if (novel.expertMode) {
+        const expertResult = await runExpertReview({
+          user: req.user, novel, content: buffer, contract, signal: abortController.signal,
+          onStatus: (message) => { try { res.write(`data: ${JSON.stringify({ type: 'status', message })}\n\n`); } catch {} },
+        });
+        chapterContent = expertResult.content;
+        expertReview = expertResult.review;
+        if (chapterContent !== buffer) {
+          try { res.write(`data: ${JSON.stringify({ type: 'expert_revision', chapterNumber: chNum, content: chapterContent })}\n\n`); } catch {}
+        }
+      }
 
       const chapterResult = finalizeGeneratedChapter({
         novel,
         chapterNumber: chNum,
-        rawContent: buffer,
+        rawContent: chapterContent,
         contract,
         protagonistName,
       });
+      if (expertReview) {
+        const savedChapter = novel.chapters[novel.chapters.length - 1];
+        savedChapter.qualityReport.expert = expertReview;
+        novel.markModified('chapters');
+      }
       await novel.save();
       if (chapterResult.continuity.issues.length) {
         try { res.write(`data: ${JSON.stringify({ type: 'quality_notice', chapterNumber: chNum, report: chapterResult.continuity })}\n\n`); } catch {}
@@ -800,9 +974,8 @@ router.post('/continue/:novelId', auth, async (req, res) => {
           return;
         }
 
-        const currentTotal = getCompletedWordCount(novel);
-        const remainingTarget = targetWordCount - currentTotal;
-        if (remainingTarget <= 0) {
+        const beforeCompletion = assessStoryCompletion(novel, planData, targetWordCount);
+        if (beforeCompletion.complete) {
           generationDone = true;
           activeStreams.delete(streamKey);
           novel.status = 'completed';
@@ -826,9 +999,6 @@ router.post('/continue/:novelId', auth, async (req, res) => {
           if (abortController.signal.aborted) break;
 
           const curTotal = getCompletedWordCount(novel);
-          const remaining = targetWordCount - curTotal;
-          if (remaining <= 0) break;
-
           const contract = buildChapterContract({
             novel,
             chapterNumber: ch,
@@ -839,7 +1009,15 @@ router.post('/continue/:novelId', auth, async (req, res) => {
             previousChapter: novel.chapters.length ? novel.chapters[novel.chapters.length - 1] : null,
           });
           const contextFromDocs = (novel.chapterSummaryDoc || novel.foreshadowingDoc)
-            ? buildContextFromDocs(novel.chapterSummaryDoc, novel.foreshadowingDoc, outline, '', ch, '')
+            ? buildContextFromDocs(novel.chapterSummaryDoc, novel.foreshadowingDoc, outline, '', ch, '', {
+              contextMemory: novel.contextMemory,
+              relevantHistory: selectRelevantHistory(
+                novel.chapters,
+                [contract.coreEvent, ...(contract.characters || []), ...(contract.setHooks || []), ...(contract.resolveHooks || [])].join(' '),
+                { currentChapter: ch, maxChapters: 4, maxChars: 1800 }
+              ),
+              maxChars: 14000,
+            })
             : buildAugmentedContext(novel.chapters);
 
           const chPrompt = `请继续创作这部${typeName}小说。
@@ -855,7 +1033,7 @@ ${renderPlanForContext(planData, ch) || '按故事主线自然推进。'}
 
 ${renderChapterContract(contract)}
 
-当前剩余目标约${remaining}字。
+          当前总字数：${curTotal}/${targetWordCount}。即使总字数已经达到目标，也必须完成本章计划与所有后续章节，不能提前写结局。
 写作要求：
 1. 只完成本章唯一核心事件，推进至少一条主线或关系线，不复述已有剧情。
 2. 通过行动、因果和人物选择衔接上一章；避免百科式解释、空泛升华和流水账。
@@ -874,11 +1052,16 @@ ${renderChapterContract(contract)}
           return;
         }
 
-        if (planData.chapters.length && getCompletedWordCount(novel) < targetWordCount * 0.72) {
+        const completion = assessStoryCompletion(novel, planData, targetWordCount);
+        if (!completion.complete) {
           novel.status = 'paused';
           await novel.save();
           activeStreams.delete(streamKey);
-          try { res.write(`data: ${JSON.stringify({ type: 'plan_needs_extension', message: '计划章节已写完但目标字数不足，为避免无计划扩写，已暂停等待扩展计划' })}\n\n`); res.end(); } catch {}
+          const blockers = [];
+          if (!completion.wordTargetReached) blockers.push(`当前 ${completion.currentWords}/${completion.wordTarget} 字，仍未达到目标字数`);
+          if (completion.missingChapters.length) blockers.push(`尚未执行计划第 ${completion.missingChapters.join('、')} 章`);
+          if (completion.unresolvedHooks.length) blockers.push(`仍有 ${completion.unresolvedHooks.length} 条计划伏笔未回收`);
+          try { res.write(`data: ${JSON.stringify({ type: 'plan_needs_extension', message: `${blockers.join('；')}。已暂停，请扩展或修订章节计划后继续。` })}\n\n`); res.end(); } catch {}
           return;
         }
 
@@ -1504,12 +1687,12 @@ router.post('/match-templates', auth, async (req, res) => {
 });
 
 // ---- Token 扣除辅助函数 ----
-async function deductTokens(user, content, inputContent = '') {
+async function deductTokens(user, content, inputContent = '', modelType = 'writing') {
   try {
     if (!user || !isPointsBillingRequired(user.modelConfig)) return null;
 
     return await debitPointsForUser(User, user._id, {
-      routeId: routeIdForModelConfig(user.modelConfig),
+      routeId: routeIdForModelConfig(user.modelConfig, modelType),
       inputTokens: countTokens(inputContent || ''),
       outputTokens: countTokens(content || ''),
     }, { reason: 'novel_generation' });
@@ -1567,10 +1750,10 @@ router.post('/deslop', auth, async (req, res) => {
       userPrompt,
       null,
       null,
-      resolveApiConfig(req.user?.modelConfig, 'writing')
+      resolveApiConfig(req.user?.modelConfig, 'polish')
     );
 
-    await deductTokens(req.user, result.content, `${systemPrompt}\n${userPrompt}`);
+    await deductTokens(req.user, result.content, `${systemPrompt}\n${userPrompt}`, 'polish');
 
     res.json({ original: text, processed: processChapter(result.content).text });
   } catch (error) {
@@ -1595,7 +1778,7 @@ router.post('/deslop-stream', auth, async (req, res) => {
       'X-Accel-Buffering': 'no',
     });
 
-    const apiConfig = resolveApiConfig(req.user?.modelConfig, 'writing');
+    const apiConfig = resolveApiConfig(req.user?.modelConfig, 'polish');
     const deslop = require('../config/deslop');
     let fullContent = '';
 
@@ -1672,7 +1855,7 @@ ${fullContent}`;
     }
 
     // 扣除 Token
-    try { await deductTokens(req.user, finalContent || fullContent, `${text}\n${fullContent}`); } catch {}
+    try { await deductTokens(req.user, finalContent || fullContent, `${text}\n${fullContent}`, 'polish'); } catch {}
 
     res.end();
   } catch (error) {
@@ -1710,7 +1893,7 @@ router.post('/polish', auth, async (req, res) => {
     // 估算输入 token 成本（输入文本 + 提示词）
     const inputTokenCost = countTokens(text) + countTokens(polishPrompt || defaultPolishPrompt);
     let outputTokenUsed = 0;
-    const billingRouteId = routeIdForModelConfig(req.user?.modelConfig);
+    const billingRouteId = routeIdForModelConfig(req.user?.modelConfig, 'polish');
     const requiresPoints = isPointsBillingRequired(req.user?.modelConfig);
 
     // 获取最新余额
@@ -1768,7 +1951,7 @@ router.post('/polish', auth, async (req, res) => {
         userPrompt,
         wrappedOnChunk,
         abortController.signal,
-        resolveApiConfig(req.user?.modelConfig, 'writing')
+        resolveApiConfig(req.user?.modelConfig, 'polish')
       );
     } catch (e) {
       if (e.name === 'AbortError' && tokenExhausted) {
@@ -1780,7 +1963,7 @@ router.post('/polish', auth, async (req, res) => {
 
     // 扣除实际消耗的 Token（仅扣除输出部分，输入部分可酌情免除）
     try {
-      await deductTokens(req.user, polished, `你是一位专业的小说润色专家，擅长各种文风的精修与优化。\n${userPrompt}`);
+      await deductTokens(req.user, polished, `你是一位专业的小说润色专家，擅长各种文风的精修与优化。\n${userPrompt}`, 'polish');
     } catch (e) {
       if (e.message === 'TOKEN_EXHAUSTED') {
         tokenExhausted = true;
@@ -1821,14 +2004,14 @@ router.post('/polish', auth, async (req, res) => {
             deslopPrompt,
             deslopOnChunk,
             abortController.signal,
-            resolveApiConfig(req.user?.modelConfig, 'writing')
+            resolveApiConfig(req.user?.modelConfig, 'polish')
           );
         } catch (e) {
           if (!(e.name === 'AbortError' && deslopExhausted)) throw e;
         }
 
         // 扣除去AI味消耗的 Token
-        try { await deductTokens(req.user, desloped, `你是一位专业的小说润色专家。\n${deslopPrompt}`); } catch {}
+        try { await deductTokens(req.user, desloped, `你是一位专业的小说润色专家。\n${deslopPrompt}`, 'polish'); } catch {}
 
         if (desloped.trim().length > 10) polished = desloped;
       }
@@ -1914,7 +2097,7 @@ DUMMY_TEXT
     const estimatedTokens = countTokens(text);
     let finalContent = '';
     let totalTokenCount = 0;
-    const apiConfig = resolveApiConfig(req.user?.modelConfig, 'writing');
+    const apiConfig = resolveApiConfig(req.user?.modelConfig, 'reasoning');
 
     // ---------- 单次处理（文本足够短） ----------
     if (estimatedTokens <= maxNovelTokens) {
@@ -2123,7 +2306,7 @@ ${content}
 3. 关键字用逗号分隔，每类至少 2-3 个人物/场景
 4. 关键字可直接用于 AI 图像生成提示词的拼接`;
 
-    const result = await streamGenerate(systemPrompt, userPrompt, null, null, resolveApiConfig(req.user?.modelConfig, 'writing'));
+    const result = await streamGenerate(systemPrompt, userPrompt, null, null, resolveApiConfig(req.user?.modelConfig, 'reasoning'));
 
     if (!result || !result.content) {
       return res.status(500).json({ message: '关键字生成失败' });
@@ -2276,7 +2459,7 @@ router.post('/optimize/:novelId', auth, async (req, res) => {
       return res.status(409).json({ message: '已有调优任务正在运行，请等待完成' });
     }
 
-    const apiConfig = resolveApiConfig(req.user?.modelConfig, 'writing');
+    const apiConfig = resolveApiConfig(req.user?.modelConfig, 'polish');
 
     // 后台执行，不 await
     runOptimizeTask(req.params.novelId, req.userId, apiConfig);
@@ -2330,7 +2513,7 @@ router.post('/editorial-stream', auth, async (req, res) => {
       'X-Accel-Buffering': 'no',
     });
 
-    const apiConfig = resolveApiConfig(req.user?.modelConfig, 'writing');
+    const apiConfig = resolveApiConfig(req.user?.modelConfig, 'polish');
 
     // 心跳
     const heartbeat = setInterval(() => {
@@ -2366,7 +2549,7 @@ router.post('/editorial-stream', auth, async (req, res) => {
       } catch {}
 
       // 扣费
-      try { await deductTokens(req.user, processedContent, text); } catch (e) {
+      try { await deductTokens(req.user, processedContent, text, 'polish'); } catch (e) {
         console.warn('[编辑引擎] 扣费异常:', e.message);
       }
 
@@ -2510,7 +2693,7 @@ router.post('/editorial-book/:novelId', auth, async (req, res) => {
       return res.status(409).json({ message: '编辑引擎正在运行中，请等待完成' });
     }
 
-    const apiConfig = resolveApiConfig(req.user?.modelConfig, 'writing');
+    const apiConfig = resolveApiConfig(req.user?.modelConfig, 'polish');
 
     // 后台执行，不 await
     runEditorialBookTask(req.params.novelId, req.userId, apiConfig);

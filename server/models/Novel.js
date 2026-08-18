@@ -43,6 +43,11 @@ const novelSchema = new mongoose.Schema({
     type: Number,
     default: 50000,
   },
+  // 可选的专家团模式：写作后增加推理审稿和必要的润色修订。
+  expertMode: {
+    type: Boolean,
+    default: false,
+  },
   currentWordCount: {
     type: Number,
     default: 0,
@@ -86,6 +91,11 @@ const novelSchema = new mongoose.Schema({
   chapterSummaryDoc: {
     type: String,
     default: '',
+  },
+  // 分阶段压缩后的故事记忆索引；正文和旧摘要仍是事实来源。
+  contextMemory: {
+    type: mongoose.Schema.Types.Mixed,
+    default: () => ({ version: 1, checkpointChapter: 0, checkpointSummary: '', facts: [], openLoops: [] }),
   },
   // 结构化创作状态。旧作品没有这些字段时，生成服务会从已有章节和文本文档渐进补全。
   storyBible: {

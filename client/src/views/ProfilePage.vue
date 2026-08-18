@@ -184,6 +184,20 @@
  <strong>{{ routeLabel(modelConfig.routeId) }}</strong>
  </div>
 
+ <details class="role-routes-details">
+ <summary>{{ $t('profile.roleRoutesTitle') }}</summary>
+ <div class="config-desc role-routes-desc">{{ $t('profile.roleRoutesDesc') }}</div>
+ <div v-for="role in modelRoles" :key="role.key" class="form-group role-route-row">
+ <label :for="`role-route-${role.key}`">{{ $t(`profile.${role.labelKey}`) }}</label>
+ <select :id="`role-route-${role.key}`" v-model="modelConfig.roleRoutes[role.key]" class="input select-input">
+ <option value="">{{ $t('profile.lineFollowDefault') }}</option>
+ <option v-for="route in publicRoutes" :key="route.id" :value="route.id">
+ {{ routeLabel(route.id) }}
+ </option>
+ </select>
+ </div>
+ </details>
+
  <button class="btn btn-primary btn-block" style="margin-top:14px;" :disabled="savingConfig" @click="saveConfig">
  {{ savingConfig ? $t('common.loading') : $t('profile.saveConfig') }}
  </button>
@@ -256,7 +270,13 @@ const routeDefinitions = [
  { id: 'svip', labelKey: 'lineSvip' },
 ]
 const publicRoutes = ref([...routeDefinitions])
-const modelConfig = ref({ routeId: 'normal_1', routeAlias: '' })
+const modelRoles = [
+ { key: 'outline', labelKey: 'modelOutline' },
+ { key: 'writing', labelKey: 'modelWriting' },
+ { key: 'reasoning', labelKey: 'modelReasoning' },
+ { key: 'polish', labelKey: 'modelPolish' },
+]
+const modelConfig = ref({ routeId: 'normal_1', routeAlias: '', roleRoutes: {} })
 const savingConfig = ref(false)
 const configMsg = ref('')
 const configMsgOk = ref(false)
@@ -459,16 +479,28 @@ async function loadModelConfig() {
  const config = payload?.modelConfig || payload || {}
  applyPublicRoutes(payload)
  const routeId = publicRoutes.value.some(route => route.id === config.routeId) ? config.routeId : publicRoutes.value[0]?.id
- modelConfig.value = { routeId: routeId || 'normal_1', routeAlias: routeLabel(routeId) }
+ const roleRoutes = {}
+ modelRoles.forEach(({ key }) => {
+  const value = config.roleRoutes?.[key]
+  roleRoutes[key] = publicRoutes.value.some(route => route.id === value) ? value : ''
+ })
+ modelConfig.value = { routeId: routeId || 'normal_1', routeAlias: routeLabel(routeId), roleRoutes }
  } catch (e) { console.error('加载线路配置失败:', e) }
 }
 
 async function saveConfig() {
  savingConfig.value = true; configMsg.value = ''
  try {
- const response = await authStore.saveModelConfig({ routeId: modelConfig.value.routeId })
+ const response = await authStore.saveModelConfig({
+  routeId: modelConfig.value.routeId,
+  roleRoutes: { ...modelConfig.value.roleRoutes },
+ })
  const savedConfig = response?.modelConfig || response || {}
  if (savedConfig.routeId) modelConfig.value.routeId = savedConfig.routeId
+ modelRoles.forEach(({ key }) => {
+  modelConfig.value.roleRoutes[key] = publicRoutes.value.some(route => route.id === savedConfig.roleRoutes?.[key])
+   ? savedConfig.roleRoutes[key] : ''
+ })
  modelConfig.value.routeAlias = routeLabel(modelConfig.value.routeId)
  configMsg.value = ' ' + t('profile.saved')
  configMsgOk.value = true
@@ -601,6 +633,10 @@ async function handleLogout() {
 .toggle-btn.active { border-color: var(--primary-color); background: var(--primary-light); }
 .model-config-card { border: 1px solid var(--warning-border); }
 .route-selector { margin-top: 14px; }
+.role-routes-details { margin-top: 14px; border-top: 1px solid var(--border-color); padding-top: 12px; }
+.role-routes-details summary { cursor: pointer; color: var(--primary-hover); font-size: 13px; font-weight: 600; }
+.role-routes-desc { margin-top: 10px; margin-bottom: 12px; }
+.role-route-row { margin-bottom: 12px; }
 .current-route { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--card-border); border-radius: 8px; color: var(--text-secondary); background: var(--primary-light); font-size: 13px; }
 .current-route strong { min-width: 0; color: var(--primary-hover); text-align: right; overflow-wrap: anywhere; }
 .config-desc { font-size: 12px; color: var(--text-light); margin-bottom: 12px; }

@@ -36,6 +36,7 @@ export default {
  maleFreq: ' 男频', femaleFreq: ' 女频',
  placeholderName: '故事主角名字', placeholderWorld: '描述故事的世界观、背景设定、特殊规则等（可选）', placeholderOutline: '可选，不填则由AI自动生成大纲',
  modeBook: ' 生成整本', modeChapter: ' 生成一章',
+ expertMode: '开启专家团模式', expertModeDesc: '每章写作后增加连续性审稿，必要时自动修订；会消耗额外积分',
  unitWord: '字', btnGenerate: ' 开始创作', btnGenerating: '⏳ 生成中...',
  statusGenerating: '大纲生成中...', statusDone: ' 生成完成！', statusPaused: '⏸️ 已暂停', statusExhausted: '️ 积分已用完，请补充积分',
  selectedType: ' 已选择：{name}',
@@ -54,6 +55,8 @@ export default {
  tmplMatched: ' 已匹配类型模板', tmplMatch: '匹配', tmplHint: '以上模板仅为参考，实际创作以你的世界观设定为主',
  // 去AI化
  btnDeslop: '去AI化', deslopResult: '去AI化结果', diffView: '改动对比', btnReset: '重新去AI化',
+ applyDeslop: '应用去AI化结果', applyEditorial: '应用编辑结果', applying: '正在应用...', applied: '已应用并保存到章节', applyFailed: '应用失败', applyUnavailable: '当前结果无法应用',
+ applyDeslopConfirm: '确定用去AI化结果覆盖当前章节吗？', applyEditorialConfirm: '确定用编辑结果覆盖当前章节吗？', applyBookHint: '整本生成已逐章保存，请到书架的章节详情中应用修改',
  // 编辑引擎
  btnEditorial: '编辑引擎', editorialResult: '编辑引擎结果', btnEditorialReset: '重新编辑',
  },
@@ -79,7 +82,8 @@ export default {
  getToken: ' 加群联系群主获取积分', tokenDesc: '积分不足或需要补充积分，请加 QQ 群联系群主：', groupNum: '群号：1019601998', groupNote: '加群时请备注"MirrorNovel"',
  stats: '创作统计', totalWorks: '总作品', totalWords: '总字数', completed: '已完成', inProgress: '进行中',
  editNick: '修改昵称', placeholderNick: '输入新昵称',
- aiConfig: '生成线路配置', aiConfigDesc: '选择小说生成所使用的服务线路，保存后对后续任务生效', routeSelect: '生成线路', routeCurrent: '当前线路',
+ aiConfig: '生成线路配置', aiConfigDesc: '选择小说生成所使用的服务线路，保存后对后续任务生效', routeSelect: '默认生成线路', routeCurrent: '当前默认线路',
+ roleRoutesTitle: '按任务类型覆盖线路（可选）', roleRoutesDesc: '未单独选择的任务会跟随默认线路，积分按实际使用的线路计算',
  modelProvider: '生成线路', providerDefault: '普通线路模型一', providerSystem: '普通线路模型二', providerOllama: '高级线路模型一', providerCloud: 'VIP线路模型', providerSvip: 'SVIP线路模型',
  systemDesc: '使用系统提供的稳定生成线路，按实际输出量扣除积分', rate: '扣费：按实际生成字数折算积分', balance: '当前积分：', buyToken: '补充积分请加 QQ 群 1019601998',
  modelOutline: '大纲线路', modelWriting: '写作线路', modelPolish: '润色线路', modelReasoning: '推理线路',

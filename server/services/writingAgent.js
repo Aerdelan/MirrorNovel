@@ -39,7 +39,7 @@ async function planChapter(novel, userConfig) {
   const result = await streamGenerate(
     '你是一位专业的小说章节规划师，擅长设计剧情走向。',
     prompt, null, null,
-    resolveApiConfig(userConfig, 'writing')
+    resolveApiConfig(userConfig, 'reasoning')
   )
 
   return result.content || ''
@@ -73,7 +73,7 @@ async function reviewChapter(chapterContent, novel, lastChapters) {
     '你是一位专业的小说审稿编辑，擅长发现写作问题。',
     prompt + '\n\n以下是本章内容：\n' + chapterContent.substring(0, 3000),
     null, null,
-    resolveApiConfig(userConfig, 'writing')
+    resolveApiConfig(userConfig, 'reasoning')
   )
 
   const text = result.content || ''
@@ -115,7 +115,7 @@ ${chapterContent}`
   const result = await streamGenerate(
     '你是一位专业的小说修订编辑，擅长根据审查意见优化文本。',
     prompt, null, null,
-    resolveApiConfig(userConfig, 'writing')
+    resolveApiConfig(userConfig, 'polish')
   )
 
   return result.content || chapterContent

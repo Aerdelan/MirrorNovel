@@ -62,8 +62,14 @@ function syncLegacyTokens(user) {
   user.tokens.used = Math.min(user.tokens.total, nonNegativeInteger(user.points.used));
 }
 
-function routeIdForModelConfig(modelConfig, catalog = createPriceCatalog()) {
-  return resolveRouteId(modelConfig?.routeId || DEFAULT_ROUTE_ID, catalog);
+function routeIdForModelConfig(modelConfig, modelType = 'writing', catalog = createPriceCatalog()) {
+  // 兼容旧调用方式 routeIdForModelConfig(config, catalog)
+  if (modelType && typeof modelType === 'object') {
+    catalog = modelType;
+    modelType = 'writing';
+  }
+  const roleRouteId = modelConfig?.roleRoutes?.[modelType] || modelConfig?.routeId || DEFAULT_ROUTE_ID;
+  return resolveRouteId(roleRouteId, catalog);
 }
 
 function isPointsBillingRequired(modelConfig) {

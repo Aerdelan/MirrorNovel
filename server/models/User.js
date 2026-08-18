@@ -63,6 +63,12 @@ const userSchema = new mongoose.Schema({
     type: {
       provider: { type: String, enum: ['default', 'system', 'ollama', 'cloud'], default: 'default' },
       routeId: { type: String, default: 'normal_1' },
+      roleRoutes: {
+        outline: { type: String, default: '' },
+        writing: { type: String, default: '' },
+        reasoning: { type: String, default: '' },
+        polish: { type: String, default: '' },
+      },
       ollamaBaseUrl: { type: String, default: 'http://localhost:11434' },
       ollamaOutlineModel: { type: String, default: '' },
       ollamaWritingModel: { type: String, default: '' },

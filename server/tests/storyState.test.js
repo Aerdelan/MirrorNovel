@@ -8,6 +8,9 @@ const {
   checkChapterContinuity,
   updateCreativeState,
   seedPlannedHooks,
+  getAdaptiveChapterWordTarget,
+  getChapterOutputTokenLimit,
+  assessStoryCompletion,
 } = require('../services/storyState');
 
 function makeNovel(overrides = {}) {
@@ -138,6 +141,52 @@ test('buildEmotionPlan inserts a restrained breathing chapter after sustained pr
   assert.equal(emotion.chapterRole, '喘息推进');
   assert.ok(emotion.tension >= 2 && emotion.tension <= 5);
   assert.ok(emotion.tone.length > 10);
+});
+
+test('long-form budget is redistributed across remaining planned chapters', () => {
+  const planData = parseChapterPlan({
+    chapters: [
+      { chapterNumber: 1, wordTarget: 3000, coreEvent: '开场' },
+      { chapterNumber: 2, wordTarget: 6000, coreEvent: '转折' },
+      { chapterNumber: 3, wordTarget: 3000, coreEvent: '收束' },
+    ],
+  });
+
+  const first = getAdaptiveChapterWordTarget({ planData, chapterNumber: 1, currentWords: 0, targetWords: 12000, totalChapters: 3 });
+  const second = getAdaptiveChapterWordTarget({ planData, chapterNumber: 2, currentWords: first, targetWords: 12000, totalChapters: 3 });
+  const endingAfterTarget = getAdaptiveChapterWordTarget({ planData, chapterNumber: 3, currentWords: 13000, targetWords: 12000, totalChapters: 3 });
+
+  assert.ok(second > first, '较重的计划章节应获得更高预算');
+  assert.ok(endingAfterTarget >= 1200, '达到目标字数后仍应保留收束章节预算');
+  assert.ok(getChapterOutputTokenLimit(first) < 16384);
+});
+
+test('story completion requires target words, every plan chapter, and required hook resolution', () => {
+  const planData = parseChapterPlan({
+    chapters: [
+      { chapterNumber: 1, coreEvent: '埋下钥匙线索' },
+      { chapterNumber: 2, coreEvent: '回收钥匙线索' },
+      { chapterNumber: 3, coreEvent: '完成结局' },
+    ],
+  });
+  const novel = makeNovel({
+    targetWordCount: 1800,
+    chapters: [
+      { chapterNumber: 1, wordCount: 900 },
+      { chapterNumber: 2, wordCount: 1000 },
+    ],
+    foreshadowingLedger: [{ id: 'key', content: '铜钥匙', targetChapter: 2, status: 'pending' }],
+  });
+
+  let result = assessStoryCompletion(novel, planData, 1800);
+  assert.equal(result.complete, false);
+  assert.deepEqual(result.missingChapters, [3]);
+  assert.deepEqual(result.unresolvedHooks, ['铜钥匙']);
+
+  novel.chapters.push({ chapterNumber: 3, wordCount: 300 });
+  novel.foreshadowingLedger[0].status = 'resolved';
+  result = assessStoryCompletion(novel, planData, 1800);
+  assert.equal(result.complete, true);
 });
 
 test('planned foreshadowing cannot resolve before its target chapter', () => {

@@ -10,6 +10,7 @@ const { claimAutoActivitiesForUser } = require('../services/activityService');
 const {
   getPublicRoutes,
   getServerRoute,
+  MODEL_ROLE_KEYS,
   toPublicModelConfig,
 } = require('../config/modelPriceCatalog');
 
@@ -395,6 +396,22 @@ router.put('/model-config', auth, async (req, res) => {
       }
       config.provider = 'system';
       config.routeId = route.id;
+      const requestedRoleRoutes = req.body.roleRoutes && typeof req.body.roleRoutes === 'object'
+        ? req.body.roleRoutes
+        : (req.user.modelConfig?.roleRoutes || {});
+      config.roleRoutes = {};
+      for (const role of MODEL_ROLE_KEYS) {
+        const requestedRole = String(requestedRoleRoutes[role] || '').trim();
+        if (!requestedRole) {
+          config.roleRoutes[role] = '';
+          continue;
+        }
+        const roleRoute = getServerRoute(requestedRole);
+        if (roleRoute.id !== requestedRole && roleRoute.alias !== requestedRole) {
+          return res.status(400).json({ message: `无效的${role}线路` });
+        }
+        config.roleRoutes[role] = roleRoute.id;
+      }
     } else if (provider === 'ollama') {
       config.ollamaBaseUrl = ollamaBaseUrl || 'http://localhost:11434';
       config.ollamaOutlineModel = ollamaOutlineModel || '';

@@ -53,6 +53,7 @@ class InMemoryNovel {
       chapterPlanData: { version: 1, chapters: [] },
       foreshadowingDoc: '',
       chapterSummaryDoc: '',
+      contextMemory: { version: 1, checkpointChapter: 0, checkpointSummary: '', facts: [], openLoops: [] },
       storyBible: {},
       characterStates: [],
       plotThreads: [],
@@ -159,8 +160,8 @@ const aiServiceMock = {
   countTokens: (content) => String(content || '').length,
   humanizeRewrite: (content) => content,
   getFriendlyErrorMessage: (error) => error?.message || 'mock error',
-  streamGenerate: async (systemPrompt, userPrompt, onChunk, signal, apiConfig, retries, temperature) => {
-    const call = { systemPrompt, userPrompt, onChunk, signal, apiConfig, retries, temperature };
+  streamGenerate: async (systemPrompt, userPrompt, onChunk, signal, apiConfig, retries, temperature, maxTokens) => {
+    const call = { systemPrompt, userPrompt, onChunk, signal, apiConfig, retries, temperature, maxTokens };
     call.kind = onChunk ? 'chapter' : (systemPrompt.includes('章节规划师') ? 'plan' : (systemPrompt.includes('大纲策划师') ? 'outline' : 'other'));
     state.aiCalls.push(call);
     return (state.aiHandler || defaultAiHandler)(call);
@@ -299,6 +300,29 @@ test('新书单章：SSE、正文、质量状态和创作状态完整落库', as
   assert.equal(state.aiCalls[0].temperature, Number(state.aiCalls[0].temperature.toFixed(2)));
 });
 
+test('专家团模式：正文后调用推理审稿，审稿失败时保留原稿并正常完成', async () => {
+  const content = makeChapter('林舟在雨夜进入旧邮局，发现登记簿上的名字与失踪证人的线索相连', '专家团测试');
+  state.chapterQueue = [content];
+
+  const { response, events } = await postSse('/generate', {
+    novelTypeId: 'xianxia',
+    protagonistName: '林舟',
+    worldSetting: '悬疑故事',
+    targetWordCount: 3000,
+    mode: 'chapter',
+    expertMode: true,
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(state.aiCalls.filter((call) => call.onChunk).length, 1);
+  assert.equal(state.aiCalls.filter((call) => !call.onChunk).length, 1);
+  assert.match(state.aiCalls.at(-1).userPrompt, /连续性与叙事质量审稿专家/);
+  assert.ok(events.some((event) => event.type === 'status' && event.message.includes('推理专家')));
+  const novel = getCreatedNovel(events);
+  assert.equal(novel.status, 'completed');
+  assert.equal(novel.chapters[0].content, content);
+});
+
 test('新书整本：先落结构化计划，再严格按章生成并回收伏笔', async () => {
   const hook = '铜钥匙上的裂纹';
   state.planContent = makePlan([
@@ -373,6 +397,37 @@ test('新书整本：计划为空时暂停，不进入无约束正文循环', as
   assert.equal(novel.status, 'paused');
   assert.equal(novel.chapters.length, 0);
   assert.deepEqual(state.aiCalls.map((call) => call.kind), ['plan']);
+});
+
+test('新书整本：字数提前达到时仍执行后续计划章节，并为每章传入输出上限', async () => {
+  state.planContent = makePlan([
+    { chapterNumber: 1, wordTarget: 300, coreEvent: '收到第一条线索' },
+    { chapterNumber: 2, wordTarget: 300, coreEvent: '发现线索指向旧码头' },
+    { chapterNumber: 3, wordTarget: 300, coreEvent: '在旧码头完成收束' },
+  ]);
+  state.chapterQueue = [
+    makeChapter('林舟收到第一条线索并决定去旧码头', '提前达到测试一'),
+    makeChapter('林舟发现线索指向旧码头的仓库', '提前达到测试二'),
+    makeChapter('林舟在旧码头完成收束并保存证据', '提前达到测试三'),
+  ];
+
+  const { response, events } = await postSse('/generate', {
+    novelTypeId: 'xianxia',
+    protagonistName: '林舟',
+    targetWordCount: 900,
+    outline: '林舟从线索追到旧码头并完成收束。',
+    mode: 'book',
+  });
+
+  assert.equal(response.status, 200);
+  const novel = getCreatedNovel(events);
+  assert.equal(novel.status, 'completed');
+  assert.deepEqual(novel.chapters.map((chapter) => chapter.chapterNumber), [1, 2, 3]);
+  assert.ok(novel.currentWordCount > novel.targetWordCount);
+  const chapterCalls = state.aiCalls.filter((call) => call.kind === 'chapter');
+  assert.equal(chapterCalls.length, 3);
+  assert.ok(chapterCalls.every((call) => call.maxTokens >= 2200 && call.maxTokens < 16384));
+  assert.match(chapterCalls[2].userPrompt, /即使总字数已经达到目标，也必须完成本章计划/);
 });
 
 test('续写单章：每次只追加连续一章，并保持作品可再次续写', async () => {

@@ -24,6 +24,7 @@ function sanitizeUserData(userData) {
   provider: 'system',
   routeId,
   routeAlias: userData.modelConfig?.routeAlias || '',
+  roleRoutes: { ...(userData.modelConfig?.roleRoutes || {}) },
  }
  return sanitized
 }

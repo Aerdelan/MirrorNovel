@@ -231,6 +231,8 @@ module.exports = {
   summarizeChapterForDoc,
   updateForeshadowingDoc,
   buildContextFromDocs,
+  buildContextMemoryCheckpoint,
+  selectRelevantHistory,
 }
 
 /**
@@ -319,6 +321,109 @@ function updateForeshadowingDoc(chapterContent, chapterNumber, existingDoc) {
   return doc
 }
 
+function compactLine(value, maxLength = 180) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, maxLength)
+}
+
+/**
+ * Create a deterministic phase checkpoint. The original chapters remain the
+ * source of truth; this object is only a small index that can be safely
+ * regenerated when a legacy novel does not have it.
+ */
+function buildContextMemoryCheckpoint({
+  chapters = [],
+  chapterSummaryDoc = '',
+  foreshadowingDoc = '',
+  storyBible = {},
+  characterStates = [],
+  plotThreads = [],
+  foreshadowingLedger = [],
+  chapterNumber = 0,
+  previousMemory = {},
+} = {}) {
+  const summaries = String(chapterSummaryDoc || '').split('\n').filter((line) => /^第\d+章：/.test(line.trim()))
+  const previousChapter = Number(previousMemory.checkpointChapter || 0)
+  const delta = summaries.filter((line) => {
+    const match = line.match(/^第(\d+)章：/)
+    return match && Number(match[1]) > previousChapter && Number(match[1]) <= Number(chapterNumber)
+  })
+  const priorSummary = compactLine(previousMemory.checkpointSummary || '', 9000)
+  const checkpointSummary = compactLine([priorSummary, ...delta.map((line) => compactLine(line, 220))].filter(Boolean).join('\n'), 10000)
+  const activeThreads = (Array.isArray(plotThreads) ? plotThreads : [])
+    .filter((thread) => ['active', 'planned'].includes(thread.status) && thread.nextMilestone)
+    .slice(0, 8)
+    .map((thread) => `${compactLine(thread.title || thread.id, 40)}：${compactLine(thread.nextMilestone, 120)}`)
+  const openHooks = (Array.isArray(foreshadowingLedger) ? foreshadowingLedger : [])
+    .filter((hook) => ['planned', 'pending'].includes(hook.status))
+    .slice(0, 12)
+    .map((hook) => `第${hook.setChapter || '?'}章伏笔：${compactLine(hook.content || hook.id, 140)}`)
+  const recentCharacters = (Array.isArray(characterStates) ? characterStates : [])
+    .filter((character) => character.name)
+    .sort((left, right) => Number(right.lastChapter || 0) - Number(left.lastChapter || 0))
+    .slice(0, 10)
+    .map((character) => `${compactLine(character.name, 40)}｜位置：${compactLine(character.location, 50)}｜状态：${compactLine(character.emotionalState, 70)}｜目标：${compactLine(character.goal, 90)}`)
+
+  return {
+    version: 1,
+    checkpointChapter: Number(chapterNumber || previousChapter || 0),
+    checkpointSummary,
+    facts: [
+      storyBible.theme ? `主题：${compactLine(storyBible.theme, 160)}` : '',
+      storyBible.tone ? `基调：${compactLine(storyBible.tone, 100)}` : '',
+      ...(Array.isArray(storyBible.worldRules) ? storyBible.worldRules.slice(0, 8).map((rule) => `世界规则：${compactLine(rule, 140)}`) : []),
+      ...recentCharacters,
+    ].filter(Boolean).slice(0, 24),
+    openLoops: [...activeThreads, ...openHooks].slice(0, 20),
+    sourceChapterCount: Array.isArray(chapters) ? chapters.length : 0,
+    updatedAt: new Date().toISOString(),
+    // Keep the textual document available for diagnostics and migration.
+    legacyForeshadowing: compactLine(foreshadowingDoc, 1200),
+  }
+}
+
+function queryTerms(query) {
+  const rawText = String(query || '')
+  const text = rawText.replace(/\s+/g, '')
+  const terms = new Set()
+  // Preserve whitespace-delimited Chinese concepts; otherwise "铜钥匙 地下室"
+  // would become one six-character term that appears nowhere in the source.
+  const cjk = rawText.match(/[\u4e00-\u9fff]{2,8}/g) || []
+  cjk.forEach((term) => terms.add(term))
+  ;(text.match(/[A-Za-z][A-Za-z0-9_-]{2,}/g) || []).forEach((term) => terms.add(term.toLowerCase()))
+  return Array.from(terms).slice(0, 32)
+}
+
+/** Select a few relevant old chapters without sending their full prose. */
+function selectRelevantHistory(chapters = [], query = '', { currentChapter = 0, maxChapters = 4, maxChars = 1800 } = {}) {
+  const terms = queryTerms(query)
+  if (!Array.isArray(chapters) || !chapters.length || !terms.length) return []
+  const scored = chapters
+    .filter((chapter) => Number(chapter.chapterNumber || 0) < Number(currentChapter || Infinity))
+    .map((chapter) => {
+      const content = String(chapter.content || '')
+      const snapshot = extractChapterSnapshot(chapter)
+      const searchable = `${content.slice(0, 1200)} ${content.slice(-1000)} ${snapshot.conflictLines.join(' ')}`.toLowerCase()
+      const hits = terms.reduce((count, term) => count + (searchable.includes(term.toLowerCase()) ? 1 : 0), 0)
+      const recency = Math.min(3, Number(chapter.chapterNumber || 0) / Math.max(1, Number(currentChapter || chapters.length)))
+      return { chapter, snapshot, score: hits * 4 + recency }
+    })
+    .filter((item) => item.score >= 4)
+    .sort((left, right) => right.score - left.score || Number(right.chapter.chapterNumber || 0) - Number(left.chapter.chapterNumber || 0))
+    .slice(0, maxChapters)
+
+  const selected = []
+  let used = 0
+  for (const item of scored) {
+    const content = String(item.chapter.content || '')
+    const excerpt = compactLine(`${item.snapshot.conflictLines.join('；')} ${content.slice(-260)}`, 420)
+    const line = `第${item.chapter.chapterNumber}章（相关历史）：${excerpt}`
+    if (used + line.length > maxChars) break
+    selected.push(line)
+    used += line.length
+  }
+  return selected
+}
+
 /**
  * 从持久化文档中构建上下文，替代 buildAugmentedContext
  * @param {string} chapterSummaryDoc - 章节浓缩文档
@@ -329,12 +434,13 @@ function updateForeshadowingDoc(chapterContent, chapterNumber, existingDoc) {
  * @param {string} lastChapterSummary - 上一章摘要
  * @returns {string} 格式化后的上下文文本
  */
-function buildContextFromDocs(chapterSummaryDoc, foreshadowingDoc, outline, chapterPlan, currentCh, lastChapterSummary) {
+function buildContextFromDocs(chapterSummaryDoc, foreshadowingDoc, outline, chapterPlan, currentCh, lastChapterSummary, options = {}) {
   // 安全保护：老数据库可能没有这些字段
   chapterSummaryDoc = chapterSummaryDoc || '';
   foreshadowingDoc = foreshadowingDoc || '';
   outline = outline || '';
   chapterPlan = chapterPlan || '';
+  options = options || {};
   const parts = []
 
   // 1. 大纲
@@ -386,5 +492,24 @@ function buildContextFromDocs(chapterSummaryDoc, foreshadowingDoc, outline, chap
     parts.push(`【上一章概要】（⚠️ 当前章核心事件必须与上一章不同）\n${lastChapterSummary}`)
   }
 
-  return parts.join('\n\n')
+  const memory = options.contextMemory || {}
+  if (memory.checkpointSummary) {
+    parts.push(`【阶段记忆检查点｜截至第${memory.checkpointChapter || '?'}章】\n${memory.checkpointSummary}`)
+  }
+  if (Array.isArray(memory.facts) && memory.facts.length) {
+    parts.push(`【不可遗忘事实】\n${memory.facts.slice(0, 18).join('\n')}`)
+  }
+  if (Array.isArray(memory.openLoops) && memory.openLoops.length) {
+    parts.push(`【当前开放剧情线】\n${memory.openLoops.slice(0, 16).join('\n')}`)
+  }
+  if (Array.isArray(options.relevantHistory) && options.relevantHistory.length) {
+    parts.push(`【相关历史片段（仅供核对，不得改变已发生事实）】\n${options.relevantHistory.join('\n')}`)
+  }
+
+  const result = parts.join('\n\n')
+  const maxChars = Math.max(6000, Number(options.maxChars || 14000))
+  if (result.length <= maxChars) return result
+  const headLength = Math.floor(maxChars * 0.68)
+  const tailLength = maxChars - headLength
+  return `${result.slice(0, headLength)}\n…（上下文压缩，保留末端状态）…\n${result.slice(-tailLength)}`
 }

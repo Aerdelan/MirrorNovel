@@ -81,11 +81,32 @@ function getPublicRoutes(catalog = createPriceCatalog()) {
   return catalog.map((route) => ({ id: route.id, alias: route.alias }));
 }
 
+const MODEL_ROLE_KEYS = Object.freeze(['outline', 'writing', 'reasoning', 'polish']);
+
+function toPublicRoleRoutes(roleRoutes, catalog = createPriceCatalog()) {
+  const source = roleRoutes && typeof roleRoutes === 'object' ? roleRoutes : {};
+  return MODEL_ROLE_KEYS.reduce((result, role) => {
+    const value = String(source[role] || '').trim();
+    if (!value) {
+      result[role] = '';
+      return result;
+    }
+    const route = catalog.find((candidate) => candidate.id === value || candidate.alias === value);
+    result[role] = route ? route.id : '';
+    return result;
+  }, {});
+}
+
 function toPublicModelConfig(modelConfig, catalog = createPriceCatalog()) {
   const provider = modelConfig?.provider || 'default';
   if (provider === 'default' || provider === 'system') {
     const route = getServerRoute(modelConfig?.routeId, catalog);
-    return { provider: 'system', routeId: route.id, routeAlias: route.alias };
+    return {
+      provider: 'system',
+      routeId: route.id,
+      routeAlias: route.alias,
+      roleRoutes: toPublicRoleRoutes(modelConfig?.roleRoutes, catalog),
+    };
   }
   // 自备模型的地址、密钥和真实模型名同样不通过通用账户 API 回传。
   return { provider, managed: false };
@@ -101,5 +122,7 @@ module.exports = {
   resolveRouteId,
   getServerRoute,
   getPublicRoutes,
+  MODEL_ROLE_KEYS,
+  toPublicRoleRoutes,
   toPublicModelConfig,
 };

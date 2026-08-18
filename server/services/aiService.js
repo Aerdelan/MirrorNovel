@@ -303,7 +303,8 @@ ${targetHint}
  * 根据用户配置和模型类型获取 API 请求参数
  */
 function resolveApiConfig(userModelConfig, modelType = 'writing') {
-  const managedRoute = getServerRoute(userModelConfig?.routeId);
+  const roleRouteId = userModelConfig?.roleRoutes?.[modelType] || userModelConfig?.routeId;
+  const managedRoute = getServerRoute(roleRouteId);
   const defaults = {
     baseUrl: managedRoute.baseUrl,
     apiKey: managedRoute.apiKey,
@@ -349,7 +350,7 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
  * 流式生成
  * @returns {Promise<{content:string, tokenCount:number}>}
  */
-async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConfig, retries = 2, temperature = 0.85) {
+async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConfig, retries = 2, temperature = 0.85, maxTokens = 16384, timeoutMs = 90000) {
   const config = apiConfig || resolveApiConfig(null);
   if (!config.baseUrl || !config.model) {
     const error = new Error('AI 服务线路尚未配置，请联系管理员填写该线路的服务地址和模型名称');
@@ -364,18 +365,18 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
   const headers = { 'Content-Type': 'application/json' };
   if (config.apiKey) headers['Authorization'] = `Bearer ${config.apiKey}`;
 
-  // 支持按任务传入温度；续写可保留创造性，校稿任务使用更低温度减少事实漂移。
-  // v4: max_tokens 提升到 16384，避免长文输出被截断导致空内容
+  // 支持按任务传入温度和输出上限；长篇章节必须按预算限制单次输出，避免一章吞掉后续剧情空间。
+  const outputLimit = Math.max(256, Math.min(16384, Number(maxTokens) || 16384));
   const body = isOllama
-    ? { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, options: { temperature, num_predict: 16384 } }
-    : { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, temperature, max_tokens: 16384 };
+    ? { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, options: { temperature, num_predict: outputLimit } }
+    : { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, temperature, max_tokens: outputLimit };
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     let timeoutId;
     let currentSignal;
     try {
       const timeoutController = new AbortController();
-      timeoutId = setTimeout(() => timeoutController.abort(), 90000);
+      timeoutId = setTimeout(() => timeoutController.abort(), Math.max(5000, Number(timeoutMs) || 90000));
 
       // 构建本次尝试的合并 signal
       // 关键：重试时如果外部 signal 已被 abort（如章节计划 45s 超时），
@@ -478,7 +479,7 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         continue;
       }
       // 所有重试耗尽，向外抛
-      throw (e.name === 'AbortError') ? new Error('AI API 请求超时（90s）') : e;
+      throw (e.name === 'AbortError') ? new Error(`AI API 请求超时（${Math.round((Number(timeoutMs) || 90000) / 1000)}s）`) : e;
     }
   } // for
   // 所有尝试均失败（理论上不会到达，但保留以防万一）

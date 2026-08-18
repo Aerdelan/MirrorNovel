@@ -15,6 +15,7 @@ const {
   debitPoints,
   debitPointsForUser,
   adjustPointsForUser,
+  routeIdForModelConfig,
 } = require('../services/pointsService');
 
 function paidCatalog() {
@@ -75,9 +76,34 @@ test('public route payloads never expose provider model names, URLs, keys, or co
   assert.doesNotMatch(serialized, /private-model-name|provider\.example|private-key|inputRmb/i);
 
   assert.deepEqual(
-    toPublicModelConfig({ provider: 'system', routeId: 'vip', cloudApiKey: 'should-not-leak' }, catalog),
-    { provider: 'system', routeId: 'vip', routeAlias: 'VIP线路模型' }
+    toPublicModelConfig({
+      provider: 'system',
+      routeId: 'vip',
+      roleRoutes: { outline: 'normal_2', polish: 'svip', reasoning: 'not-a-route' },
+      cloudApiKey: 'should-not-leak',
+    }, catalog),
+    {
+      provider: 'system',
+      routeId: 'vip',
+      routeAlias: 'VIP线路模型',
+      roleRoutes: { outline: 'normal_2', writing: '', reasoning: '', polish: 'svip' },
+    }
   );
+});
+
+test('role route overrides select the same route for billing as for the task', () => {
+  const catalog = paidCatalog();
+  const modelConfig = {
+    provider: 'system',
+    routeId: 'normal_1',
+    roleRoutes: { outline: 'normal_2', writing: 'advanced_1', reasoning: 'vip', polish: 'svip' },
+  };
+  assert.equal(routeIdForModelConfig(modelConfig, 'outline', catalog), 'normal_2');
+  assert.equal(routeIdForModelConfig(modelConfig, 'writing', catalog), 'advanced_1');
+  assert.equal(routeIdForModelConfig(modelConfig, 'reasoning', catalog), 'vip');
+  assert.equal(routeIdForModelConfig(modelConfig, 'polish', catalog), 'svip');
+  assert.equal(routeIdForModelConfig({ provider: 'system', routeId: 'vip' }, 'polish', catalog), 'vip');
+  assert.equal(routeIdForModelConfig({ provider: 'system', routeId: 'advanced_1' }, catalog), 'advanced_1');
 });
 
 test('legacy balances migrate once and remain mirrored for old clients', async () => {
