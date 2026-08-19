@@ -309,7 +309,7 @@ async function loadModel() {
 }
 async function saveModel() {
  savingM.value=true; mMsg.value=''
- try { await api.put('/admin/models',{...mForm}); mMsg.value=' 已保存，请点击重启服务'; mMsgOk.value=true }
+ try { await api.put('/admin/models',{...mForm}); mForm.apiKey=''; mMsg.value=' 已保存，请点击重启服务'; mMsgOk.value=true }
  catch(e) { mMsg.value=' '+(e.response?.data?.message||e.message); mMsgOk.value=false }
  savingM.value=false
 }
