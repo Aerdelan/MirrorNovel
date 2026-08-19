@@ -1,0 +1,154 @@
+{
+  "timestamp": "2026-08-18T20:46:02.369Z",
+  "summary": {
+    "total": 27,
+    "passed": 27,
+    "failed": 0
+  },
+  "results": [
+    {
+      "name": "T1-A 登录接口",
+      "ok": true,
+      "msg": "成功"
+    },
+    {
+      "name": "T1-B1 client 5173 代理",
+      "ok": true,
+      "msg": "status=200"
+    },
+    {
+      "name": "T1-B2 admin 5174 代理",
+      "ok": true,
+      "msg": "status=200"
+    },
+    {
+      "name": "T1-C 积分余额",
+      "ok": true,
+      "msg": "1000088782 积分"
+    },
+    {
+      "name": "T1-D 书架",
+      "ok": true,
+      "msg": "共 13 本"
+    },
+    {
+      "name": "T1-D 小说详情",
+      "ok": true,
+      "msg": "玄幻：刘义的传奇 (8833字 / 2章)"
+    },
+    {
+      "name": "T1-H 生成单章",
+      "ok": {
+        "type": "completed",
+        "novelId": "6a84c0f738b718fec88e36c8",
+        "totalWordCount": 6982
+      },
+      "msg": "finalType=completed, novelId=6a84c0f738b718fec88e36c8"
+    },
+    {
+      "name": "T1-E completed-字数不足允许续写",
+      "ok": {
+        "type": "chapter_end",
+        "chapterNumber": 2,
+        "wordCount": 1976
+      },
+      "msg": "status=200 chapterEnd=true error=none"
+    },
+    {
+      "name": "T1-F 无计划 book 模式自然续写",
+      "ok": true,
+      "msg": "chapterEnd=true completed=true planExt=false error=none"
+    },
+    {
+      "name": "T1-I 旧 /export 兼容",
+      "ok": true,
+      "msg": "status=200 ct=application/zip"
+    },
+    {
+      "name": "T2-A 润色（含诊断）",
+      "ok": true,
+      "msg": "原文 132 字 → 润色 127 字, diagnosis=true"
+    },
+    {
+      "name": "T2-B 润色（不含诊断）",
+      "ok": true,
+      "msg": "final=true diagnosis=false"
+    },
+    {
+      "name": "T2-C 润色（genre=玄幻）",
+      "ok": true,
+      "msg": "长度=129"
+    },
+    {
+      "name": "T2-D 润色（自定义 prompt 跳过诊断）",
+      "ok": true,
+      "msg": "final=true diag=false"
+    },
+    {
+      "name": "T2-E 导出 TXT",
+      "ok": true,
+      "msg": "len=390 ct=text/plain; charset=utf-8"
+    },
+    {
+      "name": "T2-F 导出 MD",
+      "ok": true,
+      "msg": "len=315 ct=text/markdown; charset=utf-8"
+    },
+    {
+      "name": "T2-G 导出 EPUB",
+      "ok": true,
+      "msg": "len=2806 magic=\"PK\\u0003\\u0004\" ct=application/epub+zip"
+    },
+    {
+      "name": "T2-H 保存回小说（append）",
+      "ok": true,
+      "msg": "章节 3 → 4"
+    },
+    {
+      "name": "T2-I 保存回小说（覆盖章节）",
+      "ok": true,
+      "msg": "ch4"
+    },
+    {
+      "name": "T2-J /deslop 去 AI 味",
+      "ok": true,
+      "msg": "len=127"
+    },
+    {
+      "name": "T2-K /deslop-stream SSE",
+      "ok": true,
+      "msg": "events=36 contentLen=154"
+    },
+    {
+      "name": "C-A /api/novel/types",
+      "ok": true,
+      "msg": "13 种"
+    },
+    {
+      "name": "C-B /generate-outline",
+      "ok": true,
+      "msg": "len=1254"
+    },
+    {
+      "name": "C-C /api/auth/profile",
+      "ok": true,
+      "msg": "admin@xiaoshuo.com"
+    },
+    {
+      "name": "C-D /api/admin/users",
+      "ok": true,
+      "msg": "2 用户"
+    },
+    {
+      "name": "C-E /api/health",
+      "ok": true,
+      "msg": "ok"
+    },
+    {
+      "name": "C-F /export vs /polish-export 共存",
+      "ok": true,
+      "msg": "export=200 polish-export=200"
+    }
+  ],
+  "issues": []
+}

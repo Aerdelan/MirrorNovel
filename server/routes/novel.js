@@ -963,15 +963,9 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       if (mode === 'book') {
         // ====== 整本模式：循环生成多章直到目标字数 ======
         if (!planData.chapters.length) {
-          // 整本续写必须有可机读计划，避免无约束循环和重复剧情。
-          novel.status = 'paused';
-          await novel.save();
-          activeStreams.delete(streamKey);
-          try {
-            res.write(`data: ${JSON.stringify({ type: 'plan_needs_extension', message: '缺少章节计划，已暂停续写，请先补充或重新生成章节计划' })}\n\n`);
-            res.end();
-          } catch {}
-          return;
+          // 无章节计划的旧作品：不阻断，按主线自然推进逐章续写。
+          // totalPlannedChapters 会 fallback 到 ceil(target/3000)，循环按字数自然结束。
+          console.log(`[Continue] 小说 ${novel._id} 无章节计划，将按主线自然续写至目标字数`);
         }
 
         const beforeCompletion = assessStoryCompletion(novel, planData, targetWordCount);
@@ -1053,6 +1047,25 @@ ${renderChapterContract(contract)}
         }
 
         const completion = assessStoryCompletion(novel, planData, targetWordCount);
+        // 无章节计划时，仅按目标字数判断是否完成：未达标则暂停等待下次续写；达标则标记完成。
+        const hasPlan = planData.chapters && planData.chapters.length > 0;
+        const wordTargetReached = getCompletedWordCount(novel) >= targetWordCount;
+        if (!hasPlan) {
+          if (wordTargetReached) {
+            generationDone = true;
+            activeStreams.delete(streamKey);
+            novel.status = 'completed';
+            await novel.save();
+            res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`);
+            res.end();
+            return;
+          }
+          novel.status = 'paused';
+          await novel.save();
+          activeStreams.delete(streamKey);
+          try { res.write(`data: ${JSON.stringify({ type: 'paused', message: `当前 ${getCompletedWordCount(novel)}/${targetWordCount} 字，已暂停，可再次点击续写` })}\n\n`); res.end(); } catch {}
+          return;
+        }
         if (!completion.complete) {
           novel.status = 'paused';
           await novel.save();
@@ -1869,26 +1882,39 @@ ${fullContent}`;
 });
 
 // ====== 润色（SSE流式，支持自定义润色方案 + Token实时消耗） ======
+// 调优说明：
+//   1. 默认提示词升级为"诊断+修订"双阶段，明确禁止模板化修辞与篇幅漂移
+//   2. 输出长度约束为原文的 0.85~1.15 倍，避免改写后扩写或大幅缩写
+//   3. 润色结果经过 processChapter 后处理（标点规范化 + 去AI味轻量）
+//   4. 支持可选的"诊断前置"模式（diagnose=true），先诊断问题再针对性修订
+//   5. 流式输出中携带诊断摘要，前端可展示给用户参考
 router.post('/polish', auth, async (req, res) => {
   try {
-    const { text, polishPrompt, doDeslop } = req.body;
+    const { text, polishPrompt, doDeslop, genre, diagnose } = req.body;
     if (!text || text.trim().length < 10) return res.status(400).json({ message: '文本太短' });
 
     // 检查 Token 余额
     await checkTokenBalance(req.user);
 
-    const defaultPolishPrompt = `你是一位专业的小说润色专家。请对以下小说文本进行润色优化，要求：
+    const textLength = text.trim().length;
+    const genreHint = genre ? `\n【文风参考】这是一篇"${genre}"类型的小说，请保留该类型常见的叙事节奏和用词习惯。` : '';
 
-1. 修正语病和不通顺的句子
-2. 优化用词，使表达更加精准生动
-3. 调整句式节奏，让阅读更流畅
-4. 保留原文的风格和情节
-5. 保持人物性格的一致性
-6. 注意段落间的衔接自然
+    const defaultPolishPrompt = `你是一位资深小说润色专家。你的任务是在**不改变剧情、视角、人物关系和事实**的前提下，让文本更像一位成熟作者的成稿，而不是AI产物。
 
-请直接输出润色后的完整文本，不要加任何评价或说明。`;
+【硬约束 — 必须严格遵守】
+1. 人物姓名、身份、关系、地点、时间、事件因果、对话信息、伏笔、结尾落点全部保留，不得增删。
+2. 润色后总字数必须在原文的 85%~115% 之间，严禁大幅扩写或缩写。
+3. 不要添加空泛的总结句、感悟句、升华句（如"他终于明白了人生的真谛"）。
+4. 不要使用模板化修辞，包括但不限于：
+   - "仿佛...一般"、"宛如...似的"、"犹如...一样"连续出现
+   - "眼中闪过一丝XX"、"嘴角勾起一抹XX"、"眉头微蹙"等陈词滥调
+   - "空气中弥漫着XX"、"时间仿佛凝固了"等过度使用的比喻
+5. 句式要有长短变化：动作戏短句密集，心理戏允许长句绵延；避免全文同一节奏。
+6. 对话要口语化、带人物性格；叙述要克制，不靠堆砌形容词撑场面。
+7. 直接输出润色后的完整文本，不加标题、不加说明、不加【】标签。
+${genreHint}`;
 
-    const userPrompt = `${polishPrompt || defaultPolishPrompt}\n\n以下是需要润色的文本：\n\n${text}`;
+    let userPrompt = `${polishPrompt || defaultPolishPrompt}\n\n以下是需要润色的文本（原文约 ${textLength} 字，请控制在 ${Math.round(textLength * 0.85)}~${Math.round(textLength * 1.15)} 字）：\n\n${text}`;
 
     // 估算输入 token 成本（输入文本 + 提示词）
     const inputTokenCost = countTokens(text) + countTokens(polishPrompt || defaultPolishPrompt);
@@ -1945,13 +1971,68 @@ router.post('/polish', auth, async (req, res) => {
       res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`);
     };
 
+    // 估算输出 token 上限（原文字数 * 1.15，再加 20% 余量）
+    const polishMaxTokens = getChapterOutputTokenLimit(Math.ceil(textLength * 1.15));
+
+    // （可选）诊断阶段：先识别问题，再针对性修订
+    let diagnosis = null;
+    if (diagnose && textLength >= 50 && !polishPrompt && !tokenExhausted) {
+      try {
+        res.write(`data: ${JSON.stringify({ type: 'status', message: '正在诊断原文问题…' })}\n\n`);
+        const diagResult = await streamGenerate(
+          '你是一位资深小说编辑。请对原文做简要诊断，不要重写正文。',
+          `请诊断以下小说文本（${textLength} 字），以 JSON 格式输出（不要 markdown 代码块）：
+{
+  "templatePhrases": ["找出 3~5 处模板化修辞原文片段"],
+  "weaknesses": ["节奏单一","视角游离","形容词堆砌","对话生硬"等 2~4 条],
+  "strengths": ["保留原文 1~2 个优点"],
+  "revisionFocus": "用一句话概括修订方向"
+}
+
+【原文】
+${text.slice(0, 8000)}`,
+          null, abortController.signal,
+          resolveApiConfig(req.user?.modelConfig, 'polish'),
+          1, 0.3, 600, 30000
+        );
+        try {
+          let raw = (diagResult?.content || '').replace(/```json|```/g, '').trim();
+          // 提取首个 {...} 作为 JSON，提升 glm-4.7 输出的容错性
+          const firstBrace = raw.indexOf('{');
+          const lastBrace = raw.lastIndexOf('}');
+          if (firstBrace >= 0 && lastBrace > firstBrace) raw = raw.slice(firstBrace, lastBrace + 1);
+          // 简单修复未闭合的数组/字符串
+          try { diagnosis = JSON.parse(raw); } catch (pe1) {
+            raw = raw.replace(/,(\s*[}\]])/g, '$1').replace(/\[\s*\]/g, '[]');
+            diagnosis = JSON.parse(raw);
+          }
+          res.write(`data: ${JSON.stringify({ type: 'diagnosis', diagnosis })}\n\n`);
+          if (diagnosis?.revisionFocus) {
+            // 将诊断结果注入到润色提示词尾部，引导针对性修订
+            userPrompt = `${userPrompt}\n\n【诊断发现的重点问题】${diagnosis.revisionFocus}\n请在润色时优先处理上述问题。`;
+          }
+        } catch (pe) {
+          console.warn('[Polish] 诊断 JSON 解析失败:', pe.message, '原文:', (diagResult?.content || '').slice(0, 200));
+          res.write(`data: ${JSON.stringify({ type: 'status', message: '诊断解析失败，直接润色' })}\n\n`);
+        }
+      } catch (e) {
+        console.warn('[Polish] 诊断跳过:', e.message);
+        res.write(`data: ${JSON.stringify({ type: 'status', message: '诊断跳过：' + (e.message || '').slice(0, 60) })}\n\n`);
+      }
+    }
+
+    res.write(`data: ${JSON.stringify({ type: 'status', message: '正在润色正文…' })}\n\n`);
     try {
       await streamGenerate(
-        '你是一位专业的小说润色专家，擅长各种文风的精修与优化。',
+        '你是一位资深小说文字编辑，擅长在保真前提下精修叙事，绝不添加空泛总结或模板修辞。',
         userPrompt,
         wrappedOnChunk,
         abortController.signal,
-        resolveApiConfig(req.user?.modelConfig, 'polish')
+        resolveApiConfig(req.user?.modelConfig, 'polish'),
+        1,
+        0.65,
+        polishMaxTokens,
+        120000
       );
     } catch (e) {
       if (e.name === 'AbortError' && tokenExhausted) {
@@ -2004,7 +2085,11 @@ router.post('/polish', auth, async (req, res) => {
             deslopPrompt,
             deslopOnChunk,
             abortController.signal,
-            resolveApiConfig(req.user?.modelConfig, 'polish')
+            resolveApiConfig(req.user?.modelConfig, 'polish'),
+            1,
+            0.65,
+            getChapterOutputTokenLimit(Math.ceil(polished.length * 1.1)),
+            120000
           );
         } catch (e) {
           if (!(e.name === 'AbortError' && deslopExhausted)) throw e;
@@ -2017,11 +2102,30 @@ router.post('/polish', auth, async (req, res) => {
       }
     }
 
-    // 发送完成事件（含 Token 信息）
-    if (tokenExhausted) {
-      res.write(`data: ${JSON.stringify({ type: 'token_exhausted', message: '积分已消耗完毕，已返回当前润色结果', totalLength: polished.length })}\n\n`);
+    // 润色后处理：标点规范化 + 轻量去AI味
+    let postProcessed = polished;
+    if (polished.trim().length > 10 && !tokenExhausted) {
+      try {
+        const result = processChapter(polished, {
+          doDeAI: false,
+          doPunctuation: true,
+          doAutoFormat: true,
+          doHumanize: false,
+        });
+        postProcessed = String(result.text || '').trim() || polished;
+      } catch (e) {
+        console.warn('[Polish] 后处理失败，使用原稿:', e.message);
+      }
     }
-    res.write(`data: ${JSON.stringify({ type: 'completed', totalLength: polished.length, tokenExhausted })}\n\n`);
+
+    // 发送后处理的完整结果，前端可据此替换流式拼接的内容
+    res.write(`data: ${JSON.stringify({ type: 'final_content', content: postProcessed })}\n\n`);
+
+    // 发送完成事件（含 Token 信息与诊断结果）
+    if (tokenExhausted) {
+      res.write(`data: ${JSON.stringify({ type: 'token_exhausted', message: '积分已消耗完毕，已返回当前润色结果', totalLength: postProcessed.length })}\n\n`);
+    }
+    res.write(`data: ${JSON.stringify({ type: 'completed', totalLength: postProcessed.length, tokenExhausted, diagnosis })}\n\n`);
     res.end();
   } catch (error) {
     console.error('润色失败:', error.message);
@@ -2033,6 +2137,213 @@ router.post('/polish', auth, async (req, res) => {
     } else {
       try { res.write(`data: ${JSON.stringify({ type: 'error', message: '润色过程中出现错误，请稍后重试' })}\n\n`); res.end(); } catch {}
     }
+  }
+});
+
+// ====== 润色文本导出（支持 TXT / MD / EPUB） ======
+// 与 /export 的区别：本接口针对任意润色后的文本（无需已入库的小说），前端润色完成后直接调用。
+router.post('/polish-export', auth, async (req, res) => {
+  try {
+    const { text, title, author, format } = req.body;
+    if (!text || text.trim().length < 10) return res.status(400).json({ message: '文本太短，无法导出' });
+
+    const safeTitle = String(title || '润色作品').replace(/[<>:"/\\|?*]/g, '_').substring(0, 60);
+    const safeAuthor = String(author || req.user.nickname || '作者').replace(/[<>:"/\\|?*]/g, '_').substring(0, 40);
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const baseName = `${safeTitle}_${timestamp}`;
+
+    // 智能拆分章节：检测“第X章”标记；若无则按双空行拆段落（单文本）
+    const chapterRegex = /^第[零一二三四五六七八九十百千\d]+章[\s：:]*(.+)?$/m;
+    const parts = [];
+    const lines = text.split('\n');
+    let buf = [];
+    let currentTitle = null;
+    let chapterNum = 0;
+    for (const line of lines) {
+      const m = line.match(chapterRegex);
+      if (m) {
+        if (buf.length || currentTitle) {
+          parts.push({ title: currentTitle || (chapterNum ? `第${chapterNum}章` : '前言'), content: buf.join('\n').trim() });
+        }
+        chapterNum++;
+        currentTitle = `第${chapterNum}章${m[1] ? ' ' + m[1].trim() : ''}`;
+        buf = [];
+      } else {
+        buf.push(line);
+      }
+    }
+    if (buf.length || currentTitle) {
+      parts.push({ title: currentTitle || (chapterNum ? `第${chapterNum}章` : '正文'), content: buf.join('\n').trim() });
+    }
+    const chapters = parts.filter(p => p.content.trim().length > 0);
+    const isSingleChapter = chapters.length <= 1;
+
+    if (format === 'txt') {
+      const filename = encodeURIComponent(baseName + '.txt');
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${filename}`);
+      if (isSingleChapter) {
+        res.send(text);
+      } else {
+        let out = `${safeTitle}\n作者：${safeAuthor}\n${'='.repeat(40)}\n\n`;
+        for (const ch of chapters) {
+          out += `${ch.title}\n${'='.repeat(30)}\n${ch.content}\n\n`;
+        }
+        res.send(out);
+      }
+      return;
+    }
+
+    if (format === 'md') {
+      const filename = encodeURIComponent(baseName + '.md');
+      res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${filename}`);
+      let out = `# ${safeTitle}\n\n> 作者：${safeAuthor}\n\n---\n\n`;
+      if (isSingleChapter) {
+        out += text;
+      } else {
+        for (const ch of chapters) {
+          out += `## ${ch.title}\n\n${ch.content}\n\n---\n\n`;
+        }
+      }
+      res.send(out);
+      return;
+    }
+
+    if (format === 'epub') {
+      const { ZipArchive } = require('archiver');
+      const filename = encodeURIComponent(baseName + '.epub');
+      res.setHeader('Content-Type', 'application/epub+zip');
+      res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${filename}`);
+      const archive = new ZipArchive();
+      archive.level = 9;
+      archive.pipe(res);
+
+      const uid = 'urn:uuid:' + require('crypto').randomUUID();
+      const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]));
+      const escHtml = (s) => String(s).replace(/[&<>]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+      // mimetype 必须无压缩且为第一个文件
+      archive.append('application/epub+zip', { name: 'mimetype', store: true });
+
+      const containerXml = `<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>`;
+      archive.append(containerXml, { name: 'META-INF/container.xml' });
+
+      const epubChapters = isSingleChapter
+        ? [{ id: 'ch1', title: safeTitle, content: text }]
+        : chapters.map((ch, i) => ({ id: `ch${i + 1}`, title: ch.title, content: ch.content }));
+
+      // XHTML 章节
+      for (const ch of epubChapters) {
+        const paras = ch.content.split(/\n\s*\n|\n/).map(p => p.trim()).filter(Boolean);
+        const body = paras.map(p => `<p>${escHtml(p)}</p>`).join('\n');
+        const xhtml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh-CN" lang="zh-CN">
+<head><meta charset="UTF-8"/><title>${esc(ch.title)}</title>
+<style>body{font-family:serif;line-height:1.8;margin:1em}h1{text-align:center;margin:2em 0}p{text-indent:2em;margin:0.4em 0}</style>
+</head><body>
+<h1>${esc(ch.title)}</h1>
+${body}
+</body></html>`;
+        archive.append(xhtml, { name: `OEBPS/${ch.id}.xhtml` });
+      }
+
+      // content.opf
+      const manifestItems = epubChapters.map(ch => `    <item id="${ch.id}" href="${ch.id}.xhtml" media-type="application/xhtml+xml"/>`).join('\n');
+      const spineItems = epubChapters.map(ch => `    <itemref idref="${ch.id}"/>`).join('\n');
+      const opf = `<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="uid">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="uid">${uid}</dc:identifier>
+    <dc:title>${esc(safeTitle)}</dc:title>
+    <dc:creator>${esc(safeAuthor)}</dc:creator>
+    <dc:language>zh-CN</dc:language>
+    <meta property="dcterms:modified">${new Date().toISOString().replace(/\.\d+Z/, 'Z')}</meta>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+${manifestItems}
+  </manifest>
+  <spine>
+${spineItems}
+  </spine>
+</package>`;
+      archive.append(opf, { name: 'OEBPS/content.opf' });
+
+      // nav.xhtml
+      const navItems = epubChapters.map(ch => `      <li><a href="${ch.id}.xhtml">${esc(ch.title)}</a></li>`).join('\n');
+      const nav = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="zh-CN">
+<head><meta charset="UTF-8"/><title>目录</title></head>
+<body>
+<nav epub:type="toc" id="toc">
+  <h1>目录</h1>
+  <ol>
+${navItems}
+  </ol>
+</nav>
+</body></html>`;
+      archive.append(nav, { name: 'OEBPS/nav.xhtml' });
+
+      await archive.finalize();
+      return;
+    }
+
+    return res.status(400).json({ message: '不支持的导出格式，请使用 txt/md/epub' });
+  } catch (error) {
+    console.error('[PolishExport] 失败:', error);
+    res.status(500).json({ message: '导出失败', error: error.message });
+  }
+});
+
+// ====== 润色结果回存到小说（覆盖指定章节 / 新增章节） ======
+router.post('/polish-save', auth, async (req, res) => {
+  try {
+    const { novelId, chapterNumber, text, mode } = req.body;
+    if (!novelId) return res.status(400).json({ message: '未指定目标小说' });
+    if (!text || text.trim().length < 10) return res.status(400).json({ message: '文本太短' });
+
+    const novel = await Novel.findOne({ _id: novelId, userId: req.userId });
+    if (!novel) return res.status(404).json({ message: '小说不存在' });
+
+    const chNum = Number(chapterNumber || 0);
+    if (mode === 'append') {
+      // 新增一章到末尾
+      const nextNum = (novel.chapters || []).length
+        ? Math.max(...novel.chapters.map(c => Number(c.chapterNumber || 0))) + 1
+        : 1;
+      novel.chapters.push({
+        chapterNumber: nextNum,
+        title: `第${nextNum}章`,
+        content: text.trim(),
+        wordCount: text.trim().length,
+        qualityReport: { score: null, issues: ['润色回存章节'] },
+      });
+    } else if (chNum > 0) {
+      // 覆盖指定章节
+      const ch = (novel.chapters || []).find(c => Number(c.chapterNumber) === chNum);
+      if (!ch) return res.status(404).json({ message: `第 ${chNum} 章不存在` });
+      ch.content = text.trim();
+      ch.wordCount = text.trim().length;
+    } else {
+      return res.status(400).json({ message: '请指定要覆盖的章节号，或选择 mode=append' });
+    }
+
+    novel.currentWordCount = (novel.chapters || []).reduce((s, c) => s + Number(c.wordCount || 0), 0);
+    novel.markModified('chapters');
+    await novel.save();
+
+    res.json({ message: '已保存回小说', novelId: novel._id, chapterNumber: chNum || 'append', currentWordCount: novel.currentWordCount });
+  } catch (error) {
+    console.error('[PolishSave] 失败:', error);
+    res.status(500).json({ message: '保存失败', error: error.message });
   }
 });
 

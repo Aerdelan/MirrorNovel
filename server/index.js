@@ -4,6 +4,7 @@ const dotenv = require('dotenv');
 const path = require('path');
 const connectDB = require('./config/db');
 const User = require('./models/User');
+const Novel = require('./models/Novel');
 const http = require('http');
 
 // 加载环境变量（支持 --env test 加载 .env.test）
@@ -86,6 +87,20 @@ const startApp = async () => {
     }
   } catch (e) {
     console.error('创建管理员失败:', e.message);
+  }
+
+  // 启动时清理 orphaned 生成状态：服务重启意味着 activeStreams 已丢失，
+  // 所有残留的 status='generating' 小说应自动转为 'paused'，否则用户将无法续写。
+  try {
+    const orphaned = await Novel.updateMany(
+      { status: 'generating' },
+      { $set: { status: 'paused' } }
+    );
+    if (orphaned.modifiedCount > 0) {
+      console.log(`🔧 启动清理：已将 ${orphaned.modifiedCount} 本孤儿化生成中小说状态重置为 paused`);
+    }
+  } catch (e) {
+    console.warn('启动清理失败（非致命）:', e.message);
   }
 
   const app = express();

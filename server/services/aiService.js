@@ -392,15 +392,12 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         currentSignal = timeoutController.signal;
       }
 
-      console.log(`[AI] 请求开始: ${config.model} -> ${apiUrl}`);
       const response = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify(body), signal: currentSignal });
-      console.log(`[AI] 收到响应头, status=${response.status}`);
 
       clearTimeout(timeoutId);
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.error(`[AI] 错误响应: status=${response.status}, body=${errorText.slice(0, 300)}`);
         if ((response.status === 503 || response.status === 429) && attempt < retries) {
           const delay = Math.pow(2, attempt) * 1000;
           console.warn(`AI API 请求 ${response.status}，第 ${attempt + 1} 次重试，等待 ${delay}ms`);
@@ -419,7 +416,6 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
       const decoder = new TextDecoder();
       let fullContent = '';
       let buffer = '';
-      let firstChunkLogged = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -450,10 +446,7 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
               try {
                 const parsed = JSON.parse(data);
                 const content = parsed.choices?.[0]?.delta?.content || '';
-                if (content) {
-                  if (!firstChunkLogged) { firstChunkLogged = true; console.log('[AI] 收到首个内容片段'); }
-                  fullContent += content; if (onChunk) onChunk(content);
-                }
+                if (content) { fullContent += content; if (onChunk) onChunk(content); }
               } catch (e) { /* skip */ }
             }
           }

@@ -216,7 +216,7 @@ export const useNovelStore = defineStore('novel', () => {
  try {
  const event = JSON.parse(line.substring(6))
  if (event.type === 'content' || event.type === 'deslop_content') { if (onChunk) onChunk(event.content, event.type === 'deslop_content') }
- else if (event.type === 'status' || event.type === 'completed' || event.type === 'error') { if (onStatus) onStatus(event) }
+ else if (event.type === 'final_content' || event.type === 'diagnosis' || event.type === 'status' || event.type === 'completed' || event.type === 'token_exhausted' || event.type === 'error') { if (onStatus) onStatus(event) }
  } catch {}
  }
  }
