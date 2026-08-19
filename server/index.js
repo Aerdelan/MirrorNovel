@@ -116,6 +116,7 @@ const startApp = async () => {
   app.use('/api/reference', require('./routes/reference'));
   app.use('/api/billing', require('./routes/billing'));
   app.use('/api/activities', require('./routes/activity'));
+  app.use('/api/persona', require('./routes/persona'));
 
   // 健康检查
   app.get('/api/health', (req, res) => {

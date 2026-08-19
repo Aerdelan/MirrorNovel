@@ -377,7 +377,7 @@ router.post('/generate', auth, async (req, res) => {
   try {
     await checkTokenBalance(req.user);
 
-    let { novelTypeId, protagonistName, worldSetting, targetWordCount, referenceIds } = req.body;
+    let { novelTypeId, protagonistName, worldSetting, targetWordCount, referenceIds, personaId } = req.body;
     if (!novelTypeId) return res.status(400).json({ message: '请选择小说类型' });
     targetWordCount = Number(targetWordCount) || 50000;
     // 支持新旧两种类型系统：先用旧 ID 查找，失败则用名称匹配
@@ -417,8 +417,18 @@ router.post('/generate', auth, async (req, res) => {
       status: 'generating', batchIndex: 0,
     });
 
-    // 构建系统提示词（含参考风格注入）
-    let systemPrompt = buildSystemPrompt(novelTypeId);
+    // 构建系统提示词（含写作人格 persona 注入）
+    let persona = null;
+    if (personaId) {
+      try {
+        const WritingPersona = require('../models/WritingPersona');
+        persona = await WritingPersona.findOne({ _id: personaId, userId: req.userId }).lean();
+        if (persona) console.log(`[生成] 使用写作人格: ${persona.name} (overrideDeslop=${persona.overrideDeslop})`);
+      } catch (e) {
+        console.error('加载写作人格失败:', e.message);
+      }
+    }
+    let systemPrompt = buildSystemPrompt(novelTypeId, undefined, persona);
 
     // 如果有参考风格 ID，获取其风格数据注入提示词
     if (referenceIds && Array.isArray(referenceIds) && referenceIds.length > 0) {
@@ -473,7 +483,7 @@ ${structureRef}
       if (matchedTmpls.length > 0) {
         const tmpl = matchedTmpls[0];
         // 根据匹配到的 gender 重新构建系统提示（男女频写作指导不同）
-        const baseSys = buildSystemPrompt(novelTypeId, tmpl.gender || 'male');
+        const baseSys = buildSystemPrompt(novelTypeId, tmpl.gender || 'male', persona);
 
         const genderTag = tmpl.gender === 'female' ? '女频' : tmpl.gender === 'unisex' ? '通用' : '男频';
 

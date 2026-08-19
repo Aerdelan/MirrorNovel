@@ -21,15 +21,46 @@
  </div>
  </div>
  <div v-if="selectedType" class="type-info">{{ $t('generate.selectedType', { name: $tn(selectedType) }) }}</div>
- </div>
+</div>
 
- <div class="card">
- <div class="section-title">② {{ $t('generate.stepChar') }}</div>
- <input v-model="protagonistName" class="input" :placeholder="$t('generate.placeholderName')" maxlength="20" />
+<div class="card">
+<div class="section-title">{{ $t('generate.stepPersona') }}</div>
+<div class="persona-desc">{{ $t('generate.personaDesc') }}</div>
+<div class="persona-grid">
+ <div
+   v-for="p in personas"
+   :key="p._id"
+   class="persona-card"
+   :class="{ selected: selectedPersonaId === p._id, disabled: personaApplicable(p) === false }"
+   @click="selectPersona(p)"
+ >
+   <div class="persona-card-head">
+     <span class="persona-name">{{ p.name }}</span>
+     <span v-if="p.isSystem" class="persona-tag sys">{{ $t('generate.personaSys') }}</span>
+     <span v-else-if="p.source === 'ai-generated'" class="persona-tag ai">AI</span>
+     <span v-else-if="p.source === 'reference-extracted'" class="persona-tag ref">{{ $t('generate.personaRef') }}</span>
+   </div>
+   <div class="persona-card-desc">{{ p.description || p.voice?.slice(0, 40) }}</div>
  </div>
+ <div class="persona-card persona-add" @click="showPersonaModal = true">
+   <span class="persona-add-icon">＋</span>
+   <span class="persona-add-text">{{ $t('generate.personaManage') }}</span>
+ </div>
+</div>
+<div v-if="selectedPersona" class="persona-selected-info">
+ <span class="persona-selected-label">{{ $t('generate.personaCurrent') }}：</span>
+ <strong>{{ selectedPersona.name }}</strong>
+ <span v-if="selectedPersona.overrideDeslop" class="persona-override-badge">{{ $t('generate.personaOverrideOn') }}</span>
+</div>
+</div>
 
- <div class="card">
- <div class="section-title">③ {{ $t('generate.stepWorld') }}</div>
+<div class="card">
+<div class="section-title">③ {{ $t('generate.stepChar') }}</div>
+<input v-model="protagonistName" class="input" :placeholder="$t('generate.placeholderName')" maxlength="20" />
+</div>
+
+<div class="card">
+<div class="section-title">④ {{ $t('generate.stepWorld') }}</div>
  <textarea v-model="worldSetting" class="textarea" :placeholder="$t('generate.placeholderWorld')" rows="4" @input="debounceMatchTemplates"></textarea>
  <!-- 类型模板匹配提示 -->
  <div v-if="matchedTemplates.length > 0" class="tmpl-match-card">
@@ -109,7 +140,7 @@
  </div>
 
  <div class="card">
- <div class="section-title">④ {{ $t('generate.stepMode') }}</div>
+ <div class="section-title">⑤ {{ $t('generate.stepMode') }}</div>
  <div class="mode-radio-group">
  <label class="mode-radio" :class="{ active: genMode === 'book' }">
  <input type="radio" v-model="genMode" value="book" />
@@ -311,7 +342,81 @@
  </div>
  </template>
 
- <!-- ==================== 大纲预览/编辑弹窗 ==================== -->
+ <!-- ==================== 写作人格管理弹窗 ==================== -->
+<Teleport to="body">
+<div v-if="showPersonaModal" class="modal-overlay" @click.self="showPersonaModal = false">
+<div class="persona-modal-card">
+ <div class="persona-modal-head">
+   <h3 class="persona-modal-title">{{ $t('generate.personaManageTitle') }}</h3>
+   <button class="gen-modal-close" @click="showPersonaModal = false">&times;</button>
+ </div>
+
+ <div class="persona-modal-body">
+   <!-- 工具栏 -->
+   <div class="persona-toolbar">
+     <button class="btn btn-sm btn-primary" @click="openEditPersona(null)">{{ $t('generate.personaNew') }}</button>
+     <button class="btn btn-sm btn-secondary" @click="aiGenInput.novelType ? null : (aiGenInput.novelType = selectedType ? $tn(selectedType) : '') ; personaStatus=''; ">{{ $t('generate.personaAIGen') }}</button>
+     <button class="btn btn-sm btn-secondary" @click="fromReferencePersona">{{ $t('generate.personaFromRef') }}</button>
+     <span v-if="personaBusy" class="persona-busy"><span class="spinner" style="width:14px;height:14px;display:inline-block;vertical-align:middle;"></span> {{ personaStatus || '处理中...' }}</span>
+   </div>
+
+   <!-- AI 生成输入区 -->
+   <div v-if="aiGenInput.novelType !== '' || personaStatus" class="persona-ai-gen">
+     <div class="label-sm">AI 生成写作人格</div>
+     <input v-model="aiGenInput.novelType" class="input" placeholder="想写的小说类型，如：玄幻修仙、甜宠言情" />
+     <textarea v-model="aiGenInput.hint" class="textarea" rows="2" placeholder="额外要求（可选），如：节奏紧凑、第一人称"></textarea>
+     <div class="persona-ai-actions">
+       <button class="btn btn-sm btn-primary" :disabled="personaBusy" @click="aiGeneratePersona">{{ $t('generate.personaAIGen') }}</button>
+       <button class="btn btn-sm btn-secondary" @click="aiGenInput = { novelType: '', hint: '' }; personaStatus=''">{{ $t('common.cancel') }}</button>
+     </div>
+   </div>
+
+   <!-- 列表 -->
+   <div class="persona-list">
+     <div v-for="p in personas" :key="p._id" class="persona-list-item" :class="{ active: selectedPersonaId === p._id }" @click="selectPersona(p)">
+       <div class="persona-list-head">
+         <span class="persona-list-name">{{ p.name }}</span>
+         <span v-if="p.isSystem" class="persona-tag sys">{{ $t('generate.personaSys') }}</span>
+         <span v-else-if="p.source === 'ai-generated'" class="persona-tag ai">AI</span>
+         <span v-else-if="p.source === 'reference-extracted'" class="persona-tag ref">{{ $t('generate.personaRef') }}</span>
+       </div>
+       <div class="persona-list-desc">{{ p.description || p.voice?.slice(0, 60) }}</div>
+       <div class="persona-list-actions" @click.stop>
+         <button class="btn btn-xs btn-secondary" @click="openEditPersona(p)">{{ $t('common.edit') }}</button>
+         <button v-if="!p.isSystem" class="btn btn-xs btn-secondary" @click="clonePersona(p)">{{ $t('generate.personaClone') }}</button>
+         <button v-if="!p.isSystem" class="btn btn-xs btn-danger" @click="deletePersona(p)">{{ $t('common.delete') }}</button>
+       </div>
+     </div>
+   </div>
+
+   <!-- 编辑表单 -->
+   <div v-if="editingPersona" class="persona-edit-form">
+     <div class="label-sm">{{ editingPersona._id ? $t('common.edit') : $t('generate.personaNew') }}：{{ editingPersona.name || $t('generate.personaUntitled') }}</div>
+     <input v-model="personaForm.name" class="input" :placeholder="$t('generate.personaFormName')" maxlength="40" :disabled="editingPersona.isSystem" />
+     <input v-model="personaForm.description" class="input" :placeholder="$t('generate.personaFormDesc')" maxlength="200" />
+     <div class="label-sm">{{ $t('generate.personaFormVoice') }}</div>
+     <textarea v-model="personaForm.voice" class="textarea" rows="3" :disabled="editingPersona.isSystem" :placeholder="$t('generate.personaFormVoicePh')"></textarea>
+     <div class="label-sm">{{ $t('generate.personaFormTone') }}</div>
+     <textarea v-model="personaForm.tone" class="textarea" rows="3" :disabled="editingPersona.isSystem" :placeholder="$t('generate.personaFormTonePh')"></textarea>
+     <div class="label-sm">{{ $t('generate.personaFormRules') }}</div>
+     <textarea v-model="personaForm.rules" class="textarea" rows="6" :disabled="editingPersona.isSystem" :placeholder="$t('generate.personaFormRulesPh')"></textarea>
+     <div class="label-sm">{{ $t('generate.personaFormVocab') }}</div>
+     <textarea v-model="personaForm.vocab" class="textarea" rows="3" :disabled="editingPersona.isSystem" :placeholder="$t('generate.personaFormVocabPh')"></textarea>
+     <label class="checkbox-row" style="margin-top:8px;">
+       <input type="checkbox" v-model="personaForm.overrideDeslop" :disabled="editingPersona.isSystem" />
+       <span>{{ $t('generate.personaOverrideDeslop') }}</span>
+     </label>
+     <div class="persona-edit-actions">
+       <button class="btn btn-sm btn-primary" :disabled="personaBusy" @click="savePersona">{{ $t('common.save') }}</button>
+       <button class="btn btn-sm btn-secondary" @click="openEditPersona(null)">{{ $t('common.cancel') }}</button>
+     </div>
+   </div>
+ </div>
+</div>
+</div>
+</Teleport>
+
+<!-- ==================== 大纲预览/编辑弹窗 ==================== -->
  <Teleport to="body">
  <div v-if="outlineModal" class="modal-overlay" @click.self="outlineModal=false">
  <div class="outline-modal-card">
@@ -334,6 +439,7 @@ import { useRouter } from 'vue-router'
 import { useNovelStore } from '../stores/novel'
 import { useAuthStore } from '../stores/auth'
 import { useReferenceStore } from '../stores/reference'
+import { usePersonaStore } from '../stores/persona'
 import { useI18n } from '../composables/useI18n'
 import api from '../api'
 
@@ -341,6 +447,7 @@ const router = useRouter()
 const novelStore = useNovelStore()
 const authStore = useAuthStore()
 const refStore = useReferenceStore()
+const personaStore = usePersonaStore()
 const { $t } = useI18n()
 
 const streamRef = ref(null)
@@ -361,6 +468,118 @@ const outline = ref('')
 const genMode = ref('book')
 const targetWordCount = ref(50000)
 const expertMode = ref(false)
+
+// ---- 写作人格 persona ----
+const personas = ref([])
+const selectedPersonaId = ref('')
+const selectedPersona = computed(() => personas.value.find(p => p._id === selectedPersonaId.value) || null)
+const showPersonaModal = ref(false)
+// persona 编辑表单
+const editingPersona = ref(null)
+const personaForm = ref({ name: '', description: '', voice: '', tone: '', rules: '', vocab: '', overrideDeslop: false, applicableTypes: [] })
+// AI 生成 / 从参考生成 的输入
+const aiGenInput = ref({ novelType: '', hint: '' })
+const personaBusy = ref(false)
+const personaStatus = ref('')
+
+// 判断 persona 是否对当前类型适用（仅用于视觉提示，不强制禁选）
+function personaApplicable(p) {
+ if (!p?.applicableTypes || p.applicableTypes.length === 0) return null // 通用
+ const t = selectedType.value
+ const g = gender.value
+ // 简单匹配：applicableTypes 里的值若为 male/female/lightnovel 则按频段，否则按类型名
+ return p.applicableTypes.some(at => at === g || at === t || (at === 'lightnovel' && t?.startsWith('lightnovel_')))
+}
+
+function selectPersona(p) {
+ if (selectedPersonaId.value === p._id) {
+   // 再次点击取消选择
+   selectedPersonaId.value = ''
+ } else {
+   selectedPersonaId.value = p._id
+ }
+}
+
+function openEditPersona(p) {
+ editingPersona.value = p ? { ...p } : null
+ personaForm.value = p
+   ? { name: p.name, description: p.description, voice: p.voice, tone: p.tone, rules: p.rules, vocab: p.vocab, overrideDeslop: p.overrideDeslop, applicableTypes: p.applicableTypes || [] }
+   : { name: '', description: '', voice: '', tone: '', rules: '', vocab: '', overrideDeslop: false, applicableTypes: [] }
+}
+
+async function savePersona() {
+ const f = personaForm.value
+ if (!f.name.trim()) return alert('请填写模板名称')
+ personaBusy.value = true
+ try {
+   if (editingPersona.value?._id) {
+     await personaStore.update(editingPersona.value._id, f)
+   } else {
+     await personaStore.create(f)
+   }
+   personas.value = personaStore.personas
+   openEditPersona(null)
+ } catch (e) {
+   alert(e.response?.data?.message || e.message || '保存失败')
+ } finally {
+   personaBusy.value = false
+ }
+}
+
+async function deletePersona(p) {
+ if (!confirm(`确认删除「${p.name}」？`)) return
+ try {
+   await personaStore.remove(p._id)
+   personas.value = personaStore.personas
+   if (selectedPersonaId.value === p._id) selectedPersonaId.value = ''
+ } catch (e) {
+   alert(e.response?.data?.message || e.message || '删除失败')
+ }
+}
+
+async function clonePersona(p) {
+ try {
+   await personaStore.clone(p._id)
+   personas.value = personaStore.personas
+ } catch (e) {
+   alert(e.response?.data?.message || e.message || '克隆失败')
+ }
+}
+
+async function aiGeneratePersona() {
+ if (!aiGenInput.value.novelType.trim()) return alert('请输入想写的小说类型')
+ personaBusy.value = true
+ personaStatus.value = 'AI 正在生成写作人格...'
+ try {
+   await personaStore.aiGenerate(aiGenInput.value.novelType, aiGenInput.value.hint)
+   personas.value = personaStore.personas
+   aiGenInput.value = { novelType: '', hint: '' }
+   personaStatus.value = ''
+ } catch (e) {
+   personaStatus.value = ''
+   alert(e.response?.data?.message || e.message || 'AI 生成失败')
+ } finally {
+   personaBusy.value = false
+ }
+}
+
+async function fromReferencePersona() {
+ // 弹出选择参考小说
+ const refId = prompt('请输入参考小说 ID（可从蒸馏库列表复制）')
+ if (!refId) return
+ personaBusy.value = true
+ personaStatus.value = '正在从参考小说提取写作人格...'
+ try {
+   await personaStore.fromReference(refId.trim())
+   personas.value = personaStore.personas
+   personaStatus.value = ''
+ } catch (e) {
+   personaStatus.value = ''
+   alert(e.response?.data?.message || e.message || '从参考提取失败')
+ } finally {
+   personaBusy.value = false
+ }
+}
 
 // ---- 参考小说结构克隆 ----
 const structFileInput = ref(null)
@@ -581,6 +800,7 @@ async function startGen() {
  mode: genMode.value,
  expertMode: expertMode.value,
  outline: outline.value,
+ personaId: selectedPersonaId.value || undefined,
  referenceIds: genSelectedRefs.value.length > 0 ? genSelectedRefs.value : undefined,
  structureRef: useStructureRef.value && structResult.value ? structResult.value : undefined,
  }
@@ -1006,19 +1226,28 @@ function lnScrollToBottom() {
 onMounted(async () => {
  if (!authStore.isLoggedIn) { router.push('/login'); return }
  try {
- const data = await novelStore.fetchFullTypes()
- fullTypes.value = data
+   const data = await novelStore.fetchFullTypes()
+   fullTypes.value = data
+ } catch {}
+ // 加载写作人格
+ try {
+   const list = await personaStore.fetchList()
+   personas.value = list
+   // 默认选中第一个系统预设
+   if (list.length > 0 && !selectedPersonaId.value) {
+     selectedPersonaId.value = list[0]._id
+   }
  } catch {}
  // 加载普通小说参考库
  try {
- const refs = await refStore.fetchByType('normal')
- genRefs.value = refs.filter(r => r.aiProcessed && r.styleProfile && r.styleProfile !== '风格提取中...')
+   const refs = await refStore.fetchByType('normal')
+   genRefs.value = refs.filter(r => r.aiProcessed && r.styleProfile && r.styleProfile !== '风格提取中...')
  } catch {}
  genRefsLoaded.value = true
  // 加载轻小说参考库
  try {
- const refs = await refStore.fetchLightNovelRefs()
- lnRefs.value = refs.filter(r => r.aiProcessed && r.styleProfile && r.styleProfile !== '风格提取中...')
+   const refs = await refStore.fetchLightNovelRefs()
+   lnRefs.value = refs.filter(r => r.aiProcessed && r.styleProfile && r.styleProfile !== '风格提取中...')
  } catch {}
  lnRefsLoaded.value = true
 })
@@ -1756,6 +1985,239 @@ onMounted(async () => {
 @keyframes slideUp {
  from { transform: translateY(20px); opacity: 0; }
  to { transform: translateY(0); opacity: 1; }
+}
+
+/* ---- 写作人格 persona ---- */
+.persona-desc {
+ font-size: 12px;
+ color: var(--text-tertiary);
+ margin-bottom: 10px;
+ line-height: 1.5;
+}
+.persona-grid {
+ display: grid;
+ grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+ gap: 8px;
+}
+.persona-card {
+ padding: 10px 12px;
+ border: 1px solid var(--card-border);
+ border-radius: var(--radius);
+ background: var(--card);
+ cursor: pointer;
+ transition: all var(--transition);
+ display: flex;
+ flex-direction: column;
+ gap: 4px;
+ min-height: 64px;
+}
+.persona-card:hover {
+ border-color: var(--primary);
+ box-shadow: 0 2px 8px rgba(63, 125, 90, 0.1);
+}
+.persona-card.selected {
+ border-color: var(--primary);
+ background: var(--primary-light);
+}
+.persona-card.disabled {
+ opacity: 0.45;
+}
+.persona-card-head {
+ display: flex;
+ align-items: center;
+ gap: 6px;
+ flex-wrap: wrap;
+}
+.persona-name {
+ font-size: 13px;
+ font-weight: 600;
+ color: var(--text);
+}
+.persona-tag {
+ font-size: 10px;
+ padding: 1px 6px;
+ border-radius: 100px;
+ font-weight: 600;
+}
+.persona-tag.sys { background: var(--info-bg); color: var(--info); }
+.persona-tag.ai { background: var(--success-bg); color: var(--success); }
+.persona-tag.ref { background: var(--warning-bg); color: var(--warning); }
+.persona-card-desc {
+ font-size: 11px;
+ color: var(--text-tertiary);
+ line-height: 1.4;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ display: -webkit-box;
+ -webkit-line-clamp: 2;
+ -webkit-box-orient: vertical;
+}
+.persona-add {
+ align-items: center;
+ justify-content: center;
+ border-style: dashed;
+ color: var(--text-tertiary);
+ text-align: center;
+}
+.persona-add-icon {
+ font-size: 22px;
+ font-weight: 300;
+}
+.persona-add-text {
+ font-size: 11px;
+}
+.persona-selected-info {
+ margin-top: 10px;
+ font-size: 12px;
+ color: var(--text-secondary);
+ display: flex;
+ align-items: center;
+ gap: 6px;
+ flex-wrap: wrap;
+}
+.persona-override-badge {
+ font-size: 10px;
+ padding: 1px 6px;
+ border-radius: 100px;
+ background: var(--warning-bg);
+ color: var(--warning);
+ font-weight: 600;
+}
+
+/* persona 管理弹窗 */
+.persona-modal-card {
+ background: var(--card);
+ border-radius: var(--radius-xl);
+ padding: 20px;
+ width: 100%;
+ max-width: 640px;
+ max-height: 85vh;
+ display: flex;
+ flex-direction: column;
+ box-shadow: 0 20px 60px rgba(0,0,0,0.15);
+ animation: slideUp 250ms var(--ease);
+}
+.persona-modal-head {
+ display: flex;
+ align-items: center;
+ justify-content: space-between;
+ margin-bottom: 14px;
+}
+.persona-modal-title {
+ font-size: 16px;
+ font-weight: 700;
+ color: var(--text);
+}
+.persona-modal-body {
+ flex: 1;
+ overflow-y: auto;
+ display: flex;
+ flex-direction: column;
+ gap: 12px;
+}
+.persona-toolbar {
+ display: flex;
+ gap: 8px;
+ flex-wrap: wrap;
+ align-items: center;
+}
+.persona-busy {
+ font-size: 12px;
+ color: var(--primary);
+ display: inline-flex;
+ align-items: center;
+ gap: 6px;
+}
+.persona-ai-gen {
+ padding: 10px 12px;
+ background: var(--bg-secondary, #f5f5f5);
+ border-radius: var(--radius);
+ display: flex;
+ flex-direction: column;
+ gap: 8px;
+}
+.persona-ai-actions {
+ display: flex;
+ gap: 8px;
+}
+.persona-list {
+ display: flex;
+ flex-direction: column;
+ gap: 8px;
+}
+.persona-list-item {
+ padding: 10px 12px;
+ border: 1px solid var(--card-border);
+ border-radius: var(--radius);
+ background: var(--card);
+ cursor: pointer;
+ transition: all var(--transition);
+}
+.persona-list-item.active {
+ border-color: var(--primary);
+ background: var(--primary-light);
+}
+.persona-list-head {
+ display: flex;
+ align-items: center;
+ gap: 6px;
+ flex-wrap: wrap;
+ margin-bottom: 4px;
+}
+.persona-list-name {
+ font-size: 13px;
+ font-weight: 600;
+ color: var(--text);
+}
+.persona-list-desc {
+ font-size: 11px;
+ color: var(--text-tertiary);
+ line-height: 1.4;
+ margin-bottom: 6px;
+}
+.persona-list-actions {
+ display: flex;
+ gap: 6px;
+}
+.btn-xs {
+ padding: 3px 8px;
+ font-size: 11px;
+ border-radius: 6px;
+}
+.btn-danger {
+ background: var(--error-bg, #ffe0e0);
+ color: var(--error, #c0392b);
+ border: 1px solid var(--error-border, #ffc0c0);
+ cursor: pointer;
+ font-family: inherit;
+}
+.btn-danger:hover { opacity: 0.85; }
+.persona-edit-form {
+ padding: 12px;
+ background: var(--bg-secondary, #f5f5f5);
+ border-radius: var(--radius);
+ display: flex;
+ flex-direction: column;
+ gap: 8px;
+}
+.persona-edit-form .input,
+.persona-edit-form .textarea {
+ width: 100%;
+ box-sizing: border-box;
+}
+.persona-edit-form .textarea {
+ font-size: 12px;
+ line-height: 1.6;
+}
+.persona-edit-actions {
+ display: flex;
+ gap: 8px;
+ margin-top: 4px;
+}
+.label-sm {
+ font-size: 12px;
+ color: var(--text-secondary);
+ font-weight: 500;
 }
 
 </style>

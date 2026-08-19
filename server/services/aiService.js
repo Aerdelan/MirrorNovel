@@ -75,12 +75,59 @@ function countTokens(text) {
 }
 
 /**
- * 构建小说生成系统提示词（支持男女频区分）
+ * 构建小说生成系统提示词（支持男女频区分 + 写作人格注入）
  * @param {string} novelTypeId - 类型 ID
  * @param {string} [gender] - 'male' | 'female' | 'unisex'
+ * @param {object} [persona] - 写作人格（WritingPersona 文档或等价对象）
+ *   - voice: 作者声线
+ *   - tone:  语气与节奏
+ *   - rules: 题材约束与人物声音规则
+ *   - vocab: 推荐/禁用词表
+ *   - overrideDeslop: 是否用 rules 接管默认 deslop 策略
+ *   - name:  人格名称（仅用于日志）
+ *
+ * 注入策略（Q1 方案：替换声线 + 允许覆盖 deslop）：
+ *   - persona 提供时，用其 voice/tone/rules 替换硬编码的"作者声线+写作要求"段
+ *   - 题材信息（type.name/keywords/outline/aiWordBank）始终保留，因为这是题材元数据而非人格
+ *   - overrideDeslop=false（默认）时，仍追加 deslop.systemDeslopPrompt（保留系统去AI化策略）
+ *   - overrideDeslop=true 时，不再追加 deslop.systemDeslopPrompt，由 persona.rules 全权接管
+ *   - persona 为空时，行为与旧版完全一致（向后兼容）
  */
-function buildSystemPrompt(novelTypeId, gender) {
+function buildSystemPrompt(novelTypeId, gender, persona) {
   const type = novelTypes.find(t => t.id === novelTypeId || t.name === novelTypeId);
+
+  // ===== persona 注入分支 =====
+  if (persona && (persona.voice || persona.tone || persona.rules)) {
+    const personaBlock = [
+      persona.voice ? `【作者声线】\n${persona.voice}` : '',
+      persona.tone ? `【语气与节奏】\n${persona.tone}` : '',
+      persona.rules ? `【写作规则】\n${persona.rules}` : '',
+      persona.vocab ? `【用词表】\n${persona.vocab}` : '',
+    ].filter(Boolean).join('\n\n');
+
+    // 题材元数据（非人格，始终保留）
+    const typeMeta = type ? [
+      `写作类型：${type.name}`,
+      `写作关键词：${type.keywords || ''}`,
+      type.outline ? `大纲参考：${type.outline}` : '',
+      type.aiWordBank ? `题材语汇参考（只在具体语境成立时使用，禁止堆砌）：${type.aiWordBank}` : '',
+    ].filter(Boolean).join('\n') : '';
+
+    // deslop 策略：默认保留系统去AI化；overrideDeslop=true 时由 persona.rules 接管
+    const deslopTail = persona.overrideDeslop
+      ? `\n\n（已启用自定义去AI化策略，遵循上方【写作规则】）`
+      : `\n\n${deslop.systemDeslopPrompt}`;
+
+    return `你是一位成熟的小说作者。请严格遵循下方给定的写作人格进行创作，在全篇保持声线一致。
+
+${personaBlock}
+
+${typeMeta}
+
+请直接开始创作，从既有文本提炼叙事视角并保持一致。${deslopTail}`;
+  }
+
+  // ===== 以下为旧版逻辑（无 persona 时保持兼容） =====
   if (!type) {
     return `你是一位专业的小说作者。先确认既有文本的叙事视角、叙事距离和语言气质，再沿用同一套作者声线继续创作。
 
