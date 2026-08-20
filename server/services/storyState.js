@@ -68,12 +68,15 @@ function parseChapterPlan(rawPlan) {
   for (const rawLine of String(rawPlan).split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line) continue;
-    if (/^(阶段\s*\d+|Phase\s*\d+)\s*[:：]?/i.test(line) && !/第\s*\d+\s*章/.test(line)) {
+    if (/^[*#\s]*(阶段\s*\d+|Phase\s*\d+)\s*[:：]?/i.test(line) && !/第\s*\d+\s*章/.test(line)) {
       phase = line;
       phases.push(line);
       continue;
     }
-    const match = line.match(/第\s*(\d+)\s*章\s*(?:[（(]([^）)]*)[）)])?\s*[:：]?\s*(.*)$/);
+    // 兼容多种常见格式: `第1章`, `第1章：xxx`, `第1章(3000字) xxx`, `**第1章** xxx`, `## 第1章 xxx`
+    // 先剥掉前导的 markdown 符号 (#, **, *) 方便后续匹配
+    const stripped = line.replace(/^[#*\s]+/, '').replace(/^\*\*+|\*\*+$/g, '');
+    const match = stripped.match(/第\s*(\d+)\s*章\s*(?:[（(]([^）)]*)[）)])?\s*[:：]?\s*(.*)$/);
     if (!match) continue;
     const fields = (match[3] || '').split('|').map((item) => item.trim()).filter(Boolean);
     const findField = (labels) => {

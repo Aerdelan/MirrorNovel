@@ -619,7 +619,8 @@ ${structureRef}
         const planResult = await streamGenerate(
           '你是一位专业的小说章节规划师。你的任务是制定详细的章节计划表，确保每章有明确目标、伏笔合理铺设和回收、结局节奏自然。',
           planPrompt, null, planController.signal,
-          resolveApiConfig(req.user?.modelConfig, 'reasoning')
+          resolveApiConfig(req.user?.modelConfig, 'reasoning'),
+          2, 0.85, 16384, 300000 // 章节计划生成常因字数大(50万字≈167章)超时,显式给5分钟
         ).finally(() => { clearTimeout(planTimeout); clearInterval(heartbeat); });
 
         if (planResult && planResult.content) {
