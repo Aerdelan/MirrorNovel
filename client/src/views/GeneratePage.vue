@@ -735,7 +735,8 @@ async function generateOutline(selectedTypeId, charName, worldSetting, wordCount
  if (useStructureRef.value && structResult.value) {
  payload.structureRef = structResult.value
  }
- const res = await api.post('/novel/generate-outline', payload)
+ // 大纲生成对长篇小说耗时较长，单独加长超时（10分钟），不修改全局默认超时
+ const res = await api.post('/novel/generate-outline', payload, { timeout: 600000 })
  return res.data.outline || ''
  } catch (e) {
  console.error('大纲生成失败:', e)

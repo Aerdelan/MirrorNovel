@@ -374,7 +374,8 @@ ${structureRef}
 
     const result = await streamGenerate(
       systemPrompt, outlinePrompt, null, null,
-      resolveApiConfig(req.user?.modelConfig, 'outline')
+      resolveApiConfig(req.user?.modelConfig, 'outline'),
+      2, 0.85, 16384, 600000
     );
 
     const outline = result.content || '';
