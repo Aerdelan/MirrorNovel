@@ -190,9 +190,24 @@ ${deslop.systemDeslopPrompt}`;
 /**
  * 生成大纲的提示词
  */
-function buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount) {
+function buildPersonaPrompt(persona, options = {}) {
+  if (!persona) return '';
+  const blocks = [
+    persona.voice ? `【作者声线】\n${persona.voice}` : '',
+    persona.tone ? `【语气与节奏】\n${persona.tone}` : '',
+    persona.rules ? `【写作规则】\n${persona.rules}` : '',
+    persona.vocab ? `【用词表】\n${persona.vocab}` : '',
+  ].filter(Boolean);
+  if (!blocks.length) return '';
+  const deslopNote = options.includeDeslop === false ? '' : persona.overrideDeslop
+    ? '\n【去AI化策略】仅遵循上方写作规则，不套用系统统一去AI化文风。'
+    : `\n${deslop.systemDeslopPrompt}`;
+  return `\n\n【用户选择的写作人格：${persona.name || '自定义模板'}】\n${blocks.join('\n\n')}${deslopNote}`;
+}
+
+function buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona) {
   const type = novelTypes.find(t => t.id === novelTypeId);
-  return `你是一位专业的小说大纲策划师。请为一部${type ? type.name : ''}小说创作一份完整的创作大纲。
+  return `你是一位专业的小说大纲策划师。请为一部${type ? type.name : ''}小说创作一份完整的创作大纲。${buildPersonaPrompt(persona, { includeDeslop: false })}
 
 主角名字：${protagonistName || '未设定'}
 世界观设定：${worldSetting || '由你自由发挥'}
@@ -258,7 +273,7 @@ function distillChapters(chapters) {
   return `【前期章节概要】\n${earlySummary}\n\n【最近章节详情】\n${recentDetail}`.slice(0, 10000);
 }
 
-function buildInitialPrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, mode, outline) {
+function buildInitialPrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, mode, outline, persona) {
   const type = novelTypes.find(t => t.id === novelTypeId);
   const isChapter = mode === 'chapter';
   const outlineText = outline ? `\n【创作大纲】\n${outline}\n` : '';
@@ -272,7 +287,7 @@ function buildInitialPrompt(novelTypeId, protagonistName, worldSetting, targetWo
       + '5. 这不是独立的章节拼接，而是一部浑然一体的作品\n'
       + '6. 每章结束时可以留悬念，但不要中断主线剧情';
 
-  return `请创作一部${type ? type.name : ''}小说。
+  return `请创作一部${type ? type.name : ''}小说。${buildPersonaPrompt(persona)}
 
 主角名字：${protagonistName || '未设定'}
 世界观设定：${worldSetting || '由你自由发挥'}
@@ -283,12 +298,12 @@ ${continuityNote}
 请从第一章开始，保持风格统一，全局规划好剧情走向。每章结束时标注【未完待续】。`;
 }
 
-function buildContinuePrompt(novelId, novel) {
+function buildContinuePrompt(novelId, novel, persona = novel?.writingPersonaSnapshot) {
   // 蒸馏提纯：提取所有章节的关键内容
   const distilled = distillChapters(novel.chapters);
   const outlineNote = novel.outline ? `\n【创作大纲】\n${novel.outline}\n` : '';
 
-  return `请继续创作这部小说。
+  return `请继续创作这部小说。${buildPersonaPrompt(persona)}
 
 小说类型：${novel.novelTypeName}
 主角：${novel.protagonistName || '未设定'}
@@ -313,7 +328,7 @@ ${'='.repeat(40)}
 /**
  * 构建导入小说续写提示词（蒸馏提纯版）
  */
-function buildImportContinuePrompt(importedText, continuationRequest, novelTypeName, targetWordCount, mode) {
+function buildImportContinuePrompt(importedText, continuationRequest, novelTypeName, targetWordCount, mode, persona) {
   // 对导入文本进行分段提纯
   const paragraphs = (importedText || '').split(/\n{2,}/);
   const distilled = paragraphs.slice(0, 30).map((p, i) => `[段落${i + 1}] ${p.slice(0, 500)}`).join('\n');
@@ -323,7 +338,7 @@ function buildImportContinuePrompt(importedText, continuationRequest, novelTypeN
     ? `本次只续写一个章节（目标约${targetWordCount}字），请写出一个完整的章节`
     : `目标总字数约${targetWordCount}字，分多个章节续写，注意全局连贯性和伏笔回收`;
 
-  return `你是一位专业的小说续写专家。请仔细阅读下方导入小说的完整剧情脉络，理解其风格、剧情走向、人物设定及所有伏笔，然后根据要求续写。
+  return `你是一位专业的小说续写专家。${buildPersonaPrompt(persona)}请仔细阅读下方导入小说的完整剧情脉络，理解其风格、剧情走向、人物设定及所有伏笔，然后根据要求续写。
 
 小说风格类型：${novelTypeName || '未知'}
 
@@ -529,10 +544,10 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
 /**
  * 构建章节计划表（细化到每一章的事件、伏笔、字数）
  */
-function buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, structureRef) {
+function buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, structureRef, persona) {
   const estChapters = Math.max(10, Math.ceil(targetWordCount / 3000));
 
-  let planPrompt = `你是一位专业的小说章节规划师。请根据以下素材制定一份详细的章节计划表。
+  let planPrompt = `你是一位专业的小说章节规划师。请根据以下素材制定一份详细的章节计划表。${buildPersonaPrompt(persona, { includeDeslop: false })}
 
 目标：约${targetWordCount}字，预计${estChapters}章
 
@@ -618,12 +633,12 @@ ${revealedForeshadowing}
 /**
  * 构建全文调优分析提示词
  */
-function buildOptimizeAnalysisPrompt(chapters, outline, protagonistName, worldSetting) {
+function buildOptimizeAnalysisPrompt(chapters, outline, protagonistName, worldSetting, persona) {
   const fullText = chapters.map(ch =>
     `【第${ch.chapterNumber}章（${ch.wordCount}字）】\n${(ch.content || '').slice(0, 3000)}`
   ).join('\n\n').slice(0, 40000);
 
-  return `你是一位专业的小说编辑。请分析以下小说的全文，输出一份详细的调优分析报告。
+  return `你是一位专业的小说编辑。${buildPersonaPrompt(persona, { includeDeslop: false })}请分析以下小说的全文，输出一份详细的调优分析报告。
 
 小说信息：
 主角：${protagonistName || '未设定'}
@@ -654,8 +669,8 @@ ${fullText}
 /**
  * 构建单章调优重写提示词
  */
-function buildOptimizeChapterPrompt(chapter, chapterNumber, analysis, outline) {
-  return `你是一位专业的小说编辑。请根据以下小说全文分析报告，对第${chapterNumber}章进行优化重写。
+function buildOptimizeChapterPrompt(chapter, chapterNumber, analysis, outline, persona) {
+  return `你是一位专业的小说编辑。${buildPersonaPrompt(persona)}请根据以下小说全文分析报告，对第${chapterNumber}章进行优化重写。
 
 小说大纲：${(outline || '无').slice(0, 2000)}
 
@@ -779,7 +794,7 @@ ${pass1}`;
 }
 
 module.exports = {
-  buildSystemPrompt, buildInitialPrompt, buildContinuePrompt,
+  buildSystemPrompt, buildPersonaPrompt, buildInitialPrompt, buildContinuePrompt,
   buildImportContinuePrompt, buildOutlinePrompt, distillChapters,
   buildChapterPlan, buildStoryStateSummary,
   buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, extractChapterSummary,

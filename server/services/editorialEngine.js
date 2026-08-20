@@ -74,6 +74,10 @@ function truncateForStage(text, maxChars = MAX_INPUT_CHARS) {
 
 function personaConstraint(persona) {
   if (!persona) return '';
+  // 生成流程传入的 WritingPersona 优先；旧版本地人格仍兼容。
+  if (persona.voice || persona.tone || persona.rules || persona.vocab) {
+    return `\n\n【用户指定作者人格 — 必须保持】\n${persona.voice ? `声线：${persona.voice}\n` : ''}${persona.tone ? `语气与节奏：${persona.tone}\n` : ''}${persona.rules ? `写作规则：${persona.rules}\n` : ''}${persona.vocab ? `用词表：${persona.vocab}` : ''}`;
+  }
   const habits = (persona.habit || []).join('、');
   const flaws = (persona.flaws || []).join('、');
   return `
@@ -225,6 +229,7 @@ async function runEditorialPipeline(text, options = {}) {
     apiConfig = resolveApiConfig(null, 'writing'),
     onChunk = null,
     onStatus = null,
+    persona = null,
   } = options;
 
   if (!text || text.length < 100) {
@@ -251,7 +256,7 @@ async function runEditorialPipeline(text, options = {}) {
 
     // persona 阶段：本地生成，不调 LLM
     if (stage.local || stage.id === 'persona') {
-      authorPersona = generateAuthorPersonaLocal();
+      authorPersona = persona || generateAuthorPersonaLocal();
       console.log(`[编辑引擎] 作者人格生成(本地):`, JSON.stringify(authorPersona));
       stageResults.push({ stage: stage.id, name: stage.name, persona: authorPersona, success: true });
       if (onStatus) {

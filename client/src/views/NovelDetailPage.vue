@@ -251,7 +251,7 @@ async function confirmDeleteChapter(ch) {
 async function deslopChapter(chapter) {
  if (!confirm(`对第${chapter.chapterNumber}章进行去AI味处理？`)) return
  try {
- const res = await api.post('/novel/deslop', { text: chapter.content || '' })
+ const res = await api.post('/novel/deslop', { text: chapter.content || '', novelId: route.params.id })
  if (res.data.processed) { await api.put(`/novel/${route.params.id}/chapter/${chapter.chapterNumber}`, { content: res.data.processed }); refreshNovel(); alert(' 去AI味完成！') }
  } catch (e) { alert('处理失败:'+(e.response?.data?.message||e.message)) }
 }
@@ -357,7 +357,7 @@ async function deslopAllChapters() {
  const ch = chapters[i]
  deslopAllProgress.value = `正在处理第 ${i + 1}/${chapters.length} 章...`
  try {
- const res = await api.post('/novel/deslop', { text: ch.content || '' })
+ const res = await api.post('/novel/deslop', { text: ch.content || '', novelId: route.params.id })
  if (res.data.processed) {
  await api.put(`/novel/${route.params.id}/chapter/${ch.chapterNumber}`, { content: res.data.processed })
  success++

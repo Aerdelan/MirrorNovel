@@ -5,16 +5,30 @@ const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 const Novel = require('../models/Novel');
 const User = require('../models/User');
+const WritingPersona = require('../models/WritingPersona');
 const novelTypes = require('../config/novelTypes');
 const novelTemplates = require('../config/novelTemplates');
 const { typeTemplates, buildTemplatePrompt } = novelTemplates;
 const {
-  buildSystemPrompt, buildInitialPrompt, buildContinuePrompt,
+  buildSystemPrompt, buildPersonaPrompt: importedBuildPersonaPrompt, buildInitialPrompt, buildContinuePrompt,
   buildImportContinuePrompt, buildOutlinePrompt,
   buildChapterPlan, buildStoryStateSummary,
   buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, extractChapterSummary,
   streamGenerate, resolveApiConfig, countTokens, humanizeRewrite, getFriendlyErrorMessage,
 } = require('../services/aiService');
+
+// 兼容旧部署/测试桩：人格功能缺失时保持原有提示词行为。
+const buildPersonaPrompt = typeof importedBuildPersonaPrompt === 'function'
+  ? importedBuildPersonaPrompt
+  : () => '';
+
+async function resolveNovelPersona(userId, novel, personaId) {
+  if (novel?.writingPersonaSnapshot) return novel.writingPersonaSnapshot;
+  const id = personaId || novel?.writingPersonaId;
+  if (!id) return null;
+  const persona = await WritingPersona.findOne({ _id: id, userId }).lean();
+  return persona || null;
+}
 const {
   buildAugmentedContext,
   buildContextFromDocs,
@@ -111,7 +125,7 @@ function appendChapterContextDocs(novel, content, chapterNumber, protagonistName
   }
 }
 
-async function runExpertReview({ user, content, contract, signal, onStatus }) {
+async function runExpertReview({ user, content, contract, signal, onStatus, persona }) {
   const original = String(content || '').trim();
   if (original.length < 500) return { content: original, review: null };
 
@@ -144,7 +158,7 @@ ${reviewSource}`;
   try {
     await ensureTokensLeft(user);
     reviewResult = await streamGenerate(
-      '你是一位严格但克制的小说连续性审稿专家。事实一致性优先于华丽表达。',
+      `你是一位严格但克制的小说连续性审稿专家。事实一致性优先于华丽表达。${buildPersonaPrompt(persona)}`,
       reviewPrompt,
       null,
       signal,
@@ -186,7 +200,7 @@ ${original}
   try {
     await ensureTokensLeft(user);
     const revised = await streamGenerate(
-      '你是一位谨慎的小说润色修订专家。保留事实和剧情，只修复审稿意见指出的问题。',
+      `你是一位谨慎的小说润色修订专家。保留事实和剧情，只修复审稿意见指出的问题。${buildPersonaPrompt(persona)}`,
       revisePrompt,
       null,
       signal,
@@ -289,7 +303,7 @@ router.get('/types', (req, res) => {
 // 单独生成大纲（同步返回，供前端弹窗确认使用）
 router.post('/generate-outline', auth, async (req, res) => {
   try {
-    const { novelTypeId, protagonistName, worldSetting, targetWordCount, structureRef } = req.body;
+    const { novelTypeId, protagonistName, worldSetting, targetWordCount, structureRef, personaId } = req.body;
     if (!novelTypeId) return res.status(400).json({ message: '请选择小说类型' });
 
     let type = novelTypes.find(t => t.id === novelTypeId || t.name === novelTypeId);
@@ -306,13 +320,14 @@ router.post('/generate-outline', auth, async (req, res) => {
     // 如果有参考结构，提取世界观但不再强制大纲雷同
     let effectiveWorld = worldSetting;
     let outlinePrompt;
+    const persona = personaId ? await resolveNovelPersona(req.user.id, null, personaId) : null;
     if (structureRef) {
       // 从参考结构中提取世界观设定作为参考
       const worldMatch = structureRef.match(/【世界观设定】([\s\S]*?)(?=【|$)/);
       const plotMatch = structureRef.match(/【剧情整体走向】([\s\S]*?)(?=【|$)/);
       effectiveWorld = worldMatch ? worldMatch[1].trim() : (worldSetting || '由参考小说设定');
 
-      outlinePrompt = `你是一位专业的小说大纲策划师。用户上传了一本参考小说，要求参考其结构模式进行**创新性再创作**，生成一本全新的原创小说。
+      outlinePrompt = `你是一位专业的小说大纲策划师。${buildPersonaPrompt(persona, { includeDeslop: false })}用户上传了一本参考小说，要求参考其结构模式进行**创新性再创作**，生成一本全新的原创小说。
 
 主角名字：${protagonistName || '未设定'}
 世界观设定（来自参考小说，可以调整）：${effectiveWorld}
@@ -350,12 +365,12 @@ ${structureRef}
 【关键节点】
 （参考参考小说的关键节奏点位置，但每个节点的具体事件必须原创）`;
     } else {
-      outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount);
+      outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona);
     }
 
     const systemPrompt = structureRef
-      ? '你是一位专业的小说大纲策划师。用户提供了参考小说的结构模式，你必须参考其结构骨架进行创新性再创作。输出的大纲必须是在结构上与原文相似，但在具体情节、冲突、事件上完全不同的原创作品。避免抄袭，确保每个情节都是全新的。'
-      : '你是一位专业的小说大纲策划师。';
+      ? `你是一位专业的小说大纲策划师。${buildPersonaPrompt(persona, { includeDeslop: false })}用户提供了参考小说的结构模式，你必须参考其结构骨架进行创新性再创作。输出的大纲必须是在结构上与原文相似，但在具体情节、冲突、事件上完全不同的原创作品。避免抄袭，确保每个情节都是全新的。`
+      : `你是一位专业的小说大纲策划师。${buildPersonaPrompt(persona, { includeDeslop: false })}`;
 
     const result = await streamGenerate(
       systemPrompt, outlinePrompt, null, null,
@@ -421,9 +436,12 @@ router.post('/generate', auth, async (req, res) => {
     let persona = null;
     if (personaId) {
       try {
-        const WritingPersona = require('../models/WritingPersona');
-        persona = await WritingPersona.findOne({ _id: personaId, userId: req.userId }).lean();
-        if (persona) console.log(`[生成] 使用写作人格: ${persona.name} (overrideDeslop=${persona.overrideDeslop})`);
+        persona = await resolveNovelPersona(req.userId, null, personaId);
+        if (persona) {
+          novel.writingPersonaId = persona._id;
+          novel.writingPersonaSnapshot = persona;
+          console.log(`[生成] 使用写作人格: ${persona.name} (overrideDeslop=${persona.overrideDeslop})`);
+        }
       } catch (e) {
         console.error('加载写作人格失败:', e.message);
       }
@@ -516,6 +534,10 @@ ${structureRef}
       console.error('模板匹配注入失败:', e.message);
     }
 
+    if (persona) {
+      systemPrompt += `\n\n【写作人格优先级】用户选择的“${persona.name || '自定义模板'}”是本书唯一的作者声线。题材模板、参考风格和结构参考只能补充题材事实、剧情结构与素材，不能改写其叙述视角、语气、节奏、词汇和人物声音。`;
+    }
+
     novel.generationContext = systemPrompt;
     await novel.save();
 
@@ -544,7 +566,7 @@ ${structureRef}
     let outlineHb = null;
     if (isBook && !outline) {
       res.write(`data: ${JSON.stringify({ type: 'status', message: '正在根据您的设定生成创作大纲（可能需要1-3分钟）...' })}\n\n`);
-      const outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount);
+      const outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona);
       try {
         outlineHb = setInterval(() => {
           try { res.write(': outline-heartbeat\n\n'); } catch { clearInterval(outlineHb); }
@@ -552,7 +574,7 @@ ${structureRef}
         const ac = new AbortController();
         const t = setTimeout(() => { try { ac.abort(); } catch {}; console.log('大纲生成超时(300s)'); }, 300000);
         const outlineResult = await streamGenerate(
-          '你是一位专业的小说大纲策划师。',
+          `你是一位专业的小说大纲策划师。${buildPersonaPrompt(persona, { includeDeslop: false })}`,
           outlinePrompt, null, ac.signal,
           resolveApiConfig(req.user?.modelConfig, 'outline')
         );
@@ -581,7 +603,7 @@ ${structureRef}
     if (isBook && outline) {
       try {
         res.write(`data: ${JSON.stringify({ type: 'status', message: '正在制定章节计划表...' })}\n\n`);
-        const planPrompt = buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, structureRef);
+        const planPrompt = buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, structureRef, persona);
 
         // 用 AbortController 施加超时 + 心跳保证连接不断
         const planController = new AbortController();
@@ -656,6 +678,7 @@ ${structureRef}
       if (expertMode) {
         const expertResult = await runExpertReview({
           user: req.user, novel, content: buffer, contract, signal: abortController.signal,
+          persona,
           onStatus: (message) => { try { res.write(`data: ${JSON.stringify({ type: 'status', message })}\n\n`); } catch {} },
         });
         chapterContent = expertResult.content;
@@ -801,7 +824,7 @@ ${renderChapterContract(contract)}
           targetWords: targetWordCount,
           previousChapter: null,
         });
-        const userPrompt = `${buildInitialPrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, mode, outline)}\n\n${renderChapterContract(contract)}\n\n请只输出正文，用具体事件和人物选择完成这章，不输出标题、提纲或“【未完待续】”标签。`;
+        const userPrompt = `${buildInitialPrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, mode, outline, persona)}\n\n${renderChapterContract(contract)}\n\n请只输出正文，用具体事件和人物选择完成这章，不输出标题、提纲或“【未完待续】”标签。`;
         await ensureTokensLeft(req.user);
         await generateOneChapter(1, userPrompt, contract);
 
@@ -881,6 +904,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
     }
 
     const mode = req.body.mode || 'chapter'; // 'chapter' | 'book'
+    const persona = await resolveNovelPersona(req.userId, novel);
 
     // 系统提示词
     const systemPrompt = novel.generationContext || buildSystemPrompt(novel.novelTypeId);
@@ -934,6 +958,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       if (novel.expertMode) {
         const expertResult = await runExpertReview({
           user: req.user, novel, content: buffer, contract, signal: abortController.signal,
+          persona,
           onStatus: (message) => { try { res.write(`data: ${JSON.stringify({ type: 'status', message })}\n\n`); } catch {} },
         });
         chapterContent = expertResult.content;
@@ -973,9 +998,14 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       if (mode === 'book') {
         // ====== 整本模式：循环生成多章直到目标字数 ======
         if (!planData.chapters.length) {
-          // 无章节计划的旧作品：不阻断，按主线自然推进逐章续写。
-          // totalPlannedChapters 会 fallback 到 ceil(target/3000)，循环按字数自然结束。
-          console.log(`[Continue] 小说 ${novel._id} 无章节计划，将按主线自然续写至目标字数`);
+          // 不能在缺少契约的情况下退化成无约束长循环，先要求补齐计划。
+          novel.status = 'paused';
+          await novel.save();
+          generationDone = true;
+          activeStreams.delete(streamKey);
+          res.write(`data: ${JSON.stringify({ type: 'plan_needs_extension', message: '缺少有效章节计划，已暂停，请先补充或重新生成章节计划' })}\n\n`);
+          res.end();
+          return;
         }
 
         const beforeCompletion = assessStoryCompletion(novel, planData, targetWordCount);
@@ -1108,7 +1138,7 @@ ${renderChapterContract(contract)}
           targetWords: targetWordCount,
           previousChapter: novel.chapters.length ? novel.chapters[novel.chapters.length - 1] : null,
         });
-        const userPrompt = `${buildContinuePrompt(novel._id, novel)}\n\n${renderChapterContract(contract)}\n\n仅输出正文。严格承接上一章，完成本章唯一核心事件；用人物行动和具体后果推进，不输出标题、提纲或“【未完待续】”标签。`;
+        const userPrompt = `${buildContinuePrompt(novel._id, novel, persona)}\n\n${renderChapterContract(contract)}\n\n仅输出正文。严格承接上一章，完成本章唯一核心事件；用人物行动和具体后果推进，不输出标题、提纲或“【未完待续】”标签。`;
         await ensureTokensLeft(req.user);
         await generateOneChapter(chapterNumber, userPrompt, contract);
 
@@ -1170,7 +1200,7 @@ router.post('/continue-import', auth, async (req, res) => {
   try {
     await checkTokenBalance(req.user);
 
-    const { importedText, continuationRequest, novelTypeName, title, novelId } = req.body;
+    const { importedText, continuationRequest, novelTypeName, title, novelId, personaId } = req.body;
 
     if (!importedText || importedText.trim().length < 50) {
       return res.status(400).json({ message: '导入的小说内容太少（至少50字）' });
@@ -1205,10 +1235,15 @@ router.post('/continue-import', auth, async (req, res) => {
       await novel.save();
     }
 
-    // 构建续写系统提示词
-    const systemPrompt = `你是一位专业的小说续写专家，擅长模仿各种文风进行创作。`;
+    // 构建续写系统提示词；已有作品优先使用生成时锁定的人格。
+    const persona = await resolveNovelPersona(req.userId, novel, personaId);
+    if (persona && !novel.writingPersonaSnapshot) {
+      novel.writingPersonaId = persona._id;
+      novel.writingPersonaSnapshot = persona;
+    }
+    const systemPrompt = `你是一位专业的小说续写专家，擅长模仿各种文风进行创作。${buildPersonaPrompt(persona)}`;
     const mode = req.body.mode || 'book';
-    const userPrompt = buildImportContinuePrompt(importedText, continuationRequest, typeName, req.body.targetWordCount || 50000, mode);
+    const userPrompt = buildImportContinuePrompt(importedText, continuationRequest, typeName, req.body.targetWordCount || 50000, mode, persona);
 
     novel.lastPrompt = userPrompt;
     novel.generationContext = systemPrompt;
@@ -1518,20 +1553,21 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
     if (!novel) return res.status(404).json({ message: '小说不存在' });
     const chNum = Number(req.params.chapterNumber);
     const { wordCount, notes } = req.body;
+    const persona = await resolveNovelPersona(req.userId, novel);
 
     let chapter = novel.chapters.find(c => c.chapterNumber === chNum);
     let systemPrompt, userPrompt;
 
     if (chapter) {
       const existing = (chapter.content || '').slice(-2000);
-      systemPrompt = '你是一位专业的小说续写专家，请接着用户已有的章节内容继续往下写，保持风格一致。';
+      systemPrompt = `你是一位专业的小说续写专家，请接着用户已有的章节内容继续往下写，保持风格一致。${buildPersonaPrompt(persona)}`;
       userPrompt = `以下是该章节已有的结尾部分：\n\n${existing}\n\n请接着上面的内容继续往下写。\n${notes ? '写作方向/备注：' + notes : '保持原有风格继续推进剧情。'}\n目标字数：约${wordCount || 2000}字。\n请直接输出续写内容，不要重复已有内容。`;
     } else {
       const lastCh = novel.chapters[novel.chapters.length - 1];
       const lastContent = lastCh ? (lastCh.content || '').slice(-1500) : '（故事开始）';
       chapter = { chapterNumber: chNum, title: `第${chNum}章`, content: '', wordCount: 0 };
       novel.chapters.push(chapter);
-      systemPrompt = '你是一位专业的小说家，请接着用户已有的小说内容创作下一章，保持风格一致。';
+      systemPrompt = `你是一位专业的小说家，请接着用户已有的小说内容创作下一章，保持风格一致。${buildPersonaPrompt(persona)}`;
       userPrompt = `以下是上一章的结尾部分：\n\n${lastContent}\n\n请接着上面的内容创作第${chNum}章。\n${notes ? '写作方向/备注：' + notes : '保持原有风格继续推进剧情。'}\n目标字数：约${wordCount || 2000}字。\n请直接输出章节内容。`;
     }
 
@@ -1761,11 +1797,14 @@ const deslop = require('../config/deslop');
 // 对文本进行去AI味处理
 router.post('/deslop', auth, async (req, res) => {
   try {
-    const { text } = req.body;
+    const { text, novelId, personaId } = req.body;
     if (!text || text.trim().length < 10) return res.status(400).json({ message: '文本太短' });
     await checkTokenBalance(req.user);
 
-    const systemPrompt = deslop.deslopSystemPrompt;
+    const persona = await resolveNovelPersona(req.userId, novelId ? await Novel.findOne({ _id: novelId, userId: req.userId }) : null, personaId);
+    const systemPrompt = persona?.overrideDeslop
+      ? `你是一位资深小说文字编辑。请严格遵循用户指定的人格规则完成去AI化。${buildPersonaPrompt(persona, { includeDeslop: false })}`
+      : `${deslop.deslopSystemPrompt}${buildPersonaPrompt(persona, { includeDeslop: false })}`;
     const userPrompt = `请对以下文本进行去AI味处理：\n\n${text}`;
 
     const result = await streamGenerate(
@@ -1787,7 +1826,7 @@ router.post('/deslop', auth, async (req, res) => {
 // ====== 去AI化（SSE流式，用于生成后的人味改写） ======
 router.post('/deslop-stream', auth, async (req, res) => {
   try {
-    const { text } = req.body;
+    const { text, novelId, personaId } = req.body;
     if (!text || text.trim().length < 50) return res.status(400).json({ message: '文本太短' });
 
     // 检查 Token 余额
@@ -1803,14 +1842,18 @@ router.post('/deslop-stream', auth, async (req, res) => {
 
     const apiConfig = resolveApiConfig(req.user?.modelConfig, 'polish');
     const deslop = require('../config/deslop');
+    const persona = await resolveNovelPersona(req.userId, novelId ? await Novel.findOne({ _id: novelId, userId: req.userId }) : null, personaId);
+    const personaPrompt = persona?.overrideDeslop
+      ? `你是一位专业小说编辑。${buildPersonaPrompt(persona, { includeDeslop: false })}`
+      : `${deslop.deslopSystemPrompt}${buildPersonaPrompt(persona, { includeDeslop: false })}`;
     let fullContent = '';
 
     // 第一遍：打碎段落结构
     res.write(`data: ${JSON.stringify({ type: 'status', message: '正在改写第1遍：打碎段落结构...' })}\n\n`);
     try {
       const result1 = await streamGenerate(
-        '你是一个写了十年网文的作者，擅长把AI写的东西改成自己的风格。',
-        `${deslop.humanizeRewritePrompt}\n\n以下是需要改写的小说草稿：\n\n${text}`,
+        personaPrompt,
+        `${deslop.humanizeRewritePrompt}${buildPersonaPrompt(persona, { includeDeslop: false })}\n\n以下是需要改写的小说草稿：\n\n${text}`,
         (chunk) => {
           fullContent += chunk;
           res.write(`data: ${JSON.stringify({ type: 'content', content: chunk, pass: 1 })}\n\n`);
@@ -1834,7 +1877,7 @@ router.post('/deslop-stream', auth, async (req, res) => {
     res.write(`data: ${JSON.stringify({ type: 'status', message: '正在改写第2遍：注入人味特征...' })}\n\n`);
     let finalContent = '';
     try {
-      const pass2Prompt = `你是同一个作者，现在对刚才的改写稿做最后一轮打磨。这次的重点不是结构，而是"人味"：
+      const pass2Prompt = `${buildPersonaPrompt(persona, { includeDeslop: false })}\n你是同一个作者，现在对刚才的改写稿做最后一轮打磨。这次的重点不是结构，而是"人味"：
 
 1. 把所有书面化的词换成口语——"然而"→"不过"，"因此"→"所以"，"逐渐"→"慢慢"
 2. 在叙述中随机插入角色的走神或吐槽，用括号或破折号
@@ -1855,7 +1898,7 @@ router.post('/deslop-stream', auth, async (req, res) => {
 ${fullContent}`;
 
       await streamGenerate(
-        '你是同一个作者，在做最后一轮打磨。',
+        personaPrompt,
         pass2Prompt,
         (chunk) => {
           finalContent += chunk;
@@ -1900,13 +1943,14 @@ ${fullContent}`;
 //   5. 流式输出中携带诊断摘要，前端可展示给用户参考
 router.post('/polish', auth, async (req, res) => {
   try {
-    const { text, polishPrompt, doDeslop, genre, diagnose } = req.body;
+    const { text, polishPrompt, doDeslop, genre, diagnose, novelId, personaId } = req.body;
     if (!text || text.trim().length < 10) return res.status(400).json({ message: '文本太短' });
 
     // 检查 Token 余额
     await checkTokenBalance(req.user);
 
     const textLength = text.trim().length;
+    const persona = await resolveNovelPersona(req.userId, novelId ? await Novel.findOne({ _id: novelId, userId: req.userId }) : null, personaId);
     const genreHint = genre ? `\n【文风参考】这是一篇"${genre}"类型的小说，请保留该类型常见的叙事节奏和用词习惯。` : '';
 
     const defaultPolishPrompt = `你是一位资深小说润色专家。你的任务是在**不改变剧情、视角、人物关系和事实**的前提下，让文本更像一位成熟作者的成稿，而不是AI产物。
@@ -1922,7 +1966,7 @@ router.post('/polish', auth, async (req, res) => {
 5. 句式要有长短变化：动作戏短句密集，心理戏允许长句绵延；避免全文同一节奏。
 6. 对话要口语化、带人物性格；叙述要克制，不靠堆砌形容词撑场面。
 7. 直接输出润色后的完整文本，不加标题、不加说明、不加【】标签。
-${genreHint}`;
+${genreHint}${buildPersonaPrompt(persona)}`;
 
     let userPrompt = `${polishPrompt || defaultPolishPrompt}\n\n以下是需要润色的文本（原文约 ${textLength} 字，请控制在 ${Math.round(textLength * 0.85)}~${Math.round(textLength * 1.15)} 字）：\n\n${text}`;
 
@@ -1990,7 +2034,7 @@ ${genreHint}`;
       try {
         res.write(`data: ${JSON.stringify({ type: 'status', message: '正在诊断原文问题…' })}\n\n`);
         const diagResult = await streamGenerate(
-          '你是一位资深小说编辑。请对原文做简要诊断，不要重写正文。',
+          `你是一位资深小说编辑。请对原文做简要诊断，不要重写正文。${buildPersonaPrompt(persona, { includeDeslop: false })}`,
           `请诊断以下小说文本（${textLength} 字），以 JSON 格式输出（不要 markdown 代码块）：
 {
   "templatePhrases": ["找出 3~5 处模板化修辞原文片段"],
@@ -2034,7 +2078,7 @@ ${text.slice(0, 8000)}`,
     res.write(`data: ${JSON.stringify({ type: 'status', message: '正在润色正文…' })}\n\n`);
     try {
       await streamGenerate(
-        '你是一位资深小说文字编辑，擅长在保真前提下精修叙事，绝不添加空泛总结或模板修辞。',
+        `你是一位资深小说文字编辑，擅长在保真前提下精修叙事，绝不添加空泛总结或模板修辞。${buildPersonaPrompt(persona)}`,
         userPrompt,
         wrappedOnChunk,
         abortController.signal,
@@ -2070,7 +2114,7 @@ ${text.slice(0, 8000)}`,
       } else {
         res.write(`data: ${JSON.stringify({ type: 'status', message: '正在执行去AI味处理...' })}\n\n`);
 
-        const deslopPrompt = `${deslop.deslopSystemPrompt}\n\n请对以下文本进行去AI味处理：\n\n${polished}`;
+        const deslopPrompt = `${persona?.overrideDeslop ? buildPersonaPrompt(persona, { includeDeslop: false }) : deslop.deslopSystemPrompt + buildPersonaPrompt(persona, { includeDeslop: false })}\n\n请对以下文本进行去AI味处理：\n\n${polished}`;
         let desloped = '';
         let deslopExhausted = false;
 
@@ -2678,7 +2722,7 @@ async function runOptimizeTask(novelId, userId, apiConfig) {
 
     // 1. 分析全文问题
     const analysisPrompt = buildOptimizeAnalysisPrompt(
-      novel.chapters, novel.outline, novel.protagonistName, novel.worldSetting
+      novel.chapters, novel.outline, novel.protagonistName, novel.worldSetting, novel.writingPersonaSnapshot
     );
     const analysisResult = await streamGenerate(
       '你是一位专业的小说编辑。请分析小说全文，找出所有问题。',
@@ -2705,7 +2749,7 @@ async function runOptimizeTask(novelId, userId, apiConfig) {
       });
 
       const ch = novel.chapters[i];
-      const chPrompt = buildOptimizeChapterPrompt(ch, ch.chapterNumber, analysis, novel.outline);
+      const chPrompt = buildOptimizeChapterPrompt(ch, ch.chapterNumber, analysis, novel.outline, novel.writingPersonaSnapshot);
       const chResult = await streamGenerate(
         '你是一位专业的小说编辑。请根据分析报告优化指定章节。',
         chPrompt, null, null, apiConfig
@@ -2821,7 +2865,7 @@ router.post('/optimize-status/:novelId', auth, async (req, res) => {
 // 单章编辑引擎（SSE 流式）
 router.post('/editorial-stream', auth, async (req, res) => {
   try {
-    const { text } = req.body;
+    const { text, novelId, personaId } = req.body;
     if (!text || text.trim().length < 100) return res.status(400).json({ message: '文本太短（至少100字）' });
 
     await checkTokenBalance(req.user);
@@ -2835,6 +2879,7 @@ router.post('/editorial-stream', auth, async (req, res) => {
     });
 
     const apiConfig = resolveApiConfig(req.user?.modelConfig, 'polish');
+    const persona = await resolveNovelPersona(req.userId, novelId ? await Novel.findOne({ _id: novelId, userId: req.userId }) : null, personaId);
 
     // 心跳
     const heartbeat = setInterval(() => {
@@ -2846,6 +2891,7 @@ router.post('/editorial-stream', auth, async (req, res) => {
     try {
       const result = await runEditorialPipeline(text, {
         apiConfig,
+        persona,
         onChunk: (chunk, stageId) => {
           if (stageId !== 'persona') {
             // persona 阶段本地生成，不输出文本
@@ -2937,6 +2983,7 @@ async function runEditorialBookTask(novelId, userId, apiConfig) {
       try {
         const result = await runEditorialPipeline(ch.content || '', {
           apiConfig,
+          persona: novel.writingPersonaSnapshot,
           onStatus: async (stageId, stageName, message) => {
             // 更新当前阶段状态
             await Novel.updateOne({ _id: novelId }, {

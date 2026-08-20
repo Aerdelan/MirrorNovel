@@ -48,6 +48,16 @@ const novelSchema = new mongoose.Schema({
     type: Boolean,
     default: false,
   },
+  // 锁定生成时的人格，避免用户后来编辑模板导致旧作品文风漂移。
+  writingPersonaId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'WritingPersona',
+    default: null,
+  },
+  writingPersonaSnapshot: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null,
+  },
   currentWordCount: {
     type: Number,
     default: 0,

@@ -729,6 +729,7 @@ async function generateOutline(selectedTypeId, charName, worldSetting, wordCount
  protagonistName: charName,
  worldSetting: worldSetting,
  targetWordCount: wordCount,
+ personaId: selectedPersonaId.value || undefined,
  }
  // 勾选了参考结构则传给大纲生成
  if (useStructureRef.value && structResult.value) {
@@ -891,7 +892,7 @@ async function startDeslop() {
  if (deslopRunning.value) { deslopDone.value = true; deslopRunning.value = false; deslopStatus.value = '去AI化完成'; computeDiff() }
  }
  xhr.onerror = () => { deslopStatus.value = '去AI化失败'; deslopRunning.value = false }
- xhr.send(JSON.stringify({ text: streamingText.value }))
+ xhr.send(JSON.stringify({ text: streamingText.value, novelId: generatedNovelId.value || undefined }))
 }
 
 function resetDeslop() {
@@ -929,7 +930,7 @@ async function startEditorial() {
 
  // Token 消耗估算
  const textLen = streamingText.value.length
- // v4: persona 本地生成（0 token）
+ // 选择小说模板时，编辑引擎会沿用该模板；未选择时才生成本地人格。
  // 3 次 LLM 调用：每阶段输入~textLen*1.5 + 系统提示~500 + 输出~textLen*1.5 ≈ textLen*3 + 500
  // 总计 ≈ textLen*9 + 1500，保守取 1.3 倍系数
  const estTokens = Math.round((textLen * 9 + 1500) * 1.3)
@@ -1013,7 +1014,7 @@ async function startEditorial() {
  }
  }
  xhr.onerror = () => { editorialRunning.value = false; alert('编辑引擎请求失败') }
- xhr.send(JSON.stringify({ text: streamingText.value }))
+ xhr.send(JSON.stringify({ text: streamingText.value, novelId: generatedNovelId.value || undefined }))
 }
 
 function resetEditorial() {
