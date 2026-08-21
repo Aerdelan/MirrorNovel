@@ -15,6 +15,11 @@ function getFriendlyErrorMessage(statusCode, errorBody) {
     apiMessage = parsed.error?.message || parsed.message || '';
   } catch {}
 
+  // 内容审核拦截（悬疑灵异/恐怖等题材常见）：与状态码无关，优先识别
+  if (/flagged|usage policy|content policy|invalid prompt|moderation/i.test(apiMessage)) {
+    return '本次内容被 AI 服务的内容审核拦截（悬疑灵异、恐怖等题材常见）。可尝试：直接重试、更换模型/线路，或调整大纲与世界观设定后再生成';
+  }
+
   // 429 频率限制
   if (statusCode === 429) {
     if (apiMessage.includes('访问量过大') || apiMessage.includes('rate limit') || apiMessage.includes('too many')) {
@@ -372,6 +377,9 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
     apiKey: managedRoute.apiKey,
     model: managedRoute.model,
     routeId: managedRoute.id,
+    // GLM-4.7/同类思考模型在正文、普通大纲和润色任务中开启深度思考
+    // 会明显拉长首字等待；推理线路仍保留思考能力。
+    disableThinking: modelType !== 'reasoning',
   };
 
   if (!userModelConfig || userModelConfig.provider === 'default' || userModelConfig.provider === 'system') {
@@ -389,7 +397,7 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
     if (!model) throw new Error('本地模型配置不完整，请先选择模型');
     return {
       baseUrl: userModelConfig.ollamaBaseUrl || 'http://localhost:11434',
-      apiKey: '', model,
+      apiKey: '', model, disableThinking: modelType !== 'reasoning',
     };
   }
 
@@ -401,7 +409,7 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
     return {
       baseUrl: userModelConfig.cloudBaseUrl,
       apiKey: userModelConfig.cloudApiKey,
-      model,
+      model, disableThinking: modelType !== 'reasoning',
     };
   }
 
@@ -410,9 +418,10 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
 
 /**
  * 流式生成
+ * @param {Function} [onReasoning] 思考型模型（如 GLM-4.7/DeepSeek-R1）思考过程的增量回调，用于向前端展示思考进度
  * @returns {Promise<{content:string, tokenCount:number}>}
  */
-async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConfig, retries = 2, temperature = 0.85, maxTokens = 16384, timeoutMs = 90000) {
+async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConfig, retries = 2, temperature = 0.85, maxTokens = 16384, timeoutMs = 90000, onReasoning) {
   const config = apiConfig || resolveApiConfig(null);
   if (!config.baseUrl || !config.model) {
     const error = new Error('AI 服务线路尚未配置，请联系管理员填写该线路的服务地址和模型名称');
@@ -429,9 +438,14 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
 
   // 支持按任务传入温度和输出上限；长篇章节必须按预算限制单次输出，避免一章吞掉后续剧情空间。
   const outputLimit = Math.max(256, Math.min(16384, Number(maxTokens) || 16384));
+  // GLM-4.7 等思考模型默认开启 thinking，正文前会长时间输出 reasoning_content。
+  // 设置 AI_THINKING_DISABLED=true 可强制关闭思考，换取更快的首字响应。
+  const disableThinking = config.disableThinking === true
+    || String(process.env.AI_THINKING_DISABLED || '').toLowerCase() === 'true';
   const body = isOllama
     ? { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, options: { temperature, num_predict: outputLimit } }
-    : { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, temperature, max_tokens: outputLimit };
+    : { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, temperature, max_tokens: outputLimit,
+      ...(disableThinking ? { thinking: { type: 'disabled' } } : {}) };
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     let timeoutId;
@@ -509,6 +523,9 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
                 const parsed = JSON.parse(data);
                 const content = parsed.choices?.[0]?.delta?.content || '';
                 if (content) { fullContent += content; if (onChunk) onChunk(content); }
+                // 思考阶段只有 reasoning_content，不转发会导致前端长时间停在 0 字
+                const reasoning = parsed.choices?.[0]?.delta?.reasoning_content || '';
+                if (reasoning && onReasoning) onReasoning(reasoning);
               } catch (e) { /* skip */ }
             }
           }
@@ -562,32 +579,18 @@ ${outline || '无大纲，请自行规划故事'}`;
 ${structureRef}`;
   }
 
-  planPrompt += `\n\n请只输出合法 JSON，不要 Markdown、不要解释、不要代码块。输出结构如下：
-{
-  "version": 1,
-  "phases": ["阶段名称（第1-5章）：本阶段目的"],
-  "chapters": [
-    {
-      "chapterNumber": 1,
-      "wordTarget": 3000,
-      "phase": "阶段名称",
-      "coreEvent": "本章唯一、不可与相邻章节重复的核心事件",
-      "setHooks": ["本章新埋的具体伏笔"],
-      "resolveHooks": ["本章明确回收的既有伏笔"],
-      "characters": ["本章关键角色"],
-      "chapterRole": "主线推进/关系推进/信息揭示/喘息推进/收束",
-      "tension": 1
-    }
-  ]
-}
+  planPrompt += `\n\n为避免长篇计划在输出时被截断，必须使用下面的紧凑 JSON 格式。不要 Markdown、不要解释、不要代码块：
+{"version":1,"phases":["开端：目的"],"chapters":[[章节号,目标字数,"核心事件","埋伏笔（无则空字符串）","回收伏笔（无则空字符串）","关键角色（无则空字符串）","章节角色",张力]]}
+
+示例：
+{"version":1,"phases":["开端：建立危机"],"chapters":[[1,3000,"收到匿名来信","旧钥匙","","林舟、苏晚","主线推进",5],[2,3000,"追查来信来源","","旧钥匙","林舟","信息揭示",6]]}
 
 关键规则：
-1. 每个伏笔设置后，必须在后续某章的 resolveHooks 中写出同一伏笔名称；最后 5-8 章集中回收，不留悬空线索。
-2. 每章只能有一个核心事件，不能把多个大转折塞进同一章；相邻章节的 coreEvent 不得重复。
-3. tension 是 1-10。连续 3 章 tension 不得都高于 7；在非结局段可安排 "喘息推进"，但它仍要推进关系、信息或伏笔。
-4. 沉重、悬疑、悲剧题材的喘息章只可使用温情、生活细节或黑色幽默，不能突然变成纯搞笑日常。
-5. 每章字数 2000-4200，总章数约 ${estChapters} 章；最后一章 chapterRole 为 "收束"，完整回收主线。
-6. 所有数组都必须存在；没有内容时返回 []。`;
+1. 必须完整输出第 1 至第 ${estChapters} 章，不能省略、不能用“其余同理”。每个核心事件限 12-28 个汉字，其他字符串尽量短。
+2. 每章只能有一个核心事件；相邻章节不得重复。章节角色只可使用：主线推进、关系推进、信息揭示、喘息推进、收束。
+3. 伏笔设置后，必须在后续章的回收字段写出同一名称；最后一章必须是“收束”。没有伏笔或角色请使用空字符串。
+4. 张力是 1-10；连续 3 章不得都高于 7；喘息章仍要推进关系、信息或伏笔。
+5. 每章目标字数 2000-4200，总章数约 ${estChapters} 章。`;
 
   return planPrompt;
 }

@@ -18,3 +18,12 @@ test('managed route selection uses the configured task role override', () => {
   }, 'polish');
   assert.equal(config.routeId, 'svip');
 });
+
+test('writing and polish routes disable deep thinking while reasoning keeps it', () => {
+  const writing = resolveApiConfig({ provider: 'system', routeId: 'normal_1' }, 'writing');
+  const polish = resolveApiConfig({ provider: 'system', routeId: 'normal_1' }, 'polish');
+  const reasoning = resolveApiConfig({ provider: 'system', routeId: 'normal_1' }, 'reasoning');
+  assert.equal(writing.disableThinking, true);
+  assert.equal(polish.disableThinking, true);
+  assert.equal(reasoning.disableThinking, false);
+});

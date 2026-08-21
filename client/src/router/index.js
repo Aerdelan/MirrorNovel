@@ -66,6 +66,12 @@ const routes = [
  component: () => import('../views/PolishPage.vue'),
  meta: { title: '润色文本', requiresAuth: true },
  },
+ {
+ path: '/screenplay',
+ name: 'Screenplay',
+ component: () => import('../views/ScreenplayPage.vue'),
+ meta: { title: 'AI剧本', requiresAuth: true },
+ },
 ]
 
 const router = createRouter({

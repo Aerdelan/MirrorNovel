@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
   parseChapterPlan,
+  buildFallbackChapterPlan,
   buildEmotionPlan,
   buildChapterContract,
   checkChapterContinuity,
@@ -11,6 +12,10 @@ const {
   getAdaptiveChapterWordTarget,
   getChapterOutputTokenLimit,
   assessStoryCompletion,
+  ensureStoryBlueprint,
+  normalizeProposedBlueprint,
+  applyStoryBlueprint,
+  renderStoryBlueprintForContext,
 } = require('../services/storyState');
 
 function makeNovel(overrides = {}) {
@@ -75,6 +80,16 @@ test('parseChapterPlan normalizes JSON plans and legacy line plans', () => {
   assert.equal(legacyPlan.chapters[0].wordTarget, 2600);
   assert.deepEqual(legacyPlan.chapters[0].setHooks, ['铜钥匙']);
   assert.deepEqual(legacyPlan.chapters[1].resolveHooks, ['铜钥匙']);
+
+  const compactPlan = parseChapterPlan('{"version":1,"chapters":[[1,2400,"收到来信","旧钥匙","","林舟","主线推进",5],[2,2400,"追查来源","","旧钥匙","林舟","信息揭示",6]]}');
+  assert.equal(compactPlan.chapters.length, 2);
+  assert.equal(compactPlan.chapters[0].wordTarget, 2400);
+  assert.deepEqual(compactPlan.chapters[1].resolveHooks, ['旧钥匙']);
+
+  const fallback = buildFallbackChapterPlan(makeNovel({ targetWordCount: 10000 }), { targetWords: 10000 });
+  assert.equal(fallback.fallback, true);
+  assert.equal(fallback.chapters.length, 4);
+  assert.equal(fallback.chapters.at(-1).chapterRole, '收束');
 });
 
 test('buildChapterContract selects the current plan and hides future hooks', () => {
@@ -296,4 +311,25 @@ test('updateCreativeState updates signatures, emotion and hooks without duplicat
   assert.equal(novel.foreshadowingLedger.length, 1);
   assert.equal(novel.foreshadowingLedger[0].status, 'pending');
   assert.equal(novel.foreshadowingLedger[0].setChapter, 1);
+});
+
+test('story blueprint stays conservative until a proposal is explicitly applied', () => {
+  const novel = makeNovel({ protagonistName: '林舟', worldSetting: '旧城', targetWordCount: 30000 });
+  const initial = ensureStoryBlueprint(novel, 10);
+  assert.equal(initial.version, 1);
+  assert.ok(initial.mainArc.includes('主角追查'));
+  assert.equal(initial.phases.length, 1);
+  assert.ok(renderStoryBlueprintForContext(novel, 1, 10).includes('已确认版本 1'));
+
+  const proposed = normalizeProposedBlueprint({
+    mainArc: '追查旧案并发现真正的幕后交易',
+    phases: [{ title: '反转追查', startChapter: 5, endChapter: 10, goal: '从证人转向幕后交易', threads: ['苏晚的隐瞒'] }],
+  }, novel, 10);
+  assert.equal(proposed.version, 2);
+  assert.equal(novel.storyBlueprint.version, 1);
+
+  applyStoryBlueprint(novel, proposed, 10);
+  assert.equal(novel.storyBlueprint.version, 2);
+  assert.equal(novel.storyBlueprint.phases[0].title, '反转追查');
+  assert.ok(novel.plotThreads.some((thread) => thread.title === '苏晚的隐瞒'));
 });

@@ -13,6 +13,54 @@
  <div class="summary-row"><span class="summary-label">状态</span><span class="status-badge" :class="novel?.status">{{ statusMap[novel?.status] }}</span></div>
  </div>
 
+ <div v-if="novel" class="card pipeline-card">
+  <div class="section-title">内容处理链</div>
+  <div class="pipeline-hint">正文每次被修订后，摘要、伏笔和续写上下文会同步刷新；各项 AI 操作仍按你的选择单独计费。</div>
+  <div class="pipeline-steps">
+   <div v-for="step in pipelineSteps" :key="step.id" class="pipeline-step" :class="step.state">
+    <span class="pipeline-dot"></span><span class="pipeline-name">{{ step.name }}</span><span class="pipeline-state">{{ step.label }}</span>
+   </div>
+  </div>
+ </div>
+
+ <div v-if="novel" class="card blueprint-card">
+ <div class="blueprint-header">
+  <div>
+   <div class="section-title" style="margin-bottom:4px;"> 动态故事蓝图</div>
+   <div class="blueprint-hint">AI 只能提出修改，应用前不会改变后续剧情</div>
+  </div>
+  <span v-if="pendingBlueprintProposal" class="blueprint-badge">待确认</span>
+ </div>
+ <div class="blueprint-main"><span class="blueprint-label">当前主线</span>{{ blueprint?.mainArc || novel.outline || '按已确认大纲推进' }}</div>
+ <div v-if="blueprint?.phases?.length" class="blueprint-phases">
+  <div v-for="phase in blueprint.phases.slice(0, 3)" :key="`${phase.title}-${phase.startChapter}`" class="blueprint-phase">
+   <span>第{{ phase.startChapter }}-{{ phase.endChapter }}章</span><strong>{{ phase.title }}</strong>
+   <small v-if="phase.goal">{{ phase.goal }}</small>
+  </div>
+ </div>
+ <div class="blueprint-actions">
+  <button class="btn btn-outline btn-sm" :disabled="blueprintLoading || blueprintReviewing" @click="reviewBlueprint">{{ blueprintReviewing ? ' 正在分析剧情...' : ' 请求 AI 提出调整' }}</button>
+  <label class="blueprint-toggle"><input type="checkbox" :checked="blueprint?.autoReviewEnabled" @change="toggleBlueprintReview" /> 每 6 章提醒我审核</label>
+  <label class="blueprint-toggle"><input type="checkbox" :checked="blueprint?.emailReminderEnabled !== false" @change="toggleBlueprintEmail" /> 重要提案发邮件</label>
+ </div>
+ <div v-if="blueprintError" class="blueprint-error">{{ blueprintError }}</div>
+ <div v-if="pendingBlueprintProposal" class="blueprint-proposal">
+  <div class="proposal-title">{{ pendingBlueprintProposal.title || '剧情蓝图优化建议' }} <span v-if="pendingBlueprintProposal.significance === 'major'" class="proposal-major">重要变更</span></div>
+  <p>{{ pendingBlueprintProposal.summary }}</p>
+  <div v-if="pendingBlueprintProposal.rationale" class="proposal-reason">原因：{{ pendingBlueprintProposal.rationale }}</div>
+  <div v-for="(change, index) in pendingBlueprintProposal.changes" :key="index" class="proposal-change">
+   <div><strong>{{ change.field }}</strong><span v-if="change.impact"> · {{ change.impact }}</span></div>
+   <div class="proposal-before">当前：{{ change.before }}</div>
+   <div class="proposal-after">建议：{{ change.after }}</div>
+  </div>
+  <div v-if="pendingBlueprintProposal.affectedChapters?.length" class="proposal-impact">影响后续章节：第{{ pendingBlueprintProposal.affectedChapters.join('、') }}章</div>
+  <div class="blueprint-actions proposal-actions">
+   <button class="btn btn-outline btn-sm" :disabled="blueprintDecisionBusy" @click="decideBlueprint('reject')">拒绝</button>
+   <button class="btn btn-primary btn-sm" :disabled="blueprintDecisionBusy" @click="decideBlueprint('apply')">{{ blueprintDecisionBusy ? '处理中...' : '应用到后续生成' }}</button>
+  </div>
+ </div>
+ </div>
+
  <Teleport to="body">
  <div v-if="showGenSettings" class="gen-overlay" @click.self="showGenSettings=false">
  <div class="gen-modal">
@@ -77,6 +125,7 @@
  <span class="generating-indicator"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
  </div>
  <div class="streaming-content" ref="streamingRef">
+ <div v-if="!chapterStreamingText && chapterThinkingLen > 0" style="color:#8a8f98;font-size:13px;margin-bottom:8px;">{{ $t('bookshelf.thinking', { words: chapterThinkingLen }) }}</div>
  <div class="content-text">{{ chapterStreamingText }}</div>
  <div class="cursor-blink">|</div>
  </div>
@@ -148,6 +197,7 @@ const expandedChapter = ref(null)
 const isContinuing = ref(false)
 const continuingChapter = ref(0)
 const chapterStreamingText = ref('')
+const chapterThinkingLen = ref(0)
 const streamingRef = ref(null)
 const showGenSettings = ref(false)
 const genWordCount = ref(2000)
@@ -166,6 +216,29 @@ const kwLoading = ref(false)
 const kwError = ref('')
 const keywordsData = ref({ characterKeywords: '', sceneKeywords: '' })
 
+// 动态故事蓝图
+const blueprint = ref(null)
+const blueprintProposals = ref([])
+const blueprintLoading = ref(false)
+const blueprintReviewing = ref(false)
+const blueprintDecisionBusy = ref(false)
+const blueprintError = ref('')
+const pendingBlueprintProposal = computed(() => blueprintProposals.value.find((proposal) => proposal.status === 'pending') || null)
+
+const pipelineSteps = computed(() => {
+ const chapters = novel.value?.chapters || []
+ const revisionCount = chapters.reduce((sum, chapter) => sum + (Array.isArray(chapter.qualityReport?.revisions) ? chapter.qualityReport.revisions.length : 0), 0)
+ const editorial = novel.value?.editorialTask
+ const optimize = novel.value?.optimizeTask
+ return [
+  { id: 'generate', name: '正文生成', state: chapters.length ? 'done' : 'idle', label: chapters.length ? `${chapters.length} 章` : '未开始' },
+  { id: 'context', name: '事实与上下文', state: novel.value?.contextMemory?.checkpointChapter ? 'done' : 'idle', label: novel.value?.contextMemory?.checkpointChapter ? '已同步' : '待同步' },
+  { id: 'revision', name: '去 AI 味 / 手动修订', state: revisionCount ? 'done' : 'idle', label: revisionCount ? `${revisionCount} 次应用` : '可选' },
+  { id: 'editorial', name: '编辑引擎', state: editorial?.status === 'running' ? 'running' : editorial?.status === 'completed' ? 'done' : editorial?.partial ? 'partial' : 'idle', label: editorial?.status === 'running' ? '处理中' : editorial?.status === 'completed' ? '已应用' : editorial?.partial ? '部分应用' : '可选' },
+  { id: 'optimize', name: '全文调优', state: optimize?.status === 'analyzing' || optimize?.status === 'optimizing' ? 'running' : optimize?.status === 'completed' ? 'done' : optimize?.partial ? 'partial' : 'idle', label: optimize?.status === 'analyzing' || optimize?.status === 'optimizing' ? '处理中' : optimize?.status === 'completed' ? '已应用' : optimize?.partial ? '部分应用' : '可选' },
+ ]
+})
+
 const lastChapterNum = computed(() => novel.value?.chapters?.length || 0)
 const nextChapterNum = computed(() => lastChapterNum.value + 1)
 const isLastChapterUnfinished = computed(() => { if (!novel.value || novel.value.status !== 'paused') return false; return novel.value.chapters.length > 0 })
@@ -175,6 +248,7 @@ function isLastUnfinished(index) { if (!novel.value || novel.value.status !== 'p
 onMounted(async () => {
  try {
  novel.value = await novelStore.fetchNovelDetail(route.params.id)
+ await loadBlueprint()
  // 检查是否有正在运行或刚完成的后台调优任务
  if (novel.value?.optimizeTask) {
  const task = novel.value.optimizeTask
@@ -202,10 +276,71 @@ watch(chapterStreamingText, async () => { await nextTick(); if (streamingRef.val
 
 function toggleChapter(idx) { expandedChapter.value = expandedChapter.value === idx ? null : idx }
 function openGenSettings(chapterNum) { genTargetChapter.value = chapterNum; genWordCount.value = 2000; genNotes.value = ''; showGenSettings.value = true }
+
+async function loadBlueprint() {
+ blueprintLoading.value = true
+ blueprintError.value = ''
+ try {
+  const res = await api.get(`/novel/${route.params.id}/blueprint`)
+  blueprint.value = res.data.blueprint || null
+  blueprintProposals.value = res.data.proposals || []
+ } catch (e) {
+  blueprintError.value = e.response?.data?.message || '动态故事蓝图加载失败'
+ } finally { blueprintLoading.value = false }
+}
+
+async function reviewBlueprint() {
+ blueprintReviewing.value = true; blueprintError.value = ''
+ try {
+  const res = await api.post(`/novel/${route.params.id}/blueprint/review`)
+  if (res.data.proposal) {
+   blueprintProposals.value = [res.data.proposal, ...blueprintProposals.value.filter((item) => item.id !== res.data.proposal.id)]
+  } else if (res.data.message) alert(res.data.message)
+ } catch (e) {
+  blueprintError.value = e.response?.data?.message || '剧情审核失败，请稍后重试'
+ } finally { blueprintReviewing.value = false }
+}
+
+async function toggleBlueprintReview(event) {
+ blueprintError.value = ''
+ try {
+  const res = await api.put(`/novel/${route.params.id}/blueprint/settings`, { autoReviewEnabled: event.target.checked })
+  blueprint.value = res.data.blueprint
+ } catch (e) {
+  event.target.checked = !event.target.checked
+  blueprintError.value = e.response?.data?.message || '保存提醒设置失败'
+ }
+}
+
+async function toggleBlueprintEmail(event) {
+ blueprintError.value = ''
+ try {
+  const res = await api.put(`/novel/${route.params.id}/blueprint/settings`, { emailReminderEnabled: event.target.checked })
+  blueprint.value = res.data.blueprint
+ } catch (e) {
+  event.target.checked = !event.target.checked
+  blueprintError.value = e.response?.data?.message || '保存邮件提醒设置失败'
+ }
+}
+
+async function decideBlueprint(decision) {
+ if (!pendingBlueprintProposal.value) return
+ if (decision === 'apply' && !confirm('应用后，后续章节将按新的故事蓝图生成，已经写完的章节不会被修改。确定应用吗？')) return
+ blueprintDecisionBusy.value = true; blueprintError.value = ''
+ try {
+  const proposal = pendingBlueprintProposal.value
+  const res = await api.post(`/novel/${route.params.id}/blueprint/proposals/${proposal.id}/decision`, { decision })
+  blueprint.value = res.data.blueprint || blueprint.value
+  blueprintProposals.value = blueprintProposals.value.map((item) => item.id === proposal.id ? res.data.proposal : item)
+  alert(res.data.message)
+ } catch (e) {
+  blueprintError.value = e.response?.data?.message || '处理剧情提案失败'
+ } finally { blueprintDecisionBusy.value = false }
+}
 async function confirmGenSettings() { showGenSettings.value = false; await startChapterGen(genTargetChapter.value, genWordCount.value, genNotes.value) }
 
 async function startChapterGen(chapterNum, wc, notes) {
- isContinuing.value = true; continuingChapter.value = chapterNum; chapterStreamingText.value = ''
+ isContinuing.value = true; continuingChapter.value = chapterNum; chapterStreamingText.value = ''; chapterThinkingLen.value = 0
  const token = localStorage.getItem('token')
  const xhr = new XMLHttpRequest()
  xhr.open('POST', `/api/novel/${route.params.id}/continue-chapter/${chapterNum}`)
@@ -220,6 +355,7 @@ async function startChapterGen(chapterNum, wc, notes) {
  try {
  const d = JSON.parse(line.slice(6))
  if (d.type === 'content') chapterStreamingText.value += d.content
+ else if (d.type === 'thinking') chapterThinkingLen.value = d.length || 0
  else if (d.type === 'completed' || d.type === 'chapter_continued' || d.type === 'paused') { isContinuing.value = false; refreshNovel() }
  else if (d.type === 'error') { isContinuing.value = false; alert('生成失败:'+d.message) }
  } catch {}
@@ -252,7 +388,7 @@ async function deslopChapter(chapter) {
  if (!confirm(`对第${chapter.chapterNumber}章进行去AI味处理？`)) return
  try {
  const res = await api.post('/novel/deslop', { text: chapter.content || '', novelId: route.params.id })
- if (res.data.processed) { await api.put(`/novel/${route.params.id}/chapter/${chapter.chapterNumber}`, { content: res.data.processed }); refreshNovel(); alert(' 去AI味完成！') }
+ if (res.data.processed) { await api.put(`/novel/${route.params.id}/chapter/${chapter.chapterNumber}`, { content: res.data.processed, source: 'deslop' }); refreshNovel(); alert(' 去AI味完成，后续续写上下文已同步！') }
  } catch (e) { alert('处理失败:'+(e.response?.data?.message||e.message)) }
 }
 
@@ -359,7 +495,7 @@ async function deslopAllChapters() {
  try {
  const res = await api.post('/novel/deslop', { text: ch.content || '', novelId: route.params.id })
  if (res.data.processed) {
- await api.put(`/novel/${route.params.id}/chapter/${ch.chapterNumber}`, { content: res.data.processed })
+ await api.put(`/novel/${route.params.id}/chapter/${ch.chapterNumber}`, { content: res.data.processed, source: 'deslop' })
  success++
  }
  } catch (e) {
@@ -372,7 +508,7 @@ async function deslopAllChapters() {
  alert(` 整本去AI味完成！成功 ${success} 章${fail ? '，失败 ' + fail + ' 章' : ''}`)
 }
 
-async function refreshNovel() { try { novel.value = await novelStore.fetchNovelDetail(route.params.id) } catch {} }
+async function refreshNovel() { try { novel.value = await novelStore.fetchNovelDetail(route.params.id); await loadBlueprint() } catch {} }
 function goBack() { router.push('/bookshelf') }
 </script>
 
@@ -424,4 +560,36 @@ function goBack() { router.push('/bookshelf') }
 .kw-content { font-size:13px; line-height:1.8; color:var(--text-secondary); background:var(--primary-light); border-radius:8px; padding:12px; white-space:pre-wrap; word-break:break-all; border:1px solid var(--primary-subtle); }
 .kw-loading { font-size:13px; color:#999; padding:12px; text-align:center; }
 .kw-error { font-size:13px; color:#ff4d4f; padding:8px 12px; background:#fff2f0; border-radius:6px; margin-bottom:12px; }
+.blueprint-card { margin-top: 8px; }
+.pipeline-card { margin-top: 8px; }
+.pipeline-hint { color: var(--text-light); font-size: 12px; line-height: 1.6; margin: -4px 0 10px; }
+.pipeline-steps { display: grid; gap: 7px; }
+.pipeline-step { display: grid; grid-template-columns: 9px 1fr auto; align-items: center; gap: 8px; font-size: 12px; }
+.pipeline-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border-color); }
+.pipeline-step.done .pipeline-dot { background: var(--success); }
+.pipeline-step.running .pipeline-dot { background: var(--warning); }
+.pipeline-step.partial .pipeline-dot { background: var(--accent); }
+.pipeline-name { color: var(--text-primary); }
+.pipeline-state { color: var(--text-light); }
+.blueprint-header { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
+.blueprint-hint { color:var(--text-light); font-size:12px; }
+.blueprint-badge, .proposal-major { color:#ad6800; background:#fff7e6; border:1px solid #ffd591; border-radius:10px; padding:2px 8px; font-size:11px; white-space:nowrap; }
+.blueprint-main { margin-top:10px; color:var(--text-secondary); line-height:1.7; font-size:13px; }
+.blueprint-label { color:var(--text-light); margin-right:8px; }
+.blueprint-phases { display:flex; gap:8px; margin-top:10px; overflow-x:auto; }
+.blueprint-phase { min-width:160px; padding:8px 10px; border:1px solid var(--border-color); border-radius:8px; background:var(--bg); display:flex; flex-direction:column; gap:3px; }
+.blueprint-phase span, .blueprint-phase small { color:var(--text-light); font-size:11px; }
+.blueprint-phase strong { font-size:13px; color:var(--text-primary); }
+.blueprint-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:12px; }
+.blueprint-toggle { font-size:12px; color:var(--text-secondary); display:flex; align-items:center; gap:5px; }
+.blueprint-error { margin-top:8px; color:#cf1322; background:#fff1f0; border-radius:6px; padding:7px 9px; font-size:12px; }
+.blueprint-proposal { margin-top:12px; padding:12px; border:1px solid #91caff; border-radius:10px; background:#f0f7ff; }
+.proposal-title { font-weight:600; color:var(--text-primary); }
+.proposal-title .proposal-major { margin-left:6px; font-weight:400; }
+.blueprint-proposal p { margin:7px 0; color:var(--text-secondary); font-size:13px; line-height:1.6; }
+.proposal-reason, .proposal-impact { color:var(--text-light); font-size:12px; line-height:1.5; }
+.proposal-change { margin-top:8px; padding:8px; border-radius:7px; background:var(--card-bg); font-size:12px; line-height:1.55; }
+.proposal-before { color:var(--text-light); }
+.proposal-after { color:#0958d9; }
+.proposal-actions { justify-content:flex-end; }
 </style>

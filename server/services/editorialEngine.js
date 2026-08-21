@@ -236,6 +236,22 @@ async function runEditorialPipeline(text, options = {}) {
     return { content: text, analysis: null, persona: null, stageResults: [] };
   }
 
+  // A chapter larger than the provider-safe window must never be silently
+  // reduced to its first 12k characters and written back as a full chapter.
+  // Callers can split it explicitly in a future chunked editor; for now keep
+  // the source intact and report the safe skip.
+  if (String(text).length > MAX_INPUT_CHARS) {
+    return {
+      content: text,
+      analysis: null,
+      persona: persona || null,
+      stageResults: [{ stage: 'guard', name: '长度保护', skipped: true, reason: `章节超过${MAX_INPUT_CHARS}字安全处理上限，保留原文` }],
+      originalLength: String(text).length,
+      finalLength: String(text).length,
+      skipped: true,
+    };
+  }
+
   const originalLength = text.length;
   let currentText = text;
   let authorPersona = null;

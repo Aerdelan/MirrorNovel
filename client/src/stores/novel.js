@@ -80,10 +80,12 @@ export const useNovelStore = defineStore('novel', () => {
  }
  else if (event.type === 'outline') { generatedOutline.value = event.content; if (onStatus) onStatus({ type: 'outline', content: event.content }) }
  else if (event.type === 'status') { if (onStatus) onStatus(event) }
+ else if (event.type === 'thinking') { if (onStatus) onStatus(event) }
  else if (event.type === 'novel_created') { if (onStatus) onStatus(event) }
  else if (event.type === 'chapter_start') { humanizedReceived = false; if (onStatus) onStatus(event) }
  else if (event.type === 'chapter_end') { if (onStatus) onStatus(event) }
  else if (event.type === 'quality_notice') { if (onStatus) onStatus(event) }
+ else if (event.type === 'blueprint_proposal') { if (onStatus) onStatus(event) }
  else if (event.type === 'completed') { if (onStatus) onStatus(event) }
  else if (event.type === 'paused' || event.type === 'token_exhausted' || event.type === 'plan_needs_extension') { if (onStatus) onStatus(event) }
  else if (event.type === 'humanized') { humanizedReceived = true; humanizedContent = event.content; if (onStatus) onStatus(event) }
@@ -122,7 +124,8 @@ export const useNovelStore = defineStore('novel', () => {
  try {
  const event = JSON.parse(line.substring(6))
  if (event.type === 'content') { streamingText.value += event.content; if (onChunk) onChunk(event.content, streamingText.value) }
- else if (event.type === 'status' || event.type === 'chapter_start' || event.type === 'chapter_end' || event.type === 'quality_notice' || event.type === 'completed' || event.type === 'paused' || event.type === 'token_exhausted' || event.type === 'plan_needs_extension' || event.type === 'error') {
+ else if (event.type === 'thinking') { if (onStatus) onStatus(event) }
+ else if (event.type === 'status' || event.type === 'chapter_start' || event.type === 'chapter_end' || event.type === 'quality_notice' || event.type === 'blueprint_proposal' || event.type === 'completed' || event.type === 'paused' || event.type === 'token_exhausted' || event.type === 'plan_needs_extension' || event.type === 'error') {
  if (['completed','paused','token_exhausted','plan_needs_extension','error'].includes(event.type)) xhr._receivedTerminal = true
  if (onStatus) onStatus(event)
  }
@@ -170,6 +173,7 @@ export const useNovelStore = defineStore('novel', () => {
  try {
  const event = JSON.parse(line.substring(6))
  if (event.type === 'content') { streamingText.value += event.content; if (onChunk) onChunk(event.content, streamingText.value) }
+ else if (event.type === 'thinking') { if (onStatus) onStatus(event) }
  else if (event.type === 'status' || event.type === 'chapter_start' || event.type === 'chapter_end' || event.type === 'completed' || event.type === 'paused' || event.type === 'token_exhausted' || event.type === 'error') {
  if (['completed','paused','token_exhausted','error'].includes(event.type)) xhr._receivedTerminal = true
  if (onStatus) onStatus(event)

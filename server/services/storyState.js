@@ -38,7 +38,13 @@ function parseChapterPlan(rawPlan) {
     return {
       version: rawPlan.version || 1,
       phases: toArray(rawPlan.phases),
-      chapters: rawPlan.chapters.map(normalizePlanChapter).filter((item) => item.chapterNumber > 0),
+      chapters: rawPlan.chapters.map((chapter) => Array.isArray(chapter)
+        ? normalizePlanChapter({
+          chapterNumber: chapter[0], wordTarget: chapter[1], coreEvent: chapter[2],
+          setHooks: chapter[3], resolveHooks: chapter[4], characters: chapter[5],
+          chapterRole: chapter[6], tension: chapter[7],
+        })
+        : normalizePlanChapter(chapter)).filter((item) => item.chapterNumber > 0),
     };
   }
 
@@ -54,7 +60,13 @@ function parseChapterPlan(rawPlan) {
         return {
           version: value.version || 1,
           phases: toArray(value.phases),
-          chapters: value.chapters.map(normalizePlanChapter).filter((item) => item.chapterNumber > 0),
+          chapters: value.chapters.map((chapter) => Array.isArray(chapter)
+            ? normalizePlanChapter({
+              chapterNumber: chapter[0], wordTarget: chapter[1], coreEvent: chapter[2],
+              setHooks: chapter[3], resolveHooks: chapter[4], characters: chapter[5],
+              chapterRole: chapter[6], tension: chapter[7],
+            })
+            : normalizePlanChapter(chapter)).filter((item) => item.chapterNumber > 0),
         };
       }
     } catch (_) {
@@ -96,6 +108,52 @@ function parseChapterPlan(rawPlan) {
     }));
   }
   return { version: 1, chapters, phases };
+}
+
+/**
+ * 为已有大纲但缺少可解析计划的作品建立保守的本地兜底计划。
+ * 它不伪造具体剧情，正文仍以大纲和章节契约为准；作用是让长篇任务
+ * 能安全恢复，并避免超长 JSON 计划被截断后把整本生成永久卡死。
+ */
+function buildFallbackChapterPlan(novel, options = {}) {
+  const targetWords = Math.max(3000, Number(options.targetWords || novel?.targetWordCount || 50000));
+  const startChapter = Math.max(1, Number(options.startChapter || 1));
+  const totalChapters = Math.max(startChapter, Math.ceil(targetWords / 3000));
+  const outline = String(novel?.outline || '').replace(/\s+/g, ' ').trim();
+  const phases = [
+    { until: 0.18, name: '开端', goal: '建立人物处境、核心目标与第一个明确阻力' },
+    { until: 0.48, name: '发展', goal: '沿主线调查、行动或关系推进，逐步扩大代价' },
+    { until: 0.72, name: '转折', goal: '揭示关键真相或迫使主角改变原有选择' },
+    { until: 0.9, name: '高潮', goal: '让主角承担代价，集中推进主要冲突与伏笔' },
+    { until: 1, name: '收束', goal: '回收主线与关键关系，给出具体后果和余波' },
+  ];
+  const chapters = [];
+  for (let number = startChapter; number <= totalChapters; number++) {
+    const ratio = number / totalChapters;
+    const phase = phases.find((item) => ratio <= item.until) || phases.at(-1);
+    const finalChapter = number === totalChapters;
+    const breathing = !finalChapter && number > 3 && number % 7 === 0;
+    chapters.push(normalizePlanChapter({
+      chapterNumber: number,
+      wordTarget: 3000,
+      phase: phase.name,
+      coreEvent: finalChapter
+        ? `依据大纲完成主线收束：${outline.slice(0, 120) || '给出主角目标的具体结果'}`
+        : `${phase.goal}（第${number}章，严格承接前章结果）`,
+      setHooks: [],
+      resolveHooks: [],
+      characters: [],
+      chapterRole: finalChapter ? '收束' : (breathing ? '喘息推进' : '主线推进'),
+      tension: finalChapter ? 8 : (breathing ? 4 : (ratio > 0.72 ? 8 : 6)),
+      raw: '本地兜底计划',
+    }));
+  }
+  return {
+    version: 1,
+    phases: phases.map((item) => `${item.name}：${item.goal}`),
+    chapters,
+    fallback: true,
+  };
 }
 
 function renderPlanForContext(planData, currentChapter) {
@@ -142,6 +200,122 @@ function initializeCreativeState(novel) {
     });
   }
   return novel;
+}
+
+function textList(value, limit = 12) {
+  return splitItems(value).slice(0, limit).map((item) => item.slice(0, 180));
+}
+
+function normalizeBlueprintPhase(phase, fallbackStart, fallbackEnd) {
+  phase = phase || {};
+  const start = Math.max(1, Number(phase.startChapter || fallbackStart || 1));
+  const end = Math.max(start, Number(phase.endChapter || fallbackEnd || start));
+  return {
+    title: String(phase.title || '剧情阶段').trim().slice(0, 80),
+    startChapter: start,
+    endChapter: end,
+    goal: String(phase.goal || '').trim().slice(0, 420),
+    obstacle: String(phase.obstacle || '').trim().slice(0, 420),
+    reversal: String(phase.reversal || '').trim().slice(0, 420),
+    threads: textList(phase.threads, 8),
+  };
+}
+
+/**
+ * Seed a conservative live blueprint from the user-approved outline. Detailed
+ * reversals are added only by an explicit AI proposal that the user applies.
+ */
+function ensureStoryBlueprint(novel, totalChapters) {
+  initializeCreativeState(novel);
+  if (!novel.storyBlueprint) novel.storyBlueprint = {};
+  const blueprint = novel.storyBlueprint;
+  const total = Math.max(1, Number(totalChapters || Math.ceil(Number(novel.targetWordCount || 50000) / 3000)));
+  if (!blueprint.version) blueprint.version = 1;
+  if (!blueprint.mainArc) blueprint.mainArc = String(novel.outline || novel.storyBible.theme || '按既定主线推进').slice(0, 1200);
+  if (!Array.isArray(blueprint.lockedFacts)) blueprint.lockedFacts = [];
+  if (!blueprint.lockedFacts.length) {
+    blueprint.lockedFacts = textList([novel.protagonistName ? `主角：${novel.protagonistName}` : '', novel.worldSetting ? `世界观：${novel.worldSetting}` : ''].filter(Boolean), 8);
+  }
+  if (!Array.isArray(blueprint.phases) || !blueprint.phases.length) {
+    blueprint.phases = [normalizeBlueprintPhase({
+      title: '当前主线阶段', startChapter: 1, endChapter: total,
+      goal: '依据用户确认的大纲推进主角目标，重要转折必须由用户确认后才可变更。',
+      threads: novel.plotThreads.map((thread) => thread.title || thread.id).filter(Boolean),
+    }, 1, total)];
+  } else {
+    blueprint.phases = blueprint.phases.map((phase) => normalizeBlueprintPhase(phase, 1, total));
+  }
+  if (typeof blueprint.autoReviewEnabled !== 'boolean') blueprint.autoReviewEnabled = false;
+  if (typeof blueprint.emailReminderEnabled !== 'boolean') blueprint.emailReminderEnabled = true;
+  if (!Number.isFinite(Number(blueprint.lastReviewedChapter))) blueprint.lastReviewedChapter = 0;
+  return blueprint;
+}
+
+function normalizeProposedBlueprint(rawBlueprint, novel, totalChapters) {
+  const current = ensureStoryBlueprint(novel, totalChapters);
+  rawBlueprint = rawBlueprint || {};
+  const total = Math.max(1, Number(totalChapters || 1));
+  const lockedFacts = Array.from(new Set([
+    ...textList(current.lockedFacts, 16),
+    ...textList(rawBlueprint.lockedFacts, 16),
+  ])).slice(0, 16);
+  const rawPhases = Array.isArray(rawBlueprint.phases) ? rawBlueprint.phases : current.phases;
+  const phases = rawPhases.slice(0, 8).map((phase, index) => normalizeBlueprintPhase(
+    phase,
+    index ? Number(rawPhases[index - 1]?.endChapter || 1) + 1 : 1,
+    total
+  ));
+  return {
+    version: Number(current.version || 1) + 1,
+    mainArc: String(rawBlueprint.mainArc || current.mainArc || '').trim().slice(0, 1200),
+    lockedFacts,
+    phases: phases.length ? phases : current.phases,
+    autoReviewEnabled: Boolean(current.autoReviewEnabled),
+    emailReminderEnabled: current.emailReminderEnabled !== false,
+    lastReviewedChapter: Number(current.lastReviewedChapter || 0),
+  };
+}
+
+function applyStoryBlueprint(novel, rawBlueprint, totalChapters) {
+  const blueprint = normalizeProposedBlueprint(rawBlueprint, novel, totalChapters);
+  novel.storyBlueprint = blueprint;
+  initializeCreativeState(novel);
+  const existingTitles = new Set(novel.plotThreads.map((thread) => String(thread.title || '').trim()).filter(Boolean));
+  for (const phase of blueprint.phases) {
+    for (const title of phase.threads || []) {
+      if (!title || existingTitles.has(title)) continue;
+      novel.plotThreads.push({
+        id: `blueprint_${String(title).replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '').slice(0, 24) || novel.plotThreads.length + 1}`,
+        title,
+        type: 'subplot',
+        status: 'planned',
+        nextMilestone: phase.goal || '在合适阶段与主线交叉推进',
+        lastChapter: Math.max(0, Number(phase.startChapter || 1) - 1),
+      });
+      existingTitles.add(title);
+    }
+  }
+  return blueprint;
+}
+
+function renderStoryBlueprintForContext(novel, chapterNumber, totalChapters) {
+  const blueprint = ensureStoryBlueprint(novel, totalChapters);
+  const chapter = Math.max(1, Number(chapterNumber || 1));
+  const relevantPhases = blueprint.phases.filter((phase) => Number(phase.endChapter || 0) >= chapter).slice(0, 3);
+  const phaseText = relevantPhases.map((phase) => [
+    `第${phase.startChapter}-${phase.endChapter}章 ${phase.title}`,
+    phase.goal ? `目标：${phase.goal}` : '',
+    phase.obstacle ? `阻力：${phase.obstacle}` : '',
+    phase.reversal ? `反转：${phase.reversal}` : '',
+    phase.threads?.length ? `关联线：${phase.threads.join('、')}` : '',
+  ].filter(Boolean).join('；')).join('\n');
+  return [
+    `【动态故事蓝图｜已确认版本 ${blueprint.version}】`,
+    `主线：${blueprint.mainArc || '按已确认大纲推进'}`,
+    blueprint.lockedFacts.length ? `不可改写事实：${blueprint.lockedFacts.join('；')}` : '',
+    phaseText,
+    '只有用户应用剧情蓝图提案后，才能改变上述方向；不得自行改写终局、人物核心动机或已经发生的事实。',
+  ].filter(Boolean).join('\n');
 }
 
 function inferStoryWeight(novel) {
@@ -255,6 +429,30 @@ function assessStoryCompletion(novel, planData, targetWords) {
     missingChapters,
     unresolvedHooks,
   };
+}
+
+/**
+ * Close planned hooks that reached the end of an approved chapter plan without
+ * an explicit resolution. This is only for a completed work: unfinished
+ * mid-story hooks must continue to block completion so the user can revise or
+ * extend the plan.
+ */
+function closeUnresolvedHooksAtEnding(novel, planData, reason = '计划已执行完毕，正文未明确回收该伏笔') {
+  const plan = planData && planData.chapters ? planData : parseChapterPlan(planData || novel.chapterPlan || '');
+  const finalChapter = plan.chapters.reduce((max, chapter) => Math.max(max, Number(chapter.chapterNumber) || 0), 0);
+  if (!finalChapter || !Array.isArray(novel.foreshadowingLedger)) return 0;
+  let changed = 0;
+  novel.foreshadowingLedger.forEach((hook) => {
+    const targetChapter = Number(hook.targetChapter || 0);
+    if (targetChapter > 0 && targetChapter <= finalChapter && ['planned', 'pending'].includes(hook.status)) {
+      hook.status = 'abandoned';
+      hook.resolvedChapter = finalChapter;
+      hook.resolution = reason;
+      changed++;
+    }
+  });
+  if (changed && typeof novel.markModified === 'function') novel.markModified('foreshadowingLedger');
+  return changed;
 }
 
 function buildChapterContract(options) {
@@ -416,13 +614,19 @@ function seedPlannedHooks(novel, planData) {
 module.exports = {
   normalizePlanChapter,
   parseChapterPlan,
+  buildFallbackChapterPlan,
   renderPlanForContext,
   ensureCreativeState,
   initializeCreativeState,
+  ensureStoryBlueprint,
+  normalizeProposedBlueprint,
+  applyStoryBlueprint,
+  renderStoryBlueprintForContext,
   buildEmotionPlan,
   getAdaptiveChapterWordTarget,
   getChapterOutputTokenLimit,
   assessStoryCompletion,
+  closeUnresolvedHooksAtEnding,
   buildChapterContract,
   renderChapterContract,
   extractEventSignature,

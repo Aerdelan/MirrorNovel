@@ -118,6 +118,21 @@
  <textarea v-model="outline" class="textarea" rows="4" :placeholder="$t('generate.placeholderOutline')"></textarea>
  </div>
 
+ <div v-if="genMode === 'book'" class="card blueprint-setup-card">
+  <div class="section-title"> 初始故事蓝图</div>
+  <div class="blueprint-setup-desc">在开始整本生成前，先把主线阶段、人物支线和可能的反转确认下来。AI 只会提出方案，确认后才用于正文。</div>
+  <div class="blueprint-setup-actions">
+   <button class="btn btn-secondary btn-sm" :disabled="blueprintGenerating || !outline.trim()" @click="generateInitialBlueprint">{{ blueprintGenerating ? ' 正在规划蓝图...' : (initialBlueprint ? ' 重新生成蓝图' : ' 生成初始蓝图') }}</button>
+   <span v-if="initialBlueprintConfirmed" class="blueprint-confirmed"> 已确认，将用于本次生成</span>
+  </div>
+  <textarea v-if="initialBlueprintJson" v-model="initialBlueprintJson" class="textarea blueprint-json-editor" rows="10" placeholder="蓝图 JSON"></textarea>
+  <div v-if="initialBlueprintJson && !initialBlueprintConfirmed" class="blueprint-setup-actions">
+   <button class="btn btn-primary btn-sm" @click="confirmInitialBlueprint">确认蓝图并继续</button>
+   <span class="blueprint-setup-hint">可直接编辑上方 JSON 后确认</span>
+  </div>
+  <div v-if="blueprintSetupError" class="blueprint-setup-error">{{ blueprintSetupError }}</div>
+ </div>
+
  <div v-if="genRefsLoaded" class="card gen-ref-card">
  <div class="section-title">{{ $t('generate.refMatch') }}</div>
  <div v-if="genFilteredRefs.length === 0" class="ln-ref-empty">
@@ -468,6 +483,11 @@ const outline = ref('')
 const genMode = ref('book')
 const targetWordCount = ref(50000)
 const expertMode = ref(false)
+const initialBlueprint = ref(null)
+const initialBlueprintJson = ref('')
+const initialBlueprintConfirmed = ref(false)
+const blueprintGenerating = ref(false)
+const blueprintSetupError = ref('')
 
 // ---- 写作人格 persona ----
 const personas = ref([])
@@ -759,6 +779,43 @@ async function showOutlineModal(selectedTypeId, charName, worldSetting, wordCoun
  })
 }
 
+async function generateInitialBlueprint() {
+ if (!selectedType.value || !outline.value.trim()) {
+  blueprintSetupError.value = '请先选择小说类型并确认大纲'
+  return
+ }
+ blueprintGenerating.value = true
+ blueprintSetupError.value = ''
+ initialBlueprintConfirmed.value = false
+ try {
+  const res = await api.post('/novel/generate-blueprint', {
+   novelTypeId: selectedType.value,
+   protagonistName: protagonistName.value,
+   worldSetting: worldSetting.value,
+   targetWordCount: targetWordCount.value,
+   outline: outline.value,
+   personaId: selectedPersonaId.value || undefined,
+  }, { timeout: 240000 })
+  initialBlueprint.value = res.data.blueprint || null
+  initialBlueprintJson.value = JSON.stringify(initialBlueprint.value, null, 2)
+ } catch (e) {
+  blueprintSetupError.value = e.response?.data?.message || e.message || '初始蓝图生成失败'
+ } finally { blueprintGenerating.value = false }
+}
+
+function confirmInitialBlueprint() {
+ try {
+  const parsed = JSON.parse(initialBlueprintJson.value)
+  if (!parsed || !Array.isArray(parsed.phases) || !parsed.phases.length) throw new Error('至少需要一个剧情阶段')
+  initialBlueprint.value = parsed
+  initialBlueprintConfirmed.value = true
+  blueprintSetupError.value = ''
+ } catch (e) {
+  initialBlueprintConfirmed.value = false
+  blueprintSetupError.value = `蓝图格式无效：${e.message}`
+ }
+}
+
 function outlineConfirm() {
  if (outlineConfirmCallback) outlineConfirmCallback()
 }
@@ -783,6 +840,12 @@ async function startGen() {
  outline.value = confirmedOutline
  }
 
+ if (genMode.value === 'book' && !initialBlueprintConfirmed.value) {
+  if (!initialBlueprintJson.value) await generateInitialBlueprint()
+  genStatus.value = blueprintSetupError.value || '请确认初始故事蓝图后再开始生成'
+  return
+ }
+
  generating.value = true; genStatus.value = ''; genOk.value = false
  streamingText.value = ''; outlineStreamingText.value = ''
  rawStreamingText.value = ''
@@ -805,6 +868,7 @@ async function startGen() {
  personaId: selectedPersonaId.value || undefined,
  referenceIds: genSelectedRefs.value.length > 0 ? genSelectedRefs.value : undefined,
  structureRef: useStructureRef.value && structResult.value ? structResult.value : undefined,
+ storyBlueprint: genMode.value === 'book' ? initialBlueprint.value : undefined,
  }
 
  novelStore.startGeneration(params,
@@ -821,6 +885,8 @@ async function startGen() {
  genStatus.value = event.message
  } else if (event.type === 'chapter_start') {
  genStatus.value = `正在生成 ${event.title || '第' + event.chapterNumber + '章'}...`
+ } else if (event.type === 'thinking') {
+  genStatus.value = `模型正在整理本章结构（已处理 ${event.length || 0} 个思考单位）...`
  } else if (event.type === 'quality_notice') {
  const issues = event.report?.issues?.join('；') || '章节存在连贯性风险，已记录供后续章节参考'
  genStatus.value = `第${event.chapterNumber}章质量提示：${issues}`
@@ -915,7 +981,10 @@ async function applyGeneratedResult(kind) {
  generatedApplyBusy.value = true
  generatedApplyMessage.value = ''
  try {
- await api.put(`/novel/${generatedNovelId.value}/chapter/${generatedChapterNumber.value}`, { content })
+ await api.put(`/novel/${generatedNovelId.value}/chapter/${generatedChapterNumber.value}`, {
+  content,
+  source: kind === 'editorial' ? 'editorial' : 'deslop',
+ })
  streamingText.value = content
  generatedApplyMessage.value = $t('generate.applied')
  } catch (error) {
@@ -1200,6 +1269,8 @@ async function startLNGen() {
  lnStatus.value = event.message
  } else if (event.type === 'chapter_start') {
  lnStatus.value = `正在生成 ${event.title || '第' + event.chapterNumber + '章'}...`
+ } else if (event.type === 'thinking') {
+  lnStatus.value = `模型正在整理本章结构（已处理 ${event.length || 0} 个思考单位）...`
  } else if (event.type === 'quality_notice') {
  const issues = event.report?.issues?.join('；') || '章节存在连贯性风险，已记录供后续章节参考'
  lnStatus.value = `第${event.chapterNumber}章质量提示：${issues}`
@@ -1456,6 +1527,15 @@ onMounted(async () => {
  background: #fffbeb;
  border-color: #fde68a;
 }
+
+/* --- Initial Story Blueprint --- */
+.blueprint-setup-card { border-color: #c7d7fe; background: #fbfcff; }
+.blueprint-setup-desc { color: var(--text-secondary); font-size: 12px; line-height: 1.7; margin-bottom: 10px; }
+.blueprint-setup-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.blueprint-json-editor { margin-top: 10px; min-height: 190px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.55; }
+.blueprint-confirmed { color: var(--success); font-size: 12px; }
+.blueprint-setup-hint { color: var(--text-light); font-size: 12px; }
+.blueprint-setup-error { margin-top: 8px; color: #cf1322; background: #fff1f0; border-radius: 6px; padding: 7px 9px; font-size: 12px; }
 
 /* --- Light Novel Tab --- */
 .ln-grid {

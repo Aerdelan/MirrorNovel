@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { randomUUID } = require('crypto');
 const auth = require('../middleware/auth');
 const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
@@ -29,6 +30,20 @@ async function resolveNovelPersona(userId, novel, personaId) {
   const persona = await WritingPersona.findOne({ _id: id, userId }).lean();
   return persona || null;
 }
+
+// 思考型模型（如 GLM-4.7）正文前会长时间输出思考内容，向前端节流推送思考进度，避免界面假死在“已生成 0 字”。
+function createThinkingEmitter(res) {
+  let total = 0;
+  let lastEmit = 0;
+  return (chunk) => {
+    total += chunk.length;
+    const now = Date.now();
+    if (now - lastEmit >= 500) {
+      lastEmit = now;
+      try { res.write(`data: ${JSON.stringify({ type: 'thinking', length: total })}\n\n`); } catch {}
+    }
+  };
+}
 const {
   buildAugmentedContext,
   buildContextFromDocs,
@@ -41,7 +56,12 @@ const { processChapter } = require('../services/chapterToolchain');
 const { runEditorialPipeline, STAGES } = require('../services/editorialEngine');
 const {
   parseChapterPlan,
+  buildFallbackChapterPlan,
   initializeCreativeState,
+  ensureStoryBlueprint,
+  normalizeProposedBlueprint,
+  applyStoryBlueprint,
+  renderStoryBlueprintForContext,
   buildChapterContract,
   renderChapterContract,
   checkChapterContinuity,
@@ -51,6 +71,7 @@ const {
   seedPlannedHooks,
   getChapterOutputTokenLimit,
   assessStoryCompletion,
+  closeUnresolvedHooksAtEnding,
 } = require('../services/storyState');
 const {
   calculatePointsCharge,
@@ -60,9 +81,113 @@ const {
   routeIdForModelConfig,
 } = require('../services/pointsService');
 const { claimAutoActivitiesForUser } = require('../services/activityService');
+const { sendBlueprintProposalNotification } = require('../services/emailService');
 
 // 全局活跃生成流跟踪
 const activeStreams = new Map();
+
+function parseJsonObject(text) {
+  const clean = String(text || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  const candidate = clean.match(/\{[\s\S]*\}/);
+  if (!candidate) return null;
+  try { return JSON.parse(candidate[0]); } catch (_) { return null; }
+}
+
+function normalizeProposalChanges(changes) {
+  if (!Array.isArray(changes)) return [];
+  return changes.slice(0, 12).map((change) => ({
+    field: String(change?.field || '剧情蓝图').trim().slice(0, 80),
+    before: String(change?.before || '当前无细化安排').trim().slice(0, 600),
+    after: String(change?.after || '').trim().slice(0, 600),
+    impact: String(change?.impact || '').trim().slice(0, 400),
+  })).filter((change) => change.after || change.impact);
+}
+
+function notifyBlueprintProposal(user, novel, proposal) {
+  if (!proposal || proposal.significance !== 'major' || novel.storyBlueprint?.emailReminderEnabled === false || !user?.email) return;
+  const payload = { ...proposal, novelTitle: novel.title };
+  sendBlueprintProposalNotification(user.email, payload, novel._id).catch((error) => {
+    console.warn('[Blueprint] 邮件提醒发送失败:', error.message);
+  });
+}
+
+async function createStoryBlueprintProposal({ user, novel, persona, signal }) {
+  if ((novel.storyBlueprintProposals || []).some((proposal) => proposal.status === 'pending')) return null;
+  const chapterNumber = getHighestChapterNumber(novel);
+  const totalChapters = getTotalPlannedChapters(parseChapterPlan(novel.chapterPlanData || novel.chapterPlan || ''), novel.targetWordCount, chapterNumber);
+  const blueprint = ensureStoryBlueprint(novel, totalChapters);
+  const context = buildContextFromDocs(
+    novel.chapterSummaryDoc, novel.foreshadowingDoc, novel.outline, '', chapterNumber + 1, '',
+    { contextMemory: novel.contextMemory, maxChars: 9000 }
+  );
+  const prompt = `请担任“长篇小说剧情蓝图编辑”。基于已完成章节和当前已确认蓝图，判断后续是否需要补充支线、人物目标、伏笔回收或阶段反转。你只能提出建议，绝不能改写已经发生的事实、主角核心动机或已确认终局。
+
+【原始大纲】
+${String(novel.outline || '无').slice(0, 5000)}
+
+【已确认动态蓝图】
+${renderStoryBlueprintForContext(novel, chapterNumber + 1, totalChapters)}
+
+【已写故事状态】
+${context || '尚未生成正文，请只判断是否需要为后续阶段补充可执行细节。'}
+
+【现有剧情线】
+${(novel.plotThreads || []).map((thread) => `${thread.title || thread.id}：${thread.status || 'planned'}，下一步：${thread.nextMilestone || '未定'}`).join('\n') || '只有主线'}
+
+只输出一个 JSON 对象，不要 markdown：
+{
+  "hasChanges": true,
+  "significance": "minor 或 major",
+  "title": "不超过20字的提案标题",
+  "summary": "给读者/作者看的简短摘要",
+  "rationale": "为什么现在需要这个调整",
+  "affectedChapters": [${chapterNumber + 1}],
+  "changes": [{"field":"支线/阶段/伏笔/人物关系","before":"当前安排","after":"建议安排","impact":"对后续章节的具体影响"}],
+  "proposedBlueprint": {
+    "mainArc": "保留并细化后的主线",
+    "lockedFacts": ["必须不变的事实"],
+    "phases": [{"title":"阶段名","startChapter":1,"endChapter":12,"goal":"目标","obstacle":"阻力","reversal":"可选反转","threads":["主线或支线名称"]}]
+  }
+}
+若当前蓝图足够，请输出 {"hasChanges":false,"summary":"当前无需调整"}。`;
+  await ensureTokensLeft(user);
+  const result = await streamGenerate(
+    `你是一位克制、重视因果与人物弧线的长篇小说编辑。${buildPersonaPrompt(persona, { includeDeslop: false })}`,
+    prompt,
+    null,
+    signal || new AbortController().signal,
+    resolveApiConfig(user?.modelConfig, 'reasoning'),
+    1,
+    0.3,
+    2200,
+    60000
+  );
+  try { await deductTokens(user, result.content, prompt, 'reasoning'); } catch (error) {
+    if (error.message !== 'TOKEN_EXHAUSTED') console.warn('[Blueprint] 审核扣费失败:', error.message);
+  }
+  const parsed = parseJsonObject(result.content);
+  if (!parsed) throw new Error('剧情蓝图审核返回格式无效');
+  blueprint.lastReviewedChapter = chapterNumber;
+  if (!parsed.hasChanges) return null;
+  const changes = normalizeProposalChanges(parsed.changes);
+  if (!changes.length || !parsed.proposedBlueprint) return null;
+  const proposedBlueprint = require('../services/storyState').normalizeProposedBlueprint(parsed.proposedBlueprint, novel, totalChapters);
+  const proposal = {
+    id: randomUUID(),
+    status: 'pending',
+    significance: parsed.significance === 'major' ? 'major' : 'minor',
+    title: String(parsed.title || '剧情蓝图优化建议').slice(0, 80),
+    summary: String(parsed.summary || '').slice(0, 800),
+    rationale: String(parsed.rationale || '').slice(0, 1200),
+    reviewChapter: chapterNumber,
+    affectedChapters: Array.from(new Set((Array.isArray(parsed.affectedChapters) ? parsed.affectedChapters : []).map(Number).filter((number) => number > chapterNumber && number <= totalChapters))).slice(0, 30),
+    changes,
+    proposedBlueprint,
+  };
+  if (!Array.isArray(novel.storyBlueprintProposals)) novel.storyBlueprintProposals = [];
+  novel.storyBlueprintProposals.push(proposal);
+  return proposal;
+}
 
 function getCompletedWordCount(novel) {
   return (novel.chapters || []).reduce((sum, chapter) => sum + Number(chapter.wordCount || 0), 0);
@@ -125,6 +250,70 @@ function appendChapterContextDocs(novel, content, chapterNumber, protagonistName
   }
 }
 
+// Revision tools may replace a chapter after it has already been used as
+// generation context. Rebuild the compact documents from the saved text so a
+// later continuation never follows an obsolete summary or unresolved hook.
+function rebuildNovelContextDocs(novel) {
+  novel.chapterSummaryDoc = '';
+  novel.foreshadowingDoc = '';
+  novel.contextMemory = { version: 1, checkpointChapter: 0, checkpointSummary: '', facts: [], openLoops: [] };
+  for (const chapter of novel.chapters || []) {
+    appendChapterContextDocs(novel, chapter.content || '', chapter.chapterNumber, novel.protagonistName);
+  }
+  const lastChapter = getHighestChapterNumber(novel);
+  if (lastChapter > 0) {
+    novel.contextMemory = buildContextMemoryCheckpoint({
+      chapters: novel.chapters,
+      chapterSummaryDoc: novel.chapterSummaryDoc,
+      foreshadowingDoc: novel.foreshadowingDoc,
+      storyBible: novel.storyBible,
+      characterStates: novel.characterStates,
+      plotThreads: novel.plotThreads,
+      foreshadowingLedger: novel.foreshadowingLedger,
+      chapterNumber: lastChapter,
+      previousMemory: novel.contextMemory || {},
+    });
+  }
+  novel.markModified('chapterSummaryDoc');
+  novel.markModified('foreshadowingDoc');
+  novel.markModified('contextMemory');
+}
+
+function applyChapterRevision(novel, chapterNumber, content, { source = 'manual', metadata = {} } = {}) {
+  const chapter = (novel.chapters || []).find((item) => Number(item.chapterNumber) === Number(chapterNumber));
+  if (!chapter) throw new Error(`第 ${chapterNumber} 章不存在`);
+
+  const finalContent = String(content || '').trim();
+  if (finalContent.length < 10) throw new Error('修订内容过短，未覆盖原文');
+  const originalContent = String(chapter.content || '');
+  const isModelRevision = source !== 'manual';
+  const minRetainedLength = Math.max(120, Math.floor(originalContent.length * 0.45));
+  if (isModelRevision && originalContent.length >= 120 && finalContent.length < minRetainedLength) {
+    throw new Error(`修订结果过短，已保留原文（${finalContent.length}/${originalContent.length}）`);
+  }
+
+  const previousChapter = (novel.chapters || []).find((item) => Number(item.chapterNumber) === Number(chapterNumber) - 1) || null;
+  const continuity = checkChapterContinuity(finalContent, previousChapter, null);
+  const qualityReport = chapter.qualityReport && typeof chapter.qualityReport === 'object' ? chapter.qualityReport : {};
+  const revisions = Array.isArray(qualityReport.revisions) ? qualityReport.revisions : [];
+  revisions.push({
+    source,
+    originalLength: originalContent.length,
+    finalLength: finalContent.length,
+    continuity,
+    appliedAt: new Date(),
+    ...metadata,
+  });
+  chapter.content = finalContent;
+  chapter.wordCount = finalContent.length;
+  chapter.generatedAt = new Date();
+  chapter.qualityReport = { ...qualityReport, score: continuity.score, issues: continuity.issues, eventSignature: continuity.eventSignature, revisions: revisions.slice(-12) };
+  novel.currentWordCount = getCompletedWordCount(novel);
+  rebuildNovelContextDocs(novel);
+  novel.markModified('chapters');
+  return { chapter, continuity, originalLength: originalContent.length, finalLength: finalContent.length };
+}
+
 async function runExpertReview({ user, content, contract, signal, onStatus, persona }) {
   const original = String(content || '').trim();
   if (original.length < 500) return { content: original, review: null };
@@ -163,10 +352,10 @@ ${reviewSource}`;
       null,
       signal,
       resolveApiConfig(user?.modelConfig, 'reasoning'),
-      1,
+      0,
       0.25,
       1200,
-      45000
+      30000
     );
     try { await deductTokens(user, reviewResult.content, reviewPrompt, 'reasoning'); } catch (error) {
       if (error.message !== 'TOKEN_EXHAUSTED') console.warn('[Expert] 审稿扣费失败:', error.message);
@@ -295,6 +484,21 @@ function prepareCreativeState(novel) {
   return planData;
 }
 
+function ensureExecutableChapterPlan(novel, targetWordCount) {
+  let plan = prepareCreativeState(novel);
+  if (plan.chapters.length || !String(novel.outline || '').trim()) return plan;
+
+  plan = buildFallbackChapterPlan(novel, { targetWords: targetWordCount });
+  novel.chapterPlanData = plan;
+  if (!String(novel.chapterPlan || '').trim()) {
+    novel.chapterPlan = JSON.stringify(plan);
+  }
+  initializeCreativeState(novel);
+  seedPlannedHooks(novel, plan);
+  novel.markModified('chapterPlanData');
+  return plan;
+}
+
 // 获取所有小说类型
 router.get('/types', (req, res) => {
   res.json(novelTypes);
@@ -388,12 +592,70 @@ ${structureRef}
   }
 });
 
+// 生成页使用的初始故事蓝图：在创建小说前确认，不写入数据库，不会静默改变剧情。
+router.post('/generate-blueprint', auth, async (req, res) => {
+  try {
+    await checkTokenBalance(req.user);
+    const { novelTypeId, protagonistName, worldSetting, targetWordCount, outline, personaId } = req.body || {};
+    if (!novelTypeId || !String(outline || '').trim()) return res.status(400).json({ message: '请先提供小说类型和大纲' });
+    const target = Number(targetWordCount) || 50000;
+    const persona = await resolveNovelPersona(req.userId, null, personaId);
+    const totalChapters = Math.max(1, Math.ceil(target / 3000));
+    const prompt = `请为一部${novelTypeId}长篇小说制定“初始故事蓝图”，用于用户确认后再开始正文。蓝图必须补足大纲中没有展开的主要人物支线、主线侧枝、阶段目标、阶段阻力和可选反转，但不得违背大纲、世界观或已经确定的结局。不要把具体正文写进蓝图，也不要把每一章写成流水账。
+
+【主角】${protagonistName || '未设定'}
+【世界观】${worldSetting || '由大纲决定'}
+【目标字数】约${target}字，预计${totalChapters}章
+【用户确认的大纲】
+${String(outline).slice(0, 12000)}
+
+只输出 JSON，不要 markdown：
+{"mainArc":"保留大纲主线并补足因果","lockedFacts":["不可擅自改变的设定/事实"],"phases":[{"title":"阶段名称","startChapter":1,"endChapter":${Math.max(1, Math.ceil(totalChapters * 0.2))},"goal":"阶段目标","obstacle":"主要阻力","reversal":"可选反转或误导","threads":["支线1","支线2"]}]}
+要求 3-6 个阶段；每个阶段必须有至少一条支线或人物关系线；lockedFacts 只能填写大纲明确给出的事实。`;
+    const result = await streamGenerate(
+      `你是一位重视因果、人物弧线和伏笔回收的长篇小说架构师。${buildPersonaPrompt(persona, { includeDeslop: false })}`,
+      prompt,
+      null,
+      null,
+      resolveApiConfig(req.user?.modelConfig, 'reasoning'),
+      1,
+      0.35,
+      2600,
+      180000
+    );
+    const parsed = parseJsonObject(result.content);
+    if (!parsed) return res.status(502).json({ message: '蓝图生成返回格式无效，请重试' });
+    const draft = {
+      novelTypeName: novelTypeId,
+      protagonistName: protagonistName || '',
+      worldSetting: worldSetting || '',
+      outline: String(outline),
+      targetWordCount: target,
+      storyBible: {},
+      plotThreads: [],
+      storyBlueprint: {},
+    };
+    const blueprint = normalizeProposedBlueprint(parsed, draft, totalChapters);
+    blueprint.version = 1;
+    blueprint.lastReviewedChapter = 0;
+    blueprint.autoReviewEnabled = false;
+    blueprint.emailReminderEnabled = true;
+    try { await deductTokens(req.user, result.content, prompt, 'reasoning'); } catch (error) {
+      if (error.message !== 'TOKEN_EXHAUSTED') console.warn('[Blueprint] 初始蓝图扣费失败:', error.message);
+    }
+    res.json({ blueprint });
+  } catch (error) {
+    console.error('[Blueprint] 初始蓝图生成失败:', error.message);
+    res.status(error.isApiError ? 503 : 500).json({ message: error.isApiError ? error.message : '初始蓝图生成失败，请稍后重试' });
+  }
+});
+
 // 创建新小说并开始生成（SSE流式）
 router.post('/generate', auth, async (req, res) => {
   try {
     await checkTokenBalance(req.user);
 
-    let { novelTypeId, protagonistName, worldSetting, targetWordCount, referenceIds, personaId } = req.body;
+    let { novelTypeId, protagonistName, worldSetting, targetWordCount, referenceIds, personaId, storyBlueprint } = req.body;
     if (!novelTypeId) return res.status(400).json({ message: '请选择小说类型' });
     targetWordCount = Number(targetWordCount) || 50000;
     // 支持新旧两种类型系统：先用旧 ID 查找，失败则用名称匹配
@@ -432,6 +694,12 @@ router.post('/generate', auth, async (req, res) => {
       expertMode,
       status: 'generating', batchIndex: 0,
     });
+    if (storyBlueprint && typeof storyBlueprint === 'object') {
+      const normalizedBlueprint = normalizeProposedBlueprint(storyBlueprint, novel, Math.max(1, Math.ceil(targetWordCount / 3000)));
+      normalizedBlueprint.version = 1;
+      novel.storyBlueprint = normalizedBlueprint;
+      novel.markModified('storyBlueprint');
+    }
 
     // 构建系统提示词（含写作人格 persona 注入）
     let persona = null;
@@ -599,6 +867,12 @@ ${structureRef}
       await novel.save();
     }
 
+    // 初始化一份保守的动态故事蓝图。它只复述用户已确认的信息，不增加
+    // 隐形剧情；后续细化必须通过书内提案确认。
+    ensureStoryBlueprint(novel, Math.max(1, Math.ceil(targetWordCount / 3000)));
+    novel.markModified('storyBlueprint');
+    await novel.save();
+
     // ====== 生成章节计划表（整本模式） ======
     let chapterPlan = '';
     if (isBook && outline) {
@@ -645,7 +919,14 @@ ${structureRef}
 
     // 正文生成始终从同一份结构化创作状态开始，兼容旧作品的纯文本计划。
     if (chapterPlan) novel.chapterPlan = chapterPlan;
-    const planData = prepareCreativeState(novel);
+    let planData = prepareCreativeState(novel);
+    // 长篇计划的 JSON 可能因输出上限被截断；已有大纲时使用本地紧凑兜底计划，
+    // 不让整本生成因为“计划不可解析”停在 0 字。短篇仍保留严格校验，便于发现配置问题。
+    if (isBook && !planData.chapters.length && String(outline || '').trim() && targetWordCount >= 100000) {
+      planData = ensureExecutableChapterPlan(novel, targetWordCount);
+      res.write(`data: ${JSON.stringify({ type: 'status', message: `章节计划输出不完整，已根据大纲自动补全 ${planData.chapters.length} 章执行计划` })}\n\n`);
+      await novel.save();
+    }
     await novel.save();
 
     // 整本生成必须建立在可机读章节计划上。计划生成失败时暂停，避免退化为无约束长循环。
@@ -673,7 +954,7 @@ ${structureRef}
       await streamGenerate(systemPrompt, prompt, (chunk) => {
         buffer += chunk;
         try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
-      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget));
+      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget), undefined, createThinkingEmitter(res));
 
       let chapterContent = buffer;
       let expertReview = null;
@@ -773,6 +1054,8 @@ ${renderPlanForContext(planData, ch) || '按故事主线自然推进。'}
 
 ${renderChapterContract(contract)}
 
+${renderStoryBlueprintForContext(novel, ch, totalPlannedChapters)}
+
           当前总字数：${currentTotal}/${targetWordCount}。即使总字数已经达到目标，也必须完成本章计划与所有后续章节，不能提前写结局。
 写作要求：
 1. 只完成本章的唯一核心事件，并让因果、人物选择和章末状态自然衔接。
@@ -785,6 +1068,16 @@ ${renderChapterContract(contract)}
           const genResult = await generateOneChapter(ch, chPrompt, contract);
           lastChapterContent = genResult.content;
           currentChapterNum = ch + 1;
+          if (novel.storyBlueprint?.autoReviewEnabled && ch % 6 === 0) {
+            try {
+              const proposal = await createStoryBlueprintProposal({ user: req.user, novel, persona, signal: abortController.signal });
+              if (proposal) {
+                await novel.save();
+                notifyBlueprintProposal(req.user, novel, proposal);
+                try { res.write(`data: ${JSON.stringify({ type: 'blueprint_proposal', proposal, message: '已生成新的剧情蓝图提案，请在书内确认' })}\n\n`); } catch {}
+              }
+            } catch (error) { console.warn('[Blueprint] 自动审核失败，继续写作:', error.message); }
+          }
         }
 
         if (abortController.signal.aborted) {
@@ -796,14 +1089,22 @@ ${renderChapterContract(contract)}
         }
 
         const completion = assessStoryCompletion(novel, planData, targetWordCount);
-        if (!completion.complete) {
+        // The plan and requested length have both been fulfilled. Do not trap
+        // the book in an impossible "extend plan" loop solely because a model
+        // did not restate a scheduled hook verbatim in the final prose.
+        if (!completion.complete && completion.wordTargetReached && completion.missingChapters.length === 0 && completion.unresolvedHooks.length) {
+          const closedHooks = closeUnresolvedHooksAtEnding(novel, planData);
+          if (closedHooks) await novel.save();
+        }
+        const finalCompletion = assessStoryCompletion(novel, planData, targetWordCount);
+        if (!finalCompletion.complete) {
           novel.status = 'paused';
           await novel.save();
           activeStreams.delete(streamKey);
           const blockers = [];
-          if (!completion.wordTargetReached) blockers.push(`当前 ${completion.currentWords}/${completion.wordTarget} 字，仍未达到目标字数`);
-          if (completion.missingChapters.length) blockers.push(`尚未执行计划第 ${completion.missingChapters.join('、')} 章`);
-          if (completion.unresolvedHooks.length) blockers.push(`仍有 ${completion.unresolvedHooks.length} 条计划伏笔未回收`);
+          if (!finalCompletion.wordTargetReached) blockers.push(`当前 ${finalCompletion.currentWords}/${finalCompletion.wordTarget} 字，仍未达到目标字数`);
+          if (finalCompletion.missingChapters.length) blockers.push(`尚未执行计划第 ${finalCompletion.missingChapters.join('、')} 章`);
+          if (finalCompletion.unresolvedHooks.length) blockers.push(`仍有 ${finalCompletion.unresolvedHooks.length} 条计划伏笔未回收`);
           try { res.write(`data: ${JSON.stringify({ type: 'plan_needs_extension', message: `${blockers.join('；')}。已暂停，请扩展或修订章节计划后继续。` })}\n\n`); res.end(); } catch {}
           return;
         }
@@ -915,7 +1216,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
     const worldSetting = novel.worldSetting || '';
     const outline = novel.outline || '';
     const targetWordCount = Number(novel.targetWordCount) || 50000;
-    const planData = prepareCreativeState(novel);
+    const planData = ensureExecutableChapterPlan(novel, targetWordCount);
 
     // 更新状态，并将旧作品的计划/事件签名补入结构化状态。
     novel.status = 'generating';
@@ -953,7 +1254,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       await streamGenerate(systemPrompt, prompt, (chunk) => {
         buffer += chunk;
         try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
-      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget));
+      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget), undefined, createThinkingEmitter(res));
 
       let chapterContent = buffer;
       let expertReview = null;
@@ -1000,12 +1301,11 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       if (mode === 'book') {
         // ====== 整本模式：循环生成多章直到目标字数 ======
         if (!planData.chapters.length) {
-          // 不能在缺少契约的情况下退化成无约束长循环，先要求补齐计划。
           novel.status = 'paused';
           await novel.save();
           generationDone = true;
           activeStreams.delete(streamKey);
-          res.write(`data: ${JSON.stringify({ type: 'plan_needs_extension', message: '缺少有效章节计划，已暂停，请先补充或重新生成章节计划' })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: 'plan_needs_extension', message: '缺少大纲和有效章节计划，已暂停，请先补充大纲或重新生成章节计划' })}\n\n`);
           res.end();
           return;
         }
@@ -1024,10 +1324,28 @@ router.post('/continue/:novelId', auth, async (req, res) => {
         const startCh = getHighestChapterNumber(novel) + 1;
         const totalPlannedChapters = getTotalPlannedChapters(planData, targetWordCount, startCh - 1);
         if (planData.chapters.length && startCh > totalPlannedChapters) {
+          let completion = assessStoryCompletion(novel, planData, targetWordCount);
+          if (!completion.complete && completion.wordTargetReached && completion.missingChapters.length === 0 && completion.unresolvedHooks.length) {
+            const closedHooks = closeUnresolvedHooksAtEnding(novel, planData);
+            if (closedHooks) await novel.save();
+            completion = assessStoryCompletion(novel, planData, targetWordCount);
+          }
+          if (completion.complete) {
+            generationDone = true;
+            activeStreams.delete(streamKey);
+            novel.status = 'completed';
+            await novel.save();
+            try { res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`); res.end(); } catch {}
+            return;
+          }
           novel.status = 'paused';
           await novel.save();
           activeStreams.delete(streamKey);
-          try { res.write(`data: ${JSON.stringify({ type: 'plan_needs_extension', message: '章节计划已执行完毕，请先扩展计划后再续写' })}\n\n`); res.end(); } catch {}
+          const blockers = [];
+          if (!completion.wordTargetReached) blockers.push(`当前 ${completion.currentWords}/${completion.wordTarget} 字，仍未达到目标字数`);
+          if (completion.missingChapters.length) blockers.push(`尚未执行计划第 ${completion.missingChapters.join('、')} 章`);
+          if (completion.unresolvedHooks.length) blockers.push(`仍有 ${completion.unresolvedHooks.length} 条计划伏笔未回收`);
+          try { res.write(`data: ${JSON.stringify({ type: 'plan_needs_extension', message: `${blockers.join('；') || '章节计划已执行完毕'}，请先扩展计划后再续写` })}\n\n`); res.end(); } catch {}
           return;
         }
 
@@ -1069,6 +1387,8 @@ ${renderPlanForContext(planData, ch) || '按故事主线自然推进。'}
 
 ${renderChapterContract(contract)}
 
+${renderStoryBlueprintForContext(novel, ch, totalPlannedChapters)}
+
           当前总字数：${curTotal}/${targetWordCount}。即使总字数已经达到目标，也必须完成本章计划与所有后续章节，不能提前写结局。
 写作要求：
 1. 只完成本章唯一核心事件，推进至少一条主线或关系线，不复述已有剧情。
@@ -1078,6 +1398,16 @@ ${renderChapterContract(contract)}
 
           await ensureTokensLeft(req.user);
           await generateOneChapter(ch, chPrompt, contract);
+          if (novel.storyBlueprint?.autoReviewEnabled && ch % 6 === 0) {
+            try {
+              const proposal = await createStoryBlueprintProposal({ user: req.user, novel, persona, signal: abortController.signal });
+              if (proposal) {
+                await novel.save();
+                notifyBlueprintProposal(req.user, novel, proposal);
+                try { res.write(`data: ${JSON.stringify({ type: 'blueprint_proposal', proposal, message: '已生成新的剧情蓝图提案，请在书内确认' })}\n\n`); } catch {}
+              }
+            } catch (error) { console.warn('[Blueprint] 自动审核失败，继续写作:', error.message); }
+          }
         }
 
         if (abortController.signal.aborted) {
@@ -1108,14 +1438,19 @@ ${renderChapterContract(contract)}
           try { res.write(`data: ${JSON.stringify({ type: 'paused', message: `当前 ${getCompletedWordCount(novel)}/${targetWordCount} 字，已暂停，可再次点击续写` })}\n\n`); res.end(); } catch {}
           return;
         }
-        if (!completion.complete) {
+        if (!completion.complete && completion.wordTargetReached && completion.missingChapters.length === 0 && completion.unresolvedHooks.length) {
+          const closedHooks = closeUnresolvedHooksAtEnding(novel, planData);
+          if (closedHooks) await novel.save();
+        }
+        const finalCompletion = assessStoryCompletion(novel, planData, targetWordCount);
+        if (!finalCompletion.complete) {
           novel.status = 'paused';
           await novel.save();
           activeStreams.delete(streamKey);
           const blockers = [];
-          if (!completion.wordTargetReached) blockers.push(`当前 ${completion.currentWords}/${completion.wordTarget} 字，仍未达到目标字数`);
-          if (completion.missingChapters.length) blockers.push(`尚未执行计划第 ${completion.missingChapters.join('、')} 章`);
-          if (completion.unresolvedHooks.length) blockers.push(`仍有 ${completion.unresolvedHooks.length} 条计划伏笔未回收`);
+          if (!finalCompletion.wordTargetReached) blockers.push(`当前 ${finalCompletion.currentWords}/${finalCompletion.wordTarget} 字，仍未达到目标字数`);
+          if (finalCompletion.missingChapters.length) blockers.push(`尚未执行计划第 ${finalCompletion.missingChapters.join('、')} 章`);
+          if (finalCompletion.unresolvedHooks.length) blockers.push(`仍有 ${finalCompletion.unresolvedHooks.length} 条计划伏笔未回收`);
           try { res.write(`data: ${JSON.stringify({ type: 'plan_needs_extension', message: `${blockers.join('；')}。已暂停，请扩展或修订章节计划后继续。` })}\n\n`); res.end(); } catch {}
           return;
         }
@@ -1312,7 +1647,8 @@ router.post('/continue-import', auth, async (req, res) => {
           res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`);
         },
         abortController.signal,
-        resolveApiConfig(req.user?.modelConfig, 'writing')
+        resolveApiConfig(req.user?.modelConfig, 'writing'),
+        2, 0.85, 16384, 90000, createThinkingEmitter(res)
       );
 
       if (abortController.signal.aborted) {
@@ -1435,6 +1771,84 @@ router.get('/export', async (req, res) => {
   }
 });
 
+// ====== 动态故事蓝图：提案、确认与版本记录 ======
+router.get('/:novelId/blueprint', auth, async (req, res) => {
+  try {
+    const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
+    if (!novel) return res.status(404).json({ message: '小说不存在' });
+    const total = getTotalPlannedChapters(parseChapterPlan(novel.chapterPlanData || novel.chapterPlan || ''), novel.targetWordCount);
+    ensureStoryBlueprint(novel, total);
+    if (!Array.isArray(novel.storyBlueprintProposals)) novel.storyBlueprintProposals = [];
+    await novel.save();
+    res.json({ blueprint: novel.storyBlueprint, proposals: novel.storyBlueprintProposals.slice().sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)) });
+  } catch (error) {
+    res.status(500).json({ message: '获取故事蓝图失败', error: error.message });
+  }
+});
+
+router.put('/:novelId/blueprint/settings', auth, async (req, res) => {
+  try {
+    const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
+    if (!novel) return res.status(404).json({ message: '小说不存在' });
+    const total = getTotalPlannedChapters(parseChapterPlan(novel.chapterPlanData || novel.chapterPlan || ''), novel.targetWordCount);
+    const blueprint = ensureStoryBlueprint(novel, total);
+    if (req.body?.autoReviewEnabled !== undefined) blueprint.autoReviewEnabled = Boolean(req.body.autoReviewEnabled);
+    if (req.body?.emailReminderEnabled !== undefined) blueprint.emailReminderEnabled = Boolean(req.body.emailReminderEnabled);
+    novel.markModified('storyBlueprint');
+    await novel.save();
+    res.json({ blueprint });
+  } catch (error) {
+    res.status(500).json({ message: '保存蓝图设置失败', error: error.message });
+  }
+});
+
+router.post('/:novelId/blueprint/review', auth, async (req, res) => {
+  try {
+    const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
+    if (!novel) return res.status(404).json({ message: '小说不存在' });
+    if (activeStreams.has(novel._id.toString())) return res.status(409).json({ message: '小说正在生成，请稍后再审核蓝图' });
+    const pending = (novel.storyBlueprintProposals || []).find((proposal) => proposal.status === 'pending');
+    if (pending) return res.json({ proposal: pending, message: '已有待确认的剧情蓝图提案' });
+    const persona = await resolveNovelPersona(req.userId, novel);
+    const proposal = await createStoryBlueprintProposal({ user: req.user, novel, persona });
+    novel.markModified('storyBlueprint');
+    novel.markModified('storyBlueprintProposals');
+    await novel.save();
+    notifyBlueprintProposal(req.user, novel, proposal);
+    res.json({ proposal, message: proposal ? '已生成待确认的剧情蓝图提案' : '当前剧情无需调整' });
+  } catch (error) {
+    console.error('[Blueprint] 审核失败:', error.message);
+    res.status(error.isApiError ? 503 : 500).json({ message: error.isApiError ? error.message : '剧情蓝图审核失败，请稍后重试' });
+  }
+});
+
+router.post('/:novelId/blueprint/proposals/:proposalId/decision', auth, async (req, res) => {
+  try {
+    const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
+    if (!novel) return res.status(404).json({ message: '小说不存在' });
+    const proposal = (novel.storyBlueprintProposals || []).find((item) => item.id === req.params.proposalId);
+    if (!proposal) return res.status(404).json({ message: '剧情蓝图提案不存在' });
+    if (!['apply', 'reject'].includes(req.body?.decision)) return res.status(400).json({ message: '无效的提案操作' });
+    if (proposal.status !== 'pending') return res.status(400).json({ message: '该提案已经处理过了' });
+    const total = getTotalPlannedChapters(parseChapterPlan(novel.chapterPlanData || novel.chapterPlan || ''), novel.targetWordCount);
+    if (req.body.decision === 'apply') {
+      applyStoryBlueprint(novel, proposal.proposedBlueprint, total);
+      novel.storyBlueprint.lastAppliedAt = new Date();
+      proposal.status = 'applied';
+    } else {
+      proposal.status = 'rejected';
+    }
+    proposal.decidedAt = new Date();
+    novel.markModified('storyBlueprint');
+    novel.markModified('storyBlueprintProposals');
+    novel.markModified('plotThreads');
+    await novel.save();
+    res.json({ message: req.body.decision === 'apply' ? '剧情蓝图已应用，后续章节将遵循新版本' : '已拒绝该剧情蓝图提案', blueprint: novel.storyBlueprint, proposal });
+  } catch (error) {
+    res.status(500).json({ message: '处理剧情蓝图提案失败', error: error.message });
+  }
+});
+
 // 获取小说详情（含章节）
 router.get('/:novelId', auth, async (req, res) => {
   try {
@@ -1531,17 +1945,12 @@ router.put('/:novelId/chapter/:chapterNumber', auth, async (req, res) => {
     const chapter = novel.chapters.find(c => c.chapterNumber === chNum);
     if (!chapter) return res.status(404).json({ message: '章节不存在' });
 
-    const { content } = req.body;
+    const { content, source = 'manual', metadata = {} } = req.body;
     if (content === undefined) return res.status(400).json({ message: '请提供内容' });
 
-    // 重新计算字数
-    novel.currentWordCount -= chapter.wordCount || 0;
-    chapter.content = content;
-    chapter.wordCount = content.length;
-    novel.currentWordCount += chapter.wordCount;
-    chapter.generatedAt = new Date();
+    const revision = applyChapterRevision(novel, chNum, content, { source, metadata });
     await novel.save();
-    res.json({ message: '章节已更新', chapter });
+    res.json({ message: '章节已更新，后续续写上下文已同步', chapter: revision.chapter, revision });
   } catch (error) {
     res.status(500).json({ message: '编辑失败', error: error.message });
   }
@@ -1622,7 +2031,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
         appendBuffer += chunk;
         if (Date.now() - lastAutoSave > 5000) saveAppendProgress();
         res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`);
-      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'));
+      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, 0.85, 16384, 90000, createThinkingEmitter(res));
 
       if (abortController.signal.aborted) {
         activeStreams.delete(streamKey);
@@ -2380,14 +2789,13 @@ router.post('/polish-save', auth, async (req, res) => {
         title: `第${nextNum}章`,
         content: text.trim(),
         wordCount: text.trim().length,
-        qualityReport: { score: null, issues: ['润色回存章节'] },
+        qualityReport: { score: null, issues: ['润色回存章节'], revisions: [{ source: 'polish-append', finalLength: text.trim().length, appliedAt: new Date() }] },
       });
+      novel.currentChapterIndex = Math.max(Number(novel.currentChapterIndex || 0), nextNum);
+      rebuildNovelContextDocs(novel);
     } else if (chNum > 0) {
       // 覆盖指定章节
-      const ch = (novel.chapters || []).find(c => Number(c.chapterNumber) === chNum);
-      if (!ch) return res.status(404).json({ message: `第 ${chNum} 章不存在` });
-      ch.content = text.trim();
-      ch.wordCount = text.trim().length;
+      applyChapterRevision(novel, chNum, text, { source: 'polish' });
     } else {
       return res.status(400).json({ message: '请指定要覆盖的章节号，或选择 mode=append' });
     }
@@ -2716,6 +3124,8 @@ async function runOptimizeTask(novelId, userId, apiConfig) {
         'optimizeTask.totalChapters': totalCh,
         'optimizeTask.optimizedCount': 0,
         'optimizeTask.polishedCount': 0,
+        'optimizeTask.failedCount': 0,
+        'optimizeTask.partial': false,
         'optimizeTask.error': '',
         'optimizeTask.startedAt': new Date(),
         'optimizeTask.completedAt': null,
@@ -2735,6 +3145,7 @@ async function runOptimizeTask(novelId, userId, apiConfig) {
     // 2. 逐章优化
     let optimizedCount = 0;
     let polishedCount = 0;
+    let failedCount = 0;
 
     for (let i = 0; i < totalCh; i++) {
       // 每次 start 后重新读取 novel（防止多任务覆盖）
@@ -2751,48 +3162,66 @@ async function runOptimizeTask(novelId, userId, apiConfig) {
       });
 
       const ch = novel.chapters[i];
+      const sourceContent = String(ch.content || '');
+      if (sourceContent.length > 12000) {
+        failedCount++;
+        await Novel.updateOne({ _id: novelId, 'chapters.chapterNumber': ch.chapterNumber }, {
+          $set: { 'chapters.$.qualityReport.optimize': { applied: false, reason: '章节超过安全处理长度，已保留原文', originalLength: sourceContent.length, appliedAt: new Date() } }
+        });
+        continue;
+      }
       const chPrompt = buildOptimizeChapterPrompt(ch, ch.chapterNumber, analysis, novel.outline, novel.writingPersonaSnapshot);
       const chResult = await streamGenerate(
         '你是一位专业的小说编辑。请根据分析报告优化指定章节。',
         chPrompt, null, null, apiConfig
       );
       let newContent = chResult?.content || '';
-      if (newContent.length > 50) {
+      const minRetainedLength = Math.max(120, Math.floor(sourceContent.length * 0.45));
+      if (newContent.length >= minRetainedLength) {
         try {
           const { text } = processChapter(newContent);
           newContent = text;
         } catch {}
         await Novel.updateOne(
           { _id: novelId, 'chapters.chapterNumber': ch.chapterNumber },
-          { $set: { 'chapters.$.content': newContent, 'chapters.$.wordCount': newContent.length } }
+          { $set: { 'chapters.$.content': newContent, 'chapters.$.wordCount': newContent.length, 'chapters.$.qualityReport.optimize': { applied: true, originalLength: sourceContent.length, finalLength: newContent.length, appliedAt: new Date() } }, $push: { 'chapters.$.qualityReport.revisions': { source: 'optimize', originalLength: sourceContent.length, finalLength: newContent.length, appliedAt: new Date() } } }
         );
         optimizedCount++;
       } else {
         try {
           const { text } = processChapter(ch.content || '');
-          if (text !== ch.content) {
+          if (text !== sourceContent) {
             await Novel.updateOne(
               { _id: novelId, 'chapters.chapterNumber': ch.chapterNumber },
-              { $set: { 'chapters.$.content': text } }
+              { $set: { 'chapters.$.content': text, 'chapters.$.wordCount': text.length, 'chapters.$.qualityReport.optimize': { applied: true, source: 'local-toolchain', originalLength: sourceContent.length, finalLength: text.length, appliedAt: new Date() } }, $push: { 'chapters.$.qualityReport.revisions': { source: 'optimize-local', originalLength: sourceContent.length, finalLength: text.length, appliedAt: new Date() } } }
             );
             polishedCount++;
-          }
-        } catch {}
+          } else failedCount++;
+        } catch { failedCount++; }
       }
     }
 
     // 更新总字数
     novel = await Novel.findOne({ _id: novelId });
     if (novel) {
+      // The optimization task has changed persisted chapter text. Refresh the
+      // compressed context before another generation can read stale facts.
+      rebuildNovelContextDocs(novel);
       const totalWords = novel.chapters.reduce((s, c) => s + (c.wordCount || 0), 0);
+      const partial = failedCount > 0;
       await Novel.updateOne({ _id: novelId }, {
         $set: {
           currentWordCount: totalWords,
-          status: 'completed',
-          'optimizeTask.status': 'completed',
-          'optimizeTask.progress': `✅ 全文调优完成！重写 ${optimizedCount} 章，润色 ${polishedCount} 章`,
+          chapterSummaryDoc: novel.chapterSummaryDoc,
+          foreshadowingDoc: novel.foreshadowingDoc,
+          contextMemory: novel.contextMemory,
+          'optimizeTask.status': partial ? 'error' : 'completed',
+          'optimizeTask.partial': partial,
+          'optimizeTask.progress': partial ? `全文调优部分完成：重写 ${optimizedCount} 章，润色 ${polishedCount} 章，失败 ${failedCount} 章（原文已保留）` : `✅ 全文调优完成！重写 ${optimizedCount} 章，润色 ${polishedCount} 章`,
           'optimizeTask.optimizedCount': optimizedCount,
           'optimizeTask.polishedCount': polishedCount,
+          'optimizeTask.failedCount': failedCount,
+          'optimizeTask.error': partial ? `${failedCount} 章未应用调优结果` : '',
           'optimizeTask.completedAt': new Date(),
         }
       });
@@ -2956,6 +3385,8 @@ async function runEditorialBookTask(novelId, userId, apiConfig) {
 
     const totalChapters = novel.chapters.length;
     let processedCount = 0;
+    let failedCount = 0;
+    const originalTotalWords = novel.chapters.reduce((sum, chapter) => sum + Number(chapter.wordCount || String(chapter.content || '').length), 0);
 
     await Novel.updateOne({ _id: novelId }, {
       $set: {
@@ -2964,6 +3395,8 @@ async function runEditorialBookTask(novelId, userId, apiConfig) {
         'editorialTask.totalChapters': totalChapters,
         'editorialTask.currentChapter': 0,
         'editorialTask.processedCount': 0,
+        'editorialTask.failedCount': 0,
+        'editorialTask.partial': false,
         'editorialTask.startedAt': new Date(),
       }
     });
@@ -2983,7 +3416,8 @@ async function runEditorialBookTask(novelId, userId, apiConfig) {
       });
 
       try {
-        const result = await runEditorialPipeline(ch.content || '', {
+        const sourceContent = String(ch.content || '');
+        const result = await runEditorialPipeline(sourceContent, {
           apiConfig,
           persona: novel.writingPersonaSnapshot,
           onStatus: async (stageId, stageName, message) => {
@@ -2998,8 +3432,11 @@ async function runEditorialBookTask(novelId, userId, apiConfig) {
           },
         });
 
-        let finalContent = result.content;
-        if (finalContent && finalContent.length > 50) {
+        let finalContent = String(result.content || '').trim();
+        // Never replace a chapter with a truncated/empty model response. The
+        // editorial engine is a revision layer, not a second generator.
+        const minRetainedLength = Math.max(120, Math.floor(sourceContent.length * 0.45));
+        if (finalContent.length >= minRetainedLength && !result.skipped) {
           // 后处理
           try {
             const { text: cleanText } = processChapter(finalContent, { doDeAI: true, doHumanize: true });
@@ -3009,29 +3446,76 @@ async function runEditorialBookTask(novelId, userId, apiConfig) {
           } catch {}
 
           // 保存到数据库
+          const continuity = checkChapterContinuity(finalContent, i > 0 ? novel.chapters[i - 1] : null, null);
           await Novel.updateOne(
             { _id: novelId, 'chapters.chapterNumber': chNum },
-            { $set: { 'chapters.$.content': finalContent, 'chapters.$.wordCount': finalContent.length } }
+            { $set: {
+              'chapters.$.content': finalContent,
+              'chapters.$.wordCount': finalContent.length,
+              'chapters.$.qualityReport.editorial': {
+                applied: true,
+                originalLength: sourceContent.length,
+                finalLength: finalContent.length,
+                stageResults: result.stageResults || [],
+                continuity,
+                appliedAt: new Date(),
+              },
+              'chapters.$.generatedAt': new Date(),
+            }, $push: { 'chapters.$.qualityReport.revisions': { source: 'editorial', originalLength: sourceContent.length, finalLength: finalContent.length, appliedAt: new Date() } } }
           );
           processedCount++;
+        } else {
+          failedCount++;
+          console.warn(`[编辑引擎] 第${chNum}章结果过短(${finalContent.length}/${sourceContent.length})，保留原文`);
+          await Novel.updateOne(
+            { _id: novelId, 'chapters.chapterNumber': chNum },
+            { $set: {
+              'chapters.$.qualityReport.editorial': {
+                applied: false,
+                reason: result.skipped ? (result.stageResults?.[0]?.reason || '超过安全处理长度，已保留原文') : '编辑结果过短，已保留原文',
+                originalLength: sourceContent.length,
+                finalLength: finalContent.length,
+                stageResults: result.stageResults || [],
+                appliedAt: new Date(),
+              },
+            } }
+          );
         }
       } catch (e) {
+        failedCount++;
         console.error(`[编辑引擎] 第${chNum}章处理失败:`, e.message);
+        await Novel.updateOne(
+          { _id: novelId, 'chapters.chapterNumber': chNum },
+          { $set: { 'chapters.$.qualityReport.editorial': { applied: false, reason: e.message, appliedAt: new Date() } } }
+        );
       }
     }
 
     // 更新总字数
     novel = await Novel.findOne({ _id: novelId });
     if (novel) {
-      const totalWords = novel.chapters.reduce((s, c) => s + (c.wordCount || 0), 0);
+      // Rebuild the persistent context docs from the actual post-edit text so
+      // future continuation does not use stale summaries or foreshadowing.
+      rebuildNovelContextDocs(novel);
+      const totalWords = novel.chapters.reduce((s, c) => s + Number(c.wordCount || String(c.content || '').length), 0);
+      const partial = failedCount > 0;
       await Novel.updateOne({ _id: novelId }, {
         $set: {
           currentWordCount: totalWords,
-          'editorialTask.status': 'completed',
-          'editorialTask.progress': `✅ 编辑引擎完成！共处理 ${processedCount}/${totalChapters} 章`,
+          chapterSummaryDoc: novel.chapterSummaryDoc,
+          foreshadowingDoc: novel.foreshadowingDoc,
+          contextMemory: novel.contextMemory,
+          'editorialTask.status': partial ? 'error' : 'completed',
+          'editorialTask.partial': partial,
+          'editorialTask.progress': partial
+            ? `编辑引擎部分完成：成功 ${processedCount}/${totalChapters} 章，失败 ${failedCount} 章，失败章节已保留原文`
+            : `✅ 编辑引擎完成！共处理 ${processedCount}/${totalChapters} 章`,
           'editorialTask.processedCount': processedCount,
+          'editorialTask.failedCount': failedCount,
+          'editorialTask.error': partial ? `${failedCount} 章未应用调优结果` : '',
           'editorialTask.completedAt': new Date(),
-        }
+        },
+        $unset: { 'editorialTask.currentStage': '', 'editorialTask.stageName': '' },
       });
     }
   } catch (error) {
@@ -3091,7 +3575,7 @@ router.post('/editorial-status/:novelId', auth, async (req, res) => {
     res.json({
       task: novel.editorialTask || {
         status: 'idle', progress: '', currentChapter: 0, totalChapters: 0,
-        currentStage: '', stageName: '', processedCount: 0, error: '',
+        currentStage: '', stageName: '', processedCount: 0, failedCount: 0, partial: false, error: '',
       }
     });
   } catch (error) {

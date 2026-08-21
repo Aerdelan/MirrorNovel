@@ -98,8 +98,15 @@ function sseRequest(method, urlPath, body, token, { timeoutMs = 30 * 60 * 1000, 
       let buffer = '';
       const events = [];
       let finalEvent = null;
-      const timer = setTimeout(() => { req.destroy(); reject(new Error('SSE timeout')); }, timeoutMs);
+      // Long-book generation can legitimately exceed the nominal request duration.
+      // Treat timeoutMs as an inactivity limit and reset it on every heartbeat/event.
+      let timer = setTimeout(() => { req.destroy(); reject(new Error('SSE inactivity timeout')); }, timeoutMs);
+      const refreshTimer = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => { req.destroy(); reject(new Error('SSE inactivity timeout')); }, timeoutMs);
+      };
       res.on('data', chunk => {
+        refreshTimer();
         buffer += chunk.toString('utf8');
         const lines = buffer.split('\n');
         buffer = lines.pop() || '';
@@ -285,7 +292,7 @@ async function phaseContinueLoop(token, novelId) {
 
 async function phaseExport(token, novelId) {
   log('EXPORT', '导出小说');
-  const r = await request('POST', '/api/novel/export', { novelId, format: 'txt' }, token);
+  const r = await request('POST', '/api/novel/export', { novelIds: [novelId] }, token);
   if (r.status !== 200) {
     // fallback：通过详情接口自己拼
     issue('EXPORT', 'WARN', '导出接口异常，降级拼接: ' + JSON.stringify(r.data).slice(0, 200));
@@ -338,6 +345,23 @@ async function main() {
 
   } catch (err) {
     issue('MAIN', 'FATAL', '流水线主流程异常: ' + err.message, { stack: err.stack });
+    // Preserve progress when the client-side stream ends after the server has
+    // already persisted chapters (for example, a browser/proxy disconnect).
+    if (novelId && token) {
+      try {
+        const detail = await request('GET', `/api/novel/${novelId}`, null, token);
+        if (detail.status === 200) {
+          const chapters = detail.data.chapters || [];
+          report.novel.title = detail.data.title;
+          report.novel.finalWordCount = detail.data.currentWordCount || chapters.reduce((sum, c) => sum + String(c.content || '').length, 0);
+          report.novel.chapters = chapters.length;
+          report.novel.status = detail.data.status;
+          log('RECOVER', `回查已持久化进度: ${report.novel.finalWordCount} 字, ${report.novel.chapters} 章, 状态=${report.novel.status}`);
+        }
+      } catch (recoverError) {
+        issue('RECOVER', 'WARN', '异常后回查小说状态失败: ' + recoverError.message);
+      }
+    }
   } finally {
     report.endedAt = new Date().toISOString();
     report.summary = {

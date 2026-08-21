@@ -57,6 +57,9 @@
  <span v-if="novel.editorialTask?.status === 'running'" class="status-badge optimizing">⏳ 编辑中</span>
  <span v-else-if="novel.optimizeTask?.status === 'analyzing' || novel.optimizeTask?.status === 'optimizing'" class="status-badge optimizing">⏳ 调优中</span>
  <span v-else class="status-badge" :class="novel.status">{{ statusMap[novel.status] || novel.status }}</span>
+ <span v-if="novel.editorialTask?.status === 'completed'" class="status-badge editorial-applied">编辑已应用</span>
+ <span v-else-if="novel.editorialTask?.partial" class="status-badge editorial-partial">部分应用</span>
+ <span v-if="novel.storyBlueprintProposals?.some(p => p.status === 'pending')" class="status-badge blueprint-pending"> 剧情待确认</span>
  </div>
  <div class="novel-meta">
  <span> {{ novel.currentWordCount }} / {{ novel.targetWordCount }} {{ $t('generate.wordShort') }}</span>
@@ -114,7 +117,7 @@
  <Teleport to="body">
  <div v-if="editorialRunning" class="editorial-progress-overlay">
  <div class="editorial-progress-card">
- <div class="progress-title">七阶段编辑引擎运行中</div>
+ <div class="progress-title">四阶段编辑引擎运行中</div>
  <div class="progress-novel-title">{{ editorialNovelTitle }}</div>
  <div class="progress-chapter">{{ editorialProgress }}</div>
  <div class="editorial-stages-display">
@@ -134,7 +137,8 @@
  <div class="continue-progress-card">
  <div class="progress-title">{{ $t('bookshelf.aiWriting') }}</div>
  <div v-if="currentContinueChapter" class="progress-chapter">{{ $t('bookshelf.currentChapter', { num: currentContinueChapter }) }}</div>
- <div class="progress-word">{{ $t('bookshelf.generated', { words: continueWordCount }) }}</div>
+ <div v-if="continueWordCount === 0 && continueThinkingCount > 0" class="progress-word">{{ $t('bookshelf.thinking', { words: continueThinkingCount }) }}</div>
+ <div v-else class="progress-word">{{ $t('bookshelf.generated', { words: continueWordCount }) }}</div>
  <div class="progress-indicator"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
  </div>
  </div>
@@ -168,6 +172,7 @@ const continueDialogNovel = ref(null)
 const isContinuing = ref(false)
 const currentContinueChapter = ref(0)
 const continueWordCount = ref(0)
+const continueThinkingCount = ref(0)
 
 // ---- 编辑引擎 ----
 const editorialRunning = ref(false)
@@ -231,10 +236,11 @@ function isTokenExhaustedError(message) {
 
 async function startBookContinue(novel) {
  continueDialogNovel.value = null; isContinuing.value = true
- currentContinueChapter.value = 0; continueWordCount.value = 0
+ currentContinueChapter.value = 0; continueWordCount.value = 0; continueThinkingCount.value = 0
  try {
  await novelStore.continueGeneration(novel._id, (chunk, fullText) => { continueWordCount.value = fullText.length }, (status) => {
- if (status.type === 'chapter_start') currentContinueChapter.value = status.chapterNumber || 0
+ if (status.type === 'chapter_start') { currentContinueChapter.value = status.chapterNumber || 0; continueThinkingCount.value = 0 }
+ if (status.type === 'thinking') { continueThinkingCount.value = status.length || 0 }
  if (status.type === 'token_exhausted') { isContinuing.value = false; novelStore.fetchBookshelf() }
  else if (status.type === 'plan_needs_extension') { isContinuing.value = false; alert(status.message || '缺少章节计划，请先生成或补充计划后再续写整本'); novelStore.fetchBookshelf() }
  else if (status.type === 'completed' || status.type === 'paused' || status.type === 'error') { isContinuing.value = false; novelStore.fetchBookshelf() }
@@ -287,7 +293,7 @@ function editOutline(novel) { outlineNovel.value = novel; outlineText.value = no
 
 // ---- 编辑引擎 ----
 async function startEditorialBook(novel) {
- if (!confirm(`确定要对《${novel.title}》执行七阶段编辑引擎吗？\n\n将对全部 ${novel.currentChapterIndex || 0} 章逐章执行：\n1. AI特征分析  2. 删除AI痕迹  3. 节奏重构\n4. 人物重塑  5. 风格润色  6. 字数压缩  7. 一致性检查\n\n处理时间较长，将在后台运行。`)) return
+ if (!confirm(`确定要对《${novel.title}》执行四阶段编辑引擎吗？\n\n将对全部 ${novel.currentChapterIndex || 0} 章逐章执行：\n1. 作者人格\n2. 结构重构\n3. 风格一致性\n4. 去AI化\n\n处理成功的章节会自动应用回原文；输出过短或失败的章节会保留原文并标记原因。\n处理时间较长，将在后台运行。`)) return
 
  try {
  const res = await api.post(`/novel/editorial-book/${novel._id}`)
@@ -335,10 +341,10 @@ function startEditorialPolling(novelId) {
  editorialRunning.value = false
  editorialStageDisplay.value.forEach(s => { if (!s.error) { s.done = true; s.active = false } })
  await novelStore.fetchBookshelf()
- if (task.status === 'completed') {
+ if (task.status === 'completed' && !task.partial) {
  alert('编辑引擎完成！' + (task.progress || ''))
  } else {
- alert('编辑引擎出错: ' + (task.error || task.progress || ''))
+ alert(task.partial ? ('编辑引擎部分完成：' + (task.progress || '失败章节已保留原文')) : ('编辑引擎出错: ' + (task.error || task.progress || '')))
  }
  }
  } catch (e) {
@@ -427,6 +433,9 @@ async function saveOutline() {
 .action-info:hover:not(:disabled) { color: var(--info); border-color: var(--info); background: var(--info-bg); }
 .action-editorial { color: var(--accent-hover); border-color: var(--accent); }
 .action-editorial:hover:not(:disabled) { color: var(--accent-hover); border-color: var(--accent); background: var(--accent-light); }
+.editorial-applied { background: #eef8f0; color: #258344; border-color: #b9dfc1; }
+.editorial-partial { background: #fff7e8; color: #a66a00; border-color: #efd39a; }
+.blueprint-pending { color: #ad6800; background: #fff7e6; border-color: #ffd591; }
 
 /* 大纲编辑弹窗 */
 .outline-overlay { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; animation: fadeIn 0.2s; }

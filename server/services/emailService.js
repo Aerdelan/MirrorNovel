@@ -1,5 +1,9 @@
 const nodemailer = require('nodemailer');
 
+const escapeHtml = (value) => String(value || '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+
 // 创建邮件传输器（添加超时配置）
 const transporter = nodemailer.createTransport({
   host: process.env.EMAIL_HOST,
@@ -119,4 +123,23 @@ const sendActivityNotification = async (to, activity) => {
   await transporter.sendMail(mailOptions);
 };
 
-module.exports = { sendVerificationCode, verifyTransporter, sendActivityNotification };
+/** Send a low-frequency reminder for a major, user-confirmed story decision. */
+const sendBlueprintProposalNotification = async (to, proposal, novelId) => {
+  const title = escapeHtml(String(proposal?.title || '剧情蓝图优化建议').slice(0, 80));
+  const summary = escapeHtml(String(proposal?.summary || 'AI 为后续剧情提出了新的蓝图建议。').slice(0, 800));
+  const link = `${process.env.CLIENT_URL || 'http://localhost:5173'}/novel/${novelId}`;
+  await transporter.sendMail({
+    from: `"MirrorNovel生成" <${process.env.EMAIL_USERNAME}>`,
+    to,
+    subject: `【MirrorNovel生成】《${String(proposal?.novelTitle || '你的小说').slice(0, 40)}》有一项重要剧情提案待确认`,
+    html: `<div style="max-width:600px;margin:0 auto;padding:20px;font-family:Arial,sans-serif;background:#fff;border-radius:10px;">
+      <h2 style="color:#FF6B35;">MirrorNovel 剧情蓝图提醒</h2>
+      <p>AI 在已写内容基础上提出了一项重要剧情调整，应用前不会改变后续生成。</p>
+      <div style="padding:16px;background:#f9f9f9;border-radius:8px;"><strong>${title}</strong><p>${summary}</p></div>
+      <p><a href="${link}" style="color:#1677ff;">打开书籍详情并确认提案</a></p>
+      <p style="color:#999;font-size:12px;">最终是否应用由你在项目内决定。</p>
+    </div>`,
+  });
+};
+
+module.exports = { sendVerificationCode, verifyTransporter, sendActivityNotification, sendBlueprintProposalNotification };
