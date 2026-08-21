@@ -76,7 +76,7 @@ export default {
  // Disclaimer modal
  disclaimer: {
    title: 'Notice & Disclaimer',
-   para1: 'This system may collect necessary platform runtime information (such as device identifiers and runtime environment) during use, to optimize performance, improve service quality, and ensure system security.',
+   para1: 'This system may collect necessary platform runtime information (such as device identifiers and runtime environment) during use, to gather system usage statistics, optimize performance, improve service quality, and ensure system security.',
    para2: 'This system is for personal study and research only. Any unauthorized commercial use, resale, or use for illegal activities is unrelated to this platform; all consequences arising therefrom are borne by the user.',
    warn: 'If you agree to the above terms, please click "Continue"; otherwise, stop using and exit immediately.',
    agree: 'I have read and agree, continue',
