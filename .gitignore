@@ -26,3 +26,10 @@ server/scripts/
 
 # Deploy webhooks (server-specific)
 server/scripts/webhook*.js
+
+# 临时文件/运行时产物/备份文件 — 不该提交
+tmp_upload/
+tmp_e2e_report/
+tmp_metrics/
+tmp_mongo_data/
+*.bak
