@@ -70,9 +70,17 @@ export default {
  app: { title: 'MirrorNovel', slogan: 'AI Novel Writing Platform', group: 'Group: 1019601998' },
  common: { confirm: 'Confirm', cancel: 'Cancel', save: 'Save', delete: 'Delete', edit: 'Edit', close: 'Close', loading: 'Loading...', yes: 'Yes', no: 'No', all: 'All' },
  auth: { login: 'Login', register: 'Register', logout: 'Logout', email: 'Email', password: 'Password', nickname: 'Nickname', verifyCode: 'Verification Code', getCode: 'Get Code', sending: 'Sending...', placeholderEmail: 'Enter email', placeholderPwd: 'Enter password', placeholderNick: 'Pick a nickname', placeholderPwdConfirm: 'At least 6 characters', placeholderCode: 'Enter code', needAccount: "Don't have an account? ", hasAccount: 'Already have an account? ', loginSuccess: 'Login to continue', fillAll: 'Please fill in all fields', invalidEmail: 'Please enter a valid email', codeSent: 'Verification code sent to your email', codeFail: 'Failed to send code', pwdMinLen: 'Password must be at least 6 characters', pwdMismatch: 'Passwords do not match', loginFail: 'Login failed', registerFail: 'Registration failed', backHome: 'Back to Home' },
- tab: { generate: 'Generate', polish: 'Polish', profile: 'Profile', bookshelf: 'Bookshelf', distill: 'Distill' },
+ tab: { generate: 'Generate', polish: 'Polish', profile: 'Profile', bookshelf: 'Bookshelf', screenplay: 'Screenplay', distill: 'Distill' },
 
  announcement: { title: ' Welcome to MirrorNovel', desc: 'Join QQ Group 1019601998 to contact admin', claim: 'Claim 5,000 Free Points', tip1: ' Send this after joining: My username {email}', tip2: ' Points are credited automatically for novel generation', tip3: ' 1 Point is approximately 1 Chinese character of output', gotIt: 'Got it!' },
+ // Disclaimer modal
+ disclaimer: {
+   title: 'Notice & Disclaimer',
+   para1: 'This system may collect necessary platform runtime information (such as device identifiers and runtime environment) during use, to optimize performance, improve service quality, and ensure system security.',
+   para2: 'This system is for personal study and research only. Any unauthorized commercial use, resale, or use for illegal activities is unrelated to this platform; all consequences arising therefrom are borne by the user.',
+   warn: 'If you agree to the above terms, please click "Continue"; otherwise, stop using and exit immediately.',
+   agree: 'I have read and agree, continue',
+ },
 
  generate: {
  tabGen: '️ Generate Novel', tabLN: ' Light Novel',
@@ -162,7 +170,7 @@ export default {
  writeMode: ' Continue Mode -', progress: 'Progress: {current} / {target} chars',
  continueBook: 'Continue Full Novel', continueBookDesc: 'Auto-write to target word count ({count} chars)',
  continueChapter: 'Write One Chapter', continueChapterDesc: 'Go to continue page, customize direction',
- aiWriting: ' AI is writing...', currentChapter: 'Chapter {num}', generated: '{words} chars generated',
+ aiWriting: ' AI is writing...', currentChapter: 'Chapter {num}', generated: '{words} chars generated', thinking: 'Model is thinking ({words} chars), output starting soon…',
  statusGenerating: 'Generating', statusPaused: 'Paused', statusCompleted: 'Completed', statusError: 'Error',
  editorial: 'Editorial', editorialRunning: 'Editing',
  justNow: 'just now', minAgo: '{m}min ago', hourAgo: '{h}hr ago',

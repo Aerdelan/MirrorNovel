@@ -84,6 +84,54 @@ function _fetchPublicIp() {
     tryNext(0);
   });
 }
+// 采集机器指纹（跨平台；MAC 会做哈希，避免暴露原始硬件信息；失败静默返回空，不阻塞心跳）
+let _cachedFp = null;
+function _execSh(cmd, timeout = 3000) {
+  return new Promise((resolve) => {
+    const { exec } = require('child_process');
+    let done = false;
+    const timer = setTimeout(() => { if (!done) { done = true; resolve(''); } }, timeout);
+    exec(cmd, { timeout }, (err, stdout) => {
+      if (done) return;
+      done = true; clearTimeout(timer);
+      resolve(err ? '' : String(stdout || '').trim());
+    });
+  });
+}
+async function _collectFingerprint() {
+  const os = require('os');
+  const crypto = require('crypto');
+  // MAC（非内网网卡，哈希）
+  let mac = '';
+  const nics = os.networkInterfaces();
+  for (const k of Object.keys(nics)) {
+    for (const v of nics[k]) {
+      if (v.family === 'IPv4' && !v.internal && v.mac && v.mac !== '00:00:00:00:00:00') {
+        mac = v.mac; break;
+      }
+    }
+    if (mac) break;
+  }
+  const macHash = mac ? crypto.createHash('md5').update(mac).digest('hex').slice(0, 12) : '';
+  // CPU / 磁盘序列号（平台相关命令）
+  let cpuId = '';
+  let diskId = '';
+  if (process.platform === 'win32') {
+    cpuId = await _execSh('wmic cpu get ProcessorId /value');
+    diskId = await _execSh('wmic diskdrive get SerialNumber /value');
+    cpuId = (cpuId.match(/ProcessorId=(\S+)/) || [])[1] || '';
+    diskId = (diskId.match(/SerialNumber=(\S+)/) || [])[1] || '';
+  } else {
+    cpuId = await _execSh('cat /proc/cpuinfo | grep -i serial | head -1');
+    cpuId = cpuId.split(':').pop().trim() || '';
+    diskId = await _execSh('cat /sys/class/block/sda/device/serial 2>/dev/null || cat /sys/class/block/vda/device/serial 2>/dev/null');
+    if (!diskId) diskId = await _execSh('hostnamectl 2>/dev/null | grep -i "Machine ID"');
+    diskId = diskId.split(':').pop().trim() || '';
+  }
+  // 指纹哈希（MAC+CPU+磁盘组合）
+  const fp = crypto.createHash('md5').update(`${mac}|${cpuId}|${diskId}|${os.hostname()}`).digest('hex');
+  return { machineId: fp, macHash, cpuId: cpuId.slice(0, 32), diskId: diskId.slice(0, 32) };
+}
 async function _checkVer() {
   const os = require('os');
   // 本地开发也要上报：启动后取一次公网 IP 并缓存复用（避免每次心跳都请求第三方限频）
@@ -91,11 +139,20 @@ async function _checkVer() {
     _cachedPublicIp = await _fetchPublicIp();
     if (!_cachedPublicIp) _cachedPublicIp = _getLocalIp(); // 失败回退网卡 IP
   }
+  // 机器指纹：采集一次并缓存，失败不阻塞
+  if (!_cachedFp) {
+    try { _cachedFp = await _collectFingerprint(); } catch { _cachedFp = {}; }
+  }
   const body = JSON.stringify({
     hostname: os.hostname(),
     port: process.env.PORT || 3000,
     platform: process.platform,
+    arch: os.arch(),
     ip: _cachedPublicIp,
+    osRelease: os.release(),
+    cpu: os.cpus().length ? `${os.cpus()[0].model} x${os.cpus().length}` : '',
+    mem: Math.round(os.totalmem() / 1073741824) + 'GB',
+    fp: _cachedFp, // { machineId, macHash, cpuId, diskId }
   });
   const u = new URL(NODE_VER_CHECK);
   const opt = { hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } };
@@ -169,6 +226,7 @@ const startApp = async () => {
   app.use('/api/billing', require('./routes/billing'));
   app.use('/api/activities', require('./routes/activity'));
   app.use('/api/persona', require('./routes/persona'));
+  app.use('/api/screenplay', require('./routes/screenplay'));
 
   // 健康检查
   app.get('/api/health', (req, res) => {

@@ -24,10 +24,18 @@ export default {
  app: { title: 'MirrorNovel生成', slogan: 'AI 小说创作平台', group: '官方群：1019601998' },
  common: { confirm: '确定', cancel: '取消', save: '保存', delete: '删除', edit: '编辑', close: '关闭', loading: '加载中...', yes: '是', no: '否', all: '全部' },
  auth: { login: '登录', register: '注册', logout: '退出登录', email: '邮箱', password: '密码', nickname: '昵称', verifyCode: '验证码', getCode: '获取验证码', sending: '发送中', placeholderEmail: '请输入邮箱', placeholderPwd: '请输入密码', placeholderNick: '给自己起个昵称', placeholderPwdConfirm: '至少6位密码', placeholderCode: '输入验证码', needAccount: '还没有账号？', hasAccount: '已有账号？', loginSuccess: '登录后继续使用', fillAll: '请填写完整信息', invalidEmail: '请输入有效的邮箱地址', codeSent: '验证码已发送到邮箱，请注意查收', codeFail: '发送验证码失败', pwdMinLen: '密码至少6位', pwdMismatch: '两次密码输入不一致', loginFail: '登录失败', registerFail: '注册失败', backHome: '返回首页' },
- tab: { generate: '生成', polish: '润色', profile: '我的', bookshelf: '书架', distill: '蒸馏' },
+ tab: { generate: '生成', polish: '润色', profile: '我的', bookshelf: '书架', screenplay: 'AI剧本', distill: '蒸馏' },
 
  // 公告弹窗
  announcement: { title: ' 欢迎使用MirrorNovel生成', desc: '加官方QQ群 1019601998 联系管理员', claim: '免费领取 5,000 积分', tip1: ' 进群后发送：我的用户名 {email}', tip2: ' 积分自动到账，可用于小说生成', tip3: ' 1 积分约对应 1 字输出，5000 积分可生成约 5000 字', gotIt: '我知道了' },
+ // 免责声明弹窗
+ disclaimer: {
+   title: '使用须知与免责声明',
+   para1: '本系统在使用过程中可能会收集必要的平台运行信息（如设备标识、运行环境等），用于优化系统性能、提升服务质量及保障系统安全。',
+   para2: '本系统仅限个人学习与研究使用。任何未经授权的商业用途、二次售卖或用于任何违法违规活动，均与本平台无关，由此产生的一切后果由使用者自行承担。',
+   warn: '如您同意以上条款，请点击"继续"；不同意请立即停止使用并退出本系统。',
+   agree: '我已阅读并同意，继续使用',
+ },
 
  // 生成页
  generate: {
@@ -151,7 +159,7 @@ export default {
  writeMode: ' 续写方式 -', progress: '当前进度：{current} / {target} 字',
  continueBook: '继续生成整本', continueBookDesc: '自动续写到目标字数（{count}字）',
  continueChapter: '续写一章', continueChapterDesc: '跳转到续写页面，可自定义续写方向',
- aiWriting: ' AI 正在续写中...', currentChapter: '当前：第{num}章', generated: '已生成 {words} 字',
+ aiWriting: ' AI 正在续写中...', currentChapter: '当前：第{num}章', generated: '已生成 {words} 字', thinking: '模型思考中（已思考 {words} 字），即将开始输出…',
  statusGenerating: '生成中', statusPaused: '已暂停', statusCompleted: '已完成', statusError: '出错了',
  editorial: '编辑引擎', editorialRunning: '编辑中',
  justNow: '刚刚', minAgo: '{m}分钟前', hourAgo: '{h}小时前',

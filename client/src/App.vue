@@ -45,8 +45,29 @@
  </div>
  </div>
  </Teleport>
+
+ <!-- 免责声明弹窗（首次使用必须同意） -->
+ <Teleport to="body">
+ <div v-if="showDisclaimer" class="announcement-overlay" @click.self.stop>
+ <div class="announcement-modal disclaimer-modal">
+ <div class="modal-header">{{ $t('disclaimer.title') }}</div>
+ <div class="modal-body">
+ <div class="disclaimer-scroll">
+ <p class="disclaimer-para">{{ $t('disclaimer.para1') }}</p>
+ <p class="disclaimer-para">{{ $t('disclaimer.para2') }}</p>
+ <p class="disclaimer-para disclaimer-warn">{{ $t('disclaimer.warn') }}</p>
  </div>
-</template>
+ </div>
+ <div class="modal-footer">
+ <button class="btn btn-primary btn-block btn-lg" @click="agreeDisclaimer">
+ {{ $t('disclaimer.agree') }}
+ </button>
+ </div>
+ </div>
+ </div>
+ </Teleport>
+ </div>
+ </template>
 
 <script setup>
 import { ref, computed, watchEffect, onMounted, onUnmounted } from 'vue'
@@ -62,6 +83,19 @@ const { isZh, setLocale } = useI18n()
 const hiddenRoutes = ['Login', 'Register', 'NovelDetail']
 const showTabBar = computed(() => !hiddenRoutes.includes(route.name))
 const showAnnouncement = ref(false)
+
+// 免责声明：首次使用必须同意，同意后 localStorage 记录
+const DISCLAIMER_KEY = 'mn_disclaimer_agreed'
+const showDisclaimer = ref(false)
+watchEffect(() => {
+  if (authStore.isLoggedIn) {
+    showDisclaimer.value = !localStorage.getItem(DISCLAIMER_KEY)
+  }
+})
+function agreeDisclaimer() {
+  localStorage.setItem(DISCLAIMER_KEY, '1')
+  showDisclaimer.value = false
+}
 
 watchEffect(async () => {
  if (authStore.isLoggedIn) {
@@ -102,5 +136,24 @@ function switchLang() {
  display: flex;
  flex-direction: column;
  position: relative;
+}
+/* 免责声明弹窗 */
+.disclaimer-modal {
+ max-width: 480px;
+}
+.disclaimer-scroll {
+ max-height: 60vh;
+ overflow-y: auto;
+ padding-right: 4px;
+}
+.disclaimer-para {
+ font-size: 13px;
+ line-height: 1.8;
+ color: var(--text-secondary);
+ margin-bottom: 10px;
+}
+.disclaimer-warn {
+ color: var(--error, #c0392b);
+ font-weight: 600;
 }
 </style>
