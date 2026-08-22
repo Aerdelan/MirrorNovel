@@ -236,18 +236,21 @@ const startApp = async () => {
   // 全局错误处理
   app.use((err, req, res, next) => {
     console.error('服务器错误:', err);
+    if (err?.type === 'entity.parse.failed') {
+      return res.status(400).json({ message: '请求数据格式无效，请重试', error: err.message });
+    }
     res.status(500).json({ message: '服务器内部错误', error: err.message });
   });
 
-  // 延长超时，番茄全本下载可能需 10-15 分钟
-  app.timeout = 1200000; // 20 分钟
-
   const PORT = process.env.PORT || 3000;
-  app.listen(PORT, () => {
+  const server = app.listen(PORT, () => {
     console.log(`服务器已启动，端口: ${PORT}`);
     console.log(`API 地址: http://localhost:${PORT}/api`);
     console.log(`管理后台: http://localhost:${PORT}/api/admin`);
   });
+  // 长篇小说、长时剧本按模型返回时间决定连接寿命，不使用 Node 默认请求超时。
+  server.timeout = 0;
+  server.requestTimeout = 0;
 };
 
 startApp();

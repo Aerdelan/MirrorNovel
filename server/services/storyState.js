@@ -18,17 +18,43 @@ function normalizePlanChapter(chapter) {
   return {
     chapterNumber: Number(chapter.chapterNumber || chapter.number || chapter.chapter || 0),
     wordTarget: Number(chapter.wordTarget || chapter.targetWords || chapter.wordCount || 0),
+    title: normalizeChapterTitle(chapter.title || chapter.chapterTitle || chapter.shortTitle || ''),
     coreEvent: String(chapter.coreEvent || chapter.event || chapter.theme || '').trim(),
     setHooks: splitItems(chapter.setHooks || chapter.foreshadowing || chapter.plantHooks),
     resolveHooks: splitItems(chapter.resolveHooks || chapter.revealHooks || chapter.collectHooks),
     characters: splitItems(chapter.characters || chapter.keyCharacters),
     chapterRole: String(chapter.chapterRole || '').trim(),
+    subplotFocus: String(chapter.subplotFocus || chapter.subplot || '').trim(),
+    relationshipBeat: String(chapter.relationshipBeat || chapter.relationship || '').trim(),
+    breathingPurpose: String(chapter.breathingPurpose || '').trim(),
     // Keep an omitted tension as 0 so buildEmotionPlan can apply the story-level
     // rhythm instead of treating every incomplete legacy plan as low pressure.
     tension: Number.isFinite(rawTension) && rawTension > 0 ? Math.max(1, Math.min(10, rawTension)) : 0,
     phase: String(chapter.phase || '').trim(),
     raw: String(chapter.raw || ''),
   };
+}
+
+function normalizeChapterTitle(value) {
+  return String(value || '')
+    .replace(/^\s*第\s*\d+\s*章\s*[-:：·、.．]?\s*/i, '')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/[。！？!?；;]+$/g, '')
+    .replace(/[“”"'《》【】]/g, '')
+    .trim()
+    .slice(0, 24);
+}
+
+function deriveChapterTitle(planChapter) {
+  const explicit = normalizeChapterTitle(planChapter?.title);
+  if (explicit) return explicit;
+  const event = String(planChapter?.coreEvent || '')
+    .replace(/^(本章|主角|故事)?(?:需要|将|要)?/i, '')
+    .replace(/（[^）]*）|\([^)]*\)/g, '')
+    .trim();
+  if (!event) return '故事未尽';
+  const candidate = event.split(/[，。；：:！!?]/)[0].trim();
+  return normalizeChapterTitle(candidate) || '故事未尽';
 }
 
 /** Parse both legacy one-line plans and a JSON-shaped plan object. */
@@ -42,7 +68,8 @@ function parseChapterPlan(rawPlan) {
         ? normalizePlanChapter({
           chapterNumber: chapter[0], wordTarget: chapter[1], coreEvent: chapter[2],
           setHooks: chapter[3], resolveHooks: chapter[4], characters: chapter[5],
-          chapterRole: chapter[6], tension: chapter[7],
+          chapterRole: chapter[6], tension: chapter[7], title: chapter[8],
+          phase: chapter[9], subplotFocus: chapter[10], relationshipBeat: chapter[11], breathingPurpose: chapter[12],
         })
         : normalizePlanChapter(chapter)).filter((item) => item.chapterNumber > 0),
     };
@@ -64,7 +91,8 @@ function parseChapterPlan(rawPlan) {
             ? normalizePlanChapter({
               chapterNumber: chapter[0], wordTarget: chapter[1], coreEvent: chapter[2],
               setHooks: chapter[3], resolveHooks: chapter[4], characters: chapter[5],
-              chapterRole: chapter[6], tension: chapter[7],
+              chapterRole: chapter[6], tension: chapter[7], title: chapter[8],
+              phase: chapter[9], subplotFocus: chapter[10], relationshipBeat: chapter[11], breathingPurpose: chapter[12],
             })
             : normalizePlanChapter(chapter)).filter((item) => item.chapterNumber > 0),
         };
@@ -98,6 +126,7 @@ function parseChapterPlan(rawPlan) {
     chapters.push(normalizePlanChapter({
       chapterNumber: Number(match[1]),
       wordTarget: Number(((match[2] || '').match(/\d{3,6}/) || [])[0] || 0),
+      title: findField('标题|章节名|章名'),
       coreEvent: (fields[0] || match[3] || '').replace(/^本章(?:核心事件|主题)?\s*[:：]?/i, ''),
       setHooks: splitItems(findField('埋伏笔|设置伏笔')),
       resolveHooks: splitItems(findField('回收伏笔|回收')),
@@ -140,6 +169,7 @@ function buildFallbackChapterPlan(novel, options = {}) {
       coreEvent: finalChapter
         ? `依据大纲完成主线收束：${outline.slice(0, 120) || '给出主角目标的具体结果'}`
         : `${phase.goal}（第${number}章，严格承接前章结果）`,
+      title: finalChapter ? '尘埃落定' : `${phase.name}之变`,
       setHooks: [],
       resolveHooks: [],
       characters: [],
@@ -164,10 +194,13 @@ function renderPlanForContext(planData, currentChapter) {
     .slice(0, 12)
     .map((item) => {
       const pieces = [
-        '第' + item.chapterNumber + '章(' + (item.wordTarget || '按节奏') + '字): ' + (item.coreEvent || '推进主线'),
+        '第' + item.chapterNumber + '章《' + deriveChapterTitle(item) + '》(' + (item.wordTarget || '按节奏') + '字): ' + (item.coreEvent || '推进主线'),
         item.setHooks.length ? '埋伏笔: ' + item.setHooks.join('、') : '',
         item.resolveHooks.length ? '回收伏笔: ' + item.resolveHooks.join('、') : '',
         item.characters.length ? '关键角色: ' + item.characters.join('、') : '',
+        item.subplotFocus ? '支线焦点: ' + item.subplotFocus : '',
+        item.relationshipBeat ? '关系变化: ' + item.relationshipBeat : '',
+        item.breathingPurpose ? '缓冲功能: ' + item.breathingPurpose : '',
       ].filter(Boolean);
       return pieces.join(' | ');
     })
@@ -260,7 +293,7 @@ function normalizeProposedBlueprint(rawBlueprint, novel, totalChapters) {
     ...textList(rawBlueprint.lockedFacts, 16),
   ])).slice(0, 16);
   const rawPhases = Array.isArray(rawBlueprint.phases) ? rawBlueprint.phases : current.phases;
-  const phases = rawPhases.slice(0, 8).map((phase, index) => normalizeBlueprintPhase(
+  const phases = rawPhases.slice(0, 16).map((phase, index) => normalizeBlueprintPhase(
     phase,
     index ? Number(rawPhases[index - 1]?.endChapter || 1) + 1 : 1,
     total
@@ -484,9 +517,13 @@ function buildChapterContract(options) {
     chapterNumber,
     totalChapters,
     wordTarget,
+    title: deriveChapterTitle(planChapter),
     coreEvent: planChapter.coreEvent || '承接上一章造成的新问题，做出一个不可逆的选择并留下下一步行动',
     phase: planChapter.phase || '',
     characters: planChapter.characters || [],
+    subplotFocus: planChapter.subplotFocus || '',
+    relationshipBeat: planChapter.relationshipBeat || '',
+    breathingPurpose: planChapter.breathingPurpose || '',
     setHooks: planChapter.setHooks || [],
     resolveHooks: planChapter.resolveHooks || [],
     pendingHooks,
@@ -505,12 +542,16 @@ function renderChapterContract(contract) {
   const advance = (contract.mustAdvance || []).map((item) => (item.title || item.id) + ' → ' + item.nextMilestone).join('；') || '至少推进一条主线或关系线';
   return [
     '【本章契约｜第' + contract.chapterNumber + '章】',
+    '章节短标题：' + (contract.title || '故事未尽') + '（仅用于目录，不要输出到正文）',
     '唯一核心事件：' + contract.coreEvent,
     '章节功能：' + contract.emotion.chapterRole + (contract.phase ? '（' + contract.phase + '）' : ''),
     '情绪目标：压力 ' + contract.emotion.tension + '/10；' + contract.emotion.tone,
     '必须承接的上一章状态：' + contract.previousEnd,
     '必须推进的剧情线：' + advance,
     '本章角色：' + list(contract.characters),
+    '本章支线焦点：' + (contract.subplotFocus || '无；若有已建立关系线，选择一条自然带入'),
+    '本章关系变化：' + (contract.relationshipBeat || '由场景中的选择和反应自然体现'),
+    '本章缓冲功能：' + (contract.breathingPurpose || '无；不要为了凑字数插入无关日常'),
     '本章埋设伏笔：' + list(contract.setHooks),
     '本章应回收伏笔：' + list(contract.resolveHooks),
     '已存在的待回收伏笔：' + pending,
@@ -613,6 +654,8 @@ function seedPlannedHooks(novel, planData) {
 
 module.exports = {
   normalizePlanChapter,
+  normalizeChapterTitle,
+  deriveChapterTitle,
   parseChapterPlan,
   buildFallbackChapterPlan,
   renderPlanForContext,

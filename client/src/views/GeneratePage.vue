@@ -130,6 +130,7 @@
    <button class="btn btn-primary btn-sm" @click="confirmInitialBlueprint">确认蓝图并继续</button>
    <span class="blueprint-setup-hint">可直接编辑上方 JSON 后确认</span>
   </div>
+  <div v-if="blueprintWarning" class="blueprint-setup-hint">{{ blueprintWarning }}</div>
   <div v-if="blueprintSetupError" class="blueprint-setup-error">{{ blueprintSetupError }}</div>
  </div>
 
@@ -488,6 +489,7 @@ const initialBlueprintJson = ref('')
 const initialBlueprintConfirmed = ref(false)
 const blueprintGenerating = ref(false)
 const blueprintSetupError = ref('')
+const blueprintWarning = ref('')
 
 // ---- 写作人格 persona ----
 const personas = ref([])
@@ -786,6 +788,7 @@ async function generateInitialBlueprint() {
  }
  blueprintGenerating.value = true
  blueprintSetupError.value = ''
+ blueprintWarning.value = ''
  initialBlueprintConfirmed.value = false
  try {
   const res = await api.post('/novel/generate-blueprint', {
@@ -798,6 +801,7 @@ async function generateInitialBlueprint() {
   }, { timeout: 240000 })
   initialBlueprint.value = res.data.blueprint || null
   initialBlueprintJson.value = JSON.stringify(initialBlueprint.value, null, 2)
+  blueprintWarning.value = res.data.warning || ''
  } catch (e) {
   blueprintSetupError.value = e.response?.data?.message || e.message || '初始蓝图生成失败'
  } finally { blueprintGenerating.value = false }

@@ -100,6 +100,7 @@ function countTokens(text) {
  */
 function buildSystemPrompt(novelTypeId, gender, persona) {
   const type = novelTypes.find(t => t.id === novelTypeId || t.name === novelTypeId);
+  const genreStyleContract = buildGenreStyleContract(novelTypeId, type);
 
   // ===== persona 注入分支 =====
   if (persona && (persona.voice || persona.tone || persona.rules)) {
@@ -128,6 +129,8 @@ function buildSystemPrompt(novelTypeId, gender, persona) {
 ${personaBlock}
 
 ${typeMeta}
+
+${genreStyleContract}
 
 请直接开始创作，从既有文本提炼叙事视角并保持一致。${deslopTail}`;
   }
@@ -160,6 +163,8 @@ ${deslop.systemDeslopPrompt}`;
 
 ${deslop.systemDeslopPrompt}
 
+${genreStyleContract}
+
 请直接开始创作，角色名称使用日本风格的名字，适当加入日式称呼。`;
   }
 
@@ -189,6 +194,8 @@ ${deslop.systemDeslopPrompt}
 4. 段落和句长由场景决定，不设置机械比例，不为显得随意而故意走神、吐槽、硬切或制造语病
 ${genderGuide}
 
+${genreStyleContract}
+
 ${deslop.systemDeslopPrompt}`;
 }
 
@@ -210,13 +217,67 @@ function buildPersonaPrompt(persona, options = {}) {
   return `\n\n【用户选择的写作人格：${persona.name || '自定义模板'}】\n${blocks.join('\n\n')}${deslopNote}`;
 }
 
+function buildGenreStyleContract(novelTypeId, type) {
+  const id = String(novelTypeId || '').toLowerCase();
+  if (/mystery|detective|suspense|horror|thriller|悬疑|推理/.test(id)) return `【题材叙事契约：悬疑/惊悚】
+以受限信息和可验证线索组织阅读体验：先给可观察事实，再给解释冲突，重要真相要通过行为、证据和视角偏差逐层释放。场景优先写声音、光线、物证、空间死角和人物反应；对白允许回避、试探和不完整回答。不要用全知旁白提前解释谜底，不要每段都用夸张形容词制造恐怖。`;
+  if (/romance|love|言情|恋爱|校园/.test(id)) return `【题材叙事契约：言情/关系】
+以关系变化而非事件清单组织章节：每次相处都要改变信任、边界、误解或选择。把情绪放进动作、距离、礼物、沉默和未说出口的判断里；对白保留双方目标差异，不用旁白反复宣布“心动/虐/甜”。日常段落可以完整展开，但必须留下关系或记忆的不可逆变化。`;
+  if (/wuxia|martial|jianghu|武侠/.test(id)) return `【题材叙事契约：武侠/江湖】
+以选择、恩义、规矩和代价塑造人物，不把江湖写成连续升级表。动作场面交代地形、兵器、节奏和判断，决斗结果必须由先前立场与代价积累而来。留出赶路、饮酒、疗伤、守约等低压段，让人物的江湖关系和失去的东西沉淀下来。`;
+  if (/xianxia|fantasy|修仙|玄幻/.test(id)) return `【题材叙事契约：玄幻/修仙】
+让力量体系服务于人物选择、世界规则和代价，不用境界名词替代戏剧。场景重点是感知变化、资源限制、仪式和人与天地/宗门的关系；突破必须改变责任或风险。阶段之间保留修行、行旅、同伴相处和规则观察，使世界有生活纹理而非只剩任务与战斗。`;
+  if (/scifi|science|future|科幻|未来/.test(id)) return `【题材叙事契约：科幻/未来】
+以技术后果、制度约束和陌生环境改变人物选择，不用术语堆砌未来感。优先写界面、设备、身体感受、空间尺度和信息不对称；解释世界观时让人物通过工作、故障、交易或日常使用发现规则。关键段落之间允许安静的观察和共同生活，让宏大设定落到人的损失与愿望。`;
+  if (/historical|history|古代|历史|宫斗|权谋/.test(id)) return `【题材叙事契约：历史/权谋】
+以身份、制度、利益和礼法塑造冲突，避免现代口吻直接替代时代人物。信息通过奏报、账册、宴席、军令、流言和沉默的站位流动；每次谋略都要有资源与政治代价。安排具有时代生活质感的间歇场景，让人物关系和权力变化在低声交谈、劳作或仪式中沉淀。`;
+  if (/lightnovel|isekai|school|轻小说|异世界/.test(id)) return `【题材叙事契约：轻小说/ACGN】
+以角色关系、具体处境和轻重反差形成节奏，不依赖统一吐槽、口头禅或模板化萌反应。冒险、校园、社团和共同生活都必须推进关系、信息或规则理解；重大情绪前允许轻松段落积累记忆，避免每章都用相同的笑点和收尾方式。`;
+  return `【题材叙事契约】
+请从当前题材、世界规则、人物关系和大纲中提炼本书独有的叙事节奏。不要套用统一的网文腔、固定转折句、固定情绪词或相同的章节收尾。先确定本书的叙事距离、信息释放速度、感官重点、对白密度和低压场景形态，并在全文保持这一组特征。`;
+}
+
+function getOutlineRequirements(targetWordCount) {
+  const target = Math.max(10000, Math.min(10000000, Number(targetWordCount) || 50000));
+  const scale = Math.min(1, Math.max(0, (target - 50000) / 950000));
+  const phaseCount = target <= 50000 ? 4 : Math.max(5, Math.min(12, Math.ceil(4 + scale * 8)));
+  const nodeCount = Math.max(12, Math.min(80, Math.round(14 + scale * 56)));
+  const characterCount = Math.max(8, Math.min(40, Math.round(10 + scale * 30)));
+  const subplotCount = Math.max(4, Math.min(24, Math.round(5 + scale * 19)));
+  const outlineChars = Math.max(7000, Math.min(50000, Math.round(7000 + scale * 43000)));
+  const outputTokens = Math.max(9000, Math.min(120000, Math.ceil(outlineChars / 1.45)));
+  return { target, phaseCount, nodeCount, characterCount, subplotCount, outlineChars, outputTokens };
+}
+
+function buildOutlineSpec(targetWordCount) {
+  const requirements = getOutlineRequirements(targetWordCount);
+  return `【按目标字数动态规划的规模】
+目标约${requirements.target}字，预计需要${Math.max(10, Math.ceil(requirements.target / 3000))}章。不要套用固定模板，必须完成：${requirements.phaseCount}个剧情阶段、约${requirements.nodeCount}个关键节点、${requirements.characterCount}名有明确目标和关系变化的主要/次要人物、至少${requirements.subplotCount}条可交叉推进的支线。全文大纲建议不少于${requirements.outlineChars}字。
+
+【输出内容要求】
+1. 故事主线：不少于800字，写清起因、阶段性目标、因果链、主要反转、终局代价与结局落点，不能只写一句复仇/成长概括。
+2. 核心冲突：不少于500字，拆出外部目标、内部选择、关系冲突、资源限制和不断升级的阻力。
+3. 主要角色：至少${requirements.characterCount}人。每人写身份、表面目标、隐藏目标、与主角关系、阶段变化、关键选择和结局状态；配角不能只列名字。
+4. 剧情阶段：严格写${requirements.phaseCount}个阶段。每阶段至少300字，并列出阶段目标、阻力、人物关系变化、主线推进、支线交叉点、阶段反转和进入下一阶段的条件。
+5. 支线与人物关系网：至少${requirements.subplotCount}条支线。每条写发起人物、独立目标、与主线的连接、至少两个转折、可能的误导、回收节点和最终状态。
+6. 关键节点：至少${requirements.nodeCount}个，按预计章节范围排列。每个节点写发生条件、参与人物、具体事件、信息变化、情绪后果、伏笔设置/回收和对下一节点的推动。
+7. 伏笔与回收表：列出不少于${Math.max(8, Math.round(requirements.nodeCount * 0.45))}组伏笔，标明埋设阶段、表面解释、真实含义和回收阶段，禁止只写“后续揭晓”。
+8. 结局方向：不少于500字，说明主线、主要支线、人物弧线和核心悬念如何分别收束；允许保留余波，但不能只写“主角成功”。
+
+篇幅必须随目标字数增长，不能因为输出方便而把百万字小说压缩成与十万字相同的四阶段、几个节点和少量人物。直接输出大纲正文，不要解释生成过程。`;
+}
+
 function buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona) {
   const type = novelTypes.find(t => t.id === novelTypeId);
-  return `你是一位专业的小说大纲策划师。请为一部${type ? type.name : ''}小说创作一份完整的创作大纲。${buildPersonaPrompt(persona, { includeDeslop: false })}
+  return `你是一位专业的小说大纲策划师。请为一部${type ? type.name : ''}小说创作一份完整、可执行、可供分章规划使用的创作大纲。${buildPersonaPrompt(persona, { includeDeslop: false })}
+
+${buildGenreStyleContract(novelTypeId, type)}
 
 主角名字：${protagonistName || '未设定'}
 世界观设定：${worldSetting || '由你自由发挥'}
 目标总字数：约${targetWordCount}字
+
+${buildOutlineSpec(targetWordCount)}
 
 请按以下格式输出大纲：
 
@@ -230,13 +291,19 @@ function buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWo
 （列出主角和重要配角及其定位）
 
 【剧情阶段】
-（按时间线划分3-5个阶段，每个阶段用3句话描述）
+（按上方动态规模划分阶段，逐阶段详细展开）
+
+【支线与人物关系网】
+（逐条展开支线目标、转折、与主线交叉和回收）
+
+【伏笔与回收表】
+（逐组列出埋设与回收位置）
 
 【结局方向】
 （概述故事的结局走向）
 
 【关键节点】
-（列出3-5个重要剧情转折点）
+（按章节范围列出动态数量的重要节点）
 
 请直接输出大纲内容，不要加额外的解释。`;
 }
@@ -421,6 +488,21 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
  * @param {Function} [onReasoning] 思考型模型（如 GLM-4.7/DeepSeek-R1）思考过程的增量回调，用于向前端展示思考进度
  * @returns {Promise<{content:string, tokenCount:number}>}
  */
+const MAX_GENERATION_TOKENS = 700000;
+
+// Different OpenAI-compatible providers expose different output ceilings. The
+// admin budget is an application-level target, but it must never make a
+// request fail just because a provider advertises a smaller hard limit. This
+// extracts a limit from common max_tokens validation messages so the request
+// can be retried safely with the provider's actual ceiling.
+function extractProviderMaxTokens(errorText) {
+  const text = String(errorText || '');
+  if (!/max[\s_-]*tokens/i.test(text)) return null;
+  const match = text.match(/max[\s_-]*tokens[\s\S]{0,160}?[\[\(（【]\s*1\s*[,，]\s*(\d{3,})/i);
+  const limit = match ? Number(match[1]) : 0;
+  return Number.isFinite(limit) && limit >= 256 ? Math.floor(limit) : null;
+}
+
 async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConfig, retries = 2, temperature = 0.85, maxTokens = 16384, timeoutMs = 90000, onReasoning) {
   const config = apiConfig || resolveApiConfig(null);
   if (!config.baseUrl || !config.model) {
@@ -436,13 +518,14 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
   const headers = { 'Content-Type': 'application/json' };
   if (config.apiKey) headers['Authorization'] = `Bearer ${config.apiKey}`;
 
-  // 支持按任务传入温度和输出上限；长篇章节必须按预算限制单次输出，避免一章吞掉后续剧情空间。
-  const outputLimit = Math.max(256, Math.min(16384, Number(maxTokens) || 16384));
+  // 支持按任务传入温度和输出上限。700k 是服务允许的最高返回预算，
+  // 各业务线路仍可传入更小的任务预算，避免无意义地放大计费和延迟。
+  let outputLimit = Math.max(256, Math.min(MAX_GENERATION_TOKENS, Number(maxTokens) || 16384));
   // GLM-4.7 等思考模型默认开启 thinking，正文前会长时间输出 reasoning_content。
   // 设置 AI_THINKING_DISABLED=true 可强制关闭思考，换取更快的首字响应。
   const disableThinking = config.disableThinking === true
     || String(process.env.AI_THINKING_DISABLED || '').toLowerCase() === 'true';
-  const body = isOllama
+  const buildRequestBody = () => isOllama
     ? { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, options: { temperature, num_predict: outputLimit } }
     : { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, temperature, max_tokens: outputLimit,
       ...(disableThinking ? { thinking: { type: 'disabled' } } : {}) };
@@ -468,12 +551,20 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         currentSignal = timeoutController.signal;
       }
 
-      const response = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify(body), signal: currentSignal });
+      const response = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify(buildRequestBody()), signal: currentSignal });
 
       clearTimeout(timeoutId);
 
       if (!response.ok) {
         const errorText = await response.text();
+        const providerMaxTokens = extractProviderMaxTokens(errorText);
+        if (providerMaxTokens && outputLimit > providerMaxTokens) {
+          outputLimit = Math.min(outputLimit, providerMaxTokens);
+          console.warn(`AI API max_tokens 超出线路上限，自动调整为 ${outputLimit} 后重试`);
+          // Do not consume a retry slot for this deterministic request fix.
+          attempt -= 1;
+          continue;
+        }
         if ((response.status === 503 || response.status === 429) && attempt < retries) {
           const delay = Math.pow(2, attempt) * 1000;
           console.warn(`AI API 请求 ${response.status}，第 ${attempt + 1} 次重试，等待 ${delay}ms`);
@@ -561,8 +652,30 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
 /**
  * 构建章节计划表（细化到每一章的事件、伏笔、字数）
  */
-function buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, structureRef, persona) {
+function getChapterPlanOutputTokens(targetWordCount) {
+  const chapters = Math.max(10, Math.ceil((Number(targetWordCount) || 50000) / 3000));
+  return Math.max(16384, Math.min(120000, Math.ceil(chapters * 135)));
+}
+
+function buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, structureRef, persona, storyBlueprint) {
   const estChapters = Math.max(10, Math.ceil(targetWordCount / 3000));
+  const plannedBreaths = Math.max(1, Math.round(estChapters * 0.09));
+  const blueprint = storyBlueprint && typeof storyBlueprint === 'object' ? storyBlueprint : {};
+  const blueprintPhases = Array.isArray(blueprint.phases) ? blueprint.phases.slice(0, 12).map((phase) => ({
+    title: phase.title || '', startChapter: phase.startChapter || 1, endChapter: phase.endChapter || estChapters,
+    goal: phase.goal || '', obstacle: phase.obstacle || '', reversal: phase.reversal || '', threads: phase.threads || [],
+  })) : [];
+  const blueprintBrief = blueprintPhases.length
+    ? `
+
+【用户已确认的故事蓝图（必须落实到章节计划）】
+主线：${String(blueprint.mainArc || '').slice(0, 1600)}
+不可改写事实：${Array.isArray(blueprint.lockedFacts) ? blueprint.lockedFacts.join('；') : '无'}
+阶段与支线：${JSON.stringify(blueprintPhases)}
+章节计划必须把蓝图阶段边界、每条支线的进入/交叉/转折/回收位置写进对应章节，不能只在总述里提及。`
+    : `
+
+【故事蓝图】当前没有用户确认的细化蓝图。请根据大纲和人物关系自行形成阶段、支线和伏笔安排，但不要凭空改变大纲已确定的事实。`;
 
   let planPrompt = `你是一位专业的小说章节规划师。请根据以下素材制定一份详细的章节计划表。${buildPersonaPrompt(persona, { includeDeslop: false })}
 
@@ -574,23 +687,27 @@ function buildChapterPlan(outline, targetWordCount, protagonistName, worldSettin
 大纲：
 ${outline || '无大纲，请自行规划故事'}`;
 
+  planPrompt += blueprintBrief;
+
   if (structureRef) {
     planPrompt += `\n\n参考小说结构（必须严格遵循）：
 ${structureRef}`;
   }
 
   planPrompt += `\n\n为避免长篇计划在输出时被截断，必须使用下面的紧凑 JSON 格式。不要 Markdown、不要解释、不要代码块：
-{"version":1,"phases":["开端：目的"],"chapters":[[章节号,目标字数,"核心事件","埋伏笔（无则空字符串）","回收伏笔（无则空字符串）","关键角色（无则空字符串）","章节角色",张力]]}
+{"version":1,"phases":["阶段名：目标"],"chapters":[[章节号,目标字数,"核心事件","埋伏笔（无则空字符串）","回收伏笔（无则空字符串）","关键角色（无则空字符串）","章节角色",张力,"章节短标题","所属阶段","本章支线焦点（无则空字符串）","关系变化","缓冲功能（无则空字符串）"]]}
 
 示例：
-{"version":1,"phases":["开端：建立危机"],"chapters":[[1,3000,"收到匿名来信","旧钥匙","","林舟、苏晚","主线推进",5],[2,3000,"追查来信来源","","旧钥匙","林舟","信息揭示",6]]}
+{"version":1,"phases":["开端：建立危机"],"chapters":[[1,3000,"收到匿名来信","旧钥匙","","林舟、苏晚","主线推进",5,"雨夜来信","开端","苏晚的隐瞒","两人从合作转为互相试探",""],[2,3000,"追查来信来源","","旧钥匙","林舟","信息揭示",6,"无名邮戳","开端","旧钥匙来源线","林舟开始怀疑苏晚",""],[3,2600,"在旧屋做饭并发现照片角落的标记","照片标记","","林舟、苏晚","喘息推进",4,"炉火余温","开端","关系线","短暂恢复日常信任并留下照片线索","让前几章的压力沉淀为关系和记忆变化"]]}
 
 关键规则：
-1. 必须完整输出第 1 至第 ${estChapters} 章，不能省略、不能用“其余同理”。每个核心事件限 12-28 个汉字，其他字符串尽量短。
+1. 必须完整输出第 1 至第 ${estChapters} 章，不能省略、不能用“其余同理”。每个核心事件限 18-42 个汉字，其他字符串尽量短。
 2. 每章只能有一个核心事件；相邻章节不得重复。章节角色只可使用：主线推进、关系推进、信息揭示、喘息推进、收束。
 3. 伏笔设置后，必须在后续章的回收字段写出同一名称；最后一章必须是“收束”。没有伏笔或角色请使用空字符串。
-4. 张力是 1-10；连续 3 章不得都高于 7；喘息章仍要推进关系、信息或伏笔。
-5. 每章目标字数 2000-4200，总章数约 ${estChapters} 章。`;
+4. 张力是 1-10；连续 3 章不得都高于 7；全书约安排 ${plannedBreaths} 个喘息推进章，但位置和形式必须由当前人物压力、关系状态、题材和前后事件决定，禁止固定每隔 N 章安排，也禁止所有作品使用同一种日常模板。
+5. 喘息推进章不是无意义凑字数：必须让关系、信息、记忆、物件、支线或伏笔发生可见变化；可以是生活、旅途、工作、仪式、梦境、共同空间或题材特有的低压场景，但只能选择适合本书世界和人物的形式。
+6. 每条蓝图支线至少要有进入章节、一次中段变化和回收/转化章节；阶段反转必须落到具体章节，不能只写在 phases 总述。
+7. 每章目标字数 2000-4200，总章数约 ${estChapters} 章。最后一个字段必须给出 4-12 个汉字的章节短标题，具体、有画面感、不得重复，不要包含“第X章”。`;
 
   return planPrompt;
 }
@@ -636,12 +753,16 @@ ${revealedForeshadowing}
 /**
  * 构建全文调优分析提示词
  */
-function buildOptimizeAnalysisPrompt(chapters, outline, protagonistName, worldSetting, persona) {
+function buildOptimizeAnalysisPrompt(chapters, outline, protagonistName, worldSetting, persona, novelTypeId) {
   const fullText = chapters.map(ch =>
     `【第${ch.chapterNumber}章（${ch.wordCount}字）】\n${(ch.content || '').slice(0, 3000)}`
   ).join('\n\n').slice(0, 40000);
 
-  return `你是一位专业的小说编辑。${buildPersonaPrompt(persona, { includeDeslop: false })}请分析以下小说的全文，输出一份详细的调优分析报告。
+  return `你是一位专业的小说编辑。${buildPersonaPrompt(persona, { includeDeslop: false })}
+
+${buildGenreStyleContract(novelTypeId, novelTypes.find(t => t.id === novelTypeId || t.name === novelTypeId))}
+
+请分析以下小说的全文，输出一份详细的调优分析报告。
 
 小说信息：
 主角：${protagonistName || '未设定'}
@@ -672,8 +793,12 @@ ${fullText}
 /**
  * 构建单章调优重写提示词
  */
-function buildOptimizeChapterPrompt(chapter, chapterNumber, analysis, outline, persona) {
-  return `你是一位专业的小说编辑。${buildPersonaPrompt(persona)}请根据以下小说全文分析报告，对第${chapterNumber}章进行优化重写。
+function buildOptimizeChapterPrompt(chapter, chapterNumber, analysis, outline, persona, novelTypeId) {
+  return `你是一位专业的小说编辑。${buildPersonaPrompt(persona)}
+
+${buildGenreStyleContract(novelTypeId, novelTypes.find(t => t.id === novelTypeId || t.name === novelTypeId))}
+
+请根据以下小说全文分析报告，对第${chapterNumber}章进行优化重写。
 
 小说大纲：${(outline || '无').slice(0, 2000)}
 
@@ -799,9 +924,12 @@ ${pass1}`;
 module.exports = {
   buildSystemPrompt, buildPersonaPrompt, buildInitialPrompt, buildContinuePrompt,
   buildImportContinuePrompt, buildOutlinePrompt, distillChapters,
+  getOutlineRequirements, buildOutlineSpec, getChapterPlanOutputTokens, buildGenreStyleContract,
   buildChapterPlan, buildStoryStateSummary,
   buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, extractChapterSummary,
   streamGenerate, resolveApiConfig, countTokens,
+  MAX_GENERATION_TOKENS,
+  extractProviderMaxTokens,
   humanizeRewrite,
   getFriendlyErrorMessage,  // 友好错误提示
 };

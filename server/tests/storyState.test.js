@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
   parseChapterPlan,
+  deriveChapterTitle,
   buildFallbackChapterPlan,
   buildEmotionPlan,
   buildChapterContract,
@@ -90,6 +91,15 @@ test('parseChapterPlan normalizes JSON plans and legacy line plans', () => {
   assert.equal(fallback.fallback, true);
   assert.equal(fallback.chapters.length, 4);
   assert.equal(fallback.chapters.at(-1).chapterRole, '收束');
+});
+
+test('chapter plans retain authored short titles and safely derive legacy titles', () => {
+  const plan = parseChapterPlan({
+    chapters: [[1, 2600, '林舟在旧花店收到无名钥匙', '', '', '林舟', '主线推进', 5, '予地以花']],
+  });
+  assert.equal(plan.chapters[0].title, '予地以花');
+  assert.equal(deriveChapterTitle(plan.chapters[0]), '予地以花');
+  assert.equal(deriveChapterTitle({ coreEvent: '林舟在旧花店收到无名钥匙，并决定追查寄件人' }), '林舟在旧花店收到无名钥匙');
 });
 
 test('buildChapterContract selects the current plan and hides future hooks', () => {

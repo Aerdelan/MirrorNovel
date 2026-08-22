@@ -137,7 +137,7 @@
  <div v-if="!novel?.chapters?.length" class="empty-chapters">暂无章节内容</div>
  <div v-for="(chapter, index) in novel?.chapters" :key="chapter.chapterNumber" class="chapter-item">
  <div class="chapter-header" @click="toggleChapter(index)">
- <span class="chapter-num">第{{ chapter.chapterNumber }}章</span>
+ <span class="chapter-num">{{ chapter.title || `第${chapter.chapterNumber}章` }}</span>
  <span class="chapter-words">{{ chapter.wordCount }}{{ $t('generate.wordShort') }}</span>
  <span class="expand-icon">{{ expandedChapter===index?'▼':'▶' }}</span>
  </div>
@@ -525,7 +525,7 @@ function goBack() { router.push('/bookshelf') }
 .empty-chapters { text-align:center; padding:20px; color:var(--text-light); font-size:14px; }
 .chapter-item { border-bottom:1px solid var(--border-color); }
 .chapter-header { display:flex; align-items:center; gap:8px; padding:12px 0; cursor:pointer; user-select:none; }
-.chapter-num { flex:1; font-size:14px; font-weight:500; color:var(--text-primary); }
+.chapter-num { flex:1; min-width:0; font-size:14px; font-weight:500; color:var(--text-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .chapter-words { font-size:12px; color:var(--text-light); }
 .expand-icon { font-size:10px; color:var(--text-light); }
 .chapter-body { padding:0 0 12px; }

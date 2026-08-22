@@ -12,8 +12,8 @@ const novelTemplates = require('../config/novelTemplates');
 const { typeTemplates, buildTemplatePrompt } = novelTemplates;
 const {
   buildSystemPrompt, buildPersonaPrompt: importedBuildPersonaPrompt, buildInitialPrompt, buildContinuePrompt,
-  buildImportContinuePrompt, buildOutlinePrompt,
-  buildChapterPlan, buildStoryStateSummary,
+  buildImportContinuePrompt, buildOutlinePrompt, getOutlineRequirements, buildOutlineSpec, getChapterPlanOutputTokens,
+  buildChapterPlan, buildStoryStateSummary, buildGenreStyleContract,
   buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, extractChapterSummary,
   streamGenerate, resolveApiConfig, countTokens, humanizeRewrite, getFriendlyErrorMessage,
 } = require('../services/aiService');
@@ -21,6 +21,9 @@ const {
 // 兼容旧部署/测试桩：人格功能缺失时保持原有提示词行为。
 const buildPersonaPrompt = typeof importedBuildPersonaPrompt === 'function'
   ? importedBuildPersonaPrompt
+  : () => '';
+const buildGenreContract = typeof buildGenreStyleContract === 'function'
+  ? buildGenreStyleContract
   : () => '';
 
 async function resolveNovelPersona(userId, novel, personaId) {
@@ -64,6 +67,7 @@ const {
   renderStoryBlueprintForContext,
   buildChapterContract,
   renderChapterContract,
+  deriveChapterTitle,
   checkChapterContinuity,
   extractEventSignature,
   updateCreativeState,
@@ -87,10 +91,61 @@ const { sendBlueprintProposalNotification } = require('../services/emailService'
 const activeStreams = new Map();
 
 function parseJsonObject(text) {
-  const clean = String(text || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-  const candidate = clean.match(/\{[\s\S]*\}/);
-  if (!candidate) return null;
-  try { return JSON.parse(candidate[0]); } catch (_) { return null; }
+  const clean = String(text || '')
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  // Models sometimes put a short explanation before/after JSON. Locate
+  // balanced object boundaries instead of using a greedy `{...}` regex, which
+  // breaks when the response contains another object or code-fence text.
+  for (let start = 0; start < clean.length; start += 1) {
+    if (clean[start] !== '{') continue;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < clean.length; index += 1) {
+      const char = clean[index];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (char === '\\') escaped = true;
+        else if (char === '"') inString = false;
+        continue;
+      }
+      if (char === '"') { inString = true; continue; }
+      if (char === '{') depth += 1;
+      else if (char === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          try {
+            const candidate = clean.slice(start, index + 1)
+              .replace(/,\s*([}\]])/g, '$1');
+            const parsed = JSON.parse(candidate);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+          } catch (_) { /* Try the next balanced object. */ }
+          break;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function parseBlueprintPayload(text) {
+  const parsed = parseJsonObject(text);
+  if (parsed && typeof parsed === 'object') {
+    if (parsed.blueprint && typeof parsed.blueprint === 'object') return parsed.blueprint;
+    if (parsed.data && typeof parsed.data === 'object') return parsed.data;
+    return parsed;
+  }
+  const raw = String(text || '').trim();
+  if (raw.startsWith('[')) {
+    try {
+      const list = JSON.parse(raw);
+      if (Array.isArray(list) && list[0] && typeof list[0] === 'object') return list[0];
+    } catch (_) { /* fall through to conservative fallback */ }
+  }
+  return null;
 }
 
 function normalizeProposalChanges(changes) {
@@ -211,6 +266,39 @@ function getChapterTemperature(contract) {
   const value = Math.max(0.72, Math.min(0.86, 0.78 + (tension - 5) * 0.012));
   // Some OpenAI-compatible providers reject a temperature with over two decimals.
   return Number(value.toFixed(2));
+}
+
+function formatChapterTitle(chapterNumber, shortTitle) {
+  const suffix = String(shortTitle || '').trim() || '故事未尽';
+  return `第${Number(chapterNumber)}章 ${suffix}`;
+}
+
+function deriveLocalChapterTitle({ notes = '', content = '' } = {}) {
+  const note = deriveChapterTitle({ title: notes });
+  if (note && note !== '故事未尽') return note;
+  const firstEvent = String(content || '')
+    .replace(/^\s*(?:第\s*\d+\s*章[^\n]*\n)?/, '')
+    .split(/[。！？!?\n]/)
+    .map((item) => item.trim())
+    .find((item) => item.length >= 4) || '';
+  return deriveChapterTitle({ coreEvent: firstEvent });
+}
+
+function ensureChapterTitles(novel) {
+  const planData = parseChapterPlan(novel.chapterPlanData && Array.isArray(novel.chapterPlanData.chapters)
+    ? novel.chapterPlanData
+    : (novel.chapterPlan || ''));
+  let changed = false;
+  for (const chapter of novel.chapters || []) {
+    const fallback = deriveChapterTitle(planData.chapters.find((item) => Number(item.chapterNumber) === Number(chapter.chapterNumber)) || {});
+    const current = String(chapter.title || '').trim();
+    if (!current || /^第\s*\d+\s*章\s*$/.test(current)) {
+      chapter.title = formatChapterTitle(chapter.chapterNumber, fallback);
+      changed = true;
+    }
+  }
+  if (changed) novel.markModified('chapters');
+  return changed;
 }
 
 function appendChapterContextDocs(novel, content, chapterNumber, protagonistName) {
@@ -442,7 +530,7 @@ function finalizeGeneratedChapter({ novel, chapterNumber, rawContent, contract, 
   const continuity = checkChapterContinuity(finalContent, previousChapter, contract);
   novel.chapters.push({
     chapterNumber,
-    title: `第${chapterNumber}章`,
+    title: formatChapterTitle(chapterNumber, contract?.title),
     content: finalContent,
     wordCount: finalContent.length,
     qualityReport: {
@@ -461,7 +549,7 @@ function finalizeGeneratedChapter({ novel, chapterNumber, rawContent, contract, 
   novel.markModified('foreshadowingLedger');
   novel.markModified('emotionCurve');
   novel.markModified('recentEventSignatures');
-  return { content: finalContent, wordCount: finalContent.length, continuity, toolchainReport };
+  return { content: finalContent, wordCount: finalContent.length, title: formatChapterTitle(chapterNumber, contract?.title), continuity, toolchainReport };
 }
 
 function prepareCreativeState(novel) {
@@ -567,7 +655,9 @@ ${structureRef}
 （参考参考小说的结局类型，但具体实现方式必须原创）
 
 【关键节点】
-（参考参考小说的关键节奏点位置，但每个节点的具体事件必须原创）`;
+（参考参考小说的关键节奏点位置，但每个节点的具体事件必须原创）
+
+${buildOutlineSpec(targetWordCount)}`;
     } else {
       outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona);
     }
@@ -576,10 +666,11 @@ ${structureRef}
       ? `你是一位专业的小说大纲策划师。${buildPersonaPrompt(persona, { includeDeslop: false })}用户提供了参考小说的结构模式，你必须参考其结构骨架进行创新性再创作。输出的大纲必须是在结构上与原文相似，但在具体情节、冲突、事件上完全不同的原创作品。避免抄袭，确保每个情节都是全新的。`
       : `你是一位专业的小说大纲策划师。${buildPersonaPrompt(persona, { includeDeslop: false })}`;
 
+    const outlineRequirements = getOutlineRequirements(targetWordCount);
     const result = await streamGenerate(
       systemPrompt, outlinePrompt, null, null,
       resolveApiConfig(req.user?.modelConfig, 'outline'),
-      2, 0.85, 16384, 600000
+      2, 0.82, outlineRequirements.outputTokens, 600000
     );
 
     const outline = result.content || '';
@@ -601,6 +692,7 @@ router.post('/generate-blueprint', auth, async (req, res) => {
     const target = Number(targetWordCount) || 50000;
     const persona = await resolveNovelPersona(req.userId, null, personaId);
     const totalChapters = Math.max(1, Math.ceil(target / 3000));
+    const blueprintRequirements = getOutlineRequirements(target);
     const prompt = `请为一部${novelTypeId}长篇小说制定“初始故事蓝图”，用于用户确认后再开始正文。蓝图必须补足大纲中没有展开的主要人物支线、主线侧枝、阶段目标、阶段阻力和可选反转，但不得违背大纲、世界观或已经确定的结局。不要把具体正文写进蓝图，也不要把每一章写成流水账。
 
 【主角】${protagonistName || '未设定'}
@@ -611,7 +703,7 @@ ${String(outline).slice(0, 12000)}
 
 只输出 JSON，不要 markdown：
 {"mainArc":"保留大纲主线并补足因果","lockedFacts":["不可擅自改变的设定/事实"],"phases":[{"title":"阶段名称","startChapter":1,"endChapter":${Math.max(1, Math.ceil(totalChapters * 0.2))},"goal":"阶段目标","obstacle":"主要阻力","reversal":"可选反转或误导","threads":["支线1","支线2"]}]}
-要求 3-6 个阶段；每个阶段必须有至少一条支线或人物关系线；lockedFacts 只能填写大纲明确给出的事实。`;
+要求严格规划${blueprintRequirements.phaseCount}个阶段；每个阶段必须有至少一条支线或人物关系线，并写清阶段进入条件、阶段反转和离开时留下的未决问题；百万字作品不能压缩成四个笼统阶段。lockedFacts 只能填写大纲明确给出的事实。`;
     const result = await streamGenerate(
       `你是一位重视因果、人物弧线和伏笔回收的长篇小说架构师。${buildPersonaPrompt(persona, { includeDeslop: false })}`,
       prompt,
@@ -620,11 +712,18 @@ ${String(outline).slice(0, 12000)}
       resolveApiConfig(req.user?.modelConfig, 'reasoning'),
       1,
       0.35,
-      2600,
+      Math.max(2600, Math.min(12000, blueprintRequirements.phaseCount * 900)),
       180000
     );
-    const parsed = parseJsonObject(result.content);
-    if (!parsed) return res.status(502).json({ message: '蓝图生成返回格式无效，请重试' });
+    const rawContent = String(result.content || '').trim();
+    if (!rawContent) return res.status(502).json({ message: '蓝图模型没有返回内容，请重试' });
+    const parsed = parseBlueprintPayload(rawContent);
+    const blueprintShapeValid = parsed && typeof parsed === 'object'
+      && (Array.isArray(parsed.phases) || typeof parsed.mainArc === 'string');
+    // A non-empty but malformed model answer must not block the whole-book
+    // flow. Fall back to a conservative blueprint derived only from the user's
+    // confirmed outline; this keeps continuity safe and lets the user edit it.
+    const blueprintInput = blueprintShapeValid ? parsed : {};
     const draft = {
       novelTypeName: novelTypeId,
       protagonistName: protagonistName || '',
@@ -635,7 +734,7 @@ ${String(outline).slice(0, 12000)}
       plotThreads: [],
       storyBlueprint: {},
     };
-    const blueprint = normalizeProposedBlueprint(parsed, draft, totalChapters);
+    const blueprint = normalizeProposedBlueprint(blueprintInput, draft, totalChapters);
     blueprint.version = 1;
     blueprint.lastReviewedChapter = 0;
     blueprint.autoReviewEnabled = false;
@@ -643,7 +742,7 @@ ${String(outline).slice(0, 12000)}
     try { await deductTokens(req.user, result.content, prompt, 'reasoning'); } catch (error) {
       if (error.message !== 'TOKEN_EXHAUSTED') console.warn('[Blueprint] 初始蓝图扣费失败:', error.message);
     }
-    res.json({ blueprint });
+    res.json({ blueprint, warning: blueprintShapeValid ? '' : '模型返回格式异常，已根据已确认大纲生成保守蓝图，可直接编辑后确认' });
   } catch (error) {
     console.error('[Blueprint] 初始蓝图生成失败:', error.message);
     res.status(error.isApiError ? 503 : 500).json({ message: error.isApiError ? error.message : '初始蓝图生成失败，请稍后重试' });
@@ -845,7 +944,11 @@ ${structureRef}
         const outlineResult = await streamGenerate(
           `你是一位专业的小说大纲策划师。${buildPersonaPrompt(persona, { includeDeslop: false })}`,
           outlinePrompt, null, ac.signal,
-          resolveApiConfig(req.user?.modelConfig, 'outline')
+          resolveApiConfig(req.user?.modelConfig, 'outline'),
+          2,
+          0.82,
+          getOutlineRequirements(targetWordCount).outputTokens,
+          300000
         );
         clearTimeout(t); clearInterval(outlineHb); outlineHb = null;
         outline = outlineResult.content || '';
@@ -878,7 +981,7 @@ ${structureRef}
     if (isBook && outline) {
       try {
         res.write(`data: ${JSON.stringify({ type: 'status', message: '正在制定章节计划表...' })}\n\n`);
-        const planPrompt = buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, structureRef, persona);
+        const planPrompt = buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, structureRef, persona, novel.storyBlueprint);
 
         // 用 AbortController 施加超时 + 心跳保证连接不断
         const planController = new AbortController();
@@ -894,7 +997,7 @@ ${structureRef}
           '你是一位专业的小说章节规划师。你的任务是制定详细的章节计划表，确保每章有明确目标、伏笔合理铺设和回收、结局节奏自然。',
           planPrompt, null, planController.signal,
           resolveApiConfig(req.user?.modelConfig, 'reasoning'),
-          2, 0.85, 16384, 300000 // 章节计划生成常因字数大(50万字≈167章)超时,显式给5分钟
+          2, 0.82, typeof getChapterPlanOutputTokens === 'function' ? getChapterPlanOutputTokens(targetWordCount) : 16384, 300000 // 长篇计划按章节数动态扩大返回预算
         ).finally(() => { clearTimeout(planTimeout); clearInterval(heartbeat); });
 
         if (planResult && planResult.content) {
@@ -946,7 +1049,7 @@ ${structureRef}
     async function generateOneChapter(chNum, prompt, contract) {
       let buffer = '';
 
-      try { res.write(`data: ${JSON.stringify({ type: 'chapter_start', chapterNumber: chNum, title: `第${chNum}章` })}\n\n`); } catch {}
+      try { res.write(`data: ${JSON.stringify({ type: 'chapter_start', chapterNumber: chNum, title: formatChapterTitle(chNum, contract?.title) })}\n\n`); } catch {}
 
       // 温度随章节压力稳定变化，避免每章随机切换作者声线。
       const chapterTemp = getChapterTemperature(contract);
@@ -998,7 +1101,7 @@ ${structureRef}
         }
       }
 
-      try { res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber: chNum, wordCount: chapterResult.wordCount })}\n\n`); } catch {}
+      try { res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber: chNum, title: chapterResult.title, wordCount: chapterResult.wordCount })}\n\n`); } catch {}
       return chapterResult;
     }
 
@@ -1210,7 +1313,11 @@ router.post('/continue/:novelId', auth, async (req, res) => {
     const persona = await resolveNovelPersona(req.userId, novel);
 
     // 系统提示词
-    const systemPrompt = novel.generationContext || buildSystemPrompt(novel.novelTypeId);
+    // Older novels may have a cached system prompt created before genre
+    // contracts were introduced. Append the current contract so continuation
+    // and regeneration do not silently fall back to the shared AI voice.
+    const cachedSystemPrompt = novel.generationContext || buildSystemPrompt(novel.novelTypeId, undefined, novel.writingPersonaSnapshot);
+    const systemPrompt = `${cachedSystemPrompt}\n\n${buildGenreContract(novel.novelTypeId || novel.novelTypeName, null)}`;
     const typeName = novel.novelTypeName || '未知';
     const protagonistName = novel.protagonistName || '';
     const worldSetting = novel.worldSetting || '';
@@ -1247,7 +1354,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
     async function generateOneChapter(chNum, prompt, contract) {
       let buffer = '';
 
-      try { res.write(`data: ${JSON.stringify({ type: 'chapter_start', chapterNumber: chNum, title: `第${chNum}章` })}\n\n`); } catch {}
+      try { res.write(`data: ${JSON.stringify({ type: 'chapter_start', chapterNumber: chNum, title: formatChapterTitle(chNum, contract?.title) })}\n\n`); } catch {}
 
       const chapterTemp = getChapterTemperature(contract);
 
@@ -1293,7 +1400,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
         if (error.message !== 'TOKEN_EXHAUSTED') console.error('[Token] 扣费异常:', error.message);
       }
 
-      try { res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber: chNum, wordCount: chapterResult.wordCount })}\n\n`); } catch {}
+      try { res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber: chNum, title: chapterResult.title, wordCount: chapterResult.wordCount })}\n\n`); } catch {}
       return chapterResult;
     }
 
@@ -1578,7 +1685,7 @@ router.post('/continue-import', auth, async (req, res) => {
       novel.writingPersonaId = persona._id;
       novel.writingPersonaSnapshot = persona;
     }
-    const systemPrompt = `你是一位专业的小说续写专家，擅长模仿各种文风进行创作。${buildPersonaPrompt(persona)}`;
+    const systemPrompt = `你是一位专业的小说续写专家，擅长模仿各种文风进行创作。${buildGenreContract(typeName, null)}${buildPersonaPrompt(persona)}`;
     const mode = req.body.mode || 'book';
     const userPrompt = buildImportContinuePrompt(importedText, continuationRequest, typeName, req.body.targetWordCount || 50000, mode, persona);
 
@@ -1615,7 +1722,12 @@ router.post('/continue-import', auth, async (req, res) => {
 
     async function finalSave(status = 'completed') {
       if (chapterBuffer.trim()) {
-        novel.chapters.push({ chapterNumber, title: `第${chapterNumber}章`, content: chapterBuffer, wordCount: chapterBuffer.length });
+        novel.chapters.push({
+          chapterNumber,
+          title: formatChapterTitle(chapterNumber, deriveLocalChapterTitle({ notes: continuationRequest, content: chapterBuffer })),
+          content: chapterBuffer,
+          wordCount: chapterBuffer.length,
+        });
       }
       const savedWords = novel.chapters.reduce((s, c) => s + (c.wordCount || 0), 0);
       novel.currentWordCount = savedWords;
@@ -1635,7 +1747,7 @@ router.post('/continue-import', auth, async (req, res) => {
     });
 
     await ensureTokensLeft(req.user);
-    res.write(`data: ${JSON.stringify({ type: 'chapter_start', chapterNumber, title: `第${chapterNumber}章` })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'chapter_start', chapterNumber, title: formatChapterTitle(chapterNumber, deriveLocalChapterTitle({ notes: continuationRequest })) })}\n\n`);
 
     try {
       await streamGenerate(
@@ -1663,7 +1775,8 @@ router.post('/continue-import', auth, async (req, res) => {
       await finalSave('completed');
       try { await deductTokens(req.user, chapterBuffer, `${systemPrompt}\n${userPrompt}`); } catch {}
 
-      res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber, wordCount: chapterBuffer.length })}\n\n`);
+      const savedChapter = novel.chapters.find((item) => Number(item.chapterNumber) === Number(chapterNumber));
+      res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber, title: savedChapter?.title, wordCount: chapterBuffer.length })}\n\n`);
       res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`);
       res.end();
     } catch (streamError) {
@@ -1736,12 +1849,12 @@ async function exportNovels(req, res) {
     const safeTitle = novel.title.replace(/[<>:"/\\|?*]/g, '_').substring(0, 50);
     let fullText = `【${novel.novelTypeName}】${novel.title}\n作者：${req.user.nickname || '书友'}\n主角：${novel.protagonistName || '未设定'}\n世界观设定：${novel.worldSetting || '自由发挥'}\n总字数：${novel.currentWordCount} / ${novel.targetWordCount}\n状态：${novel.status === 'completed' ? '已完成' : novel.status === 'generating' ? '生成中' : '已暂停'}\n${'='.repeat(50)}\n\n`;
     for (const ch of novel.chapters) {
-      fullText += `第${ch.chapterNumber}章\n${'='.repeat(30)}\n${decodeContent(ch.content || '')}\n\n`;
+      fullText += `${ch.title || formatChapterTitle(ch.chapterNumber, '故事未尽')}\n${'='.repeat(30)}\n${decodeContent(ch.content || '')}\n\n`;
     }
     archive.append(fullText, { name: `整本/${safeTitle}.txt` });
 
     for (const ch of novel.chapters) {
-      const chText = `【${novel.novelTypeName}】${novel.title}\n第${ch.chapterNumber}章\n${'='.repeat(30)}\n\n${decodeContent(ch.content || '')}\n\n${'='.repeat(30)}\n本文字数：${ch.wordCount} 字`;
+      const chText = `【${novel.novelTypeName}】${novel.title}\n${ch.title || formatChapterTitle(ch.chapterNumber, '故事未尽')}\n${'='.repeat(30)}\n\n${decodeContent(ch.content || '')}\n\n${'='.repeat(30)}\n本文字数：${ch.wordCount} 字`;
       archive.append(chText, { name: `分章节/${safeTitle}/第${String(ch.chapterNumber).padStart(3, '0')}章.txt` });
     }
   }
@@ -1856,6 +1969,10 @@ router.get('/:novelId', auth, async (req, res) => {
     if (!novel) {
       return res.status(404).json({ message: '小说不存在' });
     }
+    // Older works used a number-only chapter title. Fill those entries from
+    // their existing plan locally when the work is opened, without rewriting
+    // prose or invoking another model.
+    if (ensureChapterTitles(novel)) await novel.save();
     res.json(novel);
   } catch (error) {
     res.status(500).json({ message: '获取小说详情失败', error: error.message });
@@ -1971,14 +2088,14 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
 
     if (chapter) {
       const existing = (chapter.content || '').slice(-2000);
-      systemPrompt = `你是一位专业的小说续写专家，请接着用户已有的章节内容继续往下写，保持风格一致。${buildPersonaPrompt(persona)}`;
+      systemPrompt = `${buildSystemPrompt(novel.novelTypeId, undefined, persona)}\n\n你是一位专业的小说续写专家，请接着用户已有的章节内容继续往下写，保持风格一致。`;
       userPrompt = `以下是该章节已有的结尾部分：\n\n${existing}\n\n请接着上面的内容继续往下写。\n${notes ? '写作方向/备注：' + notes : '保持原有风格继续推进剧情。'}\n目标字数：约${wordCount || 2000}字。\n请直接输出续写内容，不要重复已有内容。`;
     } else {
       const lastCh = novel.chapters[novel.chapters.length - 1];
       const lastContent = lastCh ? (lastCh.content || '').slice(-1500) : '（故事开始）';
-      chapter = { chapterNumber: chNum, title: `第${chNum}章`, content: '', wordCount: 0 };
+      chapter = { chapterNumber: chNum, title: formatChapterTitle(chNum, deriveLocalChapterTitle({ notes })), content: '', wordCount: 0 };
       novel.chapters.push(chapter);
-      systemPrompt = `你是一位专业的小说家，请接着用户已有的小说内容创作下一章，保持风格一致。${buildPersonaPrompt(persona)}`;
+      systemPrompt = `${buildSystemPrompt(novel.novelTypeId, undefined, persona)}\n\n你是一位专业的小说家，请接着用户已有的小说内容创作下一章，保持风格一致。`;
       userPrompt = `以下是上一章的结尾部分：\n\n${lastContent}\n\n请接着上面的内容创作第${chNum}章。\n${notes ? '写作方向/备注：' + notes : '保持原有风格继续推进剧情。'}\n目标字数：约${wordCount || 2000}字。\n请直接输出章节内容。`;
     }
 
@@ -1986,7 +2103,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
     await novel.save();
 
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' });
-    res.write(`data: ${JSON.stringify({ type: 'chapter_start', chapterNumber: chNum, title: `第${chNum}章` })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'chapter_start', chapterNumber: chNum, title: chapter.title || formatChapterTitle(chNum, deriveLocalChapterTitle({ notes })) })}\n\n`);
 
     let appendBuffer = '';
     let abortController = new AbortController();
@@ -2010,6 +2127,9 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
         const newContent = (novel.chapters[idx].content || '') + appendBuffer;
         novel.chapters[idx].content = isFinal ? processChapter(newContent).text : newContent;
         novel.chapters[idx].wordCount = novel.chapters[idx].content.length;
+        if (isFinal && /^第\s*\d+\s*章\s*(?:故事未尽)?\s*$/.test(String(novel.chapters[idx].title || ''))) {
+          novel.chapters[idx].title = formatChapterTitle(chNum, deriveLocalChapterTitle({ notes, content: novel.chapters[idx].content }));
+        }
         novel.markModified(`chapters.${idx}`);
       }
       novel.currentWordCount = (novel.currentWordCount || 0) + appendBuffer.length;
@@ -2212,10 +2332,12 @@ router.post('/deslop', auth, async (req, res) => {
     if (!text || text.trim().length < 10) return res.status(400).json({ message: '文本太短' });
     await checkTokenBalance(req.user);
 
-    const persona = await resolveNovelPersona(req.userId, novelId ? await Novel.findOne({ _id: novelId, userId: req.userId }) : null, personaId);
+    const styleNovel = novelId ? await Novel.findOne({ _id: novelId, userId: req.userId }) : null;
+    const persona = await resolveNovelPersona(req.userId, styleNovel, personaId);
+    const genreContract = buildGenreContract(styleNovel?.novelTypeId || styleNovel?.novelTypeName, null);
     const systemPrompt = persona?.overrideDeslop
-      ? `你是一位资深小说文字编辑。请严格遵循用户指定的人格规则完成去AI化。${buildPersonaPrompt(persona, { includeDeslop: false })}`
-      : `${deslop.deslopSystemPrompt}${buildPersonaPrompt(persona, { includeDeslop: false })}`;
+      ? `你是一位资深小说文字编辑。请严格遵循用户指定的人格规则完成去AI化。${genreContract}${buildPersonaPrompt(persona, { includeDeslop: false })}`
+      : `${deslop.deslopSystemPrompt}${genreContract}${buildPersonaPrompt(persona, { includeDeslop: false })}`;
     const userPrompt = `请对以下文本进行去AI味处理：\n\n${text}`;
 
     const result = await streamGenerate(
@@ -2253,10 +2375,12 @@ router.post('/deslop-stream', auth, async (req, res) => {
 
     const apiConfig = resolveApiConfig(req.user?.modelConfig, 'polish');
     const deslop = require('../config/deslop');
-    const persona = await resolveNovelPersona(req.userId, novelId ? await Novel.findOne({ _id: novelId, userId: req.userId }) : null, personaId);
+    const styleNovel = novelId ? await Novel.findOne({ _id: novelId, userId: req.userId }) : null;
+    const persona = await resolveNovelPersona(req.userId, styleNovel, personaId);
+    const genreContract = buildGenreContract(styleNovel?.novelTypeId || styleNovel?.novelTypeName, null);
     const personaPrompt = persona?.overrideDeslop
-      ? `你是一位专业小说编辑。${buildPersonaPrompt(persona, { includeDeslop: false })}`
-      : `${deslop.deslopSystemPrompt}${buildPersonaPrompt(persona, { includeDeslop: false })}`;
+      ? `你是一位专业小说编辑。${genreContract}${buildPersonaPrompt(persona, { includeDeslop: false })}`
+      : `${deslop.deslopSystemPrompt}${genreContract}${buildPersonaPrompt(persona, { includeDeslop: false })}`;
     let fullContent = '';
 
     // 第一遍：打碎段落结构
@@ -2361,8 +2485,11 @@ router.post('/polish', auth, async (req, res) => {
     await checkTokenBalance(req.user);
 
     const textLength = text.trim().length;
-    const persona = await resolveNovelPersona(req.userId, novelId ? await Novel.findOne({ _id: novelId, userId: req.userId }) : null, personaId);
-    const genreHint = genre ? `\n【文风参考】这是一篇"${genre}"类型的小说，请保留该类型常见的叙事节奏和用词习惯。` : '';
+    const styleNovel = novelId ? await Novel.findOne({ _id: novelId, userId: req.userId }) : null;
+    const persona = await resolveNovelPersona(req.userId, styleNovel, personaId);
+    const genreName = genre || styleNovel?.novelTypeId || styleNovel?.novelTypeName;
+    const genreHint = genreName ? `\n【文风参考】这是一篇"${genreName}"类型的小说，请保留该类型常见的叙事节奏和用词习惯。` : '';
+    const genreContract = buildGenreContract(genreName, null);
 
     const defaultPolishPrompt = `你是一位资深小说润色专家。你的任务是在**不改变剧情、视角、人物关系和事实**的前提下，让文本更像一位成熟作者的成稿，而不是AI产物。
 
@@ -2377,7 +2504,7 @@ router.post('/polish', auth, async (req, res) => {
 5. 句式要有长短变化：动作戏短句密集，心理戏允许长句绵延；避免全文同一节奏。
 6. 对话要口语化、带人物性格；叙述要克制，不靠堆砌形容词撑场面。
 7. 直接输出润色后的完整文本，不加标题、不加说明、不加【】标签。
-${genreHint}${buildPersonaPrompt(persona)}`;
+${genreHint}\n${genreContract}${buildPersonaPrompt(persona)}`;
 
     let userPrompt = `${polishPrompt || defaultPolishPrompt}\n\n以下是需要润色的文本（原文约 ${textLength} 字，请控制在 ${Math.round(textLength * 0.85)}~${Math.round(textLength * 1.15)} 字）：\n\n${text}`;
 
@@ -2525,7 +2652,7 @@ ${text.slice(0, 8000)}`,
       } else {
         res.write(`data: ${JSON.stringify({ type: 'status', message: '正在执行去AI味处理...' })}\n\n`);
 
-        const deslopPrompt = `${persona?.overrideDeslop ? buildPersonaPrompt(persona, { includeDeslop: false }) : deslop.deslopSystemPrompt + buildPersonaPrompt(persona, { includeDeslop: false })}\n\n请对以下文本进行去AI味处理：\n\n${polished}`;
+        const deslopPrompt = `${persona?.overrideDeslop ? buildPersonaPrompt(persona, { includeDeslop: false }) : deslop.deslopSystemPrompt + buildPersonaPrompt(persona, { includeDeslop: false })}${genreContract}\n\n请对以下文本进行去AI味处理：\n\n${polished}`;
         let desloped = '';
         let deslopExhausted = false;
 
@@ -3134,7 +3261,8 @@ async function runOptimizeTask(novelId, userId, apiConfig) {
 
     // 1. 分析全文问题
     const analysisPrompt = buildOptimizeAnalysisPrompt(
-      novel.chapters, novel.outline, novel.protagonistName, novel.worldSetting, novel.writingPersonaSnapshot
+      novel.chapters, novel.outline, novel.protagonistName, novel.worldSetting, novel.writingPersonaSnapshot,
+      novel.novelTypeId || novel.novelTypeName
     );
     const analysisResult = await streamGenerate(
       '你是一位专业的小说编辑。请分析小说全文，找出所有问题。',
@@ -3170,7 +3298,10 @@ async function runOptimizeTask(novelId, userId, apiConfig) {
         });
         continue;
       }
-      const chPrompt = buildOptimizeChapterPrompt(ch, ch.chapterNumber, analysis, novel.outline, novel.writingPersonaSnapshot);
+      const chPrompt = buildOptimizeChapterPrompt(
+        ch, ch.chapterNumber, analysis, novel.outline, novel.writingPersonaSnapshot,
+        novel.novelTypeId || novel.novelTypeName
+      );
       const chResult = await streamGenerate(
         '你是一位专业的小说编辑。请根据分析报告优化指定章节。',
         chPrompt, null, null, apiConfig
@@ -3585,3 +3716,5 @@ router.post('/editorial-status/:novelId', auth, async (req, res) => {
 });
 
 module.exports = router;
+module.exports.parseJsonObject = parseJsonObject;
+module.exports.parseBlueprintPayload = parseBlueprintPayload;

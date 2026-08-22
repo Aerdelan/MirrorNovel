@@ -291,6 +291,9 @@ test('新书单章：SSE、正文、质量状态和创作状态完整落库', as
   assert.deepEqual(novel.chapters.map((chapter) => chapter.chapterNumber), [1]);
   assert.equal(novel.currentWordCount, content.length);
   assert.equal(novel.currentChapterIndex, 1);
+  assert.match(novel.chapters[0].title, /^第1章\s+/);
+  assert.notEqual(novel.chapters[0].title, '第1章');
+  assert.equal(events.find((event) => event.type === 'chapter_start').title, novel.chapters[0].title);
   assert.equal(typeof novel.chapters[0].qualityReport.score, 'number');
   assert.deepEqual(novel.chapters[0].qualityReport.toolchain, { isolated: true });
   assert.equal(novel.emotionCurve.length, 1);

@@ -257,7 +257,7 @@ async function startChapterContinue(novel) {
  continueDialogNovel.value = null
  try {
  const detail = await novelStore.fetchNovelDetail(novel._id)
- const fullText = (detail.chapters || []).map(ch => `第${ch.chapterNumber}章\n${ch.content}`).join('\n\n')
+ const fullText = (detail.chapters || []).map(ch => `${ch.title || `第${ch.chapterNumber}章`}\n${ch.content}`).join('\n\n')
  novelStore.setPrefillContinue({ novelId: detail._id, importedText: fullText, title: detail.title, novelTypeName: detail.novelTypeName })
  router.push('/continue')
  } catch (e) { alert($t('error.unknown')) }
