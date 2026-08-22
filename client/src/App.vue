@@ -54,7 +54,6 @@
  <div class="modal-body">
  <div class="disclaimer-scroll">
  <p class="disclaimer-para">{{ $t('disclaimer.para1') }}</p>
- <p class="disclaimer-para">{{ $t('disclaimer.para2') }}</p>
  <p class="disclaimer-para disclaimer-warn">{{ $t('disclaimer.warn') }}</p>
  </div>
  </div>
