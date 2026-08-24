@@ -1,7 +1,7 @@
 /**
  * Novel Context Service — RAG 风格上下文构建器
  *
- * 替代原有的 distillChapters 简单拼接：
+ * 提供比简单拼接更稳定的上下文记忆：
  * 1. 近期章节保留详情，越早的章节越压缩
  * 2. 自动追踪活跃的剧情线和角色状态
  * 3. 提取未回收的伏笔
@@ -116,7 +116,7 @@ function extractPlotHooks(chapters) {
 }
 
 /**
- * 构建增强上下文（替代 distillChapters）
+ * 构建增强上下文
  * 策略：最近3章保持详细，之前的压缩为摘要
  */
 function buildAugmentedContext(chapters) {

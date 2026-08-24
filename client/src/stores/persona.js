@@ -43,14 +43,9 @@ export const usePersonaStore = defineStore('persona', () => {
     return res.data
   }
 
-  async function fromReference(refId) {
-    const res = await api.post(`/persona/from-reference/${refId}`)
-    personas.value.push(res.data)
-    return res.data
-  }
 
   return {
     personas, loaded,
-    fetchList, create, update, remove, clone, aiGenerate, fromReference,
+    fetchList, create, update, remove, clone, aiGenerate,
   }
 })

@@ -24,46 +24,6 @@
  </div>
  </div>
 
- <!-- 积分水球 -->
- <div class="card token-card">
- <div class="token-title">{{ $t('profile.tokenBalance') }}</div>
- <div class="token-ball-wrapper">
- <div class="token-ball">
- <div class="water-wave" :style="{ height: (100 - tokenPercent) + '%' }">
- <div class="wave wave1"></div>
- <div class="wave wave2"></div>
- </div>
- <div class="token-ball-text">
- <div class="token-num">{{ availableTokens.toLocaleString() }}</div>
- <div class="token-label">{{ $t('profile.available') }}</div>
- </div>
- </div>
- </div>
- <div class="token-info-row">
- <span>{{ $t('profile.total') }} {{ totalTokens.toLocaleString() }}</span>
- <span>{{ $t('profile.used') }} {{ usedTokens.toLocaleString() }}</span>
- </div>
- <button class="btn btn-primary btn-block" @click="showGroupInfo = !showGroupInfo" style="margin-top:10px;">
- {{ $t('profile.getToken') }}
- </button>
-  <div v-if="showGroupInfo" class="group-info-card">
- <div class="group-info-text">{{ $t('profile.tokenDesc') }}</div>
- <div class="group-qq">{{ $t('profile.groupNum') }}</div>
- <div class="group-hint">{{ $t('profile.groupNote') }}</div>
-  </div>
-  </div>
-
-  <div class="card ledger-card">
-  <div class="ledger-heading"><div class="section-title" style="margin:0;">积分流水</div><button class="btn btn-sm btn-outline" :disabled="ledgerLoading" @click="loadTokenInfo">刷新</button></div>
-  <div v-if="ledger.length === 0" class="ledger-empty">暂无积分记录</div>
-  <div v-else class="ledger-list">
-  <div v-for="(entry, index) in ledger" :key="`${entry.createdAt}-${index}`" class="ledger-row">
-  <div><strong :class="entry.type === 'credit' ? 'ledger-credit' : 'ledger-debit'">{{ entry.type === 'credit' ? '+' : '-' }}{{ Number(entry.points || 0).toLocaleString() }}</strong><span class="ledger-reason">{{ ledgerReason(entry.reason) }}</span></div>
-  <span>{{ new Date(entry.createdAt).toLocaleString() }}</span>
-  </div>
-  </div>
-  </div>
-
  <!-- 统计 -->
  <div class="card stats-card">
  <div class="section-title">{{ $t('profile.stats') }}</div>
@@ -75,68 +35,11 @@
  </div>
  </div>
 
- <!-- 签到 -->
- <div class="card checkin-card">
- <div class="checkin-header">
- <div class="section-title" style="margin:0;"> 签到</div>
- <span class="checkin-total">已签到 {{ checkinTotal }} 天</span>
- </div>
- <div class="checkin-streak">
- <div v-for="d in 7" :key="d" class="checkin-day" :class="{ active: d <= checkinDayIndex, today: d === checkinDayIndex && !checkinDone, done: d <= checkinDayIndex && (d < checkinDayIndex || checkinDone) }">
- <div class="day-icon">{{ d === 7 ? '' : '' }}</div>
- <div class="day-label">Day {{ d }}</div>
- <div class="day-reward">{{ d === 7 ? '200' : '100' }}</div>
- </div>
- </div>
- <button class="btn btn-primary btn-block" :disabled="checkinDone || checkining" @click="doCheckin">
- {{ checkining ? '⏳' : checkinDone ? ' 已签到' : ' 今日签到' }}
- </button>
- <div v-if="checkinMsg" class="checkin-msg" :class="{ ok: checkinOk }">{{ checkinMsg }}</div>
- </div>
-
- <!-- 积分活动 -->
- <div class="card activity-center">
- <div class="activity-heading">
- <div class="section-title" style="margin:0;">{{ activityText.title }}</div>
- <button class="btn btn-sm btn-outline" :disabled="activitiesLoading" @click="loadActivities">{{ activityText.refresh }}</button>
- </div>
- <div v-if="activitiesLoading && activities.length === 0" class="activity-empty">{{ activityText.loading }}</div>
- <div v-else-if="activities.length === 0" class="activity-empty">{{ activityText.empty }}</div>
- <div v-else class="activity-list">
- <div v-for="activity in activities" :key="activity.id || activity._id" class="activity-row">
- <div class="activity-title-row">
- <strong>{{ activity.name }}</strong>
- <span class="activity-badge">{{ difficultyLabel(activity.difficulty) }}</span>
- </div>
- <div v-if="activity.description" class="activity-description">{{ activity.description }}</div>
- <div class="activity-meta">
- <span>{{ activityText.reward }} {{ rewardLabel(activity) }}</span>
- <span>{{ activityText.probability }} {{ Number(activity.probability ?? 100) }}%</span>
- <span>{{ requirementLabel(activity) }}</span>
- </div>
- <div class="activity-actions">
- <span class="activity-state" :class="{ ready: activity.canClaim }">
- {{ activity.canClaim ? activityText.ready : (activity.eligibility?.reason || activityText.unavailable) }}
- </span>
- <button
-  class="btn btn-primary btn-sm"
-  :disabled="!activity.canClaim || claimingActivityId === (activity.id || activity._id)"
-  @click="claimPointsActivity(activity)"
- >
- {{ claimingActivityId === (activity.id || activity._id) ? activityText.claiming : activityText.claim }}
- </button>
- </div>
- </div>
- </div>
- <div v-if="activityMessage" class="activity-message" :class="{ ok: activityMessageOk }">{{ activityMessage }}</div>
- </div>
-
  <!-- 邀请 -->
  <div class="card invite-card">
  <div class="section-title"> 邀请好友</div>
  <div class="invite-stats">
  <div class="invite-stat"><span class="stat-num">{{ inviteInfo.inviteCount }}</span><span>已邀请</span></div>
- <div class="invite-stat"><span class="stat-num">{{ inviteInfo.inviteRewards }}</span><span>获得积分</span></div>
  </div>
  <div class="invite-code-row">
  <span class="invite-label">邀请码</span>
@@ -146,7 +49,7 @@
  <div class="invite-qr" v-if="inviteInfo.inviteLink">
  <img :src="'https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=' + encodeURIComponent(inviteInfo.inviteLink)" alt="QR" />
  </div>
- <div class="invite-hint">每邀请一位新用户注册，您可获得 <strong>2000 积分</strong></div>
+ <div class="invite-hint">邀请好友一起使用 MirrorNovel</div>
  </div>
 
  <!-- 昵称 -->
@@ -224,43 +127,8 @@ const novelStore = useNovelStore()
 const { t, isZh, setLocale } = useI18n()
 const newNickname = ref('')
 
-// 签到
-const checkinDayIndex = ref(0)
-const checkinTotal = ref(0)
-const checkinDone = ref(false)
-const checkining = ref(false)
-const checkinMsg = ref('')
-const checkinOk = ref(false)
-
 // 邀请
 const inviteInfo = ref({ inviteCode: '', inviteCount: 0, inviteRewards: 0, inviteLink: '' })
-
-// 积分账户
-const totalTokens = ref(0)
-const usedTokens = ref(0)
-const availableTokens = ref(0)
-const ledger = ref([])
-const ledgerLoading = ref(false)
-const tokenPercent = computed(() => {
- if (totalTokens.value === 0) return 100
- return Math.round(usedTokens.value / totalTokens.value * 100)
-})
-const showGroupInfo = ref(false)
-
-const activities = ref([])
-const activitiesLoading = ref(false)
-const claimingActivityId = ref('')
-const activityMessage = ref('')
-const activityMessageOk = ref(false)
-const activityText = computed(() => isZh.value ? {
- title: '积分活动', refresh: '刷新', loading: '正在加载活动...', empty: '暂无可参与活动',
- reward: '奖励', probability: '概率', ready: '已满足领取条件', unavailable: '暂不可领取',
- claim: '领取', claiming: '领取中...', points: '积分', noRequirement: '无需门槛',
-} : {
- title: 'Points Activities', refresh: 'Refresh', loading: 'Loading...', empty: 'No activities available',
- reward: 'Reward', probability: 'Chance', ready: 'Ready to claim', unavailable: 'Unavailable',
- claim: 'Claim', claiming: 'Claiming...', points: 'Points', noRequirement: 'No requirement',
-})
 
 const routeDefinitions = [
  { id: 'normal_1', labelKey: 'lineStandardOne' },
@@ -301,87 +169,19 @@ const stats = ref({ totalNovels: 0, totalWords: 0, completedNovels: 0, inProgres
 
 onMounted(async () => {
  if (!authStore.isLoggedIn) return
- loadTokenInfo()
  loadStats()
  loadModelConfig()
- loadCheckinStatus()
  loadInviteInfo()
- loadActivities()
 })
 
 // 从 keep-alive 缓存重新激活时刷新数据
 onActivated(() => {
  if (!authStore.isLoggedIn) return
- checkinMsg.value = ''
  newNickname.value = ''
  configMsg.value = ''
- loadTokenInfo()
  loadStats()
- loadCheckinStatus()
  loadInviteInfo()
- loadActivities()
 })
-
-async function loadActivities() {
- activitiesLoading.value = true
- try { activities.value = await authStore.getActivities() }
- catch { activities.value = [] }
- activitiesLoading.value = false
-}
-
-function rewardLabel(activity) {
- const min = Number(activity.reward?.min ?? activity.minRewardPoints ?? activity.rewardPoints ?? 0)
- const max = Number(activity.reward?.max ?? activity.maxRewardPoints ?? activity.rewardPoints ?? min)
- return `${min === max ? min : `${min}-${max}`} ${activityText.value.points}`
-}
-
-function difficultyLabel(value) {
- const labels = isZh.value
-  ? { easy: '轻松', medium: '适中', hard: '挑战', custom: '自定义' }
-  : { easy: 'Easy', medium: 'Medium', hard: 'Hard', custom: 'Custom' }
- return labels[value] || labels.custom
-}
-
-function requirementLabel(activity) {
- const requirement = activity.requirement || {}
- if (!requirement.metric || requirement.metric === 'none') return activityText.value.noRequirement
- const labels = isZh.value
-  ? { checkin_days: '签到天数', invite_count: '邀请人数', novel_count: '作品数', chapter_count: '章节数', word_count: '创作字数', account_age_days: '注册天数' }
-  : { checkin_days: 'Check-ins', invite_count: 'Invites', novel_count: 'Works', chapter_count: 'Chapters', word_count: 'Words', account_age_days: 'Account age' }
- const value = Number(activity.eligibility?.value ?? 0)
- const operator = requirement.operator === 'lte' ? '≤' : '≥'
- return `${labels[requirement.metric] || requirement.metric} ${value} / ${operator}${Number(requirement.threshold || 0)}`
-}
-
-async function claimPointsActivity(activity) {
- const id = activity.id || activity._id
- claimingActivityId.value = id
- activityMessage.value = ''
- try {
-  const result = await authStore.claimActivity(id)
-  activityMessage.value = result.message
-  activityMessageOk.value = Boolean(result.won)
-  if (result.balance) {
-   totalTokens.value = result.balance.total || totalTokens.value
-   usedTokens.value = result.balance.used || 0
-   availableTokens.value = result.balance.available || 0
-  }
-  await loadActivities()
- } catch (error) {
-  activityMessage.value = error.response?.data?.message || error.message
-  activityMessageOk.value = false
- }
- claimingActivityId.value = ''
-}
-
-async function loadCheckinStatus() {
- try {
- const data = await authStore.getCheckinStatus()
- checkinDone.value = data.checkedIn
- checkinDayIndex.value = data.dayIndex || 0
- checkinTotal.value = data.totalDays || 0
- } catch {}
-}
 
 async function loadInviteInfo() {
  try {
@@ -389,21 +189,6 @@ async function loadInviteInfo() {
  } catch {}
 }
 
-async function doCheckin() {
- checkining.value = true; checkinMsg.value = ''
- try {
- const data = await authStore.checkin()
- checkinDone.value = true
- checkinDayIndex.value = data.dayIndex
- checkinTotal.value = data.totalDays
- checkinMsg.value = data.message
- checkinOk.value = true
- } catch (e) {
- checkinMsg.value = e.response?.data?.message || '签到失败'
- checkinOk.value = false
- }
- checkining.value = false
-}
 
 function copyToClipboard(text, label) {
  // 优先使用 Clipboard API（HTTPS 环境）
@@ -447,25 +232,6 @@ function copyInviteLink() {
  if (inviteInfo.value.inviteLink) {
  copyToClipboard(inviteInfo.value.inviteLink, '邀请链接')
  }
-}
-
-async function loadTokenInfo() {
- ledgerLoading.value = true
- try {
- const res = await authStore.getTokenInfo()
- totalTokens.value = res.total || 0
- usedTokens.value = res.used || 0
- availableTokens.value = res.available || 0
- ledger.value = Array.isArray(res.ledger) ? [...res.ledger].reverse() : []
- } catch (e) { console.error('获取积分信息失败:', e) }
- finally { ledgerLoading.value = false }
-}
-
-function ledgerReason(reason) {
- const labels = { daily_checkin: '每日签到', invite_reward: '邀请奖励', group_reward: '进群奖励', purchase: '充值', novel_generation: '模型生成' }
- if (String(reason || '').startsWith('activity:')) return '活动奖励'
- if (String(reason || '').startsWith('admin_adjust:')) return `管理员调整：${String(reason).slice(13)}`
- return labels[reason] || reason || '积分变动'
 }
 
 async function loadStats() {
@@ -544,69 +310,6 @@ async function handleLogout() {
 .user-info { flex: 1; min-width: 0; }
 .user-name { font-size: 16px; font-weight: 600; color: var(--text-primary); }
 .user-email { font-size: 12px; color: var(--text-light); margin-top: 2px; }
-.token-card { text-align: center; }
-.token-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
-.token-ball-wrapper { display: flex; justify-content: center; position: relative; height: 120px; }
-.token-ball {
- width: 120px; height: 120px; border-radius: 50%;
- background: var(--primary-light); overflow: hidden;
- position: relative; box-shadow: 0 4px 16px rgba(47, 101, 70, 0.16); cursor: default;
-}
-.water-wave { position: absolute; bottom: 0; left: 0; right: 0; background: linear-gradient(180deg, #79b98b, var(--primary)); transition: height 0.6s ease; }
-.wave { position: absolute; top: -8px; left: 0; right: 0; height: 16px; background: rgba(255,255,255,0.3); border-radius: 50%; }
-.wave1 { animation: waveMove 3s linear infinite; }
-.wave2 { animation: waveMove 4s linear infinite reverse; opacity: 0.5; }
-@keyframes waveMove {
- 0% { transform: translateX(-10%) rotate(0deg); }
- 100% { transform: translateX(10%) rotate(5deg); }
-}
-.token-ball-text { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; color: white; text-shadow: 0 1px 4px rgba(0,0,0,0.3); z-index: 1; }
-.token-num { font-size: 26px; font-weight: 700; }
-.token-label { font-size: 12px; opacity: 0.9; }
-.token-info-row { display: flex; justify-content: space-around; font-size: 12px; color: var(--text-light); padding: 8px 0; }
-.group-info-card { margin-top: 12px; padding: 16px; border-radius: 10px; background: var(--accent-light); border: 1px solid var(--warning-border); text-align: center; animation: fadeIn 0.3s ease; }
-.group-info-text { font-size: 13px; color: var(--text-secondary); margin-bottom: 8px; }
-.group-qq { font-size: 22px; font-weight: 700; color: var(--primary-color); }
-.group-hint { font-size: 12px; color: var(--text-light); margin-top: 4px; }
-.ledger-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; }
-.ledger-list { margin-top:8px; }
-.ledger-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 0; border-bottom:1px solid var(--border-color); color:var(--text-light); font-size:11px; }
-.ledger-row:last-child { border-bottom:0; }
-.ledger-row > div { min-width:0; display:flex; align-items:center; gap:8px; }
-.ledger-credit { color:var(--success-color); }.ledger-debit { color:var(--error-color); }.ledger-reason { overflow-wrap:anywhere; color:var(--text-secondary); }.ledger-empty { padding:16px 0 4px; color:var(--text-light); font-size:13px; text-align:center; }
-
-/* 签到 */
-.checkin-card { text-align: center; }
-.checkin-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
-.checkin-total { font-size: 12px; color: var(--text-light); }
-.checkin-streak { display: flex; gap: 4px; justify-content: center; margin-bottom: 14px; }
-.checkin-day { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 6px; border-radius: 10px; background: #f5f5f5; min-width: 44px; transition: all 0.2s; }
-.checkin-day.active { background: var(--primary-light); border: 1px solid var(--primary-color); }
-.checkin-day.done { background: var(--success-bg); border: 1px solid var(--success-border); }
-.checkin-day.today { border: 2px solid var(--primary-color); }
-.day-icon { font-size: 16px; }
-.day-label { font-size: 10px; color: var(--text-light); }
-.day-reward { font-size: 11px; font-weight: 700; color: var(--primary-color); }
-.checkin-msg { margin-top: 8px; font-size: 13px; color: var(--error-color); }
-.checkin-msg.ok { color: var(--success-color); }
-
-/* 积分活动 */
-.activity-heading, .activity-title-row, .activity-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.activity-heading { margin-bottom: 4px; }
-.activity-list { display: flex; flex-direction: column; }
-.activity-row { padding: 14px 0; border-bottom: 1px solid var(--border-color); }
-.activity-row:last-child { padding-bottom: 2px; border-bottom: 0; }
-.activity-title-row strong { min-width: 0; color: var(--text-primary); font-size: 14px; overflow-wrap: anywhere; }
-.activity-badge { flex: 0 0 auto; padding: 3px 7px; color: var(--primary-hover); background: var(--primary-light); border-radius: 4px; font-size: 11px; font-weight: 700; }
-.activity-description { margin-top: 6px; color: var(--text-secondary); font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
-.activity-meta { display: flex; flex-wrap: wrap; gap: 5px 12px; margin-top: 8px; color: var(--text-light); font-size: 11px; }
-.activity-actions { align-items: flex-end; margin-top: 10px; }
-.activity-state { min-width: 0; color: var(--text-light); font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
-.activity-state.ready { color: var(--success-color); font-weight: 600; }
-.activity-empty { padding: 20px 0 8px; color: var(--text-light); font-size: 13px; text-align: center; }
-.activity-message { margin-top: 10px; color: var(--error-color); font-size: 13px; }
-.activity-message.ok { color: var(--success-color); }
-
 /* 邀请 */
 .invite-card { text-align: center; border-color: var(--warning-border); background: linear-gradient(135deg, var(--accent-light), #fffaf0); }
 .invite-stats { display: flex; gap: 20px; justify-content: center; margin: 12px 0; }
@@ -621,11 +324,6 @@ async function handleLogout() {
 .invite-qr img { border-radius: 8px; border: 1px solid var(--border-color); }
 .invite-hint { font-size: 12px; color: var(--text-light); margin-top: 6px; }
 .invite-hint strong { color: var(--primary-color); }
-
-@media (max-width: 420px) {
- .activity-actions { align-items: stretch; flex-direction: column; }
- .activity-actions .btn { width: 100%; }
-}
 
 /* 语言切换 */
 .lang-switch-row { display: flex; gap: 10px; }

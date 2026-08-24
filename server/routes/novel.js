@@ -2,8 +2,6 @@ const express = require('express');
 const router = express.Router();
 const { randomUUID } = require('crypto');
 const auth = require('../middleware/auth');
-const multer = require('multer');
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 const Novel = require('../models/Novel');
 const User = require('../models/User');
 const WritingPersona = require('../models/WritingPersona');
@@ -77,14 +75,6 @@ const {
   assessStoryCompletion,
   closeUnresolvedHooksAtEnding,
 } = require('../services/storyState');
-const {
-  calculatePointsCharge,
-  debitPointsForUser,
-  getPointsSnapshot,
-  isPointsBillingRequired,
-  routeIdForModelConfig,
-} = require('../services/pointsService');
-const { claimAutoActivitiesForUser } = require('../services/activityService');
 const { sendBlueprintProposalNotification } = require('../services/emailService');
 
 // 全局活跃生成流跟踪
@@ -205,7 +195,6 @@ ${(novel.plotThreads || []).map((thread) => `${thread.title || thread.id}：${th
   }
 }
 若当前蓝图足够，请输出 {"hasChanges":false,"summary":"当前无需调整"}。`;
-  await ensureTokensLeft(user);
   const result = await streamGenerate(
     `你是一位克制、重视因果与人物弧线的长篇小说编辑。${buildPersonaPrompt(persona, { includeDeslop: false })}`,
     prompt,
@@ -217,9 +206,6 @@ ${(novel.plotThreads || []).map((thread) => `${thread.title || thread.id}：${th
     2200,
     60000
   );
-  try { await deductTokens(user, result.content, prompt, 'reasoning'); } catch (error) {
-    if (error.message !== 'TOKEN_EXHAUSTED') console.warn('[Blueprint] 审核扣费失败:', error.message);
-  }
   const parsed = parseJsonObject(result.content);
   if (!parsed) throw new Error('剧情蓝图审核返回格式无效');
   blueprint.lastReviewedChapter = chapterNumber;
@@ -316,8 +302,7 @@ function appendChapterContextDocs(novel, content, chapterNumber, protagonistName
     console.warn('[Doc] 伏笔追踪更新失败:', error.message);
   }
 
-  // Build a cheap local checkpoint every six chapters. This adds no model
-  // call or billing and is safe for old novels that do not have the field.
+  // Build a cheap local checkpoint every six chapters for older records.
   if (Number(chapterNumber) % 6 === 0 || !novel.contextMemory?.checkpointChapter) {
     try {
       novel.contextMemory = buildContextMemoryCheckpoint({
@@ -433,7 +418,6 @@ ${reviewSource}`;
   onStatus && onStatus(`推理专家正在审查第${contract?.chapterNumber || ''}章...`);
   let reviewResult;
   try {
-    await ensureTokensLeft(user);
     reviewResult = await streamGenerate(
       `你是一位严格但克制的小说连续性审稿专家。事实一致性优先于华丽表达。${buildPersonaPrompt(persona)}`,
       reviewPrompt,
@@ -445,9 +429,6 @@ ${reviewSource}`;
       1200,
       30000
     );
-    try { await deductTokens(user, reviewResult.content, reviewPrompt, 'reasoning'); } catch (error) {
-      if (error.message !== 'TOKEN_EXHAUSTED') console.warn('[Expert] 审稿扣费失败:', error.message);
-    }
   } catch (error) {
     console.warn('[Expert] 审稿失败，保留原稿:', error.message);
     return { content: original, review: null };
@@ -475,7 +456,6 @@ ${original}
 直接输出修订后的完整章节，不要解释，不要添加标题。`;
   onStatus && onStatus(`润色专家正在修订第${contract?.chapterNumber || ''}章...`);
   try {
-    await ensureTokensLeft(user);
     const revised = await streamGenerate(
       `你是一位谨慎的小说润色修订专家。保留事实和剧情，只修复审稿意见指出的问题。${buildPersonaPrompt(persona)}`,
       revisePrompt,
@@ -489,9 +469,6 @@ ${original}
     );
     const revisedText = String(revised?.content || '').trim();
     if (revisedText.length >= Math.max(500, original.length * 0.55)) {
-      try { await deductTokens(user, revisedText, revisePrompt, 'polish'); } catch (error) {
-        if (error.message !== 'TOKEN_EXHAUSTED') console.warn('[Expert] 修订扣费失败:', error.message);
-      }
       return { content: revisedText, review: report };
     }
   } catch (error) {
@@ -592,10 +569,14 @@ router.get('/types', (req, res) => {
   res.json(novelTypes);
 });
 
+router.get('/types/full', (req, res) => {
+  res.json(require('../config/novelTypeData'));
+});
+
 // 单独生成大纲（同步返回，供前端弹窗确认使用）
 router.post('/generate-outline', auth, async (req, res) => {
   try {
-    const { novelTypeId, protagonistName, worldSetting, targetWordCount, structureRef, personaId } = req.body;
+    const { novelTypeId, protagonistName, worldSetting, targetWordCount, personaId } = req.body;
     if (!novelTypeId) return res.status(400).json({ message: '请选择小说类型' });
 
     let type = novelTypes.find(t => t.id === novelTypeId || t.name === novelTypeId);
@@ -609,62 +590,11 @@ router.post('/generate-outline', auth, async (req, res) => {
       } catch { type = { id: novelTypeId, name: novelTypeId, icon: '📄', keywords: '', outline: '' }; }
     }
 
-    // 如果有参考结构，提取世界观但不再强制大纲雷同
-    let effectiveWorld = worldSetting;
     let outlinePrompt;
     const persona = personaId ? await resolveNovelPersona(req.user.id, null, personaId) : null;
-    if (structureRef) {
-      // 从参考结构中提取世界观设定作为参考
-      const worldMatch = structureRef.match(/【世界观设定】([\s\S]*?)(?=【|$)/);
-      const plotMatch = structureRef.match(/【剧情整体走向】([\s\S]*?)(?=【|$)/);
-      effectiveWorld = worldMatch ? worldMatch[1].trim() : (worldSetting || '由参考小说设定');
+    outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona);
 
-      outlinePrompt = `你是一位专业的小说大纲策划师。${buildPersonaPrompt(persona, { includeDeslop: false })}用户上传了一本参考小说，要求参考其结构模式进行**创新性再创作**，生成一本全新的原创小说。
-
-主角名字：${protagonistName || '未设定'}
-世界观设定（来自参考小说，可以调整）：${effectiveWorld}
-目标总字数：约${targetWordCount}字
-
-【参考小说的结构模式】
-以下是参考小说的结构分析，请参考其**结构模式**（如冲突类型、节奏安排、阶段划分等），但不要照搬具体情节：
-${structureRef}
-
-⚠️ 核心原则：
-1. **不得直接复制原小说的具体情节、事件、场景和冲突**。必须全新创作具体内容。
-2. 参考其**结构模板**（如"主角成长→遇到挑战→突破瓶颈"这种抽象模式），填入全新的情节素材
-3. 改变冲突的具体表现方式：如果原小说是"武林争霸"，你可以写成"商业竞争"或"宫廷斗争"
-4. 调整章节顺序和事件分布：将原小说的前半与后半打乱重组，或添加全新的事件节点
-5. 角色名称使用参考结构中"AI生成替换名称"部分提供的新名称
-6. 如果与原小说情节雷同，将被内容平台判定为抄袭下架，所以必须确保每个情节都是原创的
-
-请按以下格式输出大纲：
-
-【故事主线】
-（一个全新的原创故事线，只保留参考小说的结构骨架）
-
-【核心冲突】
-（生成全新的具体冲突，不要复刻原小说的冲突设定）
-
-【主要角色】
-（使用参考结构中提供的新名称，但重新设计角色关系和性格）
-
-【剧情阶段】
-（参考参考小说的阶段数量和节奏比例，但每个阶段的内容必须全新创作）
-
-【结局方向】
-（参考参考小说的结局类型，但具体实现方式必须原创）
-
-【关键节点】
-（参考参考小说的关键节奏点位置，但每个节点的具体事件必须原创）
-
-${buildOutlineSpec(targetWordCount)}`;
-    } else {
-      outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona);
-    }
-
-    const systemPrompt = structureRef
-      ? `你是一位专业的小说大纲策划师。${buildPersonaPrompt(persona, { includeDeslop: false })}用户提供了参考小说的结构模式，你必须参考其结构骨架进行创新性再创作。输出的大纲必须是在结构上与原文相似，但在具体情节、冲突、事件上完全不同的原创作品。避免抄袭，确保每个情节都是全新的。`
-      : `你是一位专业的小说大纲策划师。${buildPersonaPrompt(persona, { includeDeslop: false })}`;
+    const systemPrompt = `你是一位专业的小说大纲策划师。${buildPersonaPrompt(persona, { includeDeslop: false })}`;
 
     const outlineRequirements = getOutlineRequirements(targetWordCount);
     const result = await streamGenerate(
@@ -686,7 +616,6 @@ ${buildOutlineSpec(targetWordCount)}`;
 // 生成页使用的初始故事蓝图：在创建小说前确认，不写入数据库，不会静默改变剧情。
 router.post('/generate-blueprint', auth, async (req, res) => {
   try {
-    await checkTokenBalance(req.user);
     const { novelTypeId, protagonistName, worldSetting, targetWordCount, outline, personaId } = req.body || {};
     if (!novelTypeId || !String(outline || '').trim()) return res.status(400).json({ message: '请先提供小说类型和大纲' });
     const target = Number(targetWordCount) || 50000;
@@ -739,9 +668,6 @@ ${String(outline).slice(0, 12000)}
     blueprint.lastReviewedChapter = 0;
     blueprint.autoReviewEnabled = false;
     blueprint.emailReminderEnabled = true;
-    try { await deductTokens(req.user, result.content, prompt, 'reasoning'); } catch (error) {
-      if (error.message !== 'TOKEN_EXHAUSTED') console.warn('[Blueprint] 初始蓝图扣费失败:', error.message);
-    }
     res.json({ blueprint, warning: blueprintShapeValid ? '' : '模型返回格式异常，已根据已确认大纲生成保守蓝图，可直接编辑后确认' });
   } catch (error) {
     console.error('[Blueprint] 初始蓝图生成失败:', error.message);
@@ -752,9 +678,8 @@ ${String(outline).slice(0, 12000)}
 // 创建新小说并开始生成（SSE流式）
 router.post('/generate', auth, async (req, res) => {
   try {
-    await checkTokenBalance(req.user);
 
-    let { novelTypeId, protagonistName, worldSetting, targetWordCount, referenceIds, personaId, storyBlueprint } = req.body;
+    let { novelTypeId, protagonistName, worldSetting, targetWordCount, personaId, storyBlueprint } = req.body;
     if (!novelTypeId) return res.status(400).json({ message: '请选择小说类型' });
     targetWordCount = Number(targetWordCount) || 50000;
     // 支持新旧两种类型系统：先用旧 ID 查找，失败则用名称匹配
@@ -773,15 +698,6 @@ router.post('/generate', auth, async (req, res) => {
     const mode = req.body.mode || 'book';
     const isBook = mode === 'book';
     const expertMode = req.body.expertMode === true || req.body.expertMode === 'true' || req.body.expertMode === 1;
-    const structureRef = req.body.structureRef || '';
-
-    // 如果启用了参考结构，强制使用参考小说的世界观设定
-    if (structureRef) {
-      const worldMatch = structureRef.match(/【世界观设定】([\s\S]*?)(?=【|$)/);
-      if (worldMatch) {
-        worldSetting = worldMatch[1].trim();
-      }
-    }
 
     // 创建小说记录
     const novel = new Novel({
@@ -816,52 +732,6 @@ router.post('/generate', auth, async (req, res) => {
     }
     let systemPrompt = buildSystemPrompt(novelTypeId, undefined, persona);
 
-    // 如果有参考风格 ID，获取其风格数据注入提示词
-    if (referenceIds && Array.isArray(referenceIds) && referenceIds.length > 0) {
-      try {
-        const ReferenceNovel = require('../models/ReferenceNovel');
-        const refs = await ReferenceNovel.find({ _id: { $in: referenceIds } })
-          .select('title styleProfile writingCharacteristics vocabularyBank chapterStructure');
-        if (refs.length > 0) {
-          const refSection = refs.map((r, i) => {
-            return `【参考风格 ${i + 1}: ${r.title}】
-${r.styleProfile ? '风格描述：' + r.styleProfile : ''}
-${r.writingCharacteristics ? '写作特点：' + r.writingCharacteristics : ''}
-${r.vocabularyBank && r.vocabularyBank.length > 0 ? '特色词汇：' + r.vocabularyBank.join(', ') : ''}
-${r.chapterStructure ? '章节结构：' + r.chapterStructure : ''}`;
-          }).join('\n\n');
-
-          systemPrompt += `\n\n【参考风格库】
-以下是由用户选择的参考小说风格数据，请在创作时充分学习并融合这些风格特征：
-
-${refSection}
-
-请在保持轻小说整体风格的前提下，融合以上参考作品的行文特点和叙事风格。`;
-        }
-      } catch (e) {
-        console.error('加载参考风格失败:', e.message);
-      }
-    }
-
-    // 如果有小说结构参考（上传参考小说 → 提取结构 → 替换名称）
-    // ⚠️ 此注入可能在模板匹配时被覆盖，模板匹配逻辑中有重新注入
-    if (structureRef) {
-      systemPrompt += `\n\n【参考小说结构（名称已替换）—— 参考结构模式，创作全新内容】
-用户上传了一本参考小说，要求参考其结构模式进行**创新性再创作**。以下内容作为创作蓝图参考：
-
-⚠️ 核心要求：
-1. **禁止直接复制参考小说的具体情节、事件、场景、对话** — 必须全新创作
-2. 参考其**结构骨架**（冲突节奏、阶段划分、角色弧线类型），填入全新的情节素材
-3. 改变冲突的具体表现形式（如原小说是武力冲突，可改为权谋/商战/情感冲突）
-4. 重新设计角色关系和人物性格，避免人物关系与原小说雷同
-5. 调整章节顺序和事件分布，可打乱重组、添加新的事件节点
-6. 世界观设定可参考但允许自行调整和延伸
-
-【参考小说的结构模板】
-${structureRef}
-
-注意：本参考仅提供结构模式参考。**如果生成的内容与原小说情节雷同，将被内容平台判定为抄袭下架**，因此必须确保每个具体情节和冲突都是原创的。`;
-    }
 
     // 类型模板匹配 — 先推断 gender 重建系统提示，再注入动态模板
     try {
@@ -881,29 +751,13 @@ ${tmpl.dynamicPrompt}
 
 注意：以上为动态生成的参考组合，每次生成会随机选择不同的写作变体、节奏和看点，请根据你的故事主线灵活运用。`;
 
-        // 如果启用了参考结构，在模板之后重新注入（因为 buildSystemPrompt 覆盖了之前的注入）
-        if (structureRef) {
-          systemPrompt += `\n\n【参考小说结构（名称已替换）—— 参考结构模式，创作全新内容】
-⚠️ 核心要求：
-1. **禁止直接复制参考小说的具体情节、事件、场景、对话** — 必须全新创作
-2. 参考其**结构骨架**（冲突节奏、阶段划分、角色弧线类型），填入全新的情节素材
-3. 改变冲突的具体表现形式（如原小说是武力冲突，可改为权谋/商战/情感冲突）
-4. 重新设计角色关系和人物性格
-5. 可调整章节顺序和事件分布，添加新的事件节点
-6. **若与原小说情节雷同，将被判定为抄袭下架**
-
-【参考小说的结构模板】
-${structureRef}
-
-注意：本参考仅提供结构模式参考。所有具体情节和冲突必须全新创作，不得直接搬运。`;
-        }
       }
     } catch (e) {
       console.error('模板匹配注入失败:', e.message);
     }
 
     if (persona) {
-      systemPrompt += `\n\n【写作人格优先级】用户选择的“${persona.name || '自定义模板'}”是本书唯一的作者声线。题材模板、参考风格和结构参考只能补充题材事实、剧情结构与素材，不能改写其叙述视角、语气、节奏、词汇和人物声音。`;
+      systemPrompt += `\n\n【写作人格优先级】用户选择的“${persona.name || '自定义模板'}”是本书的作者声线。题材模板只能补充题材事实、剧情结构与素材，不能改写其叙述视角、语气、节奏、词汇和人物声音。`;
     }
 
     novel.generationContext = systemPrompt;
@@ -981,7 +835,7 @@ ${structureRef}
     if (isBook && outline) {
       try {
         res.write(`data: ${JSON.stringify({ type: 'status', message: '正在制定章节计划表...' })}\n\n`);
-        const planPrompt = buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, structureRef, persona, novel.storyBlueprint);
+        const planPrompt = buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, persona, novel.storyBlueprint);
 
         // 用 AbortController 施加超时 + 心跳保证连接不断
         const planController = new AbortController();
@@ -1090,16 +944,6 @@ ${structureRef}
       if (chapterResult.continuity.issues.length) {
         try { res.write(`data: ${JSON.stringify({ type: 'quality_notice', chapterNumber: chNum, report: chapterResult.continuity })}\n\n`); } catch {}
       }
-      await claimAutoActivitiesForUser(req.user, 'writing');
-      await claimAutoActivitiesForUser(req.user, 'continuous');
-      try { await deductTokens(req.user, chapterResult.content, `${systemPrompt}\n${prompt}`); } catch (e) {
-        // 如果扣费失败（如 TOKEN_EXHAUSTED），记录下来但不中断生成流程
-        if (e.message === 'TOKEN_EXHAUSTED') {
-          console.warn(`[Token] 第${chNum}章扣费后 Token 已用完，后续循环会尽快停止`);
-        } else {
-          console.error('[Token] 扣费异常:', e.message);
-        }
-      }
 
       try { res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber: chNum, title: chapterResult.title, wordCount: chapterResult.wordCount })}\n\n`); } catch {}
       return chapterResult;
@@ -1167,7 +1011,6 @@ ${renderStoryBlueprintForContext(novel, ch, totalPlannedChapters)}
 4. 段落与句长随场景自然变化；沉重题材的喘息只能服务关系、信息或伏笔，不能突兀搞笑。
 5. 不输出章节标题、提纲、说明或“【未完待续】”标签；结尾给出具体的下一步、未解问题或情绪余波。`;
 
-          await ensureTokensLeft(req.user);
           const genResult = await generateOneChapter(ch, chPrompt, contract);
           lastChapterContent = genResult.content;
           currentChapterNum = ch + 1;
@@ -1231,7 +1074,6 @@ ${renderStoryBlueprintForContext(novel, ch, totalPlannedChapters)}
           previousChapter: null,
         });
         const userPrompt = `${buildInitialPrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, mode, outline, persona)}\n\n${renderChapterContract(contract)}\n\n请只输出正文，用具体事件和人物选择完成这章，不输出标题、提纲或“【未完待续】”标签。`;
-        await ensureTokensLeft(req.user);
         await generateOneChapter(1, userPrompt, contract);
 
         generationDone = true;
@@ -1242,12 +1084,9 @@ ${renderStoryBlueprintForContext(novel, ch, totalPlannedChapters)}
         res.end();
       }
     } catch (streamError) {
-      const isTokenExhausted = streamError?.message === 'TOKEN_EXHAUSTED' || streamError?.message?.includes('余额不足');
       const isAbort = streamError?.name === 'AbortError' || streamError?.message?.includes('abort');
       const isApiError = streamError?.isApiError;
-      if (isTokenExhausted) {
-        console.log('⚠️ Token 配额已耗尽，停止生成（novelId:', novel._id, ', completed:', novel.chapters.length, '章）');
-      } else if (isAbort) {
+      if (isAbort) {
         console.log('⚠️ 生成被中断/取消（novelId:', novel._id, ', completed:', novel.chapters.length, '章）');
       } else {
         console.error('❌ 正文生成失败:', streamError?.message || streamError);
@@ -1256,9 +1095,7 @@ ${renderStoryBlueprintForContext(novel, ch, totalPlannedChapters)}
       await novel.save();
       activeStreams.delete(streamKey);
       try {
-        if (isTokenExhausted) {
-          res.write(`data: ${JSON.stringify({ type: 'token_exhausted', message: '积分已用完，请充值后继续' })}\n\n`);
-        } else if (isApiError) {
+        if (isApiError) {
           // AI API 错误，发送友好提示
           res.write(`data: ${JSON.stringify({ type: 'error', message: streamError.message || 'AI 服务暂时不可用，请稍后重试' })}\n\n`);
         } else if (isAbort) {
@@ -1288,7 +1125,6 @@ ${renderStoryBlueprintForContext(novel, ch, totalPlannedChapters)}
 router.post('/continue/:novelId', auth, async (req, res) => {
   try {
     // 检查 Token 余额
-    await checkTokenBalance(req.user);
 
     const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
     if (!novel) {
@@ -1394,11 +1230,6 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       if (chapterResult.continuity.issues.length) {
         try { res.write(`data: ${JSON.stringify({ type: 'quality_notice', chapterNumber: chNum, report: chapterResult.continuity })}\n\n`); } catch {}
       }
-      await claimAutoActivitiesForUser(req.user, 'writing');
-      await claimAutoActivitiesForUser(req.user, 'continuous');
-      try { await deductTokens(req.user, chapterResult.content, `${systemPrompt}\n${prompt}`); } catch (error) {
-        if (error.message !== 'TOKEN_EXHAUSTED') console.error('[Token] 扣费异常:', error.message);
-      }
 
       try { res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber: chNum, title: chapterResult.title, wordCount: chapterResult.wordCount })}\n\n`); } catch {}
       return chapterResult;
@@ -1503,7 +1334,6 @@ ${renderStoryBlueprintForContext(novel, ch, totalPlannedChapters)}
 3. 对话要符合人物认知与关系，有潜台词和自然停顿，但不靠随机吐槽或突兀搞笑制造人味。
 4. 重题材的喘息内容必须带来关系、信息或伏笔变化；不输出标题、提纲或“【未完待续】”标签。`;
 
-          await ensureTokensLeft(req.user);
           await generateOneChapter(ch, chPrompt, contract);
           if (novel.storyBlueprint?.autoReviewEnabled && ch % 6 === 0) {
             try {
@@ -1583,7 +1413,6 @@ ${renderStoryBlueprintForContext(novel, ch, totalPlannedChapters)}
           previousChapter: novel.chapters.length ? novel.chapters[novel.chapters.length - 1] : null,
         });
         const userPrompt = `${buildContinuePrompt(novel._id, novel, persona)}\n\n${renderChapterContract(contract)}\n\n仅输出正文。严格承接上一章，完成本章唯一核心事件；用人物行动和具体后果推进，不输出标题、提纲或“【未完待续】”标签。`;
-        await ensureTokensLeft(req.user);
         await generateOneChapter(chapterNumber, userPrompt, contract);
 
         if (abortController.signal.aborted) {
@@ -1603,19 +1432,15 @@ ${renderStoryBlueprintForContext(novel, ch, totalPlannedChapters)}
         res.end();
       }
     } catch (streamError) {
-      const isTokenExhausted = streamError?.message === 'TOKEN_EXHAUSTED' || streamError?.message?.includes('余额不足');
       const isAbort = streamError?.name === 'AbortError' || streamError?.message?.toLowerCase().includes('abort');
       const isApiError = streamError?.isApiError;
-      if (isTokenExhausted) console.log('继续生成 Token 配额已耗尽');
-      else if (isAbort) console.log('继续生成已暂停');
+      if (isAbort) console.log('继续生成已暂停');
       else console.error('继续生成失败:', streamError.message);
       novel.status = 'paused';
       await novel.save();
       activeStreams.delete(streamKey);
       try {
-        if (isTokenExhausted) {
-          res.write(`data: ${JSON.stringify({ type: 'token_exhausted', message: '积分已用完，请充值后继续' })}\n\n`);
-        } else if (isAbort) {
+        if (isAbort) {
           res.write(`data: ${JSON.stringify({ type: 'paused', message: '生成已暂停' })}\n\n`);
         } else if (isApiError) {
           res.write(`data: ${JSON.stringify({ type: 'error', message: streamError.message || 'AI 服务暂时不可用，请稍后重试' })}\n\n`);
@@ -1627,9 +1452,6 @@ ${renderStoryBlueprintForContext(novel, ch, totalPlannedChapters)}
     }
   } catch (error) {
     console.error('继续生成失败:', error.message);
-    if (error.message?.includes('余额不足')) {
-      return res.status(402).json({ message: '余额不足，请充值后再生成' });
-    }
     const msg = error.isApiError ? error.message : '继续生成失败，请稍后重试';
     if (res.headersSent) {
       try { res.write(`data: ${JSON.stringify({ type: 'error', message: msg })}\n\n`); res.end(); } catch {}
@@ -1642,7 +1464,6 @@ ${renderStoryBlueprintForContext(novel, ch, totalPlannedChapters)}
 // 导入外部小说并续写（SSE流式）
 router.post('/continue-import', auth, async (req, res) => {
   try {
-    await checkTokenBalance(req.user);
 
     const { importedText, continuationRequest, novelTypeName, title, novelId, personaId } = req.body;
 
@@ -1740,13 +1561,11 @@ router.post('/continue-import', auth, async (req, res) => {
       if (!generationDone) {
         abortController.abort();
         await finalSave('paused');
-        try { await deductTokens(req.user, chapterBuffer, `${systemPrompt}\n${userPrompt}`); } catch {}
         activeStreams.delete(streamKey);
         try { res.write(`data: ${JSON.stringify({ type: 'paused' })}\n\n`); res.end(); } catch {}
       }
     });
 
-    await ensureTokensLeft(req.user);
     res.write(`data: ${JSON.stringify({ type: 'chapter_start', chapterNumber, title: formatChapterTitle(chapterNumber, deriveLocalChapterTitle({ notes: continuationRequest })) })}\n\n`);
 
     try {
@@ -1765,7 +1584,6 @@ router.post('/continue-import', auth, async (req, res) => {
 
       if (abortController.signal.aborted) {
         await finalSave('paused');
-        try { await deductTokens(req.user, chapterBuffer, `${systemPrompt}\n${userPrompt}`); } catch {}
         activeStreams.delete(streamKey);
         return;
       }
@@ -1773,33 +1591,22 @@ router.post('/continue-import', auth, async (req, res) => {
       generationDone = true;
       activeStreams.delete(streamKey);
       await finalSave('completed');
-      try { await deductTokens(req.user, chapterBuffer, `${systemPrompt}\n${userPrompt}`); } catch {}
 
       const savedChapter = novel.chapters.find((item) => Number(item.chapterNumber) === Number(chapterNumber));
       res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber, title: savedChapter?.title, wordCount: chapterBuffer.length })}\n\n`);
       res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`);
       res.end();
     } catch (streamError) {
-      const isTokenExhausted = streamError?.message === 'TOKEN_EXHAUSTED' || streamError?.message?.includes('余额不足');
-      if (isTokenExhausted) console.log('续写 Token 配额已耗尽');
-      else console.error('续写失败:', streamError.message);
+      console.error('续写失败:', streamError.message);
       try { await finalSave('paused'); } catch {}
-      try { await deductTokens(req.user, chapterBuffer, `${systemPrompt}\n${userPrompt}`); } catch {}
       activeStreams.delete(streamKey);
       try {
-        if (isTokenExhausted) {
-          res.write(`data: ${JSON.stringify({ type: 'token_exhausted' })}\n\n`);
-        } else {
-          res.write(`data: ${JSON.stringify({ type: 'paused' })}\n\n`);
-        }
+        res.write(`data: ${JSON.stringify({ type: 'paused' })}\n\n`);
         res.end();
       } catch {}
     }
   } catch (error) {
     console.error('续写失败:', error);
-    if (error.message?.includes('余额不足')) {
-      return res.status(402).json({ message: '余额不足，请充值后再生成', error: error.message });
-    }
     res.status(500).json({ message: '续写失败', error: error.message });
   }
 });
@@ -2076,7 +1883,6 @@ router.put('/:novelId/chapter/:chapterNumber', auth, async (req, res) => {
 // 继续生成/新建指定章节（SSE流式）
 router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) => {
   try {
-    await checkTokenBalance(req.user);
     const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
     if (!novel) return res.status(404).json({ message: '小说不存在' });
     const chNum = Number(req.params.chapterNumber);
@@ -2141,7 +1947,6 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
         abortController.abort();
         saveChapterContent(true);
         novel.status = 'paused'; await novel.save();
-        try { await deductTokens(req.user, appendBuffer, `${systemPrompt}\n${userPrompt}`); } catch {}
         try { res.write(`data: ${JSON.stringify({ type: 'paused' })}\n\n`); res.end(); } catch {}
       }
     });
@@ -2157,7 +1962,6 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
         activeStreams.delete(streamKey);
         saveChapterContent(true);
         novel.status = 'paused'; await novel.save();
-        try { await deductTokens(req.user, appendBuffer, `${systemPrompt}\n${userPrompt}`); } catch {}
         return;
       }
 
@@ -2166,9 +1970,6 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
       saveChapterContent(true);
       // completed 事件只表示本次指定章节续写完成，整部小说仍可继续创作。
       novel.status = 'paused'; await novel.save();
-      await claimAutoActivitiesForUser(req.user, 'writing');
-      await claimAutoActivitiesForUser(req.user, 'continuous');
-      try { await deductTokens(req.user, appendBuffer, `${systemPrompt}\n${userPrompt}`); } catch {}
 
       res.write(`data: ${JSON.stringify({ type: 'chapter_continued', chapterNumber: chNum, addedLength: appendBuffer.length })}\n\n`);
       res.write(`data: ${JSON.stringify({ type: 'completed' })}\n\n`);
@@ -2177,7 +1978,6 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
       activeStreams.delete(streamKey);
       saveChapterContent(true);
       novel.status = 'paused'; await novel.save();
-      try { await deductTokens(req.user, appendBuffer, `${systemPrompt}\n${userPrompt}`); } catch {}
       try { res.write(`data: ${JSON.stringify({ type: 'paused' })}\n\n`); res.end(); } catch {}
     }
   } catch (error) {
@@ -2276,52 +2076,6 @@ router.post('/match-templates', auth, async (req, res) => {
   }
 });
 
-// ---- Token 扣除辅助函数 ----
-async function deductTokens(user, content, inputContent = '', modelType = 'writing') {
-  try {
-    if (!user || !isPointsBillingRequired(user.modelConfig)) return null;
-
-    return await debitPointsForUser(User, user._id, {
-      routeId: routeIdForModelConfig(user.modelConfig, modelType),
-      inputTokens: countTokens(inputContent || ''),
-      outputTokens: countTokens(content || ''),
-    }, { reason: 'novel_generation' });
-  } catch (e) {
-    if (e.code === 'POINTS_INSUFFICIENT' || e.message === 'TOKEN_EXHAUSTED') throw e;
-    console.error('扣除积分失败(非致命):', e.message);
-    return null;
-  }
-}
-
-/**
- * 检查用户 token 余额是否足够，若不足则抛出错误
- */
-async function checkTokenBalance(user) {
-  if (!user || !isPointsBillingRequired(user.modelConfig)) return;
-  const freshUser = await User.findById(user._id);
-  if (!freshUser) return;
-  const available = getPointsSnapshot(freshUser).available;
-  if (available <= 0) {
-    const error = new Error('积分余额不足，请充值后再生成');
-    error.code = 'POINTS_INSUFFICIENT';
-    throw error;
-  }
-}
-
-/**
- * 每章之前快速检查是否还有可用 Token，一旦用完立即抛出 TOKEN_EXHAUSTED
- * 这样不用等到整章生成完才发现没钱了
- */
-async function ensureTokensLeft(user) {
-  if (!user || !isPointsBillingRequired(user.modelConfig)) return;
-  const freshUser = await User.findById(user._id);
-  if (!freshUser) return;
-  const available = getPointsSnapshot(freshUser).available;
-  if (available <= 0) {
-    throw new Error('TOKEN_EXHAUSTED');
-  }
-}
-
 // ====== 去AI味 ======
 const deslop = require('../config/deslop');
 
@@ -2330,7 +2084,6 @@ router.post('/deslop', auth, async (req, res) => {
   try {
     const { text, novelId, personaId } = req.body;
     if (!text || text.trim().length < 10) return res.status(400).json({ message: '文本太短' });
-    await checkTokenBalance(req.user);
 
     const styleNovel = novelId ? await Novel.findOne({ _id: novelId, userId: req.userId }) : null;
     const persona = await resolveNovelPersona(req.userId, styleNovel, personaId);
@@ -2348,8 +2101,6 @@ router.post('/deslop', auth, async (req, res) => {
       resolveApiConfig(req.user?.modelConfig, 'polish')
     );
 
-    await deductTokens(req.user, result.content, `${systemPrompt}\n${userPrompt}`, 'polish');
-
     res.json({ original: text, processed: processChapter(result.content).text });
   } catch (error) {
     res.status(500).json({ message: '去AI味处理失败', error: error.message });
@@ -2361,9 +2112,6 @@ router.post('/deslop-stream', auth, async (req, res) => {
   try {
     const { text, novelId, personaId } = req.body;
     if (!text || text.trim().length < 50) return res.status(400).json({ message: '文本太短' });
-
-    // 检查 Token 余额
-    await checkTokenBalance(req.user);
 
     // SSE 设置
     res.writeHead(200, {
@@ -2455,9 +2203,6 @@ ${fullContent}`;
       res.write(`data: ${JSON.stringify({ type: 'completed', content: processedText })}\n\n`);
     }
 
-    // 扣除 Token
-    try { await deductTokens(req.user, finalContent || fullContent, `${text}\n${fullContent}`, 'polish'); } catch {}
-
     res.end();
   } catch (error) {
     console.error('去AI化流式处理失败:', error.message);
@@ -2480,9 +2225,6 @@ router.post('/polish', auth, async (req, res) => {
   try {
     const { text, polishPrompt, doDeslop, genre, diagnose, novelId, personaId } = req.body;
     if (!text || text.trim().length < 10) return res.status(400).json({ message: '文本太短' });
-
-    // 检查 Token 余额
-    await checkTokenBalance(req.user);
 
     const textLength = text.trim().length;
     const styleNovel = novelId ? await Novel.findOne({ _id: novelId, userId: req.userId }) : null;
@@ -2509,18 +2251,6 @@ ${genreHint}\n${genreContract}${buildPersonaPrompt(persona)}`;
     let userPrompt = `${polishPrompt || defaultPolishPrompt}\n\n以下是需要润色的文本（原文约 ${textLength} 字，请控制在 ${Math.round(textLength * 0.85)}~${Math.round(textLength * 1.15)} 字）：\n\n${text}`;
 
     // 估算输入 token 成本（输入文本 + 提示词）
-    const inputTokenCost = countTokens(text) + countTokens(polishPrompt || defaultPolishPrompt);
-    let outputTokenUsed = 0;
-    const billingRouteId = routeIdForModelConfig(req.user?.modelConfig, 'polish');
-    const requiresPoints = isPointsBillingRequired(req.user?.modelConfig);
-
-    // 获取最新余额
-    const getAvailableTokens = async () => {
-      const fresh = await User.findById(req.user._id);
-      if (!fresh) return 0;
-      return getPointsSnapshot(fresh).available;
-    };
-
     // SSE 流式输出润色结果
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -2532,34 +2262,12 @@ ${genreHint}\n${genreContract}${buildPersonaPrompt(persona)}`;
     let polished = '';
     const abortController = new AbortController();
     let streamAborted = false;
-    let tokenExhausted = false;
 
     req.on('close', () => { try { abortController.abort(); } catch {}; try { res.end(); } catch {} });
 
-    // 发送初始 Token 信息
-    const initialAvailable = await getAvailableTokens();
-    res.write(`data: ${JSON.stringify({ type: 'token_info', available: initialAvailable })}\n\n`);
-
-    // 包装 onChunk：实时检查 Token
     const wrappedOnChunk = async (chunk) => {
       if (streamAborted) return;
       polished += chunk;
-      outputTokenUsed = countTokens(polished);
-
-      // 每 200 输出 token 检查一次余额
-      if (outputTokenUsed % 200 < 10) {
-        const available = await getAvailableTokens();
-        const estimatedPoints = requiresPoints
-          ? calculatePointsCharge({ routeId: billingRouteId, inputTokens: inputTokenCost, outputTokens: outputTokenUsed }).points
-          : 0;
-        if (requiresPoints && estimatedPoints >= available) {
-          tokenExhausted = true;
-          streamAborted = true;
-          abortController.abort();
-          return;
-        }
-      }
-
       res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`);
     };
 
@@ -2568,7 +2276,7 @@ ${genreHint}\n${genreContract}${buildPersonaPrompt(persona)}`;
 
     // （可选）诊断阶段：先识别问题，再针对性修订
     let diagnosis = null;
-    if (diagnose && textLength >= 50 && !polishPrompt && !tokenExhausted) {
+    if (diagnose && textLength >= 50 && !polishPrompt) {
       try {
         res.write(`data: ${JSON.stringify({ type: 'status', message: '正在诊断原文问题…' })}\n\n`);
         const diagResult = await streamGenerate(
@@ -2627,47 +2335,18 @@ ${text.slice(0, 8000)}`,
         120000
       );
     } catch (e) {
-      if (e.name === 'AbortError' && tokenExhausted) {
-        // Token 耗尽导致的正常中止
-      } else if (!tokenExhausted) {
-        throw e;
-      }
+      if (e.name !== 'AbortError') throw e;
     }
 
-    // 扣除实际消耗的 Token（仅扣除输出部分，输入部分可酌情免除）
-    try {
-      await deductTokens(req.user, polished, `你是一位专业的小说润色专家，擅长各种文风的精修与优化。\n${userPrompt}`, 'polish');
-    } catch (e) {
-      if (e.message === 'TOKEN_EXHAUSTED') {
-        tokenExhausted = true;
-      }
-    }
-
-    // 如果用户选择了去AI味且未因 token 耗尽中止
-    if (doDeslop && polished.trim().length > 10 && !tokenExhausted) {
-      // 去AI味前再次检查余额
-      const availableNow = await getAvailableTokens();
-      if (availableNow <= 0) {
-        tokenExhausted = true;
-      } else {
+    // 如果用户选择了去AI味
+    if (doDeslop && polished.trim().length > 10) {
         res.write(`data: ${JSON.stringify({ type: 'status', message: '正在执行去AI味处理...' })}\n\n`);
 
         const deslopPrompt = `${persona?.overrideDeslop ? buildPersonaPrompt(persona, { includeDeslop: false }) : deslop.deslopSystemPrompt + buildPersonaPrompt(persona, { includeDeslop: false })}${genreContract}\n\n请对以下文本进行去AI味处理：\n\n${polished}`;
         let desloped = '';
-        let deslopExhausted = false;
 
         const deslopOnChunk = async (chunk) => {
-          if (deslopExhausted) return;
           desloped += chunk;
-          const dtc = countTokens(desloped);
-          if (dtc % 100 < 10) {
-            const avail = await getAvailableTokens();
-            if (avail <= 0) {
-              deslopExhausted = true;
-              abortController.abort();
-              return;
-            }
-          }
           res.write(`data: ${JSON.stringify({ type: 'deslop_content', content: chunk })}\n\n`);
         };
 
@@ -2684,19 +2363,15 @@ ${text.slice(0, 8000)}`,
             120000
           );
         } catch (e) {
-          if (!(e.name === 'AbortError' && deslopExhausted)) throw e;
+          if (e.name !== 'AbortError') throw e;
         }
 
-        // 扣除去AI味消耗的 Token
-        try { await deductTokens(req.user, desloped, `你是一位专业的小说润色专家。\n${deslopPrompt}`, 'polish'); } catch {}
-
         if (desloped.trim().length > 10) polished = desloped;
-      }
     }
 
     // 润色后处理：标点规范化 + 轻量去AI味
     let postProcessed = polished;
-    if (polished.trim().length > 10 && !tokenExhausted) {
+    if (polished.trim().length > 10) {
       try {
         const result = processChapter(polished, {
           doDeAI: false,
@@ -2713,17 +2388,11 @@ ${text.slice(0, 8000)}`,
     // 发送后处理的完整结果，前端可据此替换流式拼接的内容
     res.write(`data: ${JSON.stringify({ type: 'final_content', content: postProcessed })}\n\n`);
 
-    // 发送完成事件（含 Token 信息与诊断结果）
-    if (tokenExhausted) {
-      res.write(`data: ${JSON.stringify({ type: 'token_exhausted', message: '积分已消耗完毕，已返回当前润色结果', totalLength: postProcessed.length })}\n\n`);
-    }
-    res.write(`data: ${JSON.stringify({ type: 'completed', totalLength: postProcessed.length, tokenExhausted, diagnosis })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'completed', totalLength: postProcessed.length, diagnosis })}\n\n`);
     res.end();
   } catch (error) {
     console.error('润色失败:', error.message);
-    if (error.message === 'TOKEN_EXHAUSTED' || (error.message && error.message.includes('Token 不足'))) {
-      try { res.write(`data: ${JSON.stringify({ type: 'token_exhausted', message: '积分余额不足，请充值后重试' })}\n\n`); res.end(); } catch {}
-    } else if (error.isApiError) {
+    if (error.isApiError) {
       // AI API 错误，使用友好提示
       try { res.write(`data: ${JSON.stringify({ type: 'error', message: error.message || 'AI 服务暂时不可用，请稍后重试' })}\n\n`); res.end(); } catch {}
     } else {
@@ -2938,245 +2607,10 @@ router.post('/polish-save', auth, async (req, res) => {
   }
 });
 
-// ====== 上传参考小说 → 提取剧情结构（走向/伏笔/世界观/地名替换） ======
-router.post('/analyze-structure', auth, upload.single('file'), async (req, res) => {
-  try {
-    if (!req.file) return res.status(400).json({ message: '请上传 .txt 文件' });
-    const text = req.file.buffer.toString('utf-8');
-    if (text.length < 100) return res.status(400).json({ message: '小说太短，至少100字' });
-
-    // 限制最大分析字数
-    const MAX_ANALYSIS_CHARS = 5000000;
-    if (text.length > MAX_ANALYSIS_CHARS) {
-      return res.status(400).json({ message: `小说内容过长（${text.length} 字），最多支持 ${MAX_ANALYSIS_CHARS} 字分析` });
-    }
-
-    const systemPrompt = '你是一位专业的小说结构分析师。你的任务是从给定的小说文本中提取**抽象的结构骨架**（节奏模式、冲突类型、阶段划分方式）作为创作蓝图，并用AI生成全新的角色名称和地点名称。⚠️ 注意：输出的结构模板会用于生成全新的小说，因此要抽象到"模板"级别，避免包含具体的情节细节，防止被控抄袭。';
-
-    // 估算 token 开销
-    const promptSkeleton = `请分析以下小说文本，提取其抽象的结构模式作为创作模板。你需要输出以下内容（使用中文）：
-
-【结构模板 — 剧情整体走向】
-- 不要复述原小说的具体情节，而是抽象描述其**故事类型模板**（如：废柴逆袭型、寻宝探险型、重生复仇型、系统升级型等）
-- 用100-200字描述该模板的核心套路和节奏模式
-
-【结构模板 — 章节结构规划】
-- 不要复制原小说的章节顺序，而是抽象描述**阶段划分方式**
-- 格式：阶段1：[类型描述，如"主角初始困境建立"] → 大致节奏、关键转折类型
-- 阶段2：[类型描述，如"外部势力介入"] → 大致节奏、关键转折类型
-
-【世界观设定】
-- 列出核心世界观要素（时代背景、社会结构、特殊规则等）
-- 每个要素30-50字，抽象描述类型（如"修炼等级体系"而非具体等级名字）
-
-【伏笔类型】
-- 不要列出具体伏笔，而是描述**伏笔的类型和设置方式**
-- 格式：伏笔类型 → 常见回收方式
-
-【核心冲突类型】
-- 列出主要冲突类型（至少3条，含主线、感情线、成长线）
-- 每种类型20-30字，描述冲突的模板
-
-【AI生成替换名称】
-请为以下每个类别生成5个全新的、与原文风格不同的名称：
-- 主角（男女各5个）
-- 配角（男女各5个）  
-- 地名/场景（5个）
-- 特殊物品/能力（5个）
-- 宠物/坐骑（3个）
-
-重要：这些名称必须是新创作的，不能使用原文中的任何名字！名称的文化背景可以与原文不同（如原文是中式名称，可生成西式名称）
-
-小说文本（0字）：
-DUMMY_TEXT
-
-请按照以上格式输出，确保名称是全新的。`;
-
-    const overhead = countTokens(systemPrompt + promptSkeleton);
-    const MAX_PROMPT_TOKENS = 1000000;
-    const maxNovelTokens = MAX_PROMPT_TOKENS - overhead;
-
-    const estimatedTokens = countTokens(text);
-    let finalContent = '';
-    let totalTokenCount = 0;
-    const apiConfig = resolveApiConfig(req.user?.modelConfig, 'reasoning');
-
-    // ---------- 单次处理（文本足够短） ----------
-    if (estimatedTokens <= maxNovelTokens) {
-      const userPrompt = `请分析以下小说文本，提取其抽象的结构模式作为创作模板。你需要输出以下内容（使用中文）：
-
-【结构模板 — 剧情整体走向】
-- 不要复述原小说的具体情节，而是抽象描述其**故事类型模板**（如：废柴逆袭型、寻宝探险型、重生复仇型、系统升级型等）
-- 用100-200字描述该模板的核心套路和节奏模式
-
-【结构模板 — 章节结构规划】
-- 不要复制原小说的章节顺序，而是抽象描述**阶段划分方式**
-- 格式：阶段1：[类型描述，如"主角初始困境建立"] → 大致节奏、关键转折类型
-- 阶段2：[类型描述，如"外部势力介入"] → 大致节奏、关键转折类型
-
-【世界观设定】
-- 列出核心世界观要素（时代背景、社会结构、特殊规则等）
-- 每个要素30-50字，抽象描述类型（如"修炼等级体系"而非具体等级名字）
-
-【伏笔类型】
-- 不要列出具体伏笔，而是描述**伏笔的类型和设置方式**
-- 格式：伏笔类型 → 常见回收方式
-
-【核心冲突类型】
-- 列出主要冲突类型（至少3条，含主线、感情线、成长线）
-- 每种类型20-30字，描述冲突的模板
-
-【AI生成替换名称】
-请为以下每个类别生成5个全新的、与原文风格不同的名称：
-- 主角（男女各5个）
-- 配角（男女各5个）  
-- 地名/场景（5个）
-- 特殊物品/能力（5个）
-- 宠物/坐骑（3个）
-
-重要：这些名称必须是新创作的，不能使用原文中的任何名字！名称的文化背景可以与原文不同（如原文是中式名称，可生成西式名称）
-
-小说文本（${text.length}字）：
-${text}
-
-请按照以上格式输出，确保名称是全新的。`;
-
-      const result = await streamGenerate(systemPrompt, userPrompt, null, null, apiConfig);
-      if (!result || !result.content) throw new Error('结构分析失败');
-      finalContent = result.content;
-      totalTokenCount = result.tokenCount;
-
-    // ---------- 智能分批处理（超长文本） ----------
-    } else {
-      // 每块可容纳的最大字符数（留 10% 余量，按 token/字比例折算）
-      const ratio = (maxNovelTokens * 0.85) / estimatedTokens;
-      const rawChunkSize = Math.floor(text.length * ratio);
-      const OVERLAP = 2000; // 块间重叠字符数，保证上下文不丢失
-      const MIN_CHUNK = 5000; // 每块至少 5000 字
-
-      // 在段落边界拆分
-      const chunks = [];
-      let pos = 0;
-      while (pos < text.length) {
-        const endRaw = Math.min(pos + rawChunkSize, text.length);
-        // 找到最后一个段落边界（\n\n）
-        let cutPos = endRaw;
-        if (endRaw < text.length) {
-          const searchStart = Math.max(pos, endRaw - 3000);
-          const segment = text.substring(searchStart, endRaw);
-          const lastBreak = segment.lastIndexOf('\n\n');
-          if (lastBreak !== -1 && lastBreak > 100) {
-            cutPos = searchStart + lastBreak;
-          } else {
-            // 没有段落边界，找最后一个换行
-            const lastNewline = segment.lastIndexOf('\n');
-            if (lastNewline > 0) {
-              cutPos = searchStart + lastNewline;
-            }
-          }
-        }
-        // 加上重叠
-        const chunkEnd = Math.min(cutPos + OVERLAP, text.length);
-        if (chunkEnd - pos < MIN_CHUNK && chunks.length > 0) {
-          // 最后一块太小，并入前一块
-          chunks[chunks.length - 1] += text.substring(pos, chunkEnd);
-          break;
-        }
-        chunks.push(text.substring(pos, chunkEnd));
-        pos = cutPos;
-      }
-
-      const totalBatches = chunks.length;
-
-      // 分批 prompt 模板（提取抽象结构模式，不要求输出 AI 生成替换名称，只在前/后块提）
-      const chunkPrompt = (chunkText, batchIdx, total) => `你正在为小说结构的第 ${batchIdx}/${total} 部分提取结构模式。请从这一部分中提取**抽象的结构特征**（使用中文）：
-
-【本部分的结构作用】
-- 本部分在全书中承担什么结构功能（如：引入冲突、建立世界观、推进主线等）
-- 描述其叙事节奏类型（快速推进/慢速铺垫/高潮爆发等）
-
-【本部分的新增世界观类型】
-- 本部分中出现的新世界观要素类型
-
-【本部分的冲突模式】
-- 本部分中出现的冲突类型及其在故事结构中的位置
-
-【本部分的关键角色类型】
-- 本部分中起关键作用的角色类型（如：导师型、对手型、伙伴型等）${batchIdx === total ? '\n\n【AI生成替换名称】（仅在最后一部分输出）\n请为以下每个类别生成5个全新的、与原文文化背景不同的名称：\n- 主角（男女各5个）\n- 配角（男女各5个）\n- 地名/场景（5个）\n- 特殊物品/能力（5个）\n- 宠物/坐骑（3个）' : ''}
-
-小说片段（第 ${batchIdx}/${total} 部分，${chunkText.length}字）：
-${chunkText}`;
-
-      // 分批执行（并行加速）
-      let parallelTokenCount = 0;
-      const partialResults = await Promise.all(chunks.map(async (chunk, i) => {
-        const cp = chunkPrompt(chunk, i + 1, totalBatches);
-        const result = await streamGenerate(systemPrompt, cp, null, null, apiConfig);
-        if (!result || !result.content) throw new Error(`第 ${i + 1}/${totalBatches} 部分分析失败`);
-        parallelTokenCount += result.tokenCount;
-        return result.content;
-      }));
-      totalTokenCount += parallelTokenCount;
-
-      // 合并汇总
-      const aggregationSystemPrompt = '你是一位专业的小说结构分析师。你将收到对同一本小说多个部分的结构分析结果，请将它们合并成一份**抽象的结构模板**，用于指导新小说的创作，不得包含原文的具体情节细节。';
-      const partialsText = partialResults.map((r, i) => `===== 第 ${i + 1}/${totalBatches} 部分分析 =====\n${r}`).join('\n\n');
-
-      const aggregationPrompt = `以下是对同一本小说的 ${totalBatches} 个部分分别进行结构分析的结果。请将这些抽象的结构模式合并成一份完整的结构模板报告（使用中文）：
-
-【结构模板 — 剧情整体走向】
-- 不要复述原小说的具体情节，而是抽象描述其**故事类型模板**（如：废柴逆袭型、寻宝探险型、重生复仇型等）
-- 用100-200字描述该模板的核心套路和节奏模式
-
-【结构模板 — 章节结构规划】
-- 不要复制原小说的章节顺序，而是抽象描述**阶段划分方式**
-- 格式：阶段1：[类型描述] → 大致节奏、关键转折类型
-
-【世界观设定】
-- 列出核心世界观要素（时代背景、社会结构、特殊规则等）
-- 每个要素30-50字，抽象描述类型
-
-【伏笔类型】
-- 不要列出具体伏笔，而是描述**伏笔的类型和设置方式**
-- 格式：伏笔类型 → 常见回收方式
-
-【核心冲突类型】
-- 列出主要冲突类型（至少3条，含主线、感情线、成长线）
-- 每种类型20-30字，描述冲突的模板
-
-【AI生成替换名称】
-请为以下每个类别生成5个全新的、与原文风格不同的名称：
-- 主角（男女各5个）
-- 配角（男女各5个）  
-- 地名/场景（5个）
-- 特殊物品/能力（5个）
-- 宠物/坐骑（3个）
-
-重要：这些名称必须是新创作的，不能使用原文中的任何名字！
-
-各部分分析结果如下：
-
-${partialsText}
-
-请输出抽象的结构模板，确保所有名称都是全新的。`;
-
-      const aggResult = await streamGenerate(aggregationSystemPrompt, aggregationPrompt, null, null, apiConfig);
-      if (!aggResult || !aggResult.content) throw new Error('结构汇总分析失败');
-      finalContent = aggResult.content;
-      totalTokenCount += aggResult.tokenCount;
-    }
-
-    res.json({ structure: finalContent, tokenCount: totalTokenCount });
-  } catch (error) {
-    console.error('结构分析失败:', error);
-    res.status(500).json({ message: '结构分析失败', error: error.message });
-  }
-});
 
 // ====== 章节关键字总结（用于生图） ======
 router.post('/chapter-keywords/:novelId/:chapterNumber', auth, async (req, res) => {
   try {
-    await checkTokenBalance(req.user);
     const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
     if (!novel) return res.status(404).json({ message: '小说不存在' });
 
@@ -3430,8 +2864,6 @@ router.post('/editorial-stream', auth, async (req, res) => {
     const { text, novelId, personaId } = req.body;
     if (!text || text.trim().length < 100) return res.status(400).json({ message: '文本太短（至少100字）' });
 
-    await checkTokenBalance(req.user);
-
     // SSE 设置
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -3476,11 +2908,6 @@ router.post('/editorial-stream', auth, async (req, res) => {
           processedContent = cleanText;
         }
       } catch {}
-
-      // 扣费
-      try { await deductTokens(req.user, processedContent, text, 'polish'); } catch (e) {
-        console.warn('[编辑引擎] 扣费异常:', e.message);
-      }
 
       res.write(`data: ${JSON.stringify({
         type: 'completed',

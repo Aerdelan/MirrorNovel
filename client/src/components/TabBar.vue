@@ -47,25 +47,11 @@ const tabs = [
  roles: ['user', 'admin', 'importer'],
  },
  {
- name: 'screenplay',
- path: '/screenplay',
- icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h10l3 4v14H4V7l3-4z"/><path d="M7 3v4h10V3"/><path d="M8 12h8M8 16h6"/></svg>',
- labelKey: 'tab.screenplay',
- roles: ['user', 'admin', 'importer'],
- },
- {
  name: 'profile',
  path: '/profile',
  icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 1 0-16 0"/></svg>',
  labelKey: 'tab.profile',
  roles: ['user', 'admin', 'importer'],
- },
- {
- name: 'distill',
- path: '/reference-upload',
- icon: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83"/></svg>',
- labelKey: 'tab.distill',
- roles: ['admin'],
  },
 ]
 

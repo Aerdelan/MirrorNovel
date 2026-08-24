@@ -18,8 +18,6 @@ export function modelLineAlias(modelName, locale = 'zh', preferredIndex = 0) {
 
 export function toUserFacingMessage(value, locale = 'zh') {
  if (value === undefined || value === null) return ''
- const pointsLabel = locale === 'en' ? 'Points' : '积分'
  return String(value)
-  .replace(/\bTokens?\b/gi, pointsLabel)
   .replace(MODEL_NAME_PATTERN, (name) => modelLineAlias(name, locale))
 }

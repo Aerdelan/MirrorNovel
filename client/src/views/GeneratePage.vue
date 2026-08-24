@@ -38,7 +38,6 @@
      <span class="persona-name">{{ p.name }}</span>
      <span v-if="p.isSystem" class="persona-tag sys">{{ $t('generate.personaSys') }}</span>
      <span v-else-if="p.source === 'ai-generated'" class="persona-tag ai">AI</span>
-     <span v-else-if="p.source === 'reference-extracted'" class="persona-tag ref">{{ $t('generate.personaRef') }}</span>
    </div>
    <div class="persona-card-desc">{{ p.description || p.voice?.slice(0, 40) }}</div>
  </div>
@@ -75,37 +74,6 @@
  </div>
  </div>
 
- <!-- 上传参考小说 → 提取结构模式 -->
- <div class="card ref-struct-card">
- <div class="section-title">上传参考小说（结构启发创作）</div>
- <div class="ref-struct-desc">上传一本小说，AI 将提取其结构骨架（剧情套路/冲突类型/世界观模板），生成一本结构相似但情节完全原创的新小说，避免抄袭风险</div>
- <div class="upload-bar">
- <input ref="structFileInput" type="file" accept=".txt" @change="handleStructFile" style="display:none" />
- <button class="btn btn-sm btn-secondary" @click="$refs.structFileInput.click()">选择文件</button>
- <span v-if="structFileName" class="file-name">{{ structFileName }}</span>
- </div>
- <button v-if="structRawText && !structAnalyzing && !structResult" class="btn btn-primary btn-sm btn-block" style="margin-top:8px;" @click="analyzeStructure">
- 分析结构
- </button>
- <div v-if="structAnalyzing" class="struct-analyzing">
- <span class="spinner" style="width:20px;height:20px;display:inline-block;"></span>
- <span style="margin-left:8px;">AI 正在分析剧情结构...</span>
- </div>
- <div v-if="structResult" class="struct-result">
- <div class="struct-preview">
- <div v-for="(section, idx) in structSections" :key="idx" class="struct-section">
- <div class="struct-section-title">{{ section.title }}</div>
- <div class="struct-section-body">{{ section.body.substring(0, 200) }}{{ section.body.length > 200 ? '...' : '' }}</div>
- </div>
- </div>
- <label class="checkbox-row" style="margin-top:8px;">
- <input type="checkbox" v-model="useStructureRef" />
- <span>参考此结构模式生成（情节将完全原创）</span>
- </label>
- <button class="btn btn-sm btn-secondary" style="margin-top:4px;" @click="structResult='';structRawText=''">清除重新上传</button>
- </div>
- </div>
-
  <div v-if="genMode === 'book'" class="card">
  <div class="section-title">{{ $t('generate.stepOutline') }}</div>
  <div v-if="generating && outlineStreamingText" class="outline-streaming">
@@ -132,27 +100,6 @@
   </div>
   <div v-if="blueprintWarning" class="blueprint-setup-hint">{{ blueprintWarning }}</div>
   <div v-if="blueprintSetupError" class="blueprint-setup-error">{{ blueprintSetupError }}</div>
- </div>
-
- <div v-if="genRefsLoaded" class="card gen-ref-card">
- <div class="section-title">{{ $t('generate.refMatch') }}</div>
- <div v-if="genFilteredRefs.length === 0" class="ln-ref-empty">
- <template v-if="selectedType">{{ $t('generate.refEmpty', { type: selectedType }) }}</template>
- <template v-else>{{ $t('generate.refSelectType') }}</template>
- </div>
- <div v-else>
- <div class="ln-ref-desc">{{ $t('generate.refAutoMatched', { count: genFilteredRefs.length, type: $tn(selectedType) }) }}</div>
- <div class="ln-ref-list">
- <div v-for="ref in genFilteredRefs" :key="ref._id" class="ln-ref-item" :class="{ selected: genSelectedRefs.includes(ref._id) }" @click="toggleGenRef(ref._id)">
- <div class="ref-check">{{ genSelectedRefs.includes(ref._id) ? '️' : '⬜' }}</div>
- <div class="ref-info">
- <div class="ref-title">{{ ref.title }}</div>
- <div class="ref-meta">{{ ref.mainCategory }} · {{ $t('refList.qualityScore') }} {{ ref.qualityScore || '-' }}</div>
- </div>
- </div>
- </div>
- <div v-if="genSelectedRefs.length > 0" class="ref-count">{{ $t('generate.refSelected', { count: genSelectedRefs.length }) }}</div>
- </div>
  </div>
 
  <div class="card">
@@ -300,27 +247,6 @@
  <textarea v-model="lnWorldSetting" class="textarea" rows="4" :placeholder="$t('generate.lnPlaceholderWorld')"></textarea>
  </div>
 
- <div v-if="lnRefsLoaded" class="card ln-ref-card">
- <div class="section-title">{{ $t('generate.refMatch') }}</div>
- <div v-if="lnFilteredRefs.length === 0" class="ln-ref-empty">
- <template v-if="lnSelectedType">{{ $t('generate.refEmpty', { type: $tn(lnTypes.find(t=>t.id===lnSelectedType)?.name) }) }}</template>
- <template v-else>{{ $t('generate.refSelectType') }}</template>
- </div>
- <div v-else>
- <div class="ln-ref-desc">{{ $t('generate.refAutoMatched', { count: lnFilteredRefs.length, type: $tn(lnTypes.find(t=>t.id===lnSelectedType)?.name) }) }}</div>
- <div class="ln-ref-list">
- <div v-for="ref in lnFilteredRefs" :key="ref._id" class="ln-ref-item" :class="{ selected: lnSelectedRefs.includes(ref._id) }" @click="toggleRef(ref._id)">
- <div class="ref-check">{{ lnSelectedRefs.includes(ref._id) ? '️' : '⬜' }}</div>
- <div class="ref-info">
- <div class="ref-title">{{ ref.title }}</div>
- <div class="ref-meta">{{ ref.mainCategory }} · {{ $t('refList.qualityScore') }} {{ ref.qualityScore || '-' }}</div>
- </div>
- </div>
- </div>
- <div v-if="lnSelectedRefs.length > 0" class="ref-count">{{ $t('generate.refSelected', { count: lnSelectedRefs.length }) }}</div>
- </div>
- </div>
-
  <div class="card">
  <div class="section-title">④ {{ $t('generate.lnStepMode') }}</div>
  <div class="mode-radio-group">
@@ -372,7 +298,6 @@
    <div class="persona-toolbar">
      <button class="btn btn-sm btn-primary" @click="openEditPersona(null)">{{ $t('generate.personaNew') }}</button>
      <button class="btn btn-sm btn-secondary" @click="aiGenInput.novelType ? null : (aiGenInput.novelType = selectedType ? $tn(selectedType) : '') ; personaStatus=''; ">{{ $t('generate.personaAIGen') }}</button>
-     <button class="btn btn-sm btn-secondary" @click="fromReferencePersona">{{ $t('generate.personaFromRef') }}</button>
      <span v-if="personaBusy" class="persona-busy"><span class="spinner" style="width:14px;height:14px;display:inline-block;vertical-align:middle;"></span> {{ personaStatus || '处理中...' }}</span>
    </div>
 
@@ -394,7 +319,6 @@
          <span class="persona-list-name">{{ p.name }}</span>
          <span v-if="p.isSystem" class="persona-tag sys">{{ $t('generate.personaSys') }}</span>
          <span v-else-if="p.source === 'ai-generated'" class="persona-tag ai">AI</span>
-         <span v-else-if="p.source === 'reference-extracted'" class="persona-tag ref">{{ $t('generate.personaRef') }}</span>
        </div>
        <div class="persona-list-desc">{{ p.description || p.voice?.slice(0, 60) }}</div>
        <div class="persona-list-actions" @click.stop>
@@ -454,7 +378,6 @@ import { ref, computed, watch, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNovelStore } from '../stores/novel'
 import { useAuthStore } from '../stores/auth'
-import { useReferenceStore } from '../stores/reference'
 import { usePersonaStore } from '../stores/persona'
 import { useI18n } from '../composables/useI18n'
 import api from '../api'
@@ -462,7 +385,6 @@ import api from '../api'
 const router = useRouter()
 const novelStore = useNovelStore()
 const authStore = useAuthStore()
-const refStore = useReferenceStore()
 const personaStore = usePersonaStore()
 const { $t } = useI18n()
 
@@ -585,49 +507,6 @@ async function aiGeneratePersona() {
  }
 }
 
-async function fromReferencePersona() {
- // 弹出选择参考小说
- const refId = prompt('请输入参考小说 ID（可从蒸馏库列表复制）')
- if (!refId) return
- personaBusy.value = true
- personaStatus.value = '正在从参考小说提取写作人格...'
- try {
-   await personaStore.fromReference(refId.trim())
-   personas.value = personaStore.personas
-   personaStatus.value = ''
- } catch (e) {
-   personaStatus.value = ''
-   alert(e.response?.data?.message || e.message || '从参考提取失败')
- } finally {
-   personaBusy.value = false
- }
-}
-
-// ---- 参考小说结构克隆 ----
-const structFileInput = ref(null)
-const structFileName = ref('')
-const structRawText = ref('')
-const structAnalyzing = ref(false)
-const structResult = ref('')
-const useStructureRef = ref(false)
-const structSections = computed(() => {
- if (!structResult.value) return []
- const lines = structResult.value.split('\n')
- const sections = []
- let current = null
- for (const line of lines) {
- const m = line.match(/^【(.+?)】/)
- if (m) {
- if (current) sections.push(current)
- current = { title: m[1], body: '' }
- } else if (current) {
- current.body += line + '\n'
- }
- }
- if (current) sections.push(current)
- return sections
-})
-
 const generating = ref(false)
 const genStatus = ref('')
 const genOk = ref(false)
@@ -697,44 +576,6 @@ function debounceMatchTemplates() {
 }
 function scoreClass(s) { if (!s) return ''; if (s >= 60) return 'high'; if (s >= 35) return 'mid'; return 'low' }
 
-// ---- 参考小说结构克隆 ----
-function handleStructFile(e) {
- const file = e.target.files?.[0]
- if (!file || !file.name.endsWith('.txt')) return alert('请选择 .txt 文件')
- structFileName.value = file.name
- structRawText.value = ''
- structResult.value = ''
- useStructureRef.value = false
- const reader = new FileReader()
- reader.onload = () => { structRawText.value = reader.result }
- reader.readAsText(file, 'UTF-8')
-}
-
-async function analyzeStructure() {
- if (!structRawText.value || structRawText.value.length < 100) return alert('小说内容太短（至少100字）')
- structAnalyzing.value = true
- const token = localStorage.getItem('token')
- try {
- const formData = new FormData()
- formData.append('file', new Blob([structRawText.value], { type: 'text/plain' }), structFileName.value || 'ref.txt')
- const res = await fetch('/api/novel/analyze-structure', {
- method: 'POST', headers: { 'Authorization': `Bearer ${token}` }, body: formData,
- })
- const bodyText = await res.text()
- let data
- try {
- data = JSON.parse(bodyText)
- } catch {
- throw new Error(bodyText || `服务器返回 ${res.status}，但响应体为空`)
- }
- if (!res.ok) throw new Error(data.message || '分析失败')
- structResult.value = data.structure
- } catch (e) {
- alert('结构分析失败: ' + e.message)
- }
- structAnalyzing.value = false
-}
-
 // 监听类型切换时重新匹配
 watch(selectedType, () => { matchTemplates() })
 
@@ -752,10 +593,6 @@ async function generateOutline(selectedTypeId, charName, worldSetting, wordCount
  worldSetting: worldSetting,
  targetWordCount: wordCount,
  personaId: selectedPersonaId.value || undefined,
- }
- // 勾选了参考结构则传给大纲生成
- if (useStructureRef.value && structResult.value) {
- payload.structureRef = structResult.value
  }
  // 大纲生成对长篇小说耗时较长，单独加长超时（10分钟），不修改全局默认超时
  const res = await api.post('/novel/generate-outline', payload, { timeout: 600000 })
@@ -870,8 +707,6 @@ async function startGen() {
  expertMode: expertMode.value,
  outline: outline.value,
  personaId: selectedPersonaId.value || undefined,
- referenceIds: genSelectedRefs.value.length > 0 ? genSelectedRefs.value : undefined,
- structureRef: useStructureRef.value && structResult.value ? structResult.value : undefined,
  storyBlueprint: genMode.value === 'book' ? initialBlueprint.value : undefined,
  }
 
@@ -908,7 +743,7 @@ async function startGen() {
  } else if (event.type === 'paused') {
  genStatus.value = '️ 已暂停'; generating.value = false
  } else if (event.type === 'token_exhausted') {
- genStatus.value = '积分已用完，请充值'; generating.value = false
+ genStatus.value = '生成已停止'; generating.value = false
  } else if (event.type === 'plan_needs_extension') {
  genStatus.value = event.message || '章节计划需要扩展'; generating.value = false
 } else if (event.type === 'error') {
@@ -1008,7 +843,6 @@ async function startEditorial() {
  // 3 次 LLM 调用：每阶段输入~textLen*1.5 + 系统提示~500 + 输出~textLen*1.5 ≈ textLen*3 + 500
  // 总计 ≈ textLen*9 + 1500，保守取 1.3 倍系数
  const estTokens = Math.round((textLen * 9 + 1500) * 1.3)
- const estPoints = Math.ceil(estTokens / 20)
  const estTimeMin = Math.max(1, Math.round(estTokens / 3000))
 
  if (!confirm(
@@ -1019,7 +853,6 @@ async function startEditorial() {
  `  ① 结构重构（压缩+节奏+人物）\n` +
  `  ② 风格一致性（润色+一致性检查）\n` +
  `  ③ 去AI化（最终，注入人类特征）\n\n` +
- `预计积分（普通线路参考）：约 ${estPoints.toLocaleString()}\n` +
  `VIP/SVIP 线路按实际输入、输出成本与倍率结算\n` +
  `预计耗时：约 ${estTimeMin} 分钟\n\n` +
  `去AI化放在最后一步，\n` +
@@ -1166,61 +999,7 @@ const lnOk = ref(false)
 const lnStreamingText = ref('')
 const lnStreamRef = ref(null)
 
-// ---- 生成小说 - 参考库匹配 ----
-const genRefs = ref([])
-const genRefsLoaded = ref(false)
-const genSelectedRefs = ref([])
-
-const genFilteredRefs = computed(() => {
- if (!selectedType.value) return []
- return genRefs.value.filter(r => r.mainCategory === selectedType.value)
-})
-
-watch(selectedType, () => {
- genSelectedRefs.value = genFilteredRefs.value.map(r => r._id)
-})
-
-function toggleGenRef(id) {
- const idx = genSelectedRefs.value.indexOf(id)
- if (idx > -1) genSelectedRefs.value.splice(idx, 1)
- else genSelectedRefs.value.push(id)
-}
-
 // ---- 轻小说 ----
-// 轻小说类型ID → 蒸馏库 mainCategory 名称映射
-const lnTypeToCat = {
- lightnovel_isekai: '异世界转生',
- lightnovel_school: '校园恋爱',
- lightnovel_fantasy: '奇幻冒险',
- lightnovel_slice: '日常系',
- lightnovel_battle: '战斗异能',
- lightnovel_scifi: '科幻未来',
-}
-
-// 参考库匹配
-const lnRefs = ref([])
-const lnRefsLoaded = ref(false)
-const lnSelectedRefs = ref([])
-
-// 根据已选轻小说类型自动过滤匹配的参考
-const lnFilteredRefs = computed(() => {
- if (!lnSelectedType.value) return []
- const catName = lnTypeToCat[lnSelectedType.value]
- if (!catName) return []
- return lnRefs.value.filter(r => r.mainCategory === catName)
-})
-
-// 切换类型时自动选中匹配的参考
-watch(lnSelectedType, () => {
- lnSelectedRefs.value = lnFilteredRefs.value.map(r => r._id)
-})
-
-function toggleRef(id) {
- const idx = lnSelectedRefs.value.indexOf(id)
- if (idx > -1) lnSelectedRefs.value.splice(idx, 1)
- else lnSelectedRefs.value.push(id)
-}
-
 const lnTraits = ['元气', '冷酷', '温柔', '傲娇', '天然呆', '腹黑', '高冷', '治愈', '热血', '神秘', '活泼', '冷静']
 
 const lnActivePresets = computed(() => {
@@ -1258,8 +1037,6 @@ async function startLNGen() {
  mode: lnGenMode.value,
  expertMode: lnExpertMode.value,
  outline: lnOutline,
- referenceIds: lnSelectedRefs.value.length > 0 ? lnSelectedRefs.value : undefined,
- structureRef: useStructureRef.value && structResult.value ? structResult.value : undefined,
  }
 
  novelStore.startGeneration(params,
@@ -1286,7 +1063,7 @@ async function startLNGen() {
  } else if (event.type === 'paused') {
  lnStatus.value = '⏸️ 已暂停'; lnGenerating.value = false
  } else if (event.type === 'token_exhausted') {
- lnStatus.value = '积分已用完，请充值'; lnGenerating.value = false
+ lnStatus.value = '生成已停止'; lnGenerating.value = false
  } else if (event.type === 'plan_needs_extension') {
  lnStatus.value = event.message || '章节计划需要扩展'; lnGenerating.value = false
 } else if (event.type === 'error') {
@@ -1315,18 +1092,6 @@ onMounted(async () => {
      selectedPersonaId.value = list[0]._id
    }
  } catch {}
- // 加载普通小说参考库
- try {
-   const refs = await refStore.fetchByType('normal')
-   genRefs.value = refs.filter(r => r.aiProcessed && r.styleProfile && r.styleProfile !== '风格提取中...')
- } catch {}
- genRefsLoaded.value = true
- // 加载轻小说参考库
- try {
-   const refs = await refStore.fetchLightNovelRefs()
-   lnRefs.value = refs.filter(r => r.aiProcessed && r.styleProfile && r.styleProfile !== '风格提取中...')
- } catch {}
- lnRefsLoaded.value = true
 })
 </script>
 
@@ -1560,7 +1325,6 @@ onMounted(async () => {
  font-size: 13px;
 }
 
-/* --- Reference Style Matching --- */
 .ln-ref-card {
  border-color: var(--success-border);
  background: var(--success-bg);
@@ -1750,7 +1514,6 @@ onMounted(async () => {
  to { opacity: 1; transform: translateY(0); }
 }
 
-/* --- Reference Structure Clone --- */
 .ref-struct-desc {
  font-size: 13px;
  color: var(--text-secondary);

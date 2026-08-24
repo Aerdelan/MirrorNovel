@@ -3,7 +3,7 @@ const mongoose = require('mongoose')
 /**
  * 写作人格（Writing Persona）
  * 用于把原本硬编码在 buildSystemPrompt 里的"作者声线"提取出来，
- * 让用户在前端选择/管理/AI生成/从参考小说提取，实现风格多样化。
+ * 让用户在前端选择/管理/AI生成，实现风格多样化。
  */
 const writingPersonaSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -26,11 +26,8 @@ const writingPersonaSchema = new mongoose.Schema({
   // 是否覆盖默认 deslop（false=保留系统去AI化策略；true=用本模板的 rules 接管）
   overrideDeslop: { type: Boolean, default: false },
 
-  // 来源：system 系统预设 / user 手动 / ai-generated AI生成 / reference-extracted 从参考提取
-  source: { type: String, enum: ['system', 'user', 'ai-generated', 'reference-extracted'], default: 'user' },
-
-  // 若来源为 reference-extracted，记录参考小说 ID（可选）
-  sourceRefId: { type: mongoose.Schema.Types.ObjectId, ref: 'ReferenceNovel', default: null },
+  // 来源：system 系统预设 / user 手动 / ai-generated AI生成
+  source: { type: String, enum: ['system', 'user', 'ai-generated'], default: 'user' },
 
   // 系统预设不可被用户删除/编辑核心字段
   isSystem: { type: Boolean, default: false, index: true },

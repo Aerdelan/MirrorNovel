@@ -49,28 +49,10 @@ const routes = [
  meta: { title: '小说详情', requiresAuth: true },
  },
  {
- path: '/reference-upload',
- name: 'ReferenceUpload',
- component: () => import('../views/ReferenceUploadPage.vue'),
- meta: { title: '参考风格库', requiresAuth: true, requiresAdmin: true },
- },
- {
- path: '/reference-list',
- name: 'ReferenceList',
- component: () => import('../views/ReferenceListPage.vue'),
- meta: { title: '风格参考库', requiresAuth: true, requiresAdmin: true },
- },
- {
  path: '/polish',
  name: 'Polish',
  component: () => import('../views/PolishPage.vue'),
  meta: { title: '润色文本', requiresAuth: true },
- },
- {
- path: '/screenplay',
- name: 'Screenplay',
- component: () => import('../views/ScreenplayPage.vue'),
- meta: { title: 'AI剧本', requiresAuth: true },
  },
 ]
 

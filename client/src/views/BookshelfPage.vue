@@ -247,7 +247,7 @@ async function startBookContinue(novel) {
  }, 'book')
  } catch (e) {
  isContinuing.value = false
- if (isTokenExhaustedError(e.message)) alert('当前积分余额不足，请加 QQ 群 1019601998 联系群主补充积分')
+ if (isTokenExhaustedError(e.message)) alert('生成请求已停止，请稍后重试')
  else if (e.message !== 'paused') alert('续写失败：' + e.message)
  novelStore.fetchBookshelf()
  }

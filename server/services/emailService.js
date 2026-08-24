@@ -80,49 +80,6 @@ const verifyTransporter = async () => {
   });
 };
 
-/**
- * 发送限免活动通知邮件
- * @param {string} to - 目标邮箱
- * @param {object} activity - 活动对象
- */
-const sendActivityNotification = async (to, activity) => {
-  const startDate = new Date(activity.startTime).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
-  const endDate = new Date(activity.endTime).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
-  const rewardPoints = activity.rewardPoints || activity.tokenAmount || 0;
-
-  const html = `
-    <div style="max-width:600px;margin:0 auto;padding:20px;background:#fff;border-radius:10px;">
-      <div style="text-align:center;padding:20px 0;">
-        <h1 style="color:#FF6B35;margin:0;">🎉 MirrorNovel生成 限免活动</h1>
-      </div>
-      <div style="padding:20px;background:#f9f9f9;border-radius:8px;">
-        <p style="font-size:16px;color:#333;">亲爱的用户：</p>
-        <p style="font-size:16px;color:#333;">
-          <strong>MirrorNovel生成</strong> 将举办积分活动！完成活动条件即可获得
-          <span style="color:#FF6B35;font-weight:bold;font-size:20px;">${rewardPoints}</span> 积分！
-        </p>
-        <div style="text-align:center;padding:20px 0;">
-          <div style="display:inline-block;background:linear-gradient(135deg,#FF6B35,#ff8f5e);color:white;padding:15px 30px;border-radius:8px;">
-            <div style="font-size:14px;opacity:0.9;">📅 活动时间</div>
-            <div style="font-size:16px;font-weight:bold;margin-top:5px;">${startDate} 至 ${endDate}</div>
-          </div>
-        </div>
-        <p style="font-size:15px;color:#555;text-align:center;">活动奖励 <strong>${rewardPoints} 积分</strong>，具体领取条件请以活动页面为准</p>
-        <p style="font-size:14px;color:#999;text-align:center;margin-top:20px;">如有疑问，请加 QQ 群 1019601998 联系群主</p>
-      </div>
-    </div>
-  `;
-
-  const mailOptions = {
-    from: `"MirrorNovel生成" <${process.env.EMAIL_USERNAME}>`,
-    to,
-    subject: `【MirrorNovel生成】积分活动：最高可得 ${rewardPoints} 积分`,
-    html,
-  };
-
-  await transporter.sendMail(mailOptions);
-};
-
 /** Send a low-frequency reminder for a major, user-confirmed story decision. */
 const sendBlueprintProposalNotification = async (to, proposal, novelId) => {
   const title = escapeHtml(String(proposal?.title || '剧情蓝图优化建议').slice(0, 80));
@@ -142,4 +99,4 @@ const sendBlueprintProposalNotification = async (to, proposal, novelId) => {
   });
 };
 
-module.exports = { sendVerificationCode, verifyTransporter, sendActivityNotification, sendBlueprintProposalNotification };
+module.exports = { sendVerificationCode, verifyTransporter, sendBlueprintProposalNotification };

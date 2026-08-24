@@ -87,21 +87,13 @@ const adminUser = computed(() => safeParse('admin_user'))
 const menuItems = [
  { path: '/dashboard', label: '数据大屏', glyph: '览' },
  { path: '/users', label: '用户管理', glyph: '人' },
- { path: '/novels', label: '小说管理', glyph: '文' },
- { path: '/distill', label: '蒸馏管理', glyph: '析' },
- { path: '/activities', label: '积分活动', glyph: '惠' },
- { path: '/templates', label: '类型模板', glyph: '类' },
- { path: '/models', label: '线路与计价', glyph: '线' },
+ { path: '/models', label: '模型配置', glyph: '线' },
 ]
 
 const pageTitles = {
  '/dashboard': '数据大屏',
  '/users': '用户管理',
- '/novels': '小说管理',
- '/distill': '蒸馏管理',
- '/activities': '积分活动',
- '/templates': '类型模板',
- '/models': '线路与计价',
+ '/models': '模型配置',
 }
 
 const currentTitle = computed(() => pageTitles[currentPath.value] || '管理后台')

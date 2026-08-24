@@ -24,10 +24,10 @@ export default {
  app: { title: 'MirrorNovel生成', slogan: 'AI 小说创作平台', group: '官方群：1019601998' },
  common: { confirm: '确定', cancel: '取消', save: '保存', delete: '删除', edit: '编辑', close: '关闭', loading: '加载中...', yes: '是', no: '否', all: '全部' },
  auth: { login: '登录', register: '注册', logout: '退出登录', email: '邮箱', password: '密码', nickname: '昵称', verifyCode: '验证码', getCode: '获取验证码', sending: '发送中', placeholderEmail: '请输入邮箱', placeholderPwd: '请输入密码', placeholderNick: '给自己起个昵称', placeholderPwdConfirm: '至少6位密码', placeholderCode: '输入验证码', needAccount: '还没有账号？', hasAccount: '已有账号？', loginSuccess: '登录后继续使用', fillAll: '请填写完整信息', invalidEmail: '请输入有效的邮箱地址', codeSent: '验证码已发送到邮箱，请注意查收', codeFail: '发送验证码失败', pwdMinLen: '密码至少6位', pwdMismatch: '两次密码输入不一致', loginFail: '登录失败', registerFail: '注册失败', backHome: '返回首页' },
- tab: { generate: '生成', polish: '润色', profile: '我的', bookshelf: '书架', screenplay: 'AI剧本', distill: '蒸馏' },
+ tab: { generate: '生成', polish: '润色', profile: '我的', bookshelf: '书架' },
 
  // 公告弹窗
- announcement: { title: ' 欢迎使用MirrorNovel生成', desc: '加官方QQ群 1019601998 联系管理员', claim: '免费领取 5,000 积分', tip1: ' 进群后发送：我的用户名 {email}', tip2: ' 积分自动到账，可用于小说生成', tip3: ' 1 积分约对应 1 字输出，5000 积分可生成约 5000 字', gotIt: '我知道了' },
+ announcement: { title: ' 欢迎使用 MirrorNovel', desc: '开始创建你的小说作品', claim: '开始创作', tip1: '创建作品大纲', tip2: '完善角色与世界观', tip3: '持续生成和编辑章节', gotIt: '我知道了' },
  // 免责声明弹窗
  disclaimer: {
    title: '使用须知与免责声明',
@@ -45,10 +45,9 @@ export default {
  personaDesc: '决定 AI 的作者声线和语气节奏，不同模板输出不同风格',
  personaManage: '管理 / 新建',
  personaManageTitle: '写作风格管理',
- personaSys: '系统', personaRef: '参考',
+ personaSys: '系统',
  personaNew: '新建模板',
  personaAIGen: 'AI 生成',
- personaFromRef: '从参考小说生成',
  personaClone: '克隆',
  personaUntitled: '未命名模板',
  personaCurrent: '当前使用',
@@ -67,16 +66,15 @@ export default {
  maleFreq: ' 男频', femaleFreq: ' 女频',
  placeholderName: '故事主角名字', placeholderWorld: '描述故事的世界观、背景设定、特殊规则等（可选）', placeholderOutline: '可选，不填则由AI自动生成大纲',
  modeBook: ' 生成整本', modeChapter: ' 生成一章',
- expertMode: '开启专家团模式', expertModeDesc: '每章写作后增加连续性审稿，必要时自动修订；会消耗额外积分',
+ expertMode: '开启专家团模式', expertModeDesc: '每章写作后增加连续性审稿，必要时自动修订',
  unitWord: '字', btnGenerate: ' 开始创作', btnGenerating: '⏳ 生成中...',
- statusGenerating: '大纲生成中...', statusDone: ' 生成完成！', statusPaused: '⏸️ 已暂停', statusExhausted: '️ 积分已用完，请补充积分',
+ statusGenerating: '大纲生成中...', statusDone: ' 生成完成！', statusPaused: '⏸️ 已暂停', statusExhausted: '️ 生成已停止',
  selectedType: ' 已选择：{name}',
  // 轻小说
  lnStepType: '选择轻小说类型', lnStepChar: '角色设定', lnStepWorld: '世界观 / 背景设定', lnStepMode: '生成模式 & 字数设定',
  lnPlaceholderName: '主角名字（日式风格，如：佐藤悠真）', lnPlaceholderWorld: '描述故事发生的世界背景（可选）',
  lnCharTrait: '角色属性', lnBtnGenerate: ' 开始创作轻小说',
  // 参考匹配
- refMatch: ' 参考风格匹配', refAutoMatched: '已自动匹配 {count} 部「{type}」风格参考', refEmpty: '蒸馏库中暂无匹配「{type}」的参考数据', refSelectType: '请先选择小说类型，系统将自动匹配蒸馏库中的参考风格', refSelected: '已选 {count} 部', refNoLN: '蒸馏库中暂无轻小说参考数据，请先在「蒸馏」页面导入轻小说',
  wordShort: '字',
  // 大纲弹窗
  outlinePreview: ' AI 大纲预览', outlineDesc: '以下是大纲，你可以直接编辑修改，确认无误后点击"确定开始"生成正文',
@@ -132,14 +130,12 @@ export default {
  // 我的
  profile: {
  title: ' 我的', loginFirst: '登录后解锁全部功能',
- tokenBalance: ' 积分余额', available: '可用积分', total: '总积分', used: '已使用', pointsUnit: '积分',
- getToken: ' 加群联系群主获取积分', tokenDesc: '积分不足或需要补充积分，请加 QQ 群联系群主：', groupNum: '群号：1019601998', groupNote: '加群时请备注"MirrorNovel"',
  stats: '创作统计', totalWorks: '总作品', totalWords: '总字数', completed: '已完成', inProgress: '进行中',
  editNick: '修改昵称', placeholderNick: '输入新昵称',
  aiConfig: '生成线路配置', aiConfigDesc: '选择小说生成所使用的服务线路，保存后对后续任务生效', routeSelect: '默认生成线路', routeCurrent: '当前默认线路',
- roleRoutesTitle: '按任务类型覆盖线路（可选）', roleRoutesDesc: '未单独选择的任务会跟随默认线路，积分按实际使用的线路计算',
+ roleRoutesTitle: '按任务类型覆盖线路（可选）', roleRoutesDesc: '未单独选择的任务会跟随默认线路',
  modelProvider: '生成线路', providerDefault: '普通线路模型一', providerSystem: '普通线路模型二', providerOllama: '高级线路模型一', providerCloud: 'VIP线路模型', providerSvip: 'SVIP线路模型',
- systemDesc: '使用系统提供的稳定生成线路，按实际输出量扣除积分', rate: '扣费：按实际生成字数折算积分', balance: '当前积分：', buyToken: '补充积分请加 QQ 群 1019601998',
+ systemDesc: '使用系统提供的稳定生成线路',
  modelOutline: '大纲线路', modelWriting: '写作线路', modelPolish: '润色线路', modelReasoning: '推理线路',
  lineStandardOne: '普通线路模型一', lineStandardTwo: '普通线路模型二', lineAdvancedOne: '高级线路模型一', lineVip: 'VIP线路模型', lineSvip: 'SVIP线路模型', lineFollowDefault: '跟随默认线路',
  refreshModels: ' 刷新线路列表',
@@ -187,39 +183,6 @@ export default {
  chapter: '章', btnEdit: '️ 编辑', btnContinue: '继续生成', btnSave: ' 保存',
  placeholderEdit: '编辑章节内容...', editChapter: '编辑 第{num}章',
  completed: '已完成', generating: '生成中', paused: '已暂停',
- },
-
- // 蒸馏页
- distill: {
- title: ' 风格参考库', myLib: ' 我的库',
- stepDistillType: '选择蒸馏类型', normalNovel: ' 普通小说', lightNovel: ' 轻小说', lnHint: '日式ACGN风格小说提取，分析角色萌属性、对话风格、动画感描写等',
- stepCategory: '选择{type}类型', stepCookie: ' 番茄小说 Cookie 设置',
- stepFanqieImport: '从番茄小说导入', fanqieDesc: '输入番茄小说的 Book ID，自动获取书名和类型',
- fanqieDownload: '下载番茄小说（纯下载，不蒸馏）', fanqieDownloadDesc: '输入 Book ID 和章节数，下载为 .txt 文件',
- stepUpload: '或上传本地的 .txt 文件', uploadHint: '支持 UTF-8 编码，最大 10MB',
- uploadName: '小说名称', placeholderName: '输入小说名称',
- btnUpload: ' 上传并提取风格', btnUploading: '⏳ 分析中...',
- cookieHelp: '如何获取', cookiePlaceholder: '粘贴 document.cookie 内容',
- cookieSave: ' 保存', cookieConfigured: ' Cookie 已配置（{len} 字符）', cookieNotConfigured: '️ 未配置 Cookie，锁定章节无法下载',
- cookieTips: ['Chrome 打开 fanqienovel.com 并登录', '按 F12 → Application → Cookies → fanqienovel.com', '右键任意 cookie → "显示以 URL 编码"', '全选复制所有 cookie 文本，粘贴到下方输入框', '或：刷新页面 → 控制台输入 document.cookie → 复制结果'],
- searchPlaceholder: '搜索分类或标签...',
- subCategory: '二级题材（可选）', tags: '标签（可选）',
- downloadBtn: ' 下载', downloadChapter: '章数(0=全本)',
- },
-
- // 参考库列表
- refList: {
- title: ' 风格参考库', upload: ' 上传', total: '共 {count} 部', analyzed: '已分析 {count} 部',
- analyzedBadge: '已分析', notAnalyzed: '未分析', general: '通用',
- noData: '还没有上传参考小说', uploadFirst: ' 上传第一部',
- deleteConfirm: '确定删除《{title}》吗？',
- qualityScore: '质量分', styleDesc: ' 风格描述（{len}字）', writingFeatures: '️ 写作特点',
- excerpts: ' 精选片段（{count}段）', excerptLabel: '片段 {num}',
- vocab: '️ 特色词汇（{count}个）', chapterStruct: ' 章节结构',
- lnBadge: '轻小说',
- // 详情弹窗
- detailCategory: '分类：{cat} / {sub}', detailGender: '性别：{gender}', detailWords: '字数：{count}', detailTags: '标签：{tags}',
- genderMale: '男频', genderFemale: '女频',
  },
 
  // 错误提示

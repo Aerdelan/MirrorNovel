@@ -291,7 +291,6 @@ module.exports = {
 
 // ====== 口语化词库补充（供外部引用，用于生成时的正向引导） ======
 // 这个导出供 novelTemplates.js 和 aiService.js 使用
-// TODO：这里我感觉不能用写死的词库进行处理，应该对作者进行风格上的蒸馏，以作者为纬度进行创作
 
 module.exports.colloquialWordBank = {
   // 时间表达

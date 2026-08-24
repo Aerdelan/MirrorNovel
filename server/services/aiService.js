@@ -1,6 +1,6 @@
 const novelTypes = require('../config/novelTypes');
 const deslop = require('../config/deslop');
-const { getServerRoute } = require('../config/modelPriceCatalog');
+const { getServerRoute } = require('../config/modelCatalog');
 
 /**
  * 将 AI API 错误转换为对用户友好的提示
@@ -26,7 +26,7 @@ function getFriendlyErrorMessage(statusCode, errorBody) {
       return 'AI 服务当前访问量过大，请稍后重试（建议等待 1-2 分钟）';
     }
     if (apiMessage.includes('余额') || apiMessage.includes('quota') || apiMessage.includes('credit')) {
-      return 'AI 服务额度已用完，请联系管理员充值';
+      return 'AI 服务额度已用完，请检查模型提供商配置';
     }
     return 'AI 服务请求过于频繁，请稍后再试';
   }
@@ -308,13 +308,8 @@ ${buildOutlineSpec(targetWordCount)}
 请直接输出大纲内容，不要加额外的解释。`;
 }
 
-/**
- * 蒸馏提纯：根据章节数量动态调整上下文压缩策略
- * - 章节少时：保留详细内容
- * - 章节多时：最近2章保留详情，之前的压缩为摘要
- * - 上限字符数：10000
- */
-function distillChapters(chapters) {
+/** Build a bounded chapter context for continuation prompts. */
+function buildChapterContext(chapters) {
   if (!chapters || chapters.length === 0) return '';
 
   const totalChars = chapters.reduce((s, c) => s + (c.content || '').length, 0);
@@ -371,8 +366,7 @@ ${continuityNote}
 }
 
 function buildContinuePrompt(novelId, novel, persona = novel?.writingPersonaSnapshot) {
-  // 蒸馏提纯：提取所有章节的关键内容
-  const distilled = distillChapters(novel.chapters);
+  const chapterContext = buildChapterContext(novel.chapters);
   const outlineNote = novel.outline ? `\n【创作大纲】\n${novel.outline}\n` : '';
 
   return `请继续创作这部小说。${buildPersonaPrompt(persona)}
@@ -384,7 +378,7 @@ ${outlineNote}
 以下是从已有章节中提取的完整剧情脉络（包含所有伏笔和人物线）：
 
 ${'='.repeat(40)}
-${distilled}
+${chapterContext}
 ${'='.repeat(40)}
 
 续写要求：
@@ -398,12 +392,12 @@ ${'='.repeat(40)}
 }
 
 /**
- * 构建导入小说续写提示词（蒸馏提纯版）
+ * 构建导入小说续写提示词
  */
 function buildImportContinuePrompt(importedText, continuationRequest, novelTypeName, targetWordCount, mode, persona) {
   // 对导入文本进行分段提纯
   const paragraphs = (importedText || '').split(/\n{2,}/);
-  const distilled = paragraphs.slice(0, 30).map((p, i) => `[段落${i + 1}] ${p.slice(0, 500)}`).join('\n');
+  const chapterContext = paragraphs.slice(0, 30).map((p, i) => `[段落${i + 1}] ${p.slice(0, 500)}`).join('\n');
 
   const isChapter = mode === 'chapter';
   const targetHint = isChapter
@@ -416,7 +410,7 @@ function buildImportContinuePrompt(importedText, continuationRequest, novelTypeN
 
 用户导入的小说完整内容摘要（含全部情节脉络）：
 ${'='.repeat(40)}
-${distilled.slice(0, 10000)}
+${chapterContext.slice(0, 10000)}
 ${'='.repeat(40)}
 
 用户续写要求：
@@ -519,7 +513,7 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
   if (config.apiKey) headers['Authorization'] = `Bearer ${config.apiKey}`;
 
   // 支持按任务传入温度和输出上限。700k 是服务允许的最高返回预算，
-  // 各业务线路仍可传入更小的任务预算，避免无意义地放大计费和延迟。
+  // 各业务线路仍可传入更小的任务预算，避免无意义地放大响应时间。
   let outputLimit = Math.max(256, Math.min(MAX_GENERATION_TOKENS, Number(maxTokens) || 16384));
   // GLM-4.7 等思考模型默认开启 thinking，正文前会长时间输出 reasoning_content。
   // 设置 AI_THINKING_DISABLED=true 可强制关闭思考，换取更快的首字响应。
@@ -657,7 +651,12 @@ function getChapterPlanOutputTokens(targetWordCount) {
   return Math.max(16384, Math.min(120000, Math.ceil(chapters * 135)));
 }
 
-function buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, structureRef, persona, storyBlueprint) {
+function buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, persona, storyBlueprint) {
+  // Keep compatibility with older callers that passed an unused fifth context argument.
+  if (arguments.length >= 7) {
+    storyBlueprint = arguments[6];
+    persona = arguments[5];
+  }
   const estChapters = Math.max(10, Math.ceil(targetWordCount / 3000));
   const plannedBreaths = Math.max(1, Math.round(estChapters * 0.09));
   const blueprint = storyBlueprint && typeof storyBlueprint === 'object' ? storyBlueprint : {};
@@ -688,11 +687,6 @@ function buildChapterPlan(outline, targetWordCount, protagonistName, worldSettin
 ${outline || '无大纲，请自行规划故事'}`;
 
   planPrompt += blueprintBrief;
-
-  if (structureRef) {
-    planPrompt += `\n\n参考小说结构（必须严格遵循）：
-${structureRef}`;
-  }
 
   planPrompt += `\n\n为避免长篇计划在输出时被截断，必须使用下面的紧凑 JSON 格式。不要 Markdown、不要解释、不要代码块：
 {"version":1,"phases":["阶段名：目标"],"chapters":[[章节号,目标字数,"核心事件","埋伏笔（无则空字符串）","回收伏笔（无则空字符串）","关键角色（无则空字符串）","章节角色",张力,"章节短标题","所属阶段","本章支线焦点（无则空字符串）","关系变化","缓冲功能（无则空字符串）"]]}
@@ -923,7 +917,7 @@ ${pass1}`;
 
 module.exports = {
   buildSystemPrompt, buildPersonaPrompt, buildInitialPrompt, buildContinuePrompt,
-  buildImportContinuePrompt, buildOutlinePrompt, distillChapters,
+  buildImportContinuePrompt, buildOutlinePrompt,
   getOutlineRequirements, buildOutlineSpec, getChapterPlanOutputTokens, buildGenreStyleContract,
   buildChapterPlan, buildStoryStateSummary,
   buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, extractChapterSummary,

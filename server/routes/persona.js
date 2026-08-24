@@ -2,7 +2,6 @@ const express = require('express')
 const router = express.Router()
 const auth = require('../middleware/auth')
 const WritingPersona = require('../models/WritingPersona')
-const ReferenceNovel = require('../models/ReferenceNovel')
 const { streamGenerate, resolveApiConfig } = require('../services/aiService')
 const { seedSystemPersonas } = require('../config/writingPersonas')
 
@@ -11,7 +10,6 @@ const { seedSystemPersonas } = require('../config/writingPersonas')
  * - 每个用户独立存储
  * - 系统预设 isSystem=true 不可删除/改核心字段
  * - AI 生成：用户给题材，一次性产出 voice/tone/rules/vocab
- * - 从参考提取：复用 ReferenceNovel.styleProfile，转为人格字段
  */
 
 // 列表（首次访问自动播种系统预设）
@@ -193,68 +191,6 @@ router.post('/ai-generate', auth, async (req, res) => {
       overrideDeslop: !!parsed.overrideDeslop,
       applicableTypes: [],
       source: 'ai-generated',
-      isSystem: false,
-    })
-    res.json(doc)
-  } catch (e) {
-    res.status(500).json({ message: e.message })
-  }
-})
-
-// 从参考小说提取人格（复用 styleProfile，不重新蒸馏）
-router.post('/from-reference/:refId', auth, async (req, res) => {
-  try {
-    const ref = await ReferenceNovel.findOne({ _id: req.params.refId, userId: req.user.id })
-    if (!ref) return res.status(404).json({ message: '未找到该参考小说' })
-    if (!ref.styleProfile || ref.styleProfile.trim().length < 50) {
-      return res.status(400).json({ message: '该参考小说尚未完成风格蒸馏，请先蒸馏' })
-    }
-
-    const apiConfig = resolveApiConfig(req.user.modelConfig, 'reasoning')
-    const systemPrompt = '你是一位写作风格分析师。请根据给定的参考小说风格档案，提炼出一套"写作人格"模板，用于指导 AI 小说生成器模仿该风格。只输出合法 JSON，不要 Markdown、不要解释、不要代码块。'
-
-    const userPrompt = `请根据以下参考小说的风格档案，提炼一套写作人格。
-
-参考小说：${ref.title}
-分类：${ref.mainCategory}${ref.subCategory ? ' - ' + ref.subCategory : ''}
-
-风格档案：
-${ref.styleProfile}
-
-特色词汇：${(ref.vocabularyBank || []).join('、')}
-
-输出结构（所有字段都是字符串，不要省略）：
-{
-  "name": "模板名称（基于参考小说，不超过10字）",
-  "description": "一句话描述这套风格（不超过30字）",
-  "voice": "作者声线：从风格档案中提炼的视角、距离、人称、温度（80-150字）",
-  "tone": "语气与节奏：从风格档案中提炼的用词密度、句法、轻重平衡（80-150字）",
-  "rules": "题材约束与人物声音规则，用编号列表（300-500字）",
-  "vocab": "推荐词与禁用词，换行分隔（50-100字）",
-  "overrideDeslop": false
-}`
-
-    const result = await streamGenerate(systemPrompt, userPrompt, null, null, apiConfig, 2, 0.7, 4096, 120000)
-    let parsed
-    try {
-      const text = result.content.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim()
-      parsed = JSON.parse(text)
-    } catch {
-      return res.status(500).json({ message: 'AI 输出解析失败，请重试', raw: result.content.slice(0, 500) })
-    }
-
-    const doc = await WritingPersona.create({
-      userId: req.user.id,
-      name: (parsed.name || `${ref.title} 风格`).slice(0, 40),
-      description: parsed.description || '',
-      voice: parsed.voice || '',
-      tone: parsed.tone || '',
-      rules: parsed.rules || '',
-      vocab: parsed.vocab || '',
-      overrideDeslop: !!parsed.overrideDeslop,
-      applicableTypes: [],
-      source: 'reference-extracted',
-      sourceRefId: ref._id,
       isSystem: false,
     })
     res.json(doc)

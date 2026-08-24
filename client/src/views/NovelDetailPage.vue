@@ -15,7 +15,7 @@
 
  <div v-if="novel" class="card pipeline-card">
   <div class="section-title">内容处理链</div>
-  <div class="pipeline-hint">正文每次被修订后，摘要、伏笔和续写上下文会同步刷新；各项 AI 操作仍按你的选择单独计费。</div>
+  <div class="pipeline-hint">正文每次被修订后，摘要、伏笔和续写上下文会同步刷新；各项 AI 操作按你选择的模型线路执行。</div>
   <div class="pipeline-steps">
    <div v-for="step in pipelineSteps" :key="step.id" class="pipeline-step" :class="step.state">
     <span class="pipeline-dot"></span><span class="pipeline-name">{{ step.name }}</span><span class="pipeline-state">{{ step.label }}</span>

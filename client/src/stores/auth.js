@@ -95,78 +95,15 @@ export const useAuthStore = defineStore('auth', () => {
  return res.data
  }
 
- // 积分账户优先使用新接口，失败时兼容旧服务端。
- async function getTokenInfo() {
- let data
- try {
-  const res = await api.get('/billing/account')
-  data = res.data.account
- } catch {
-  const res = await api.get('/auth/tokens')
-  data = res.data.points || res.data
- }
- if (user.value) {
- user.value.points = { version: 1, total: data.total, used: data.used }
- user.value.availablePoints = data.available
- user.value.tokens = { total: data.total, used: data.used }
- user.value.availableTokens = data.available
- localStorage.setItem('user', JSON.stringify(user.value))
- }
- return data
- }
-
  // 用户统计
  async function getUserStats() {
  const res = await api.get('/auth/stats')
  return res.data
  }
 
- async function purchaseTokens(amount) {
- const res = await api.post('/auth/purchase', { amount, method: 'alipay' })
- if (user.value) {
- user.value.tokens = { total: res.data.total, used: user.value.tokens?.used || 0 }
- user.value.availableTokens = res.data.available
- localStorage.setItem('user', JSON.stringify(user.value))
- }
- return res.data
- }
-
- // 签到
- async function checkin() {
- const res = await api.post('/auth/checkin')
- if (user.value) {
- user.value.tokens = { total: res.data.availableTokens + (user.value.tokens?.used || 0), used: user.value.tokens?.used || 0 }
- user.value.availableTokens = res.data.availableTokens
- localStorage.setItem('user', JSON.stringify(user.value))
- }
- return res.data
- }
-
- async function getCheckinStatus() {
- const res = await api.get('/auth/checkin-status')
- return res.data
- }
-
  // 邀请
  async function getInviteInfo() {
  const res = await api.get('/auth/invite-info')
- return res.data
- }
-
- async function getActivities() {
- const res = await api.get('/activities')
- return res.data.activities || []
- }
-
- async function claimActivity(activityId) {
- const res = await api.post(`/activities/${activityId}/claim`)
- if (user.value && res.data.balance) {
-  user.value.points = { version: 1, total: res.data.balance.total, used: res.data.balance.used }
-  user.value.availablePoints = res.data.balance.available
-  user.value.tokens = { total: res.data.balance.total, used: res.data.balance.used }
-  user.value.availableTokens = res.data.balance.available
-  localStorage.setItem('user', JSON.stringify(user.value))
- }
  return res.data
  }
 
@@ -201,12 +138,8 @@ export const useAuthStore = defineStore('auth', () => {
  updateProfile,
  getModelConfig,
  saveModelConfig,
- getTokenInfo,
  getUserStats,
- purchaseTokens,
- checkin, getCheckinStatus,
  getInviteInfo,
- getActivities, claimActivity,
  checkAnnouncement,
  dismissAnnouncement,
  logout,

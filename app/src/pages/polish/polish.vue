@@ -54,17 +54,6 @@
       </label>
     </view>
 
-    <!-- 积分余额 -->
-    <view v-if="polishing || polishCompleted" class="card points-indicator">
-      <view class="points-row">
-        <text class="points-label">积分余额</text>
-        <text class="points-value">
-          <text style="color:var(--primary-color);font-size:15px;font-weight:700;">{{ pointsAvailable.toLocaleString() }}</text>
-          <text v-if="polishing" style="color:var(--text-light);font-size:12px;"> ⟳ 消耗中</text>
-        </text>
-      </view>
-    </view>
-
     <button class="btn btn-primary btn-block btn-lg" :disabled="polishing || !polishReady" @click="startPolish">
       {{ polishing ? '润色中...' : '开始润色' }}
     </button>
@@ -109,7 +98,6 @@ const polishedText = ref('')
 const polishCompleted = ref(false)
 const polishStatusText = ref('')
 const polishProgress = ref(0)
-const pointsAvailable = ref(0)
 
 const polishPresets = [
   { label: '默认', prompt: '请对以下小说文本进行润色优化：修正语病，优化用词，调整句式节奏，保留原文风格。直接输出润色后文本。' },
@@ -144,7 +132,7 @@ function startPolish() {
   if (!text || text.trim().length < 10) return uni.showToast({ title: '文本太短', icon: 'none' })
   polishing.value = true; polishCompleted.value = false
   polishedText.value = ''; polishStatusText.value = '正在润色...'
-  polishProgress.value = 0; pointsAvailable.value = 0
+  polishProgress.value = 0
   let totalChunks = 0
 
   const token = getToken()
@@ -162,9 +150,7 @@ function startPolish() {
     for (const line of lines) {
       try {
         const event = JSON.parse(line.substring(6))
-        if (event.type === 'token_info' || event.type === 'points_info') {
-          pointsAvailable.value = Number(event.availablePoints ?? event.available ?? 0)
-        } else if (event.type === 'content') {
+        if (event.type === 'content') {
           polishedText.value += event.content; totalChunks++
           polishProgress.value = Math.min(95, Math.round(totalChunks / 10))
           polishStatusText.value = '正在润色...'
@@ -177,16 +163,6 @@ function startPolish() {
         } else if (event.type === 'completed') {
           polishStatusText.value = '润色完成（' + polishedText.value.length + '字）'
           polishProgress.value = 100; polishCompleted.value = true; polishing.value = false
-          authStore.getPointsInfo().catch(() => {})
-        } else if (event.type === 'token_exhausted' || event.type === 'points_exhausted') {
-          if (polishedText.value.length > 0) {
-            polishStatusText.value = '积分已用完，已保留当前结果'
-            polishCompleted.value = true
-          } else {
-            polishStatusText.value = toUserFacingMessage(event.message || '积分余额不足')
-          }
-          polishProgress.value = 100; polishing.value = false
-          authStore.getPointsInfo().catch(() => {})
         } else if (event.type === 'error') {
           polishStatusText.value = toUserFacingMessage(event.message || '润色失败'); polishing.value = false
         }
@@ -227,7 +203,5 @@ function downloadPolish() {
 .progress-fill { height:100%;background:linear-gradient(90deg,var(--primary-color),var(--accent-color));border-radius:3px;transition:width 0.3s; }
 .polish-preview { font-size:13px;line-height:1.6;color:var(--text-secondary);max-height:200px;background:#f8f8f8;padding:10px;border-radius:8px;white-space:pre-wrap; }
 .polish-hint { text-align:center;font-size:13px;color:var(--text-light);margin-top:8px; }
-.points-indicator { padding:10px 16px;background:var(--primary-light);border:1px solid #cce0d1; }
-.points-row { display:flex;justify-content:space-between;align-items:center;font-size:13px; }
 .btn-success { background:#52c41a;color:white;border:none;padding:14px 24px;border-radius:10px;font-size:16px; }
 </style>

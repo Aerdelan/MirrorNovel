@@ -33,7 +33,7 @@ const PUBLIC_ROUTE_IDS = new Set(['normal_1', 'normal_2', 'advanced_1', 'vip', '
 
 function sanitizeUserData(userData) {
   if (!userData || typeof userData !== 'object') return userData
-  const { modelConfig, tokens: _legacyTokens, availableTokens: _legacyAvailable, ...publicUser } = userData
+  const { modelConfig, ...publicUser } = userData
   const routeId = PUBLIC_ROUTE_IDS.has(modelConfig?.routeId) ? modelConfig.routeId : 'normal_1'
   return { ...publicUser, modelConfig: { routeId } }
 }
@@ -95,14 +95,9 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function getModelConfig() {
-    const [config, billing] = await Promise.all([
-      api.get('/auth/model-config'),
-      api.get('/billing/routes').catch(() => ({ routes: [] })),
-    ])
+    const config = await api.get('/auth/model-config')
     const routeId = PUBLIC_ROUTE_IDS.has(config?.modelConfig?.routeId) ? config.modelConfig.routeId : 'normal_1'
-    const sourceRoutes = Array.isArray(billing?.routes) && billing.routes.length
-      ? billing.routes
-      : (config?.routes || [])
+    const sourceRoutes = config?.routes || []
     return {
       modelConfig: { routeId },
       routes: sourceRoutes
@@ -122,70 +117,12 @@ export const useAuthStore = defineStore('auth', () => {
     return { message: res?.message || '', modelConfig: { routeId } }
   }
 
-  function normalizePoints(payload) {
-    const account = payload?.account || payload?.points || payload || {}
-    const total = Number(account.total || 0)
-    const used = Number(account.used || 0)
-    const available = Number(account.available ?? payload?.availablePoints ?? payload?.available ?? Math.max(0, total - used))
-    return { total, used, available }
-  }
-
-  async function getPointsInfo() {
-    let res
-    try {
-      res = await api.get('/billing/account')
-    } catch {
-      // 兼容尚未升级 billing 路由的旧服务端。
-      res = await api.get('/auth/tokens')
-    }
-    const points = normalizePoints(res)
-    if (user.value) {
-      user.value.points = { total: points.total, used: points.used }
-      user.value.availablePoints = points.available
-      safeSet('user', user.value)
-    }
-    return { ...points, ledger: Array.isArray(res?.ledger) ? res.ledger : [] }
-  }
-
-  // 旧页面调用兼容；返回值已经统一为积分。
-  async function getTokenInfo() {
-    return getPointsInfo()
-  }
-
   async function getUserStats() {
     return api.get('/auth/stats')
   }
 
-  async function checkin() {
-    const res = await api.post('/auth/checkin')
-    if (user.value) {
-      user.value.availablePoints = res.availablePoints ?? res.availableTokens ?? user.value.availablePoints
-      safeSet('user', user.value)
-    }
-    return res
-  }
-
-  async function getCheckinStatus() {
-    return api.get('/auth/checkin-status')
-  }
-
   async function getInviteInfo() {
     return api.get('/auth/invite-info')
-  }
-
-  async function getActivities() {
-    const res = await api.get('/activities')
-    return Array.isArray(res?.activities) ? res.activities : []
-  }
-
-  async function claimActivity(activityId) {
-    const res = await api.post(`/activities/${encodeURIComponent(activityId)}/claim`)
-    if (user.value && res?.balance) {
-      user.value.points = { total: res.balance.total || 0, used: res.balance.used || 0 }
-      user.value.availablePoints = res.balance.available || 0
-      safeSet('user', user.value)
-    }
-    return res
   }
 
   async function checkAnnouncement() {
@@ -211,9 +148,7 @@ export const useAuthStore = defineStore('auth', () => {
     user, token, isLoggedIn,
     login, register, sendCode, getProfile, updateNickname,
     getModelConfig, saveModelConfig,
-    getPointsInfo, getTokenInfo, getUserStats,
-    checkin, getCheckinStatus, getInviteInfo,
-    getActivities, claimActivity,
+    getUserStats, getInviteInfo,
     checkAnnouncement, dismissAnnouncement,
     logout, setAuth, clearAuth,
   }

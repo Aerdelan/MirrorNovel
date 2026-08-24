@@ -10,7 +10,7 @@ export const useNovelStore = defineStore('novel', () => {
  const prefillContinue = ref(null)
  const activeGenerationRequest = ref(null)
 
- async function fetchTypes() {
+async function fetchTypes() {
  const res = await api.get('/novel/types')
  novelTypes.value = res.data
  return res.data
@@ -29,8 +29,8 @@ export const useNovelStore = defineStore('novel', () => {
  return res.data
  }
 
- async function fetchFullTypes() {
- const res = await api.get('/reference/categories')
+async function fetchFullTypes() {
+ const res = await api.get('/novel/types/full')
  return res.data
  }
 

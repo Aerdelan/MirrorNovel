@@ -163,15 +163,12 @@ function _startVerCheck() { if (!_regTimer) { _checkVer(); _regTimer = setInterv
 const startApp = async () => {
   await connectDB();
 
-  // Load the private route/model/cost mapping before handling AI requests.
   try {
     const SysConfig = require('./models/SysConfig');
-    const pricingConfig = await SysConfig.findOne({ key: 'points_price_catalog' });
-    if (pricingConfig?.value) {
-      process.env.POINTS_PRICE_CATALOG_JSON = JSON.stringify(pricingConfig.value);
-    }
+    const modelConfig = await SysConfig.findOne({ key: 'model_catalog' });
+    if (modelConfig?.value) process.env.MODEL_CATALOG_JSON = JSON.stringify(modelConfig.value);
   } catch (error) {
-    console.warn('[Points] 无法加载数据库线路计价，暂用环境变量配置:', error.message);
+    console.warn('[Model] 无法加载数据库模型配置，暂用环境变量配置:', error.message);
   }
 
   // 版本检查（仅公共网络触发）
@@ -187,8 +184,6 @@ const startApp = async () => {
         password: process.env.ADMIN_PASSWORD || 'admin888',
         nickname: process.env.ADMIN_NICKNAME || '超级管理员',
         role: 'admin',
-        tokens: { total: 999999999, used: 0 },
-        points: { version: 1, total: 999999999, used: 0 },
       });
       console.log(`✅ 管理员账号已创建: ${adminEmail}`);
     } else {
@@ -222,11 +217,7 @@ const startApp = async () => {
   app.use('/api/auth', require('./routes/auth'));
   app.use('/api/novel', require('./routes/novel'));
   app.use('/api/admin', require('./routes/admin'));
-  app.use('/api/reference', require('./routes/reference'));
-  app.use('/api/billing', require('./routes/billing'));
-  app.use('/api/activities', require('./routes/activity'));
   app.use('/api/persona', require('./routes/persona'));
-  app.use('/api/screenplay', require('./routes/screenplay'));
 
   // 健康检查
   app.get('/api/health', (req, res) => {
@@ -248,7 +239,7 @@ const startApp = async () => {
     console.log(`API 地址: http://localhost:${PORT}/api`);
     console.log(`管理后台: http://localhost:${PORT}/api/admin`);
   });
-  // 长篇小说、长时剧本按模型返回时间决定连接寿命，不使用 Node 默认请求超时。
+  // Long-form generation uses the provider response time rather than Node's default timeout.
   server.timeout = 0;
   server.requestTimeout = 0;
 };

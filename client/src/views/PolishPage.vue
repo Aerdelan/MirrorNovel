@@ -66,17 +66,6 @@
  </label>
  </div>
 
- <!-- 积分余额显示 -->
- <div v-if="polishing || polishCompleted" class="card token-indicator">
- <div class="token-row">
- <span class="token-label">{{ $t('profile.tokenBalance') }}</span>
- <span class="token-value">
- <strong>{{ tokenAvailable.toLocaleString() }}</strong>
- <span v-if="polishing" class="token-consuming"> ⟳ {{ tokenConsumed }} 消耗中</span>
- </span>
- </div>
- </div>
-
  <button class="btn btn-primary btn-block btn-lg" :disabled="polishing || !polishReady" @click="startPolish">
  {{ polishing ? $t('polish.btnPolishing') : $t('polish.btnPolish') }}
  </button>
@@ -165,8 +154,6 @@ const polishedText = ref('')
 const polishCompleted = ref(false)
 const polishStatusText = ref('')
 const polishProgress = ref(0)
-const tokenAvailable = ref(0)
-const tokenConsumed = ref(0)
 const diagnosis = ref(null)
 const showFullPreview = ref(false)
 
@@ -227,7 +214,7 @@ function startPolish() {
  if (!text || text.trim().length < 10) return alert($t('common.loading'))
  polishing.value = true; polishCompleted.value = false
  polishedText.value = ''; polishStatusText.value = $t('polish.statusPolishing')
- polishProgress.value = 0; tokenConsumed.value = 0
+ polishProgress.value = 0
  diagnosis.value = null; showFullPreview.value = false
  saveMessage.value = ''; saveOk.value = false
  let totalChunks = 0
@@ -240,9 +227,7 @@ function startPolish() {
  else { polishStatusText.value = $t('polish.statusPolishing') }
  },
  (event) => {
- if (event.type === 'token_info') {
- tokenAvailable.value = event.available
- } else if (event.type === 'diagnosis') {
+ if (event.type === 'diagnosis') {
  diagnosis.value = event.diagnosis || null
  } else if (event.type === 'final_content') {
  // 用后处理过的完整内容替换流式拼接的结果
@@ -250,16 +235,6 @@ function startPolish() {
  } else if (event.type === 'completed') {
  polishStatusText.value = $t('polish.statusDone', { count: polishedText.value.length })
  polishProgress.value = 100; polishCompleted.value = true; polishing.value = false
- authStore.getTokenInfo().catch(() => {})
- } else if (event.type === 'token_exhausted') {
- if (polishedText.value.length > 0) {
- polishStatusText.value = '积分已用完，已保留当前润色结果'
- polishCompleted.value = true
- } else {
- polishStatusText.value = event.message || '积分余额不足'
- }
- polishProgress.value = 100; polishing.value = false
- authStore.getTokenInfo().catch(() => {})
  } else if (event.type === 'status') {
  polishStatusText.value = event.message || ''
  } else if (event.type === 'error') {
@@ -363,10 +338,6 @@ function downloadPolish() {
 .btn-success { background: var(--success); color: white; border: none; padding: 14px 24px; border-radius: 10px; font-size: 16px; cursor: pointer; font-family: inherit; }
 .btn-success:hover { background: var(--primary-hover); }
 .polish-hint { text-align: center; font-size: 13px; color: var(--text-light); margin-top: 8px; }
-.token-indicator { padding: 10px 16px; background: var(--success-bg); border: 1px solid var(--success-border); }
-.token-row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
-.token-value strong { color: var(--primary-color); font-size: 15px; }
-.token-consuming { color: var(--text-light); font-size: 12px; }
 .diagnosis-card { background: var(--warning-bg, #fff7e6); border: 1px solid var(--warning-border, #ffd591); border-radius: 8px; padding: 12px; margin: 10px 0; font-size: 13px; line-height: 1.6; }
 .diagnosis-title { font-weight: 600; color: var(--warning-color, #d48806); margin-bottom: 6px; }
 .diagnosis-row { margin-bottom: 6px; }
