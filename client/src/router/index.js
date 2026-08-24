@@ -43,6 +43,12 @@ const routes = [
  meta: { title: '注册' },
  },
  {
+ path: '/forgot-password',
+ name: 'ForgotPassword',
+ component: () => import('../views/ForgotPasswordPage.vue'),
+ meta: { title: '找回密码' },
+ },
+ {
  path: '/novel/:id',
  name: 'NovelDetail',
  component: () => import('../views/NovelDetailPage.vue'),

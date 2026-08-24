@@ -35,6 +35,10 @@
  <router-link to="/register" class="link">{{ $t('auth.register') }}</router-link>
  </div>
 
+ <div class="forgot-link">
+ <router-link to="/forgot-password" class="link-secondary">{{ $t('auth.forgotPassword') }}</router-link>
+ </div>
+
  <div class="back-link">
  <router-link to="/generate" class="link-secondary">{{ $t('auth.backHome') }}</router-link>
  </div>
@@ -130,6 +134,10 @@ async function handleLogin() {
  margin-top: 20px;
  font-size: 13px;
  color: var(--text-tertiary);
+}
+.forgot-link {
+ text-align: center;
+ margin-top: 12px;
 }
 .link {
  color: var(--primary);

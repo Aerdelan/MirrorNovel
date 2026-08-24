@@ -79,7 +79,7 @@ const route = useRoute()
 const authStore = useAuthStore()
 const { isZh, setLocale } = useI18n()
 
-const hiddenRoutes = ['Login', 'Register', 'NovelDetail']
+const hiddenRoutes = ['Login', 'Register', 'ForgotPassword', 'NovelDetail']
 const showTabBar = computed(() => !hiddenRoutes.includes(route.name))
 const showAnnouncement = ref(false)
 

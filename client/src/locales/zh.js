@@ -23,7 +23,7 @@ export default {
  // 通用
  app: { title: 'MirrorNovel生成', slogan: 'AI 小说创作平台', group: '官方群：1019601998' },
  common: { confirm: '确定', cancel: '取消', save: '保存', delete: '删除', edit: '编辑', close: '关闭', loading: '加载中...', yes: '是', no: '否', all: '全部' },
- auth: { login: '登录', register: '注册', logout: '退出登录', email: '邮箱', password: '密码', nickname: '昵称', verifyCode: '验证码', getCode: '获取验证码', sending: '发送中', placeholderEmail: '请输入邮箱', placeholderPwd: '请输入密码', placeholderNick: '给自己起个昵称', placeholderPwdConfirm: '至少6位密码', placeholderCode: '输入验证码', needAccount: '还没有账号？', hasAccount: '已有账号？', loginSuccess: '登录后继续使用', fillAll: '请填写完整信息', invalidEmail: '请输入有效的邮箱地址', codeSent: '验证码已发送到邮箱，请注意查收', codeFail: '发送验证码失败', pwdMinLen: '密码至少6位', pwdMismatch: '两次密码输入不一致', loginFail: '登录失败', registerFail: '注册失败', backHome: '返回首页' },
+ auth: { login: '登录', register: '注册', logout: '退出登录', email: '邮箱', password: '密码', nickname: '昵称', verifyCode: '验证码', getCode: '获取验证码', sending: '发送中', placeholderEmail: '请输入邮箱', placeholderPwd: '请输入密码', placeholderNick: '给自己起个昵称', placeholderPwdConfirm: '至少6位密码', placeholderCode: '输入验证码', needAccount: '还没有账号？', hasAccount: '已有账号？', loginSuccess: '登录后继续使用', fillAll: '请填写完整信息', invalidEmail: '请输入有效的邮箱地址', codeSent: '验证码已发送到邮箱，请注意查收', codeFail: '发送验证码失败', pwdMinLen: '密码至少6位', pwdMismatch: '两次密码输入不一致', loginFail: '登录失败', registerFail: '注册失败', backHome: '返回首页', forgotPassword: '忘记密码？', resetPassword: '找回密码', resetPasswordDesc: '通过邮箱验证码设置新密码', newPassword: '新密码', confirmPassword: '确认新密码', resetCodeSent: '重置验证码已发送，请注意查收邮箱', resetSuccess: '密码已重置，请使用新密码登录', resetFail: '密码重置失败', resetButton: '重置密码', backLogin: '返回登录' },
  tab: { generate: '生成', polish: '润色', profile: '我的', bookshelf: '书架' },
 
  // 公告弹窗

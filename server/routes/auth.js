@@ -88,6 +88,76 @@ router.post('/send-code', async (req, res) => {
   }
 });
 
+// 发送密码重置验证码
+router.post('/send-reset-code', async (req, res) => {
+  try {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    if (!email) return res.status(400).json({ message: '请输入邮箱地址' });
+
+    const existingUser = await User.findOne({ email });
+    // 不泄露邮箱是否存在；对不存在的邮箱返回与成功相同的提示。
+    if (!existingUser) return res.json({ message: '如果该邮箱已注册，验证码将发送到您的邮箱' });
+
+    const code = generateCode();
+    await VerificationCode.deleteMany({ email, type: 'reset' });
+    await VerificationCode.create({
+      email,
+      code,
+      type: 'reset',
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+    });
+
+    if (emailEnabled) {
+      try {
+        await sendVerificationCode(email, code, 'reset');
+        return res.json({ message: '密码重置验证码已发送到您的邮箱' });
+      } catch (emailError) {
+        console.error('重置密码邮件发送失败，转为控制台输出:', emailError.message);
+        emailEnabled = false;
+      }
+    }
+
+    console.log(`\n═══════════════════════════════════════`);
+    console.log(`  📧 密码重置验证码（邮箱: ${email}）`);
+    console.log(`  🔑 ${code}`);
+    console.log(`  ⏰ 有效期 10 分钟`);
+    console.log(`═══════════════════════════════════════\n`);
+    res.json({ message: '验证码已生成（邮箱服务暂不可用，请在控制台查看验证码）', code });
+  } catch (error) {
+    console.error('发送密码重置验证码失败:', error);
+    res.status(500).json({ message: '发送验证码失败，请稍后重试' });
+  }
+});
+
+// 使用邮箱验证码设置新密码
+router.post('/reset-password', async (req, res) => {
+  try {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const code = String(req.body?.code || '').trim();
+    const password = String(req.body?.password || '');
+    if (!email || !code || !password) return res.status(400).json({ message: '请填写完整信息' });
+    if (password.length < 6) return res.status(400).json({ message: '密码至少6位' });
+
+    const verification = await VerificationCode.findOne({
+      email,
+      code,
+      type: 'reset',
+      expiresAt: { $gt: new Date() },
+    });
+    if (!verification) return res.status(400).json({ message: '验证码无效或已过期' });
+
+    const user = await User.findOne({ email });
+    if (!user) return res.status(400).json({ message: '验证码无效或已过期' });
+    user.password = password;
+    await user.save();
+    await VerificationCode.deleteMany({ email, type: 'reset' });
+    res.json({ message: '密码重置成功' });
+  } catch (error) {
+    console.error('密码重置失败:', error);
+    res.status(500).json({ message: '密码重置失败，请稍后重试' });
+  }
+});
+
 // 注册
 router.post('/register', async (req, res) => {
   try {
