@@ -165,8 +165,9 @@ const startApp = async () => {
 
   try {
     const SysConfig = require('./models/SysConfig');
+    const { setCatalogOverrides } = require('./config/modelCatalog');
     const modelConfig = await SysConfig.findOne({ key: 'model_catalog' });
-    if (modelConfig?.value) process.env.MODEL_CATALOG_JSON = JSON.stringify(modelConfig.value);
+    if (modelConfig?.value) setCatalogOverrides(modelConfig.value);
   } catch (error) {
     console.warn('[Model] 无法加载数据库模型配置，暂用环境变量配置:', error.message);
   }

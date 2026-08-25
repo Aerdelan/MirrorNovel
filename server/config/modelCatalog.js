@@ -9,6 +9,25 @@ const MODEL_ROUTE_DEFINITIONS = Object.freeze([
 const DEFAULT_ROUTE_ID = 'normal_1';
 const MODEL_ROLE_KEYS = Object.freeze(['outline', 'writing', 'reasoning', 'polish']);
 
+// The catalog is read synchronously by every generation request. Keep the
+// database-backed override in process memory so an admin change takes effect
+// without requiring a process restart.
+let runtimeOverrides = null;
+
+function normalizeOverrides(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.keys(value).reduce((result, id) => {
+    const route = value[id];
+    if (!route || typeof route !== 'object' || Array.isArray(route)) return result;
+    result[id] = {
+      baseUrl: String(route.baseUrl || '').trim(),
+      apiKey: String(route.apiKey || '').trim(),
+      model: String(route.model || '').trim(),
+    };
+    return result;
+  }, {});
+}
+
 function parseOverrides(env) {
   if (!env.MODEL_CATALOG_JSON) return {};
   try {
@@ -21,7 +40,7 @@ function parseOverrides(env) {
 }
 
 function createModelCatalog(env = process.env) {
-  const overrides = parseOverrides(env);
+  const overrides = runtimeOverrides || parseOverrides(env);
   const fallback = {
     baseUrl: env.AI_API_BASE || '',
     apiKey: env.AI_API_KEY || '',
@@ -38,6 +57,14 @@ function createModelCatalog(env = process.env) {
       model: override.model || env[`${prefix}_MODEL`] || fallback.model,
     });
   });
+}
+
+function setCatalogOverrides(value) {
+  runtimeOverrides = normalizeOverrides(value);
+  // Keep the environment value in sync for code which still reads it
+  // directly, and for consistency with the startup loading path.
+  process.env.MODEL_CATALOG_JSON = JSON.stringify(runtimeOverrides);
+  return runtimeOverrides;
 }
 
 function resolveRouteId(value, catalog = createModelCatalog()) {
@@ -84,6 +111,7 @@ module.exports = {
   MODEL_ROUTE_DEFINITIONS,
   DEFAULT_ROUTE_ID,
   createModelCatalog,
+  setCatalogOverrides,
   resolveRouteId,
   getServerRoute,
   getPublicRoutes,

@@ -7,6 +7,7 @@ const SysConfig = require('../models/SysConfig');
 const {
   MODEL_ROUTE_DEFINITIONS,
   createModelCatalog,
+  setCatalogOverrides,
 } = require('../config/modelCatalog');
 
 router.use(adminAuth);
@@ -65,8 +66,16 @@ function modelRouteView(route) {
   };
 }
 
-router.get('/models', (req, res) => {
-  res.json({ routes: createModelCatalog().map(modelRouteView) });
+router.get('/models', async (req, res) => {
+  try {
+    // Refresh the synchronous runtime catalog from MongoDB so an update made
+    // by another admin process is visible before the next generation request.
+    const stored = await SysConfig.findOne({ key: 'model_catalog' }).lean();
+    if (stored?.value) setCatalogOverrides(stored.value);
+    res.json({ routes: createModelCatalog().map(modelRouteView) });
+  } catch (error) {
+    res.status(500).json({ message: '读取模型配置失败', error: error.message });
+  }
 });
 
 router.put('/models', async (req, res) => {
@@ -90,7 +99,7 @@ router.put('/models', async (req, res) => {
       if (!overrides[current.id]) overrides[current.id] = { baseUrl: current.baseUrl || '', model: current.model || '', apiKey: current.apiKey || '' };
     }
     await SysConfig.findOneAndUpdate({ key: 'model_catalog' }, { value: overrides, updatedAt: new Date() }, { upsert: true, new: true, setDefaultsOnInsert: true });
-    process.env.MODEL_CATALOG_JSON = JSON.stringify(overrides);
+    setCatalogOverrides(overrides);
     res.json({ message: '模型线路配置已保存并即时生效', routes: createModelCatalog().map(modelRouteView) });
   } catch (error) {
     res.status(500).json({ message: '保存失败', error: error.message });
