@@ -402,6 +402,28 @@ test('新书整本：计划为空时暂停，不进入无约束正文循环', as
   assert.deepEqual(state.aiCalls.map((call) => call.kind), ['plan']);
 });
 
+test('新书整本：已确认蓝图但计划为空时使用兜底计划直接开始正文', async () => {
+  state.planContent = '';
+  state.chapterQueue = [makeChapter('林舟在雨夜进入废弃邮局，决定沿着旧案线索继续追查', '兜底计划首章')];
+
+  const { response, events } = await postSse('/generate', {
+    novelTypeId: 'xianxia',
+    protagonistName: '林舟',
+    worldSetting: '阴雨旧城中的沉重悬疑故事',
+    targetWordCount: 600,
+    outline: '林舟追查旧案，在危机中揭开真相并完成主线收束。',
+    mode: 'book',
+    storyBlueprint: { mainArc: '追查旧案并完成主线收束', phases: [{ title: '开端', startChapter: 1, endChapter: 1 }] },
+  });
+
+  assert.equal(response.status, 200);
+  assert.ok(eventIndex(events, 'status', (event) => event.message.includes('自动补全')) > -1);
+  assert.ok(eventIndex(events, 'chapter_start') > eventIndex(events, 'novel_created'));
+  assert.equal(eventIndex(events, 'plan_needs_extension'), -1);
+  assert.equal(getCreatedNovel(events).chapters.length, 1);
+  assert.ok(state.aiCalls.some((call) => call.kind === 'chapter'));
+});
+
 test('新书长篇：大纲存在但计划不可解析时自动补全执行计划', async () => {
   const content = makeChapter('林舟根据旧案线索进入废弃邮局', '长篇兜底计划');
   state.planContent = '';

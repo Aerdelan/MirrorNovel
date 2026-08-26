@@ -54,22 +54,22 @@
  </div>
  <div class="mode-tip">{{ $t(genMode === 'book' ? 'continue.modeBookHint' : 'continue.modeChapterHint') }}</div>
  <div class="word-count-input" style="margin-top:12px;">
- <input v-model.number="targetWordCount" class="input" type="number" :min="genMode === 'chapter' ? 500 : 1000" :max="genMode === 'chapter' ? 8000 : 1000000" step="500" />
+ <input v-model.number="targetWordCount" class="input" :disabled="isGenerating" type="number" :min="genMode === 'chapter' ? 500 : 1000" :max="genMode === 'chapter' ? 8000 : 1000000" step="500" />
  <span class="unit">{{ $t('generate.wordShort') }}</span>
  </div>
  <div class="word-count-presets">
- <span v-for="p in activePresets" :key="p.value" class="preset-btn" :class="{ active: targetWordCount === p.value }" @click="targetWordCount = p.value">{{ p.label }}</span>
+ <span v-for="p in activePresets" :key="p.value" class="preset-btn" :class="{ active: targetWordCount === p.value, locked: isGenerating }" @click="!isGenerating && (targetWordCount = p.value)">{{ p.label }}</span>
  </div>
  </div>
 
  <div class="card action-card">
- <button v-if="!isGenerating" class="btn btn-primary btn-block btn-generate" :disabled="importedText.length < 50" @click="startContinue">
+ <button v-if="!isGenerating" class="btn btn-primary btn-block btn-generate" :disabled="importedText.length < 50 || stopping" @click="startContinue">
  {{ $t('continue.btnWrite') }}
  </button>
  <div v-else class="generating-status">
  <div class="generating-indicator"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="indicator-text">{{ $t('continue.btnWriting') }}</span></div>
  <div class="word-count-progress">{{ $t('bookshelf.generated', { words: wordCount }) }}</div>
- <button class="btn btn-outline btn-sm" @click="stopContinue">⏸ {{ $t('bookshelf.pause') }}</button>
+ <button class="btn btn-outline btn-sm" :disabled="stopping" :aria-busy="stopping" @click="stopContinue">{{ stopping ? $t('common.loading') : `⏸ ${$t('bookshelf.pause')}` }}</button>
  </div>
  </div>
 
@@ -118,6 +118,7 @@ const continueNovelId = ref('')
 const genMode = ref('book')
 const targetWordCount = ref(30000)
 const isGenerating = ref(false)
+const stopping = ref(false)
 const generationDone = ref(false)
 const wordCount = ref(0)
 const continueStatus = ref('')
@@ -178,7 +179,7 @@ function isTokenExhaustedError(message) {
 }
 
 async function startContinue() {
- if (importedText.value.length < 50) return
+ if (importedText.value.length < 50 || isGenerating.value || stopping.value) return
  isGenerating.value = true; generationDone.value = false; wordCount.value = 0; novelStore.streamingText = ''
  try {
  if (continueNovelId.value) {
@@ -214,17 +215,20 @@ async function startContinue() {
 }
 
 async function stopContinue() {
- novelStore.stopGeneration()
- isGenerating.value = false
- continueStatus.value = '已暂停'
- if (continueNovelId.value) {
- try { await novelStore.pauseNovel(continueNovelId.value) } catch {}
- }
+ if (stopping.value) return
+ stopping.value = true
+ try {
+  if (continueNovelId.value) await novelStore.pauseNovel(continueNovelId.value)
+  novelStore.stopGeneration()
+  isGenerating.value = false
+  continueStatus.value = '已暂停'
+ } finally { stopping.value = false }
 }
 function goToBookshelf() { router.push('/bookshelf') }
 </script>
 
 <style scoped>
+.locked { opacity:0.55; pointer-events:none; cursor:not-allowed; }
 .continue-page { padding: 12px 0; }
 .section-title { font-size: 15px; font-weight: 600; margin-bottom: 12px; }
 .import-area .textarea { min-height: 140px; font-family: inherit; }

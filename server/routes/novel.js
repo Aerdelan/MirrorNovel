@@ -877,11 +877,13 @@ ${tmpl.dynamicPrompt}
     // 正文生成始终从同一份结构化创作状态开始，兼容旧作品的纯文本计划。
     if (chapterPlan) novel.chapterPlan = chapterPlan;
     let planData = prepareCreativeState(novel);
-    // 长篇计划的 JSON 可能因输出上限被截断；已有大纲时使用本地紧凑兜底计划，
-    // 不让整本生成因为“计划不可解析”停在 0 字。短篇仍保留严格校验，便于发现配置问题。
-    if (isBook && !planData.chapters.length && String(outline || '').trim() && targetWordCount >= 100000) {
+    // 章节计划的 JSON 可能为空、被截断或无法解析。只要用户已经确认了
+    // 故事蓝图，就可以像“继续生成”一样使用保守的本地执行计划，避免
+    // 首次生成在 0 字处直接暂停。没有蓝图的旧 API 调用仍保留严格校验。
+    const hasConfirmedBlueprint = storyBlueprint && typeof storyBlueprint === 'object' && Object.keys(storyBlueprint).length > 0;
+    if (isBook && !planData.chapters.length && String(outline || '').trim() && (targetWordCount >= 100000 || hasConfirmedBlueprint)) {
       planData = ensureExecutableChapterPlan(novel, targetWordCount);
-      res.write(`data: ${JSON.stringify({ type: 'status', message: `章节计划输出不完整，已根据大纲自动补全 ${planData.chapters.length} 章执行计划` })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: 'status', message: `章节计划输出不完整，已根据大纲自动补全 ${planData.chapters.length} 章执行计划，开始创作正文...` })}\n\n`);
       await novel.save();
     }
     await novel.save();

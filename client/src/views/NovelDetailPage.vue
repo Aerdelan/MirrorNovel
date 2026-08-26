@@ -73,7 +73,7 @@
  </div>
  <div class="gf-acts">
  <button class="btn btn-outline" @click="showGenSettings=false">{{ $t('common.cancel') }}</button>
- <button class="btn btn-primary" @click="confirmGenSettings">开始生成</button>
+ <button class="btn btn-primary" :disabled="isContinuing" :aria-busy="isContinuing" @click="confirmGenSettings">{{ isContinuing ? '正在启动...' : '开始生成' }}</button>
  </div>
  </div>
  </div>
@@ -86,7 +86,7 @@
  <textarea v-model="editContent" class="textarea" rows="12"></textarea>
  <div class="gf-acts">
  <button class="btn btn-outline" @click="showEditModal=false">{{ $t('common.cancel') }}</button>
- <button class="btn btn-primary" @click="saveEdit">{{ $t('common.save') }}</button>
+ <button class="btn btn-primary" :disabled="savingEdit || !editContent.trim()" :aria-busy="savingEdit" @click="saveEdit">{{ savingEdit ? $t('common.loading') : $t('common.save') }}</button>
  </div>
  </div>
  </div>
@@ -144,11 +144,11 @@
  <div v-show="expandedChapter===index" class="chapter-body">
  <div class="chapter-content">{{ chapter.content||'内容生成中...' }}</div>
  <div class="chapter-actions">
- <button class="btn-ch action-edit" @click="openEdit(chapter)">{{ $t('novelDetail.btnEdit') }}</button>
- <button class="btn-ch action-del" @click="confirmDeleteChapter(chapter)"> {{ $t('common.delete') }}</button>
- <button class="btn-ch action-deslop" @click="deslopChapter(chapter)"> 去AI味</button>
- <button class="btn-ch action-keywords" @click="generateKeywords(chapter)"> 总结关键字</button>
- <button v-if="isLastUnfinished(index)" class="btn-ch action-gen" @click="openGenSettings(chapter.chapterNumber)">{{ $t('novelDetail.btnContinue') }}</button>
+ <button class="btn-ch action-edit" :disabled="chapterActionBusy || isContinuing" @click="openEdit(chapter)">{{ $t('novelDetail.btnEdit') }}</button>
+ <button class="btn-ch action-del" :disabled="chapterActionBusy || isContinuing" @click="confirmDeleteChapter(chapter)"> {{ chapterActionBusy === `delete:${chapter.chapterNumber}` ? $t('common.loading') : $t('common.delete') }}</button>
+ <button class="btn-ch action-deslop" :disabled="chapterActionBusy || isContinuing" @click="deslopChapter(chapter)"> {{ chapterActionBusy === `deslop:${chapter.chapterNumber}` ? $t('common.loading') : '去AI味' }}</button>
+ <button class="btn-ch action-keywords" :disabled="chapterActionBusy || isContinuing" @click="generateKeywords(chapter)"> {{ chapterActionBusy === `keywords:${chapter.chapterNumber}` ? '分析中...' : '总结关键字' }}</button>
+ <button v-if="isLastUnfinished(index)" class="btn-ch action-gen" :disabled="chapterActionBusy || isContinuing" @click="openGenSettings(chapter.chapterNumber)">{{ $t('novelDetail.btnContinue') }}</button>
  </div>
  </div>
  </div>
@@ -206,6 +206,8 @@ const genTargetChapter = ref(0)
 const showEditModal = ref(false)
 const editingChapter = ref(null)
 const editContent = ref('')
+const savingEdit = ref(false)
+const chapterActionBusy = ref('')
 
 const statusMap = { generating: $t('novelDetail.generating'), paused: $t('novelDetail.paused'), completed: $t('novelDetail.completed'), error: $t('bookshelf.statusError') }
 
@@ -275,7 +277,7 @@ onUnmounted(() => {
 watch(chapterStreamingText, async () => { await nextTick(); if (streamingRef.value) streamingRef.value.scrollTop = streamingRef.value.scrollHeight })
 
 function toggleChapter(idx) { expandedChapter.value = expandedChapter.value === idx ? null : idx }
-function openGenSettings(chapterNum) { genTargetChapter.value = chapterNum; genWordCount.value = 2000; genNotes.value = ''; showGenSettings.value = true }
+function openGenSettings(chapterNum) { if (!isContinuing.value && !chapterActionBusy.value) { genTargetChapter.value = chapterNum; genWordCount.value = 2000; genNotes.value = ''; showGenSettings.value = true } }
 
 async function loadBlueprint() {
  blueprintLoading.value = true
@@ -337,7 +339,7 @@ async function decideBlueprint(decision) {
   blueprintError.value = e.response?.data?.message || '处理剧情提案失败'
  } finally { blueprintDecisionBusy.value = false }
 }
-async function confirmGenSettings() { showGenSettings.value = false; await startChapterGen(genTargetChapter.value, genWordCount.value, genNotes.value) }
+async function confirmGenSettings() { if (isContinuing.value) return; showGenSettings.value = false; await startChapterGen(genTargetChapter.value, genWordCount.value, genNotes.value) }
 
 async function startChapterGen(chapterNum, wc, notes) {
  isContinuing.value = true; continuingChapter.value = chapterNum; chapterStreamingText.value = ''; chapterThinkingLen.value = 0
@@ -368,34 +370,41 @@ async function startChapterGen(chapterNum, wc, notes) {
 }
 function stopChapterGen() { if (window.__chapterGenXHR) { window.__chapterGenXHR.abort(); window.__chapterGenXHR = null }; isContinuing.value = false }
 
-function openEdit(chapter) { editingChapter.value = chapter; editContent.value = chapter.content || ''; showEditModal.value = true }
+function openEdit(chapter) { if (!chapterActionBusy.value && !isContinuing.value) { editingChapter.value = chapter; editContent.value = chapter.content || ''; showEditModal.value = true } }
 async function saveEdit() {
- try { await api.put(`/novel/${route.params.id}/chapter/${editingChapter.value.chapterNumber}`, { content: editContent.value }); showEditModal.value = false; refreshNovel() }
+ if (savingEdit.value || !editingChapter.value || !editContent.value.trim()) return
+ savingEdit.value = true
+ try { await api.put(`/novel/${route.params.id}/chapter/${editingChapter.value.chapterNumber}`, { content: editContent.value }); showEditModal.value = false; await refreshNovel() }
  catch (e) { alert('保存失败:'+(e.response?.data?.message||e.message)) }
+ finally { savingEdit.value = false }
 }
 
 async function confirmDeleteChapter(ch) {
  if (!confirm(`确定删除第${ch.chapterNumber}章吗？`)) return
+ chapterActionBusy.value = `delete:${ch.chapterNumber}`
  try {
  await api.delete(`/novel/${route.params.id}/chapter/${ch.chapterNumber}`)
- refreshNovel()
+ await refreshNovel()
  } catch (e) {
  alert('删除失败: ' + (e.response?.data?.message || e.message))
- }
+ } finally { chapterActionBusy.value = '' }
 }
 
 async function deslopChapter(chapter) {
  if (!confirm(`对第${chapter.chapterNumber}章进行去AI味处理？`)) return
+ chapterActionBusy.value = `deslop:${chapter.chapterNumber}`
  try {
  const res = await api.post('/novel/deslop', { text: chapter.content || '', novelId: route.params.id })
- if (res.data.processed) { await api.put(`/novel/${route.params.id}/chapter/${chapter.chapterNumber}`, { content: res.data.processed, source: 'deslop' }); refreshNovel(); alert(' 去AI味完成，后续续写上下文已同步！') }
+ if (res.data.processed) { await api.put(`/novel/${route.params.id}/chapter/${chapter.chapterNumber}`, { content: res.data.processed, source: 'deslop' }); await refreshNovel(); alert(' 去AI味完成，后续续写上下文已同步！') }
  } catch (e) { alert('处理失败:'+(e.response?.data?.message||e.message)) }
+ finally { chapterActionBusy.value = '' }
 }
 
 async function generateKeywords(chapter) {
  keywordsChapterNum.value = chapter.chapterNumber
  keywordsData.value = { characterKeywords: '', sceneKeywords: '' }
  kwError.value = ''
+ chapterActionBusy.value = `keywords:${chapter.chapterNumber}`
  kwLoading.value = true
  showKeywordsDialog.value = true
  try {
@@ -405,6 +414,7 @@ async function generateKeywords(chapter) {
  kwError.value = e.response?.data?.message || e.message || '关键字生成失败'
  } finally {
  kwLoading.value = false
+ chapterActionBusy.value = ''
  }
 }
 

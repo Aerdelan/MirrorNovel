@@ -16,18 +16,18 @@
  <div class="card auth-card">
  <div class="form-group">
  <label class="label">{{ $t('auth.email') }}</label>
- <input v-model="email" class="input" type="email" :placeholder="$t('auth.placeholderEmail')" />
+ <input v-model.trim="email" class="input" type="email" autocomplete="email" :disabled="loading" :placeholder="$t('auth.placeholderEmail')" />
  </div>
  <div class="form-group" style="margin-top: 16px;">
  <label class="label">{{ $t('auth.password') }}</label>
- <input v-model="password" class="input" type="password" :placeholder="$t('auth.placeholderPwd')" @keyup.enter="handleLogin" />
+ <input v-model="password" class="input" type="password" autocomplete="current-password" :disabled="loading" :placeholder="$t('auth.placeholderPwd')" @keyup.enter="handleLogin" />
  </div>
 
  <div v-if="errorMsg" class="error-msg">{{ errorMsg }}</div>
 
- <button class="btn btn-primary btn-block btn-lg" style="margin-top: 20px;" @click="handleLogin" :disabled="loading">
+ <button class="btn btn-primary btn-block btn-lg" style="margin-top: 20px;" @click="handleLogin" :disabled="!canLogin" :aria-busy="loading">
  <span v-if="loading" class="spinner"></span>
- <span v-else>{{ $t('auth.login') }}</span>
+ <span>{{ loading ? $t('common.loading') : $t('auth.login') }}</span>
  </button>
 
  <div class="auth-footer">
@@ -48,7 +48,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useI18n } from '../composables/useI18n'
@@ -62,6 +62,7 @@ const email = ref('')
 const password = ref('')
 const errorMsg = ref('')
 const loading = ref(false)
+const canLogin = computed(() => !loading.value && Boolean(email.value.trim() && password.value))
 
 async function handleLogin() {
  if (!email.value || !password.value) {
@@ -76,8 +77,7 @@ async function handleLogin() {
  router.push(redirect)
  } catch (e) {
  errorMsg.value = e.response?.data?.message || $t('auth.loginFail')
- }
- loading.value = false
+ } finally { loading.value = false }
 }
 </script>
 

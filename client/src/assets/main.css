@@ -163,8 +163,16 @@ h3 { font-size: 16px; }
   text-decoration: none;
   white-space: nowrap;
 }
-.btn:active { transform: scale(0.97); }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+.btn:active:not(:disabled) { transform: scale(0.97); }
+.btn:disabled, button:disabled, [role="button"][aria-disabled="true"] {
+  opacity: 0.55;
+  cursor: not-allowed;
+  pointer-events: none;
+  transform: none;
+}
+.btn[aria-busy="true"] { cursor: progress; }
+.btn .spinner { width: 14px; height: 14px; border-color: rgba(255,255,255,0.42); border-top-color: currentColor; }
+input:disabled, textarea:disabled, select:disabled { background: var(--bg-alt); color: var(--text-tertiary); cursor: not-allowed; }
 
 .btn-primary {
   background: var(--primary);

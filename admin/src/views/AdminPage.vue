@@ -10,7 +10,7 @@
   <section v-else-if="activeTab === 'users'">
    <input v-model="keyword" class="input" placeholder="搜索邮箱或昵称" @input="loadUsers" />
    <div class="table-wrap"><table><thead><tr><th>邮箱</th><th>昵称</th><th>角色</th><th>状态</th><th>操作</th></tr></thead><tbody>
-    <tr v-for="user in users" :key="user._id"><td>{{ user.email }}</td><td>{{ user.nickname }}</td><td>{{ user.role }}</td><td>{{ user.disabled ? '禁用' : '正常' }}</td><td><button @click="toggleUser(user)">{{ user.disabled ? '启用' : '禁用' }}</button></td></tr>
+    <tr v-for="user in users" :key="user._id"><td>{{ user.email }}</td><td>{{ user.nickname }}</td><td>{{ user.role }}</td><td>{{ user.disabled ? '禁用' : '正常' }}</td><td><button :disabled="updatingUserId === user._id" @click="toggleUser(user)">{{ updatingUserId === user._id ? '处理中...' : (user.disabled ? '启用' : '禁用') }}</button></td></tr>
    </tbody></table></div>
   </section>
 
@@ -18,9 +18,9 @@
    <div class="section-head"><h2>模型线路</h2><button :disabled="saving" @click="saveModels">{{ saving ? '保存中...' : '保存配置' }}</button></div>
    <div v-for="route in routes" :key="route.id" class="route-row">
     <h3>{{ route.alias }}</h3>
-    <label>接口地址<input v-model.trim="route.baseUrl" class="input" /></label>
-    <label>模型名称<input v-model.trim="route.model" class="input" /></label>
-    <label>API Key<input v-model.trim="route.apiKey" class="input" :placeholder="route.apiKeyConfigured ? '已配置，留空则保持不变' : '请输入 API Key'" /></label>
+    <label>接口地址<input v-model.trim="route.baseUrl" :disabled="saving" class="input" /></label>
+    <label>模型名称<input v-model.trim="route.model" :disabled="saving" class="input" /></label>
+    <label>API Key<input v-model.trim="route.apiKey" :disabled="saving" class="input" :placeholder="route.apiKeyConfigured ? '已配置，留空则保持不变' : '请输入 API Key'" /></label>
    </div>
    <p v-if="message" :class="{ error: errorMessage }">{{ message }}</p>
   </section>
@@ -42,13 +42,19 @@ const users = ref([])
 const keyword = ref('')
 const routes = ref([])
 const saving = ref(false)
+const updatingUserId = ref('')
 const message = ref('')
 const errorMessage = ref(false)
 
 async function loadDashboard() { dashboard.value = (await api.get('/admin/dashboard')).data }
 async function loadUsers() { users.value = (await api.get('/admin/users', { params: { keyword: keyword.value } })).data.users || [] }
 async function loadModels() { routes.value = (await api.get('/admin/models')).data.routes || [] }
-async function toggleUser(user) { await api.put(`/admin/users/${user._id}`, { disabled: !user.disabled }); await loadUsers() }
+async function toggleUser(user) {
+ if (updatingUserId.value) return
+ updatingUserId.value = user._id
+ try { await api.put(`/admin/users/${user._id}`, { disabled: !user.disabled }); await loadUsers() }
+ finally { updatingUserId.value = '' }
+}
 async function saveModels() {
  saving.value = true; message.value = ''
  try { const response = await api.put('/admin/models', { routes: routes.value }); routes.value = response.data.routes || routes.value; message.value = response.data.message; errorMessage.value = false }
@@ -69,6 +75,6 @@ onMounted(loadCurrent)
 .card,.route-row { background:#fff; border:1px solid #dce3df; padding:18px; border-radius:6px; }
 .card strong { display:block; font-size:28px; }.card span { color:#66736c; font-size:13px; }
 .table-wrap { overflow:auto; margin-top:14px; background:#fff; border:1px solid #dce3df; }.table-wrap table { width:100%; border-collapse:collapse; }.table-wrap th,.table-wrap td { padding:10px; border-bottom:1px solid #edf0ee; text-align:left; }
-.section-head { display:flex; justify-content:space-between; align-items:center; }.route-row { margin-top:12px; }.route-row h3 { margin:0 0 12px; }.route-row label { display:block; margin-top:10px; font-size:13px; }.input { display:block; width:100%; box-sizing:border-box; margin-top:5px; padding:8px; border:1px solid #bcc9c1; border-radius:4px; } button { padding:8px 12px; border:1px solid #63836f; border-radius:4px; background:#fff; cursor:pointer; }.error { color:#b42318; }.empty { color:#66736c; }
+.section-head { display:flex; justify-content:space-between; align-items:center; }.route-row { margin-top:12px; }.route-row h3 { margin:0 0 12px; }.route-row label { display:block; margin-top:10px; font-size:13px; }.input { display:block; width:100%; box-sizing:border-box; margin-top:5px; padding:8px; border:1px solid #bcc9c1; border-radius:4px; } button { padding:8px 12px; border:1px solid #63836f; border-radius:4px; background:#fff; cursor:pointer; } button:disabled, .input:disabled { opacity:0.55; cursor:not-allowed; }.error { color:#b42318; }.empty { color:#66736c; }
 @media (max-width:760px) { .grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 </style>

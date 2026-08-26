@@ -2,8 +2,8 @@
  <div class="page-container generate-page">
  <!-- Tab 切换 -->
  <div class="tabs">
- <button class="tab" :class="{ active: activeTab === 'generate' }" @click="activeTab='generate'">{{ $t('generate.tabGen') }}</button>
- <button class="tab" :class="{ active: activeTab === 'lightnovel' }" @click="activeTab='lightnovel'">{{ $t('generate.tabLN') }}</button>
+ <button class="tab" :class="{ active: activeTab === 'generate' }" :disabled="generationBusy || lnGenerating" @click="activeTab='generate'">{{ $t('generate.tabGen') }}</button>
+ <button class="tab" :class="{ active: activeTab === 'lightnovel' }" :disabled="generationBusy || lnGenerating" @click="activeTab='lightnovel'">{{ $t('generate.tabLN') }}</button>
  </div>
 
  <!-- ==================== 生成 Tab ==================== -->
@@ -11,11 +11,11 @@
  <div class="card">
  <div class="section-title">① {{ $t('generate.stepType') }}</div>
  <div class="gender-tabs">
- <button :class="{ active: gender === 'male' }" @click="gender='male'">{{ $t('generate.maleFreq') }}</button>
- <button :class="{ active: gender === 'female' }" @click="gender='female'">{{ $t('generate.femaleFreq') }}</button>
+ <button :class="{ active: gender === 'male' }" :disabled="generationBusy" @click="gender='male'">{{ $t('generate.maleFreq') }}</button>
+ <button :class="{ active: gender === 'female' }" :disabled="generationBusy" @click="gender='female'">{{ $t('generate.femaleFreq') }}</button>
  </div>
  <div class="type-grid">
- <div v-for="cat in currentCats" :key="cat.name" class="type-card" :class="{ selected: selectedType === cat.name }" @click="selectedType = cat.name">
+ <div v-for="cat in currentCats" :key="cat.name" class="type-card" :class="{ selected: selectedType === cat.name, locked: generationBusy }" @click="!generationBusy && (selectedType = cat.name)">
  <span class="type-icon">{{ cat.icon }}</span>
  <span class="type-name">{{ $tn(cat.name) }}</span>
  </div>
@@ -32,7 +32,7 @@
    :key="p._id"
    class="persona-card"
    :class="{ selected: selectedPersonaId === p._id, disabled: personaApplicable(p) === false }"
-   @click="selectPersona(p)"
+   @click="!generationBusy && selectPersona(p)"
  >
    <div class="persona-card-head">
      <span class="persona-name">{{ p.name }}</span>
@@ -41,7 +41,7 @@
    </div>
    <div class="persona-card-desc">{{ p.description || p.voice?.slice(0, 40) }}</div>
  </div>
- <div class="persona-card persona-add" @click="showPersonaModal = true">
+ <div class="persona-card persona-add" :class="{ locked: generationBusy }" @click="!generationBusy && (showPersonaModal = true)">
    <span class="persona-add-icon">＋</span>
    <span class="persona-add-text">{{ $t('generate.personaManage') }}</span>
  </div>
@@ -55,12 +55,12 @@
 
 <div class="card">
 <div class="section-title">③ {{ $t('generate.stepChar') }}</div>
-<input v-model="protagonistName" class="input" :placeholder="$t('generate.placeholderName')" maxlength="20" />
+<input v-model="protagonistName" class="input" :disabled="generationBusy" :placeholder="$t('generate.placeholderName')" maxlength="20" />
 </div>
 
 <div class="card">
 <div class="section-title">④ {{ $t('generate.stepWorld') }}</div>
- <textarea v-model="worldSetting" class="textarea" :placeholder="$t('generate.placeholderWorld')" rows="4" @input="debounceMatchTemplates"></textarea>
+ <textarea v-model="worldSetting" class="textarea" :disabled="generationBusy" :placeholder="$t('generate.placeholderWorld')" rows="4" @input="debounceMatchTemplates"></textarea>
  <!-- 类型模板匹配提示 -->
  <div v-if="matchedTemplates.length > 0" class="tmpl-match-card">
  <div class="tmpl-match-title">{{ $t('generate.tmplMatched') }}</div>
@@ -83,19 +83,19 @@
  </div>
  <div class="outline-preview">{{ generatedOutline || outline }}</div>
  </div>
- <textarea v-model="outline" class="textarea" rows="4" :placeholder="$t('generate.placeholderOutline')"></textarea>
+ <textarea v-model="outline" class="textarea" :disabled="generationBusy || blueprintGenerating" rows="4" :placeholder="$t('generate.placeholderOutline')"></textarea>
  </div>
 
  <div v-if="genMode === 'book'" class="card blueprint-setup-card">
   <div class="section-title"> 初始故事蓝图</div>
   <div class="blueprint-setup-desc">在开始整本生成前，先把主线阶段、人物支线和可能的反转确认下来。AI 只会提出方案，确认后才用于正文。</div>
   <div class="blueprint-setup-actions">
-   <button class="btn btn-secondary btn-sm" :disabled="blueprintGenerating || !outline.trim()" @click="generateInitialBlueprint">{{ blueprintGenerating ? ' 正在规划蓝图...' : (initialBlueprint ? ' 重新生成蓝图' : ' 生成初始蓝图') }}</button>
+   <button class="btn btn-secondary btn-sm" :disabled="generating || blueprintGenerating || !outline.trim()" :aria-busy="blueprintGenerating" @click="generateInitialBlueprint">{{ blueprintGenerating ? ' 正在规划蓝图...' : (initialBlueprint ? ' 重新生成蓝图' : ' 生成初始蓝图') }}</button>
    <span v-if="initialBlueprintConfirmed" class="blueprint-confirmed"> 已确认，将用于本次生成</span>
   </div>
-  <textarea v-if="initialBlueprintJson" v-model="initialBlueprintJson" class="textarea blueprint-json-editor" rows="10" placeholder="蓝图 JSON"></textarea>
+  <textarea v-if="initialBlueprintJson" v-model="initialBlueprintJson" :disabled="generating || blueprintGenerating" class="textarea blueprint-json-editor" rows="10" placeholder="蓝图 JSON"></textarea>
   <div v-if="initialBlueprintJson && !initialBlueprintConfirmed" class="blueprint-setup-actions">
-   <button class="btn btn-primary btn-sm" @click="confirmInitialBlueprint">确认蓝图并继续</button>
+   <button class="btn btn-primary btn-sm" :disabled="generating || blueprintGenerating" @click="confirmInitialBlueprint">确认蓝图并继续</button>
    <span class="blueprint-setup-hint">可直接编辑上方 JSON 后确认</span>
   </div>
   <div v-if="blueprintWarning" class="blueprint-setup-hint">{{ blueprintWarning }}</div>
@@ -106,31 +106,31 @@
  <div class="section-title">⑤ {{ $t('generate.stepMode') }}</div>
  <div class="mode-radio-group">
  <label class="mode-radio" :class="{ active: genMode === 'book' }">
- <input type="radio" v-model="genMode" value="book" />
+ <input type="radio" v-model="genMode" :disabled="generationBusy" value="book" />
  <!-- <span class="mode-icon"></span> -->
  <span class="mode-label">{{ $t('generate.modeBook') }}</span>
  </label>
  <label class="mode-radio" :class="{ active: genMode === 'chapter' }">
- <input type="radio" v-model="genMode" value="chapter" />
+ <input type="radio" v-model="genMode" :disabled="generationBusy" value="chapter" />
  <!-- <span class="mode-icon"></span> -->
  <span class="mode-label">{{ $t('generate.modeChapter') }}</span>
  </label>
  </div>
  <div class="word-count-input" style="margin-top:12px;">
- <input v-model.number="targetWordCount" class="input" type="number" :min="genMode==='chapter'?500:1000" :max="genMode==='chapter'?20000:10000000" step="500" />
+ <input v-model.number="targetWordCount" class="input" :disabled="generationBusy" type="number" :min="genMode==='chapter'?500:1000" :max="genMode==='chapter'?20000:10000000" step="500" />
  <span class="unit">{{ $t('generate.wordShort') }}</span>
  </div>
  <div class="word-count-presets">
- <span v-for="p in activePresets" :key="p.value" class="preset-btn" :class="{ active: targetWordCount === p.value }" @click="targetWordCount = p.value">{{ p.label }}</span>
+ <span v-for="p in activePresets" :key="p.value" class="preset-btn" :class="{ active: targetWordCount === p.value, locked: generationBusy }" @click="!generationBusy && (targetWordCount = p.value)">{{ p.label }}</span>
  </div>
  <label class="expert-mode-toggle">
- <input type="checkbox" v-model="expertMode" />
+ <input type="checkbox" v-model="expertMode" :disabled="generationBusy" />
  <span><strong>{{ $t('generate.expertMode') }}</strong><small>{{ $t('generate.expertModeDesc') }}</small></span>
  </label>
  </div>
 
- <button class="btn btn-primary btn-block btn-lg" :disabled="generating || !selectedType" @click="startGen">
- {{ generating ? $t('generate.btnGenerating') : $t('generate.btnGenerate') }}
+ <button class="btn btn-primary btn-block btn-lg" :disabled="generationBusy || blueprintGenerating || !selectedType" :aria-busy="generationBusy" @click="startGen">
+ {{ generationBusy ? $t('generate.btnGenerating') : $t('generate.btnGenerate') }}
  </button>
 
  <div v-if="generating && outlineStreamingText" class="card outline-stream-card">
@@ -508,6 +508,8 @@ async function aiGeneratePersona() {
 }
 
 const generating = ref(false)
+const preparingGeneration = ref(false)
+const generationBusy = computed(() => generating.value || preparingGeneration.value)
 const genStatus = ref('')
 const genOk = ref(false)
 const streamingText = ref('')
@@ -672,21 +674,24 @@ const activePresets = computed(() => {
 })
 
 async function startGen() {
- if (!selectedType.value) return alert('请选择小说类型')
+ if (!selectedType.value || generationBusy.value) return
+ preparingGeneration.value = true
 
  // 如果没有填写大纲且是整本模式，先生成大纲让用户确认
  if (!outline.value.trim() && genMode.value === 'book') {
  const confirmedOutline = await showOutlineModal(selectedType.value, protagonistName.value, worldSetting.value, targetWordCount.value)
- if (!confirmedOutline) return // 用户取消或生成失败
+ if (!confirmedOutline) { preparingGeneration.value = false; return }
  outline.value = confirmedOutline
  }
 
  if (genMode.value === 'book' && !initialBlueprintConfirmed.value) {
   if (!initialBlueprintJson.value) await generateInitialBlueprint()
   genStatus.value = blueprintSetupError.value || '请确认初始故事蓝图后再开始生成'
+  preparingGeneration.value = false
   return
  }
 
+ preparingGeneration.value = false
  generating.value = true; genStatus.value = ''; genOk.value = false
  streamingText.value = ''; outlineStreamingText.value = ''
  rawStreamingText.value = ''
@@ -837,13 +842,11 @@ async function applyGeneratedResult(kind) {
 async function startEditorial() {
  if (!streamingText.value || streamingText.value.length < 100) return
 
- // Token 消耗估算
  const textLen = streamingText.value.length
  // 选择小说模板时，编辑引擎会沿用该模板；未选择时才生成本地人格。
  // 3 次 LLM 调用：每阶段输入~textLen*1.5 + 系统提示~500 + 输出~textLen*1.5 ≈ textLen*3 + 500
  // 总计 ≈ textLen*9 + 1500，保守取 1.3 倍系数
- const estTokens = Math.round((textLen * 9 + 1500) * 1.3)
- const estTimeMin = Math.max(1, Math.round(estTokens / 3000))
+ const estTimeMin = Math.max(1, Math.round((textLen * 9 + 1500) * 1.3 / 3000))
 
  if (!confirm(
  `确认执行编辑引擎？\n\n` +
@@ -853,7 +856,6 @@ async function startEditorial() {
  `  ① 结构重构（压缩+节奏+人物）\n` +
  `  ② 风格一致性（润色+一致性检查）\n` +
  `  ③ 去AI化（最终，注入人类特征）\n\n` +
- `VIP/SVIP 线路按实际输入、输出成本与倍率结算\n` +
  `预计耗时：约 ${estTimeMin} 分钟\n\n` +
  `去AI化放在最后一步，\n` +
  `避免后续润色重新引入AI特征。\n` +
@@ -1096,6 +1098,7 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.locked { opacity: 0.55; pointer-events: none; cursor: not-allowed; }
 .generate-page {
  padding-top: var(--header-height);
 }

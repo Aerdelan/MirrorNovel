@@ -67,13 +67,13 @@
  <span> {{ formatTime(novel.updatedAt) }}</span>
  </div>
  <div class="novel-actions" @click.stop>
- <button v-if="novel.status === 'generating'" class="btn btn-sm btn-outline" @click="pauseNovel(novel)">{{ $t('bookshelf.pause') }}</button>
- <button v-if="novel.status === 'paused'" class="btn btn-sm btn-primary" @click="showContinueDialog(novel)">{{ $t('bookshelf.resume') }}</button>
- <button v-if="novel.status === 'completed' || novel.status === 'paused'" class="btn btn-sm btn-outline action-warm" @click="showContinueDialog(novel)">{{ $t('bookshelf.write') }}</button>
- <button class="btn btn-sm btn-outline action-info" @click.stop="editOutline(novel)">{{ $t('bookshelf.outline') }}</button>
- <button v-if="novel.status === 'completed' || novel.status === 'paused'" class="btn btn-sm btn-outline action-editorial" :disabled="editorialRunning" @click.stop="startEditorialBook(novel)">{{ editorialRunning ? $t('bookshelf.editorialRunning') : $t('bookshelf.editorial') }}</button>
- <button class="btn btn-sm btn-outline" style="color: var(--primary-color); border-color: var(--primary-color);" :disabled="exporting" @click="exportSingle(novel)">{{ $t('bookshelf.export') }}</button>
- <button class="btn btn-sm btn-outline" style="color: var(--error-color); border-color: var(--error-color);" @click="confirmDelete(novel)">{{ $t('common.delete') }}</button>
+ <button v-if="novel.status === 'generating'" class="btn btn-sm btn-outline" :disabled="isNovelActionBusy(novel, 'pause')" :aria-busy="isNovelActionBusy(novel, 'pause')" @click="pauseNovel(novel)">{{ isNovelActionBusy(novel, 'pause') ? $t('common.loading') : $t('bookshelf.pause') }}</button>
+ <button v-if="novel.status === 'paused'" class="btn btn-sm btn-primary" :disabled="isContinuing" @click="showContinueDialog(novel)">{{ $t('bookshelf.resume') }}</button>
+ <button v-if="novel.status === 'completed' || novel.status === 'paused'" class="btn btn-sm btn-outline action-warm" :disabled="isContinuing" @click="showContinueDialog(novel)">{{ $t('bookshelf.write') }}</button>
+ <button class="btn btn-sm btn-outline action-info" :disabled="isNovelActionBusy(novel, 'outline')" @click.stop="editOutline(novel)">{{ $t('bookshelf.outline') }}</button>
+ <button v-if="novel.status === 'completed' || novel.status === 'paused'" class="btn btn-sm btn-outline action-editorial" :disabled="editorialRunning || novelActionBusy" @click.stop="startEditorialBook(novel)">{{ editorialRunning ? $t('bookshelf.editorialRunning') : $t('bookshelf.editorial') }}</button>
+ <button class="btn btn-sm btn-outline" style="color: var(--primary-color); border-color: var(--primary-color);" :disabled="exporting || novelActionBusy" @click="exportSingle(novel)">{{ exporting ? $t('common.loading') : $t('bookshelf.export') }}</button>
+ <button class="btn btn-sm btn-outline" style="color: var(--error-color); border-color: var(--error-color);" :disabled="isNovelActionBusy(novel, 'delete')" :aria-busy="isNovelActionBusy(novel, 'delete')" @click="confirmDelete(novel)">{{ isNovelActionBusy(novel, 'delete') ? $t('common.loading') : $t('common.delete') }}</button>
  </div>
  </div>
  </div>
@@ -109,7 +109,7 @@
  <span class="option-desc">{{ $t('bookshelf.continueChapterDesc') }}</span>
  </button>
  </div>
- <button class="btn btn-outline btn-sm" style="margin-top:12px;" @click="continueDialogNovel=null">{{ $t('common.cancel') }}</button>
+ <button class="btn btn-outline btn-sm" style="margin-top:12px;" :disabled="isContinuing" @click="continueDialogNovel=null">{{ $t('common.cancel') }}</button>
  </div>
  </div>
  </Teleport>
@@ -173,6 +173,7 @@ const isContinuing = ref(false)
 const currentContinueChapter = ref(0)
 const continueWordCount = ref(0)
 const continueThinkingCount = ref(0)
+const novelActionBusy = ref('')
 
 // ---- 编辑引擎 ----
 const editorialRunning = ref(false)
@@ -224,7 +225,8 @@ function formatTime(dateStr) {
 }
 
 function openNovel(novel) { router.push(`/novel/${novel._id}`) }
-function showContinueDialog(novel) { continueDialogNovel.value = novel }
+function showContinueDialog(novel) { if (!isContinuing.value) continueDialogNovel.value = novel }
+function isNovelActionBusy(novel, action) { return novelActionBusy.value === `${action}:${novel._id}` }
 
 function isTokenExhaustedError(message) {
  if (!message) return false
@@ -254,6 +256,8 @@ async function startBookContinue(novel) {
 }
 
 async function startChapterContinue(novel) {
+ if (isContinuing.value) return
+ isContinuing.value = true
  continueDialogNovel.value = null
  try {
  const detail = await novelStore.fetchNovelDetail(novel._id)
@@ -261,6 +265,7 @@ async function startChapterContinue(novel) {
  novelStore.setPrefillContinue({ novelId: detail._id, importedText: fullText, title: detail.title, novelTypeName: detail.novelTypeName })
  router.push('/continue')
  } catch (e) { alert($t('error.unknown')) }
+ finally { isContinuing.value = false }
 }
 
 function goToGenerate() { router.push('/generate') }
@@ -270,26 +275,36 @@ function toggleSelect(id) { const idx = selectedIds.value.indexOf(id); idx > -1 
 function toggleSelectAll() { selectedIds.value = allSelected.value ? [] : novelStore.bookshelf.map(n => n._id) }
 
 function downloadZip(novelIds, filename) {
+ if (exporting.value) return
+ exporting.value = true
  const token = localStorage.getItem('token')
  window.open(`/api/novel/export?token=${encodeURIComponent(token)}&ids=${novelIds.join(',')}`, '_blank')
+ window.setTimeout(() => { exporting.value = false }, 700)
 }
 
 function exportSingle(novel) { downloadZip([novel._id], `${(novel.title || $t('bookshelf.defaultTitle')).replace(/[<>:"/\\|?*]/g, '_').substring(0, 30)}.zip`) }
 function exportSelected() { if (selectedIds.value.length) downloadZip(selectedIds.value, `批量导出_${selectedIds.value.length}本_${Date.now()}.zip`) }
 function exportAll() { const allIds = novelStore.bookshelf.map(n => n._id); downloadZip(allIds, `批量导出_全部${allIds.length}本_${Date.now()}.zip`) }
 
-async function pauseNovel(novel) { try { await novelStore.pauseNovel(novel._id); await novelStore.fetchBookshelf() } catch (e) { alert($t('bookshelf.pause') + '失败') } }
+async function pauseNovel(novel) {
+ if (novelActionBusy.value) return
+ novelActionBusy.value = `pause:${novel._id}`
+ try { await novelStore.pauseNovel(novel._id); await novelStore.fetchBookshelf() }
+ catch (e) { alert($t('bookshelf.pause') + '失败') }
+ finally { novelActionBusy.value = '' }
+}
 async function confirmDelete(novel) {
  if (!confirm($t('bookshelf.deleteConfirm', { title: novel.title }))) return
+ novelActionBusy.value = `delete:${novel._id}`
  try {
  await novelStore.deleteNovel(novel._id)
  await novelStore.fetchBookshelf()
  } catch (e) {
  alert('删除失败: ' + (e.response?.data?.message || e.message))
- }
+ } finally { novelActionBusy.value = '' }
 }
 
-function editOutline(novel) { outlineNovel.value = novel; outlineText.value = novel.outline || ''; outlineModal.value = true }
+function editOutline(novel) { if (!novelActionBusy.value) { outlineNovel.value = novel; outlineText.value = novel.outline || ''; outlineModal.value = true } }
 
 // ---- 编辑引擎 ----
 async function startEditorialBook(novel) {
@@ -353,10 +368,11 @@ function startEditorialPolling(novelId) {
  }, 5000)
 }
 async function saveOutline() {
+ if (outlineSaving.value || !outlineNovel.value) return
  outlineSaving.value = true
  try { await api.put(`/novel/${outlineNovel.value._id}/outline`, { outline: outlineText.value }); outlineNovel.value.outline = outlineText.value; outlineModal.value = false }
  catch (e) { alert($t('error.unknown') + ':' + (e.response?.data?.message || e.message)) }
- outlineSaving.value = false
+ finally { outlineSaving.value = false }
 }
 </script>
 

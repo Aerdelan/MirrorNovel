@@ -16,31 +16,31 @@
    <div class="card auth-card">
     <div class="form-group">
      <label class="label">{{ $t('auth.email') }}</label>
-     <input v-model.trim="email" class="input" type="email" autocomplete="email" :placeholder="$t('auth.placeholderEmail')" />
+     <input v-model.trim="email" class="input" type="email" autocomplete="email" :disabled="loading" :placeholder="$t('auth.placeholderEmail')" />
     </div>
     <div class="form-group code-group">
      <label class="label">{{ $t('auth.verifyCode') }}</label>
      <div class="code-row">
-      <input v-model.trim="code" class="input" inputmode="numeric" maxlength="6" :placeholder="$t('auth.placeholderCode')" />
-      <button class="btn btn-outline btn-sm code-btn" :disabled="sending || countdown > 0" @click="sendCode">
+      <input v-model.trim="code" class="input" inputmode="numeric" maxlength="6" :disabled="loading" :placeholder="$t('auth.placeholderCode')" />
+      <button class="btn btn-outline btn-sm code-btn" :disabled="!canSendCode" @click="sendCode">
        {{ countdown > 0 ? `${countdown}s` : (sending ? $t('auth.sending') : $t('auth.getCode')) }}
       </button>
      </div>
     </div>
     <div class="form-group">
      <label class="label">{{ $t('auth.newPassword') }}</label>
-     <input v-model="password" class="input" type="password" autocomplete="new-password" :placeholder="$t('auth.placeholderPwdConfirm')" />
+     <input v-model="password" class="input" type="password" autocomplete="new-password" :disabled="loading" :placeholder="$t('auth.placeholderPwdConfirm')" />
     </div>
     <div class="form-group">
      <label class="label">{{ $t('auth.confirmPassword') }}</label>
-     <input v-model="confirmPassword" class="input" type="password" autocomplete="new-password" :placeholder="$t('auth.placeholderPwdConfirm')" @keyup.enter="resetPassword" />
+     <input v-model="confirmPassword" class="input" type="password" autocomplete="new-password" :disabled="loading" :placeholder="$t('auth.placeholderPwdConfirm')" @keyup.enter="resetPassword" />
     </div>
 
     <div v-if="message" class="success-msg">{{ message }}</div>
     <div v-if="errorMsg" class="error-msg">{{ errorMsg }}</div>
-    <button class="btn btn-primary btn-block btn-lg" style="margin-top: 20px;" :disabled="loading" @click="resetPassword">
+    <button class="btn btn-primary btn-block btn-lg" style="margin-top: 20px;" :disabled="!canReset" :aria-busy="loading" @click="resetPassword">
      <span v-if="loading" class="spinner"></span>
-     <span v-else>{{ $t('auth.resetButton') }}</span>
+     <span>{{ loading ? $t('common.loading') : $t('auth.resetButton') }}</span>
     </button>
 
     <div class="back-link">
@@ -52,7 +52,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from '../composables/useI18n'
 import api from '../api'
@@ -68,6 +68,9 @@ const message = ref('')
 const loading = ref(false)
 const sending = ref(false)
 const countdown = ref(0)
+const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const canSendCode = computed(() => !loading.value && !sending.value && countdown.value === 0 && emailRegex.test(email.value))
+const canReset = computed(() => !loading.value && Boolean(email.value && code.value && password.value && confirmPassword.value))
 
 function startCountdown() {
  countdown.value = 60

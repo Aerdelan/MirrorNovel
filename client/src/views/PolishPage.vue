@@ -9,11 +9,11 @@
  <div class="section-title">① {{ $t('polish.stepInput') }}</div>
  <div class="mode-radio-group">
  <label class="mode-radio" :class="{ active: polishMode === 'text' }">
- <input type="radio" v-model="polishMode" value="text" />
+ <input type="radio" v-model="polishMode" :disabled="polishing" value="text" />
  <span>{{ $t('polish.modeText') }}</span>
  </label>
  <label class="mode-radio" :class="{ active: polishMode === 'file' }">
- <input type="radio" v-model="polishMode" value="file" />
+ <input type="radio" v-model="polishMode" :disabled="polishing" value="file" />
  <span>{{ $t('polish.modeFile') }}</span>
  </label>
  </div>
@@ -21,13 +21,13 @@
 
  <div v-if="polishMode === 'text'" class="card">
  <div class="section-title">② {{ $t('polish.stepText') }}</div>
- <textarea v-model="polishText" class="textarea" rows="8" :placeholder="$t('polish.placeholderText')"></textarea>
+ <textarea v-model="polishText" class="textarea" :disabled="polishing" rows="8" :placeholder="$t('polish.placeholderText')"></textarea>
  </div>
 
  <div v-if="polishMode === 'file'" class="card">
  <div class="section-title">② {{ $t('polish.stepFile') }}</div>
- <div class="upload-area" @click="$refs.polishFileInput.click()">
- <input ref="polishFileInput" type="file" accept=".txt" @change="handlePolishFile" style="display:none" />
+ <div class="upload-area" :class="{ disabled: polishing }" @click="!polishing && $refs.polishFileInput.click()">
+ <input ref="polishFileInput" type="file" accept=".txt" :disabled="polishing" @change="handlePolishFile" style="display:none" />
  <div v-if="!polishFileName" class="upload-placeholder">
  <div class="upload-icon"></div>
  <div>{{ $t('polish.modeFile') }}</div>
@@ -41,15 +41,15 @@
 
  <div class="card">
  <div class="section-title">③ {{ $t('polish.stepScheme') }}</div>
- <div class="polish-presets">
+ <div class="polish-presets" :class="{ disabled: polishing }">
  <span v-for="p in polishPresets" :key="p.label" class="preset-btn" :class="{ active: polishPrompt === p.prompt }" @click="polishPrompt = p.prompt">{{ p.label }}</span>
  </div>
- <textarea v-model="polishPrompt" class="textarea" rows="4" :placeholder="$t('polish.placeholderCustom')"></textarea>
+ <textarea v-model="polishPrompt" class="textarea" :disabled="polishing" rows="4" :placeholder="$t('polish.placeholderCustom')"></textarea>
  </div>
 
  <div class="card">
  <div class="section-title">④ {{ $t('polish.genreLabel') }}</div>
- <div class="polish-presets">
+ <div class="polish-presets" :class="{ disabled: polishing }">
  <span v-for="g in genreOptions" :key="g.value" class="preset-btn" :class="{ active: polishGenre === g.value }" @click="polishGenre = g.value">{{ g.label }}</span>
  </div>
  </div>
@@ -113,7 +113,7 @@
  <button class="format-btn" :class="{ active: exportFormat === 'epub' }" @click="exportFormat = 'epub'">{{ $t('polish.fmtEpub') }}</button>
  </div>
  </div>
- <button class="btn btn-success btn-block" @click="exportPolish" :disabled="exporting">{{ exporting ? '...' : $t('polish.exportBtn') }}</button>
+ <button class="btn btn-success btn-block" @click="exportPolish" :disabled="exporting" :aria-busy="exporting">{{ exporting ? $t('common.loading') : $t('polish.exportBtn') }}</button>
  </div>
 
  <div class="save-panel">
@@ -123,7 +123,7 @@
  <option value="">{{ $t('polish.saveSelectNovel') }}</option>
  <option v-for="n in bookshelf" :key="n._id" :value="n._id">{{ n.title }}（{{ n.currentWordCount || 0 }} 字）</option>
  </select>
- <button class="btn btn-primary btn-block" :disabled="!saveNovelId || saving" @click="saveToNovel">{{ saving ? '...' : $t('polish.saveBtn') }}</button>
+ <button class="btn btn-primary btn-block" :disabled="!saveNovelId || saving" :aria-busy="saving" @click="saveToNovel">{{ saving ? $t('common.loading') : $t('polish.saveBtn') }}</button>
  <div v-if="saveMessage" class="save-msg" :class="{ ok: saveOk }">{{ saveMessage }}</div>
  </div>
  </div>
@@ -318,12 +318,14 @@ function downloadPolish() {
 .mode-radio.active { border-color: var(--primary-color); background: var(--primary-light); }
 .upload-area { border: 2px dashed var(--border-color); border-radius: 12px; padding: 24px; text-align: center; cursor: pointer; transition: all 0.2s; background: var(--bg); }
 .upload-area:hover { border-color: var(--primary-color); background: var(--primary-light); }
+.upload-area.disabled { opacity: 0.55; cursor: not-allowed; pointer-events: none; }
 .upload-placeholder { color: var(--text-secondary); }
 .upload-icon { font-size: 36px; margin-bottom: 8px; }
 .upload-file-info { display: flex; align-items: center; gap: 8px; justify-content: center; }
 .file-icon { font-size: 24px; }
 .file-name { font-size: 14px; font-weight: 500; color: var(--text-primary); }
 .polish-presets { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+.polish-presets.disabled { opacity: 0.55; pointer-events: none; }
 .preset-btn { padding: 4px 12px; border: 1px solid var(--border-color); border-radius: 14px; font-size: 12px; cursor: pointer; transition: all 0.15s; color: var(--text-secondary); }
 .preset-btn.active { border-color: var(--primary-color); background: var(--primary-light); color: var(--primary-color); font-weight: 600; }
 .preset-btn:hover { border-color: var(--primary-color); }

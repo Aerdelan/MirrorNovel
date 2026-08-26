@@ -9,33 +9,33 @@
  <div class="card auth-form">
  <div class="form-group">
  <label>{{ $t('auth.email') }}</label>
- <input v-model="email" class="input" type="email" :placeholder="$t('auth.placeholderEmail')" />
+ <input v-model.trim="email" class="input" type="email" autocomplete="email" :disabled="loading" :placeholder="$t('auth.placeholderEmail')" />
  </div>
  <div class="form-group">
  <label>{{ $t('auth.nickname') }}（{{ $t('common.no') }}选）</label>
- <input v-model="nickname" class="input" :placeholder="$t('auth.placeholderNick')" maxlength="20" />
+ <input v-model.trim="nickname" class="input" :disabled="loading" :placeholder="$t('auth.placeholderNick')" maxlength="20" />
  </div>
  <div class="form-group">
  <label>{{ $t('auth.password') }}</label>
- <input v-model="password" class="input" type="password" :placeholder="$t('auth.placeholderPwdConfirm')" />
+ <input v-model="password" class="input" type="password" autocomplete="new-password" :disabled="loading" :placeholder="$t('auth.placeholderPwdConfirm')" />
  </div>
  <div class="form-group">
  <label>确认{{ $t('auth.password') }}</label>
- <input v-model="confirmPassword" class="input" type="password" placeholder="再次输入密码" />
+ <input v-model="confirmPassword" class="input" type="password" autocomplete="new-password" :disabled="loading" placeholder="再次输入密码" />
  </div>
  <div class="form-group">
  <label>{{ $t('auth.verifyCode') }}</label>
  <div class="code-row">
- <input v-model="code" class="input" :placeholder="$t('auth.placeholderCode')" maxlength="6" />
- <button class="btn btn-outline btn-sm code-btn" :disabled="codeSending || codeCountdown > 0" @click="sendCode">
+ <input v-model.trim="code" class="input" inputmode="numeric" :disabled="loading" :placeholder="$t('auth.placeholderCode')" maxlength="6" />
+ <button class="btn btn-outline btn-sm code-btn" :disabled="!canSendCode" @click="sendCode">
  {{ codeCountdown > 0 ? `${codeCountdown}s` : (codeSending ? $t('auth.sending') : $t('auth.getCode')) }}
  </button>
  </div>
  </div>
  <div v-if="errorMsg" class="error-msg">{{ errorMsg }}</div>
- <button class="btn btn-primary btn-block" @click="handleRegister" :disabled="loading">
+ <button class="btn btn-primary btn-block" @click="handleRegister" :disabled="!canRegister" :aria-busy="loading">
  <span v-if="loading" class="loading-spinner"></span>
- <span v-else>{{ $t('auth.register') }}</span>
+ <span>{{ loading ? $t('common.loading') : $t('auth.register') }}</span>
  </button>
  <div class="auth-footer">
  {{ $t('auth.hasAccount') }}<router-link to="/login">{{ $t('auth.login') }}</router-link>
@@ -46,7 +46,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useI18n } from '../composables/useI18n'
@@ -66,10 +66,12 @@ const errorMsg = ref('')
 const loading = ref(false)
 const codeSending = ref(false)
 const codeCountdown = ref(0)
+const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const canSendCode = computed(() => !loading.value && !codeSending.value && codeCountdown.value === 0 && emailRegex.test(email.value))
+const canRegister = computed(() => !loading.value && Boolean(email.value && password.value && confirmPassword.value && code.value))
 
 async function sendCode() {
  if (!email.value) { errorMsg.value = '请先输入邮箱'; return }
- const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
  if (!emailRegex.test(email.value)) { errorMsg.value = $t('auth.invalidEmail'); return }
  codeSending.value = true; errorMsg.value = ''
  try {
@@ -78,7 +80,7 @@ async function sendCode() {
  const timer = setInterval(() => { codeCountdown.value--; if (codeCountdown.value <= 0) clearInterval(timer) }, 1000)
  alert($t('auth.codeSent'))
  } catch (e) { errorMsg.value = e.response?.data?.message || $t('auth.codeFail') }
- codeSending.value = false
+ finally { codeSending.value = false }
 }
 
 async function handleRegister() {
@@ -88,7 +90,7 @@ async function handleRegister() {
  loading.value = true; errorMsg.value = ''
  try { await authStore.register(email.value, password.value, code.value, nickname.value, inviteCode.value || undefined); router.push('/generate') }
  catch (e) { errorMsg.value = e.response?.data?.message || $t('auth.registerFail') }
- loading.value = false
+ finally { loading.value = false }
 }
 
 onMounted(() => {

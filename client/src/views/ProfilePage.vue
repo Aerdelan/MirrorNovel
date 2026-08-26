@@ -44,7 +44,7 @@
  <div class="invite-code-row">
  <span class="invite-label">邀请码</span>
  <span class="invite-code" @click="copyInviteCode">{{ inviteInfo.inviteCode }}</span>
- <button class="btn btn-sm btn-outline" @click="copyInviteLink">复制链接</button>
+ <button class="btn btn-sm btn-outline" :disabled="copyingInvite" @click="copyInviteLink">{{ copyingInvite ? $t('common.loading') : '复制链接' }}</button>
  </div>
  <div class="invite-qr" v-if="inviteInfo.inviteLink">
  <img :src="'https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=' + encodeURIComponent(inviteInfo.inviteLink)" alt="QR" />
@@ -56,8 +56,8 @@
  <div class="card">
  <div class="section-title">{{ $t('profile.editNick') }}</div>
  <div class="nickname-edit">
- <input v-model="newNickname" class="input" :placeholder="$t('profile.placeholderNick')" maxlength="20" />
- <button class="btn btn-primary btn-sm" @click="updateNickname" :disabled="!newNickname.trim()">{{ $t('common.save') }}</button>
+ <input v-model.trim="newNickname" class="input" :disabled="savingNickname" :placeholder="$t('profile.placeholderNick')" maxlength="20" />
+ <button class="btn btn-primary btn-sm" @click="updateNickname" :disabled="!newNickname.trim() || savingNickname" :aria-busy="savingNickname">{{ savingNickname ? $t('common.loading') : $t('common.save') }}</button>
  </div>
  </div>
 
@@ -76,7 +76,7 @@
  <div class="config-desc">{{ $t('profile.aiConfigDesc') }}</div>
  <div class="form-group route-selector">
  <label for="generation-route">{{ $t('profile.routeSelect') }}</label>
- <select id="generation-route" v-model="modelConfig.routeId" class="input select-input">
+ <select id="generation-route" v-model="modelConfig.routeId" class="input select-input" :disabled="savingConfig">
  <option v-for="route in publicRoutes" :key="route.id" :value="route.id">
  {{ routeLabel(route.id) }}
  </option>
@@ -92,7 +92,7 @@
  <div class="config-desc role-routes-desc">{{ $t('profile.roleRoutesDesc') }}</div>
  <div v-for="role in modelRoles" :key="role.key" class="form-group role-route-row">
  <label :for="`role-route-${role.key}`">{{ $t(`profile.${role.labelKey}`) }}</label>
- <select :id="`role-route-${role.key}`" v-model="modelConfig.roleRoutes[role.key]" class="input select-input">
+ <select :id="`role-route-${role.key}`" v-model="modelConfig.roleRoutes[role.key]" class="input select-input" :disabled="savingConfig">
  <option value="">{{ $t('profile.lineFollowDefault') }}</option>
  <option v-for="route in publicRoutes" :key="route.id" :value="route.id">
  {{ routeLabel(route.id) }}
@@ -101,7 +101,7 @@
  </div>
  </details>
 
- <button class="btn btn-primary btn-block" style="margin-top:14px;" :disabled="savingConfig" @click="saveConfig">
+ <button class="btn btn-primary btn-block" style="margin-top:14px;" :disabled="savingConfig || !publicRoutes.length" :aria-busy="savingConfig" @click="saveConfig">
  {{ savingConfig ? $t('common.loading') : $t('profile.saveConfig') }}
  </button>
  <div v-if="configMsg" class="config-msg" :class="{ ok: configMsgOk }">{{ configMsg }}</div>
@@ -146,6 +146,8 @@ const modelRoles = [
 ]
 const modelConfig = ref({ routeId: 'normal_1', routeAlias: '', roleRoutes: {} })
 const savingConfig = ref(false)
+const savingNickname = ref(false)
+const copyingInvite = ref(false)
 const configMsg = ref('')
 const configMsgOk = ref(false)
 
@@ -193,13 +195,13 @@ async function loadInviteInfo() {
 function copyToClipboard(text, label) {
  // 优先使用 Clipboard API（HTTPS 环境）
  if (navigator.clipboard && navigator.clipboard.writeText) {
- navigator.clipboard.writeText(text).then(() => {
+ return navigator.clipboard.writeText(text).then(() => {
  alert(`${label}已复制`)
- }).catch(() => {
- fallbackCopy(text, label)
+}).catch(() => {
+ return fallbackCopy(text, label)
  })
  } else {
- fallbackCopy(text, label)
+ return fallbackCopy(text, label)
  }
 }
 
@@ -220,6 +222,7 @@ function fallbackCopy(text, label) {
  prompt('请手动复制以下内容：', text)
  }
  document.body.removeChild(ta)
+ return Promise.resolve()
 }
 
 function copyInviteCode() {
@@ -228,10 +231,11 @@ function copyInviteCode() {
  }
 }
 
-function copyInviteLink() {
- if (inviteInfo.value.inviteLink) {
- copyToClipboard(inviteInfo.value.inviteLink, '邀请链接')
- }
+async function copyInviteLink() {
+ if (!inviteInfo.value.inviteLink || copyingInvite.value) return
+ copyingInvite.value = true
+ try { await copyToClipboard(inviteInfo.value.inviteLink, '邀请链接') }
+ finally { copyingInvite.value = false }
 }
 
 async function loadStats() {
@@ -280,9 +284,11 @@ async function saveConfig() {
 function goToLogin() { router.push('/login') }
 function goToRegister() { router.push('/register') }
 async function updateNickname() {
- if (!newNickname.value.trim()) return
+ if (!newNickname.value.trim() || savingNickname.value) return
+ savingNickname.value = true
  try { await authStore.updateProfile(newNickname.value.trim()); alert(t('profile.nickUpdated')) }
  catch (e) { alert(t('profile.nickFail') + (e.response?.data?.message || e.message)) }
+ finally { savingNickname.value = false }
 }
 async function handleLogout() {
  authStore.logout()
