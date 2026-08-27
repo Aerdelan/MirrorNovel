@@ -160,8 +160,8 @@ const aiServiceMock = {
   countTokens: (content) => String(content || '').length,
   humanizeRewrite: (content) => content,
   getFriendlyErrorMessage: (error) => error?.message || 'mock error',
-  streamGenerate: async (systemPrompt, userPrompt, onChunk, signal, apiConfig, retries, temperature, maxTokens) => {
-    const call = { systemPrompt, userPrompt, onChunk, signal, apiConfig, retries, temperature, maxTokens };
+  streamGenerate: async (systemPrompt, userPrompt, onChunk, signal, apiConfig, retries, temperature, maxTokens, timeoutMs) => {
+    const call = { systemPrompt, userPrompt, onChunk, signal, apiConfig, retries, temperature, maxTokens, timeoutMs };
     call.kind = onChunk ? 'chapter' : (systemPrompt.includes('章节规划师') ? 'plan' : (systemPrompt.includes('大纲策划师') ? 'outline' : 'other'));
     state.aiCalls.push(call);
     return (state.aiHandler || defaultAiHandler)(call);
@@ -422,6 +422,31 @@ test('新书整本：已确认蓝图但计划为空时使用兜底计划直接�
   assert.equal(eventIndex(events, 'plan_needs_extension'), -1);
   assert.equal(getCreatedNovel(events).chapters.length, 1);
   assert.ok(state.aiCalls.some((call) => call.kind === 'chapter'));
+  assert.equal(state.aiCalls.find((call) => call.kind === 'plan').timeoutMs, 45000);
+});
+
+test('新书整本：已确认蓝图且计划请求被取消时直接使用兜底计划', async () => {
+  state.chapterQueue = [makeChapter('林舟在雨夜进入废弃邮局，决定沿着旧案线索继续追查', '取消计划后首章')];
+  state.aiHandler = async (call) => {
+    if (call.kind === 'plan') throw abortError();
+    return defaultAiHandler(call);
+  };
+
+  const { response, events } = await postSse('/generate', {
+    novelTypeId: 'xianxia',
+    protagonistName: '林舟',
+    worldSetting: '阴雨旧城中的沉重悬疑故事',
+    targetWordCount: 600,
+    outline: '林舟追查旧案，在危机中揭开真相并完成主线收束。',
+    mode: 'book',
+    storyBlueprint: { mainArc: '追查旧案并完成主线收束', phases: [{ title: '开端', startChapter: 1, endChapter: 1 }] },
+  });
+
+  assert.equal(response.status, 200);
+  assert.ok(eventIndex(events, 'status', (event) => event.message.includes('根据已确认蓝图补全')) > -1);
+  assert.ok(eventIndex(events, 'chapter_start') > eventIndex(events, 'novel_created'));
+  assert.equal(eventIndex(events, 'plan_needs_extension'), -1);
+  assert.equal(getCreatedNovel(events).chapters.length, 1);
 });
 
 test('新书长篇：大纲存在但计划不可解析时自动补全执行计划', async () => {

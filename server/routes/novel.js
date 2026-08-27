@@ -830,6 +830,8 @@ ${tmpl.dynamicPrompt}
     novel.markModified('storyBlueprint');
     await novel.save();
 
+    const hasConfirmedBlueprint = storyBlueprint && typeof storyBlueprint === 'object' && Object.keys(storyBlueprint).length > 0;
+
     // ====== 生成章节计划表（整本模式） ======
     let chapterPlan = '';
     if (isBook && outline) {
@@ -839,10 +841,11 @@ ${tmpl.dynamicPrompt}
 
         // 用 AbortController 施加超时 + 心跳保证连接不断
         const planController = new AbortController();
+        const planTimeoutMs = hasConfirmedBlueprint ? 45000 : 150000;
         const planTimeout = setTimeout(() => {
-          console.log('章节计划表生成超时(150s)，将在重试后继续');
+          console.log(`章节计划表生成超时(${Math.round(planTimeoutMs / 1000)}s)，将使用可用计划继续`);
           planController.abort();
-        }, 150000); // 150 秒超时
+        }, planTimeoutMs);
         const heartbeat = setInterval(() => {
           try { res.write(': heartbeat\n\n'); } catch { clearInterval(heartbeat); }
         }, 10000);
@@ -851,7 +854,9 @@ ${tmpl.dynamicPrompt}
           '你是一位专业的小说章节规划师。你的任务是制定详细的章节计划表，确保每章有明确目标、伏笔合理铺设和回收、结局节奏自然。',
           planPrompt, null, planController.signal,
           resolveApiConfig(req.user?.modelConfig, 'reasoning'),
-          2, 0.82, typeof getChapterPlanOutputTokens === 'function' ? getChapterPlanOutputTokens(targetWordCount) : 16384, 300000 // 长篇计划按章节数动态扩大返回预算
+          1, 0.82,
+          typeof getChapterPlanOutputTokens === 'function' ? getChapterPlanOutputTokens(targetWordCount) : 16384,
+          planTimeoutMs
         ).finally(() => { clearTimeout(planTimeout); clearInterval(heartbeat); });
 
         if (planResult && planResult.content) {
@@ -869,8 +874,8 @@ ${tmpl.dynamicPrompt}
           console.warn('章节计划表生成为空内容，将暂停整本生成');
         }
       } catch (e) {
-        console.error('章节计划生成失败:', e.message, '将暂停整本生成');
-        res.write(`data: ${JSON.stringify({ type: 'status', message: '章节计划生成暂不可用，准备暂停并等待补充计划...' })}\n\n`);
+        console.error('章节计划生成失败:', e.message, '将根据已确认蓝图继续');
+        res.write(`data: ${JSON.stringify({ type: 'status', message: hasConfirmedBlueprint ? '章节计划生成超时或暂不可用，正根据已确认蓝图补全执行计划...' : '章节计划生成暂不可用，准备暂停并等待补充计划...' })}\n\n`);
       }
     }
 
@@ -880,7 +885,6 @@ ${tmpl.dynamicPrompt}
     // 章节计划的 JSON 可能为空、被截断或无法解析。只要用户已经确认了
     // 故事蓝图，就可以像“继续生成”一样使用保守的本地执行计划，避免
     // 首次生成在 0 字处直接暂停。没有蓝图的旧 API 调用仍保留严格校验。
-    const hasConfirmedBlueprint = storyBlueprint && typeof storyBlueprint === 'object' && Object.keys(storyBlueprint).length > 0;
     if (isBook && !planData.chapters.length && String(outline || '').trim() && (targetWordCount >= 100000 || hasConfirmedBlueprint)) {
       planData = ensureExecutableChapterPlan(novel, targetWordCount);
       res.write(`data: ${JSON.stringify({ type: 'status', message: `章节计划输出不完整，已根据大纲自动补全 ${planData.chapters.length} 章执行计划，开始创作正文...` })}\n\n`);

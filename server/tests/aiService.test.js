@@ -72,6 +72,28 @@ test('streamGenerate reports an unconfigured route before making a request', asy
   );
 });
 
+test('streamGenerate does not retry after its caller cancels the request', async () => {
+  const originalFetch = global.fetch;
+  const controller = new AbortController();
+  let calls = 0;
+  try {
+    global.fetch = async () => {
+      calls += 1;
+      controller.abort();
+      const error = new Error('aborted');
+      error.name = 'AbortError';
+      throw error;
+    };
+    await assert.rejects(
+      () => streamGenerate('system', 'prompt', null, controller.signal, { baseUrl: 'https://example.test/v1', model: 'test' }, 2),
+      /已取消/
+    );
+    assert.equal(calls, 1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('managed route selection uses the configured task role override', () => {
   const config = resolveApiConfig({
     provider: 'system',

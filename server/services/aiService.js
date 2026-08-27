@@ -525,6 +525,14 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
       ...(disableThinking ? { thinking: { type: 'disabled' } } : {}) };
 
   for (let attempt = 0; attempt <= retries; attempt++) {
+    // An external abort is a caller decision (for example, the chapter-plan
+    // deadline). It must end the operation immediately instead of turning
+    // into another full-length retry.
+    if (signal?.aborted) {
+      const error = new Error('AI API 请求已取消');
+      error.name = 'AbortError';
+      throw error;
+    }
     let timeoutId;
     let currentSignal;
     try {
@@ -629,6 +637,11 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
 
     } catch (e) {
       clearTimeout(timeoutId);
+      if (signal?.aborted) {
+        throw (e.name === 'AbortError')
+          ? new Error('AI API 请求已取消')
+          : e;
+      }
       if (attempt < retries) {
         const delay = Math.pow(2, attempt) * 1000;
         console.warn(`AI API 请求异常（${e.message}），第 ${attempt + 1} 次重试，等待 ${delay}ms`);
