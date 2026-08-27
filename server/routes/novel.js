@@ -642,7 +642,7 @@ ${String(outline).slice(0, 12000)}
       1,
       0.35,
       Math.max(2600, Math.min(12000, blueprintRequirements.phaseCount * 900)),
-      180000
+      360000
     );
     const rawContent = String(result.content || '').trim();
     if (!rawContent) return res.status(502).json({ message: '蓝图模型没有返回内容，请重试' });

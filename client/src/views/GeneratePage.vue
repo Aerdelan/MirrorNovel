@@ -637,7 +637,7 @@ async function generateInitialBlueprint() {
    targetWordCount: targetWordCount.value,
    outline: outline.value,
    personaId: selectedPersonaId.value || undefined,
-  }, { timeout: 240000 })
+  }, { timeout: 480000 })
   initialBlueprint.value = res.data.blueprint || null
   initialBlueprintJson.value = JSON.stringify(initialBlueprint.value, null, 2)
   blueprintWarning.value = res.data.warning || ''
