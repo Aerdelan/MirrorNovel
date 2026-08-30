@@ -298,7 +298,9 @@ async function runEditorialPipeline(text, options = {}) {
         null,
         apiConfig,
         3,           // 3 次重试
-        0.85 + Math.random() * 0.15
+        0.85 + Math.random() * 0.15,
+        undefined,
+        300000
       );
 
       let stageOutput = result?.content || '';
@@ -320,7 +322,9 @@ async function runEditorialPipeline(text, options = {}) {
           null,
           apiConfig,
           3,
-          0.9 + Math.random() * 0.1
+          0.9 + Math.random() * 0.1,
+          undefined,
+          300000
         );
         stageOutput = result?.content || '';
       }

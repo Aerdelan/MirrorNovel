@@ -43,6 +43,12 @@ const novelSchema = new mongoose.Schema({
     type: Number,
     default: 50000,
   },
+  // 每章目标字数（整本模式可选）。旧作品/未设置时按 3000 处理，
+  // 大章模式（如长篇悬疑每章 1 万+ 字）会传入更大值。
+  chapterWordTarget: {
+    type: Number,
+    default: 3000,
+  },
   // 可选的专家团模式：写作后增加推理审稿和必要的润色修订。
   expertMode: {
     type: Boolean,
@@ -106,6 +112,17 @@ const novelSchema = new mongoose.Schema({
   contextMemory: {
     type: mongoose.Schema.Types.Mixed,
     default: () => ({ version: 1, checkpointChapter: 0, checkpointSummary: '', facts: [], openLoops: [] }),
+  },
+  // token 用量账本：按任务角色聚合输入/输出/前缀缓存命中量。
+  // 旧作品没有该字段时按需创建，不需要回填迁移。
+  tokenUsage: {
+    type: mongoose.Schema.Types.Mixed,
+    default: () => ({ inputTokens: 0, outputTokens: 0, cacheSavedTokens: 0, calls: 0, byRole: {} }),
+  },
+  // 大纲生成的单次用量（生成时展示用，也可能为空表示大纲是用户手填的）。
+  outlineTokenUsage: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null,
   },
   // 结构化创作状态。旧作品没有这些字段时，生成服务会从已有章节和文本文档渐进补全。
   storyBible: {

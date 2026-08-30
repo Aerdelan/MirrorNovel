@@ -93,6 +93,39 @@ test('parseChapterPlan normalizes JSON plans and legacy line plans', () => {
   assert.equal(fallback.chapters.at(-1).chapterRole, '收束');
 });
 
+test('fallback plan and output budget honor a per-chapter word target for long-form mysteries', () => {
+  // 每章 1 万字的大章设定：章数按 1 万字估算，每章 wordTarget 也是 1 万。
+  const bigChapterNovel = makeNovel({ targetWordCount: 100000, chapterWordTarget: 10000 });
+  const bigFallback = buildFallbackChapterPlan(bigChapterNovel, { targetWords: 100000 });
+  assert.equal(bigFallback.chapters.length, 10);
+  assert.ok(bigFallback.chapters.every((chapter) => chapter.wordTarget === 10000));
+
+  // 未设置时维持旧口径 3000。
+  const defaultFallback = buildFallbackChapterPlan(makeNovel({ targetWordCount: 100000 }), { targetWords: 100000 });
+  assert.equal(defaultFallback.chapters.length, 34);
+  assert.ok(defaultFallback.chapters.every((chapter) => chapter.wordTarget === 3000));
+
+  // options 显式传入时优先于小说字段。
+  const overridden = buildFallbackChapterPlan(bigChapterNovel, { targetWords: 100000, chapterWordTarget: 5000 });
+  assert.equal(overridden.chapters.length, 20);
+  assert.ok(overridden.chapters.every((chapter) => chapter.wordTarget === 5000));
+
+  // 输出 token 上限按每章字数放大：1 万字章节约 1.35 万 token，
+  // 不会被旧的 7600 上限截断；小章节仍保持旧上限。
+  assert.equal(getChapterOutputTokenLimit(10000), 13500);
+  assert.equal(getChapterOutputTokenLimit(3000), 4051);
+  assert.equal(getChapterOutputTokenLimit(1200), 2200);
+  assert.equal(getChapterOutputTokenLimit(999999), 24000);
+
+  // 自适应字数分配尊重大章计划的尺度：10 章每章 1 万字的计划，
+  // 首章目标字数不应被压回 5200 旧上限。
+  const planData = { version: 1, chapters: Array.from({ length: 10 }, (_, index) => ({
+    chapterNumber: index + 1, wordTarget: 10000, coreEvent: `推进第${index + 1}步`,
+  })) };
+  const firstTarget = getAdaptiveChapterWordTarget({ planData, chapterNumber: 1, currentWords: 0, targetWords: 100000 });
+  assert.ok(firstTarget >= 8000, `大章计划的字数目标被截短了：${firstTarget}`);
+});
+
 test('chapter plans retain authored short titles and safely derive legacy titles', () => {
   const plan = parseChapterPlan({
     chapters: [[1, 2600, '林舟在旧花店收到无名钥匙', '', '', '林舟', '主线推进', 5, '予地以花']],

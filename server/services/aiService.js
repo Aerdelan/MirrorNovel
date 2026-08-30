@@ -237,52 +237,74 @@ function buildGenreStyleContract(novelTypeId, type) {
 请从当前题材、世界规则、人物关系和大纲中提炼本书独有的叙事节奏。不要套用统一的网文腔、固定转折句、固定情绪词或相同的章节收尾。先确定本书的叙事距离、信息释放速度、感官重点、对白密度和低压场景形态，并在全文保持这一组特征。`;
 }
 
-function getOutlineRequirements(targetWordCount) {
+/** 规范化每章目标字数：允许福尔摩斯式大章（1万+字），默认维持旧口径 3000。 */
+function normalizeChapterWordTarget(value) {
+  if (value === undefined || value === null || value === '') return 3000;
+  const target = Number(value);
+  if (!Number.isFinite(target)) return 3000;
+  return Math.max(2000, Math.min(20000, Math.round(target)));
+}
+
+function getOutlineRequirements(targetWordCount, chapterWordTarget) {
   const target = Math.max(10000, Math.min(10000000, Number(targetWordCount) || 50000));
   const scale = Math.min(1, Math.max(0, (target - 50000) / 950000));
   const phaseCount = target <= 50000 ? 4 : Math.max(5, Math.min(12, Math.ceil(4 + scale * 8)));
   const nodeCount = Math.max(12, Math.min(80, Math.round(14 + scale * 56)));
   const characterCount = Math.max(8, Math.min(40, Math.round(10 + scale * 30)));
   const subplotCount = Math.max(4, Math.min(24, Math.round(5 + scale * 19)));
-  const outlineChars = Math.max(7000, Math.min(50000, Math.round(7000 + scale * 43000)));
-  const outputTokens = Math.max(9000, Math.min(120000, Math.ceil(outlineChars / 1.45)));
-  return { target, phaseCount, nodeCount, characterCount, subplotCount, outlineChars, outputTokens };
+  // 大纲上限收紧到 2 万字：长大纲的中段是"数字升级"式模板重复，而下游
+  // （章节计划/蓝图/分层渲染）只需要结构化信息。outputTokens 与
+  // outlineChars 耦合，输出预算自动从旧版 12 万 token 降到约 1.4 万。
+  const outlineChars = Math.max(7000, Math.min(20000, Math.round(7000 + scale * 13000)));
+  const outputTokens = Math.max(9000, Math.min(16000, Math.ceil(outlineChars / 1.45)));
+  const chapterWords = normalizeChapterWordTarget(chapterWordTarget);
+  const estChapters = Math.max(1, Math.ceil(target / chapterWords));
+  return { target, phaseCount, nodeCount, characterCount, subplotCount, outlineChars, outputTokens, chapterWords, estChapters };
 }
 
-function buildOutlineSpec(targetWordCount) {
-  const requirements = getOutlineRequirements(targetWordCount);
+function buildOutlineSpec(targetWordCount, chapterWordTarget) {
+  const requirements = getOutlineRequirements(targetWordCount, chapterWordTarget);
+  const chapterPacing = requirements.chapterWords >= 6000
+    ? `本书每章约${requirements.chapterWords}字，属于大章节奏：每个关键节点应承载完整的信息链（现场/线索→推理或冲突→新问题），不要把一个大章拆成多个重复场景，也不要压缩成流水账。`
+    : `本书每章约${requirements.chapterWords}字，保持紧凑节奏：每个关键节点对应明确的场景推进，避免一章内塞入过多事件。`;
   return `【按目标字数动态规划的规模】
-目标约${requirements.target}字，预计需要${Math.max(10, Math.ceil(requirements.target / 3000))}章。不要套用固定模板，必须完成：${requirements.phaseCount}个剧情阶段、约${requirements.nodeCount}个关键节点、${requirements.characterCount}名有明确目标和关系变化的主要/次要人物、至少${requirements.subplotCount}条可交叉推进的支线。全文大纲建议不少于${requirements.outlineChars}字。
+目标约${requirements.target}字，预计需要${requirements.estChapters}章（每章约${requirements.chapterWords}字）。不要套用固定模板，必须完成：${requirements.phaseCount}个剧情阶段、约${requirements.nodeCount}个关键节点、${requirements.characterCount}名有明确目标和关系变化的主要/次要人物、至少${requirements.subplotCount}条可交叉推进的支线。规模必须随目标字数增长：百万字目标必须使用更大的阶段/节点/角色数量，不能退化成四阶段小结构。
+${chapterPacing}
 
-【输出内容要求】
-1. 故事主线：不少于800字，写清起因、阶段性目标、因果链、主要反转、终局代价与结局落点，不能只写一句复仇/成长概括。
-2. 核心冲突：不少于500字，拆出外部目标、内部选择、关系冲突、资源限制和不断升级的阻力。
-3. 主要角色：至少${requirements.characterCount}人。每人写身份、表面目标、隐藏目标、与主角关系、阶段变化、关键选择和结局状态；配角不能只列名字。
-4. 剧情阶段：严格写${requirements.phaseCount}个阶段。每阶段至少300字，并列出阶段目标、阻力、人物关系变化、主线推进、支线交叉点、阶段反转和进入下一阶段的条件。
+【输出内容要求 — 信息密度优先，长度是结果不是目标】
+1. 故事主线：写清起因、阶段性目标、因果链、主要反转、终局代价与结局落点，不能只写一句复仇/成长概括。
+2. 核心冲突：拆出外部目标、内部选择、关系冲突、资源限制和不断升级的阻力。
+3. 主要角色：至少${requirements.characterCount}人。每人写身份、表面目标、隐藏目标、与主角关系、阶段变化、关键选择、结局状态，以及一句"其他角色无法替代的功能"；删掉不影响主线走向的角色。
+4. 剧情阶段：严格写${requirements.phaseCount}个阶段。每阶段列出阶段目标、阻力、人物关系变化、主线推进、支线交叉点、阶段反转和进入下一阶段的条件。
 5. 支线与人物关系网：至少${requirements.subplotCount}条支线。每条写发起人物、独立目标、与主线的连接、至少两个转折、可能的误导、回收节点和最终状态。
-6. 关键节点：至少${requirements.nodeCount}个，按预计章节范围排列。每个节点写发生条件、参与人物、具体事件、信息变化、情绪后果、伏笔设置/回收和对下一节点的推动。
+6. 关键节点：至少${requirements.nodeCount}个，按预计章节范围排列（全书约${requirements.estChapters}章）。每个节点必须写清：触发条件→参与人物→具体事件→信息变化→后果与对下一节点的推动；禁止只列结果不写因果。
 7. 伏笔与回收表：列出不少于${Math.max(8, Math.round(requirements.nodeCount * 0.45))}组伏笔，标明埋设阶段、表面解释、真实含义和回收阶段，禁止只写“后续揭晓”。
-8. 结局方向：不少于500字，说明主线、主要支线、人物弧线和核心悬念如何分别收束；允许保留余波，但不能只写“主角成功”。
+8. 结局方向：说明主线、主要支线、人物弧线和核心悬念如何分别收束；允许保留余波，但不能只写“主角成功”。
 
-篇幅必须随目标字数增长，不能因为输出方便而把百万字小说压缩成与十万字相同的四阶段、几个节点和少量人物。直接输出大纲正文，不要解释生成过程。`;
+【反重复约束】
+- 禁止用"更强的敌人/更大的危机/更高的境界"式数字升级凑节点；相邻阶段和节点必须改变人物关系或信息状态，而不只是提高强度。
+- 阶段、节点、角色之间不得互为换皮复述；若删掉某个节点不影响因果链，就合并它。
+- 宁可短而具体，不要长而重复：完成上述结构要求即可收束，不要为凑篇幅扩写。
+直接输出大纲正文，不要解释生成过程。`;
 }
 
-function buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona) {
+function buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona, chapterWordTarget) {
   const type = novelTypes.find(t => t.id === novelTypeId);
+  const requirements = getOutlineRequirements(targetWordCount, chapterWordTarget);
   return `你是一位专业的小说大纲策划师。请为一部${type ? type.name : ''}小说创作一份完整、可执行、可供分章规划使用的创作大纲。${buildPersonaPrompt(persona, { includeDeslop: false })}
 
 ${buildGenreStyleContract(novelTypeId, type)}
 
 主角名字：${protagonistName || '未设定'}
 世界观设定：${worldSetting || '由你自由发挥'}
-目标总字数：约${targetWordCount}字
+目标总字数：约${requirements.target}字（预计${requirements.estChapters}章，每章约${requirements.chapterWords}字）
 
-${buildOutlineSpec(targetWordCount)}
+${buildOutlineSpec(targetWordCount, chapterWordTarget)}
 
 请按以下格式输出大纲：
 
 【故事主线】
-（用3-5句话概括核心故事线）
+（写清起因、阶段目标、主要反转与终局落点之间的因果链）
 
 【核心冲突】
 （描述主要冲突和矛盾）
@@ -519,10 +541,25 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
   // 设置 AI_THINKING_DISABLED=true 可强制关闭思考，换取更快的首字响应。
   const disableThinking = config.disableThinking === true
     || String(process.env.AI_THINKING_DISABLED || '').toLowerCase() === 'true';
+  // 思考参数可能与模型能力不符：如 glm-5.3-flash 会拒绝禁用思考
+  // （"当前模型必须开启深度思考"），而部分线路不认识 thinking 字段。
+  // 这类确定性 400 带着同样参数重试只会原样失败，下方在识别后修正并
+  // 免费重试一次（每个方向只修正一次）。
+  let thinkingMode = disableThinking ? 'disabled' : null;
+  let thinkingTweaked = false;
+  // 思考模型（如 glm-5.3-flash）的 reasoning 与正文共享 max_tokens 预算，
+  // 复杂任务的思考可能耗尽预算导致正文为空。对确认要求思考的线路附加
+  // reasoning_effort 限制思考篇幅；不认识该字段的线路会在 400 后自动去除。
+  let reasoningEffort = null;
+  let effortTweaked = false;
+  // 输入 token 估算（无服务商用量时回退使用）。system+user 在重试间不变，
+  // 只需计算一次。
+  const estimatedInputTokens = countTokens(systemPrompt) + countTokens(userPrompt);
   const buildRequestBody = () => isOllama
     ? { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, options: { temperature, num_predict: outputLimit } }
     : { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, temperature, max_tokens: outputLimit,
-      ...(disableThinking ? { thinking: { type: 'disabled' } } : {}) };
+      ...(thinkingMode ? { thinking: { type: thinkingMode } } : {}),
+      ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) };
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     // An external abort is a caller decision (for example, the chapter-plan
@@ -537,6 +574,8 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
     let currentSignal;
     try {
       const timeoutController = new AbortController();
+      // 超时按"每次尝试"计算，不是全请求共享：思考型线路一次空输出尝试
+      // 可能消耗数百秒，若共享剩余时间，最后一次尝试会立刻超时。
       timeoutId = setTimeout(() => timeoutController.abort(), Math.max(5000, Number(timeoutMs) || 90000));
 
       // 构建本次尝试的合并 signal
@@ -555,10 +594,42 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
 
       const response = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify(buildRequestBody()), signal: currentSignal });
 
-      clearTimeout(timeoutId);
-
       if (!response.ok) {
         const errorText = await response.text();
+        clearTimeout(timeoutId);
+        // 思考参数与模型能力不符：识别"必须开启深度思考"（当前携带 disabled）
+        // 与"不支持/无效 thinking 参数"，修正后免费重试一次。
+        if (!thinkingTweaked && /深度思考|thinking/i.test(errorText)) {
+          if (/必须开启|enable|required/i.test(errorText) && thinkingMode === 'disabled') {
+            thinkingMode = 'enabled';
+            thinkingTweaked = true;
+            // 该线路强制思考，主动附上 reasoning_effort 限制思考篇幅。
+            reasoningEffort = reasoningEffort || 'medium';
+            // 强制思考模型的 reasoning 与正文共享 max_tokens：只按正文
+            // 估算的预算必然被思考挤空（实测 glm-5.3-flash 大纲任务思考
+            // 可达正文的 3 倍以上），放大预算给思考留出空间。
+            const previousLimit = outputLimit;
+            outputLimit = Math.min(65536, Math.ceil(outputLimit * 4));
+            console.warn(`AI API 要求开启深度思考，已改为 thinking:enabled，输出预算 ${previousLimit}→${outputLimit} 后重试`);
+            attempt -= 1;
+            continue;
+          }
+          if (thinkingMode) {
+            thinkingMode = null;
+            thinkingTweaked = true;
+            console.warn('AI API 拒绝 thinking 参数，已去除该字段后重试');
+            attempt -= 1;
+            continue;
+          }
+        }
+        // 部分线路不认识 reasoning_effort 字段，去除后免费重试。
+        if (!effortTweaked && reasoningEffort && /reasoning_effort/i.test(errorText)) {
+          reasoningEffort = null;
+          effortTweaked = true;
+          console.warn('AI API 拒绝 reasoning_effort 参数，已去除该字段后重试');
+          attempt -= 1;
+          continue;
+        }
         const providerMaxTokens = extractProviderMaxTokens(errorText);
         if (providerMaxTokens && outputLimit > providerMaxTokens) {
           outputLimit = Math.min(outputLimit, providerMaxTokens);
@@ -585,6 +656,15 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
       const decoder = new TextDecoder();
       let fullContent = '';
       let buffer = '';
+      // 服务商在流末尾返回的实际用量（若支持）。DeepSeek 附带
+      // prompt_cache_hit_tokens，OpenAI 兼容线路在 prompt_tokens_details.cached_tokens
+      // 中给出前缀缓存命中量。不做请求体改动，被动捕获即可，兼容所有线路。
+      let providerUsage = null;
+      // finish_reason 与 reasoning 累计用于空输出诊断：思考模型（如
+      // glm-5.3-flash）的 reasoning 与正文共享 max_tokens，若 reasoning
+      // 吃满预算（finish=length 且无正文），同预算重试必然再失败。
+      let finishReason = null;
+      let reasoningChars = 0;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -600,7 +680,9 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
               const parsed = JSON.parse(line);
               const content = parsed.message?.content || '';
               if (content) { fullContent += content; if (onChunk) onChunk(content); }
-              if (parsed.done) break;
+              if (parsed.done && (parsed.prompt_eval_count || parsed.eval_count)) {
+                providerUsage = { prompt_tokens: parsed.prompt_eval_count, completion_tokens: parsed.eval_count };
+              }
             } catch (e) { /* skip */ }
           }
         } else {
@@ -618,22 +700,44 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
                 if (content) { fullContent += content; if (onChunk) onChunk(content); }
                 // 思考阶段只有 reasoning_content，不转发会导致前端长时间停在 0 字
                 const reasoning = parsed.choices?.[0]?.delta?.reasoning_content || '';
-                if (reasoning && onReasoning) onReasoning(reasoning);
+                if (reasoning) { reasoningChars += reasoning.length; if (onReasoning) onReasoning(reasoning); }
+                const reason = parsed.choices?.[0]?.finish_reason;
+                if (reason) finishReason = reason;
+                if (parsed.usage && typeof parsed.usage === 'object') providerUsage = parsed.usage;
               } catch (e) { /* skip */ }
             }
           }
         }
       } // while
 
-      // v4: 空输出检测 — 模型返回 200 但内容为空，视为失败并重试
+      // 超时需覆盖整个流式读取过程：头部到达即停表会让慢速流（思考模型
+      // 长推理）在无超时保护下无限挂起。到这里流已结束，停表。
+      clearTimeout(timeoutId);
+
+      // v4: 空输出检测 — 模型返回 200 但内容为空，视为失败并重试。
+      // 思考模型 reasoning 吃满预算（finish=length 且 reasoning 很长）时，
+      // 同预算重试必然原样失败：先放大预算再重试，同时收紧 reasoning_effort。
       if (!fullContent.trim() && attempt < retries) {
         const delay = Math.pow(2, attempt) * 1500;
+        if (finishReason === 'length' && reasoningChars > 0) {
+          const previousLimit = outputLimit;
+          outputLimit = Math.min(MAX_GENERATION_TOKENS, Math.ceil(outputLimit * 2.5));
+          if (!effortTweaked && reasoningEffort !== 'low') {
+            reasoningEffort = 'low';
+          }
+          console.warn(`AI 思考耗尽输出预算（reasoning ${reasoningChars} 字，finish=length），预算 ${previousLimit}→${outputLimit} 并收紧 reasoning_effort 后重试`);
+        }
         console.warn(`AI API 返回空内容，第 ${attempt + 1} 次重试，等待 ${delay}ms`);
         await new Promise(r => setTimeout(r, delay));
         continue;
       }
 
-      return { content: fullContent, tokenCount: countTokens(fullContent) };
+      return {
+        content: fullContent,
+        tokenCount: countTokens(fullContent),
+        inputTokens: estimatedInputTokens,
+        usage: providerUsage,
+      };
 
     } catch (e) {
       clearTimeout(timeoutId);
@@ -659,19 +763,31 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
 /**
  * 构建章节计划表（细化到每一章的事件、伏笔、字数）
  */
-function getChapterPlanOutputTokens(targetWordCount) {
-  const chapters = Math.max(10, Math.ceil((Number(targetWordCount) || 50000) / 3000));
+function getChapterPlanOutputTokens(targetWordCount, chapterWordTarget) {
+  const chapterWords = normalizeChapterWordTarget(chapterWordTarget);
+  const chapters = Math.max(10, Math.ceil((Number(targetWordCount) || 50000) / chapterWords));
   return Math.max(16384, Math.min(120000, Math.ceil(chapters * 135)));
 }
 
-function buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, persona, storyBlueprint) {
-  // Keep compatibility with older callers that passed an unused fifth context argument.
-  if (arguments.length >= 7) {
+function buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, persona, storyBlueprint, chapterWordTarget) {
+  // 兼容两种历史调用形态：旧形态第 5 位是一个已废弃的上下文参数
+  // (outline, target, proto, world, unusedContext, persona, blueprint)，
+  // 新形态是 (outline, target, proto, world, persona, blueprint, chapterWordTarget)。
+  // 第 7 位是数字即新形态，否则按旧形态重排。
+  if (arguments.length >= 7 && typeof arguments[6] !== 'number') {
     storyBlueprint = arguments[6];
     persona = arguments[5];
+    chapterWordTarget = undefined;
   }
-  const estChapters = Math.max(10, Math.ceil(targetWordCount / 3000));
+  const chapterWords = normalizeChapterWordTarget(chapterWordTarget);
+  const estChapters = Math.max(10, Math.ceil(targetWordCount / chapterWords));
   const plannedBreaths = Math.max(1, Math.round(estChapters * 0.09));
+  // 章节字数带宽：3000 字时为 2000-4200（与旧口径一致），大章按比例放宽。
+  const wordBandLow = Math.max(1200, Math.floor(chapterWords * 0.67));
+  const wordBandHigh = Math.ceil(chapterWords * 1.4);
+  const chapterPacing = chapterWords >= 6000
+    ? `\n8. 每章约${chapterWords}字属于大章：必须承载完整的信息链或冲突推进（场景→交锋/推理→新局面），禁止把一章拆成多个场景重复或压缩成事件清单。`
+    : '';
   const blueprint = storyBlueprint && typeof storyBlueprint === 'object' ? storyBlueprint : {};
   const blueprintPhases = Array.isArray(blueprint.phases) ? blueprint.phases.slice(0, 12).map((phase) => ({
     title: phase.title || '', startChapter: phase.startChapter || 1, endChapter: phase.endChapter || estChapters,
@@ -691,7 +807,7 @@ function buildChapterPlan(outline, targetWordCount, protagonistName, worldSettin
 
   let planPrompt = `你是一位专业的小说章节规划师。请根据以下素材制定一份详细的章节计划表。${buildPersonaPrompt(persona, { includeDeslop: false })}
 
-目标：约${targetWordCount}字，预计${estChapters}章
+目标：约${targetWordCount}字，预计${estChapters}章（每章约${chapterWords}字）
 
 素材：
 主角：${protagonistName || '未设定'}
@@ -714,7 +830,7 @@ ${outline || '无大纲，请自行规划故事'}`;
 4. 张力是 1-10；连续 3 章不得都高于 7；全书约安排 ${plannedBreaths} 个喘息推进章，但位置和形式必须由当前人物压力、关系状态、题材和前后事件决定，禁止固定每隔 N 章安排，也禁止所有作品使用同一种日常模板。
 5. 喘息推进章不是无意义凑字数：必须让关系、信息、记忆、物件、支线或伏笔发生可见变化；可以是生活、旅途、工作、仪式、梦境、共同空间或题材特有的低压场景，但只能选择适合本书世界和人物的形式。
 6. 每条蓝图支线至少要有进入章节、一次中段变化和回收/转化章节；阶段反转必须落到具体章节，不能只写在 phases 总述。
-7. 每章目标字数 2000-4200，总章数约 ${estChapters} 章。最后一个字段必须给出 4-12 个汉字的章节短标题，具体、有画面感、不得重复，不要包含“第X章”。`;
+7. 每章目标字数 ${wordBandLow}-${wordBandHigh}，总章数约 ${estChapters} 章。最后一个字段必须给出 4-12 个汉字的章节短标题，具体、有画面感、不得重复，不要包含“第X章”。${chapterPacing}`;
 
   return planPrompt;
 }
@@ -932,6 +1048,7 @@ module.exports = {
   buildSystemPrompt, buildPersonaPrompt, buildInitialPrompt, buildContinuePrompt,
   buildImportContinuePrompt, buildOutlinePrompt,
   getOutlineRequirements, buildOutlineSpec, getChapterPlanOutputTokens, buildGenreStyleContract,
+  normalizeChapterWordTarget,
   buildChapterPlan, buildStoryStateSummary,
   buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, extractChapterSummary,
   streamGenerate, resolveApiConfig, countTokens,

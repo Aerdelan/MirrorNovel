@@ -11,6 +11,7 @@
  <div class="summary-row"><span class="summary-label">{{ $t('novelDetail.wordCount') }}</span><span>{{ $t('novelDetail.outOf', { current: novel?.currentWordCount, target: novel?.targetWordCount }) }}</span></div>
  <div class="summary-row"><span class="summary-label">{{ $t('novelDetail.chapterCount') }}</span><span>{{ novel?.currentChapterIndex||0 }} {{ $t('novelDetail.chapter') }}</span></div>
  <div class="summary-row"><span class="summary-label">状态</span><span class="status-badge" :class="novel?.status">{{ statusMap[novel?.status] }}</span></div>
+ <div v-if="bookTokenUsage" class="summary-row"><span class="summary-label">Token 消耗</span><span class="token-total">输入 {{ formatTokenCount(bookTokenUsage.inputTokens) }} / 输出 {{ formatTokenCount(bookTokenUsage.outputTokens) }}<span v-if="bookTokenUsage.cacheSavedTokens > 0" class="token-cache">（缓存命中 {{ formatTokenCount(bookTokenUsage.cacheSavedTokens) }}）</span><span v-if="novel?.outlineTokenUsage" class="token-sub">｜大纲：输入 {{ formatTokenCount(novel.outlineTokenUsage.inputTokens) }} / 输出 {{ formatTokenCount(novel.outlineTokenUsage.outputTokens) }}</span></span></div>
  </div>
 
  <div v-if="novel" class="card pipeline-card">
@@ -54,6 +55,7 @@
    <div class="proposal-after">建议：{{ change.after }}</div>
   </div>
   <div v-if="pendingBlueprintProposal.affectedChapters?.length" class="proposal-impact">影响后续章节：第{{ pendingBlueprintProposal.affectedChapters.join('、') }}章</div>
+  <div v-if="pendingBlueprintProposal.tokenUsage" class="proposal-token">本次蓝图分析消耗：输入 {{ formatTokenCount(pendingBlueprintProposal.tokenUsage.inputTokens) }} / 输出 {{ formatTokenCount(pendingBlueprintProposal.tokenUsage.outputTokens) }} token</div>
   <div class="blueprint-actions proposal-actions">
    <button class="btn btn-outline btn-sm" :disabled="blueprintDecisionBusy" @click="decideBlueprint('reject')">拒绝</button>
    <button class="btn btn-primary btn-sm" :disabled="blueprintDecisionBusy" @click="decideBlueprint('apply')">{{ blueprintDecisionBusy ? '处理中...' : '应用到后续生成' }}</button>
@@ -138,11 +140,18 @@
  <div v-for="(chapter, index) in novel?.chapters" :key="chapter.chapterNumber" class="chapter-item">
  <div class="chapter-header" @click="toggleChapter(index)">
  <span class="chapter-num">{{ chapter.title || `第${chapter.chapterNumber}章` }}</span>
+ <span v-if="chapterTokens(chapter)" class="chapter-tokens" title="本章生成消耗（含审稿/修订时另计）">⚡{{ formatTokenCount(chapterTokens(chapter).inputTokens) }}↑ / {{ formatTokenCount(chapterTokens(chapter).outputTokens) }}↓</span>
  <span class="chapter-words">{{ chapter.wordCount }}{{ $t('generate.wordShort') }}</span>
  <span class="expand-icon">{{ expandedChapter===index?'▼':'▶' }}</span>
  </div>
  <div v-show="expandedChapter===index" class="chapter-body">
  <div class="chapter-content">{{ chapter.content||'内容生成中...' }}</div>
+ <div v-if="chapterTokens(chapter)" class="chapter-token-detail">
+ <span>本章 token：输入 {{ formatTokenCount(chapterTokens(chapter).inputTokens) }}</span>
+ <span>输出 {{ formatTokenCount(chapterTokens(chapter).outputTokens) }}</span>
+ <span v-if="chapterTokens(chapter).cacheSavedTokens > 0">缓存命中 {{ formatTokenCount(chapterTokens(chapter).cacheSavedTokens) }}</span>
+ <span v-if="chapterTokenRoles(chapter).length" class="token-roles">{{ chapterTokenRoles(chapter) }}</span>
+ </div>
  <div class="chapter-actions">
  <button class="btn-ch action-edit" :disabled="chapterActionBusy || isContinuing" @click="openEdit(chapter)">{{ $t('novelDetail.btnEdit') }}</button>
  <button class="btn-ch action-del" :disabled="chapterActionBusy || isContinuing" @click="confirmDeleteChapter(chapter)"> {{ chapterActionBusy === `delete:${chapter.chapterNumber}` ? $t('common.loading') : $t('common.delete') }}</button>
@@ -242,6 +251,35 @@ const pipelineSteps = computed(() => {
 })
 
 const lastChapterNum = computed(() => novel.value?.chapters?.length || 0)
+
+// ====== token 用量展示 =====
+// 账本有数据（calls>0）才显示；旧作品没有 tokenUsage 时保持原有界面。
+const bookTokenUsage = computed(() => {
+  const usage = novel.value?.tokenUsage
+  if (!usage || !Number(usage.calls)) return null
+  return usage
+})
+function chapterTokens(chapter) {
+  const tokens = chapter?.qualityReport?.tokens
+  if (!tokens || !Number(tokens.calls)) return null
+  return tokens
+}
+const ROLE_LABELS = { writing: '正文', reasoning: '审稿', polish: '润色', outline: '大纲' }
+function chapterTokenRoles(chapter) {
+  const tokens = chapterTokens(chapter)
+  if (!tokens?.byRole) return ''
+  return Object.entries(tokens.byRole)
+    .filter(([, value]) => value?.calls > 0)
+    .map(([role, value]) => `${ROLE_LABELS[role] || role} ${formatTokenCount(value.inputTokens)}↓↑${formatTokenCount(value.outputTokens)}`)
+    .join(' · ')
+}
+function formatTokenCount(value) {
+  const number = Number(value) || 0
+  if (number >= 1000000) return `${(number / 1000000).toFixed(2)}M`
+  if (number >= 10000) return `${(number / 10000).toFixed(1)}万`
+  if (number >= 1000) return `${(number / 1000).toFixed(1)}k`
+  return String(number)
+}
 const nextChapterNum = computed(() => lastChapterNum.value + 1)
 const isLastChapterUnfinished = computed(() => { if (!novel.value || novel.value.status !== 'paused') return false; return novel.value.chapters.length > 0 })
 const allChaptersComplete = computed(() => { if (!novel.value) return false; return novel.value.status === 'completed' || novel.value.status === 'paused' })
@@ -394,7 +432,7 @@ async function deslopChapter(chapter) {
  if (!confirm(`对第${chapter.chapterNumber}章进行去AI味处理？`)) return
  chapterActionBusy.value = `deslop:${chapter.chapterNumber}`
  try {
- const res = await api.post('/novel/deslop', { text: chapter.content || '', novelId: route.params.id })
+ const res = await api.post('/novel/deslop', { text: chapter.content || '', novelId: route.params.id }, { timeout: 1200000 })
  if (res.data.processed) { await api.put(`/novel/${route.params.id}/chapter/${chapter.chapterNumber}`, { content: res.data.processed, source: 'deslop' }); await refreshNovel(); alert(' 去AI味完成，后续续写上下文已同步！') }
  } catch (e) { alert('处理失败:'+(e.response?.data?.message||e.message)) }
  finally { chapterActionBusy.value = '' }
@@ -408,7 +446,7 @@ async function generateKeywords(chapter) {
  kwLoading.value = true
  showKeywordsDialog.value = true
  try {
- const res = await api.post(`/novel/chapter-keywords/${route.params.id}/${chapter.chapterNumber}`)
+ const res = await api.post(`/novel/chapter-keywords/${route.params.id}/${chapter.chapterNumber}`, null, { timeout: 1200000 })
  keywordsData.value = res.data
  } catch (e) {
  kwError.value = e.response?.data?.message || e.message || '关键字生成失败'
@@ -503,7 +541,7 @@ async function deslopAllChapters() {
  const ch = chapters[i]
  deslopAllProgress.value = `正在处理第 ${i + 1}/${chapters.length} 章...`
  try {
- const res = await api.post('/novel/deslop', { text: ch.content || '', novelId: route.params.id })
+ const res = await api.post('/novel/deslop', { text: ch.content || '', novelId: route.params.id }, { timeout: 1200000 })
  if (res.data.processed) {
  await api.put(`/novel/${route.params.id}/chapter/${ch.chapterNumber}`, { content: res.data.processed, source: 'deslop' })
  success++
@@ -537,6 +575,13 @@ function goBack() { router.push('/bookshelf') }
 .chapter-header { display:flex; align-items:center; gap:8px; padding:12px 0; cursor:pointer; user-select:none; }
 .chapter-num { flex:1; min-width:0; font-size:14px; font-weight:500; color:var(--text-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .chapter-words { font-size:12px; color:var(--text-light); }
+.chapter-tokens { font-size:12px; color:var(--text-light); background:var(--bg); padding:2px 8px; border-radius:10px; white-space:nowrap; }
+.chapter-token-detail { display:flex; flex-wrap:wrap; gap:10px; margin-top:8px; padding:6px 10px; background:var(--bg); border-radius:6px; font-size:12px; color:var(--text-light); }
+.chapter-token-detail .token-roles { color:var(--text-secondary); }
+.token-total { font-size:13px; }
+.token-cache { color:var(--success); }
+.token-sub { color:var(--text-light); font-size:12px; }
+.proposal-token { margin-top:8px; font-size:12px; color:var(--text-light); }
 .expand-icon { font-size:10px; color:var(--text-light); }
 .chapter-body { padding:0 0 12px; }
 .chapter-content { line-height:1.8; font-size:14px; color:var(--text-secondary); white-space:pre-wrap; max-height:300px; overflow-y:auto; padding:8px; background:var(--bg); border-radius:6px; }

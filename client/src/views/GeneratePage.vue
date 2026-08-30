@@ -99,6 +99,7 @@
    <span class="blueprint-setup-hint">可直接编辑上方 JSON 后确认</span>
   </div>
   <div v-if="blueprintWarning" class="blueprint-setup-hint">{{ blueprintWarning }}</div>
+  <div v-if="blueprintTokenUsage" class="blueprint-setup-hint">{{ tokenUsageText(blueprintTokenUsage) }}</div>
   <div v-if="blueprintSetupError" class="blueprint-setup-error">{{ blueprintSetupError }}</div>
  </div>
 
@@ -123,6 +124,18 @@
  <div class="word-count-presets">
  <span v-for="p in activePresets" :key="p.value" class="preset-btn" :class="{ active: targetWordCount === p.value, locked: generationBusy }" @click="!generationBusy && (targetWordCount = p.value)">{{ p.label }}</span>
  </div>
+ <!-- 每章字数：整本模式可选。福尔摩斯式长篇悬疑需要 1 万+ 字的大章节奏。 -->
+ <div v-if="genMode === 'book'" class="chapter-words-input">
+ <label class="chapter-words-label">
+ <span class="chapter-words-title">每章字数</span>
+ <input v-model.number="chapterWordTarget" class="input" :disabled="generationBusy" type="number" min="2000" max="20000" step="500" />
+ <span class="unit">字/章</span>
+ </label>
+ <div class="word-count-presets">
+ <span v-for="p in chapterWordPresets" :key="p.value" class="preset-btn" :class="{ active: chapterWordTarget === p.value, locked: generationBusy }" @click="!generationBusy && (chapterWordTarget = p.value)">{{ p.label }}</span>
+ </div>
+ <div class="chapter-words-hint">预计约 {{ estimatedChapters }} 章{{ chapterWordTarget >= 6000 ? ' · 大章节奏：每章承载完整的线索链与冲突推进' : '' }}</div>
+ </div>
  <label class="expert-mode-toggle">
  <input type="checkbox" v-model="expertMode" :disabled="generationBusy" />
  <span><strong>{{ $t('generate.expertMode') }}</strong><small>{{ $t('generate.expertModeDesc') }}</small></span>
@@ -139,6 +152,9 @@
  </div>
 
  <div v-if="genStatus" class="gen-status" :class="{ ok: genOk }">{{ genStatus }}</div>
+ <div v-if="generationTokenUsage" class="gen-token-usage">
+ 累计 token：输入 {{ formatTokenCount(generationTokenUsage.inputTokens) }} / 输出 {{ formatTokenCount(generationTokenUsage.outputTokens) }}<span v-if="generationTokenUsage.cacheSavedTokens > 0">（缓存命中 {{ formatTokenCount(generationTokenUsage.cacheSavedTokens) }}）</span>
+ </div>
 
  <!-- 生成结果弹框 -->
  <Teleport to="body">
@@ -363,6 +379,7 @@
  <h3 class="outline-modal-title">{{ $t('generate.outlinePreview') }}</h3>
  <p class="outline-modal-desc">{{ $t('generate.outlineDesc') }}</p>
  <textarea v-model="outlineModalText" class="outline-modal-textarea" rows="12"></textarea>
+ <div v-if="outlineTokenUsage" class="outline-modal-token">{{ tokenUsageText(outlineTokenUsage) }}</div>
  <div class="outline-modal-actions">
  <button class="btn btn-secondary" @click="outlineModal=false; outlineReject()">{{ $t('common.cancel') }}</button>
  <button class="btn btn-primary" @click="outlineConfirm()">{{ $t('generate.outlineConfirm') }}</button>
@@ -405,6 +422,8 @@ const worldSetting = ref('')
 const outline = ref('')
 const genMode = ref('book')
 const targetWordCount = ref(50000)
+// 每章字数（整本模式）：影响大纲规模、章节计划与每章输出预算。
+const chapterWordTarget = ref(3000)
 const expertMode = ref(false)
 const initialBlueprint = ref(null)
 const initialBlueprintJson = ref('')
@@ -587,27 +606,47 @@ const outlineModalText = ref('')
 let outlineConfirmCallback = null
 let outlineRejectCallback = null
 
-async function generateOutline(selectedTypeId, charName, worldSetting, wordCount) {
+// 大纲/蓝图生成的单次 token 消耗（接口返回，弹窗与蓝图卡片展示）
+const outlineTokenUsage = ref(null)
+const blueprintTokenUsage = ref(null)
+// 生成过程中的累计 token 消耗（SSE token_usage 事件）
+const generationTokenUsage = ref(null)
+function formatTokenCount(value) {
+ const number = Number(value) || 0
+ if (number >= 1000000) return `${(number / 1000000).toFixed(2)}M`
+ if (number >= 10000) return `${(number / 10000).toFixed(1)}万`
+ if (number >= 1000) return `${(number / 1000).toFixed(1)}k`
+ return String(number)
+}
+function tokenUsageText(usage) {
+ if (!usage) return ''
+ return `消耗：输入 ${formatTokenCount(usage.inputTokens)} / 输出 ${formatTokenCount(usage.outputTokens)} token`
+}
+
+async function generateOutline(selectedTypeId, charName, worldSetting, wordCount, perChapterWords) {
  try {
- const payload = {
- novelTypeId: selectedTypeId,
- protagonistName: charName,
- worldSetting: worldSetting,
- targetWordCount: wordCount,
- personaId: selectedPersonaId.value || undefined,
- }
- // 大纲生成对长篇小说耗时较长，单独加长超时（10分钟），不修改全局默认超时
- const res = await api.post('/novel/generate-outline', payload, { timeout: 600000 })
+  const payload = {
+  novelTypeId: selectedTypeId,
+  protagonistName: charName,
+  worldSetting: worldSetting,
+  targetWordCount: wordCount,
+  chapterWordTarget: perChapterWords || undefined,
+  personaId: selectedPersonaId.value || undefined,
+  }
+ // 大纲生成对长篇小说耗时较长（思考模型需先完成长推理再输出），单独加长超时（20分钟），不修改全局默认超时
+ const res = await api.post('/novel/generate-outline', payload, { timeout: 1200000 })
+ outlineTokenUsage.value = res.data.tokenUsage || null
  return res.data.outline || ''
  } catch (e) {
  console.error('大纲生成失败:', e)
+ outlineTokenUsage.value = null
  return ''
  }
 }
 
-async function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount) {
+async function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, perChapterWords) {
  genStatus.value = $t('generate.outlineGenerating')
- const outline = await generateOutline(selectedTypeId, charName, worldSetting, wordCount)
+ const outline = await generateOutline(selectedTypeId, charName, worldSetting, wordCount, perChapterWords)
  if (!outline) {
  genStatus.value = ''
  return null
@@ -635,12 +674,14 @@ async function generateInitialBlueprint() {
    protagonistName: protagonistName.value,
    worldSetting: worldSetting.value,
    targetWordCount: targetWordCount.value,
+   chapterWordTarget: chapterWordTarget.value,
    outline: outline.value,
    personaId: selectedPersonaId.value || undefined,
-  }, { timeout: 480000 })
+  }, { timeout: 1200000 })
   initialBlueprint.value = res.data.blueprint || null
   initialBlueprintJson.value = JSON.stringify(initialBlueprint.value, null, 2)
   blueprintWarning.value = res.data.warning || ''
+  blueprintTokenUsage.value = res.data.tokenUsage || null
  } catch (e) {
   blueprintSetupError.value = e.response?.data?.message || e.message || '初始蓝图生成失败'
  } finally { blueprintGenerating.value = false }
@@ -668,6 +709,27 @@ function outlineReject() {
 
 const maxWordCount = computed(() => genMode.value === 'chapter' ? 20000 : 10000000)
 
+const chapterWordPresets = [
+ { label: '3000字/章', value: 3000 },
+ { label: '5000字/章', value: 5000 },
+ { label: '8000字/章', value: 8000 },
+ { label: '10000字/章', value: 10000 },
+]
+
+// 输入越界时夹回 [2000, 20000]，与后端 normalizeChapterWordTarget 同口径。
+watch(chapterWordTarget, (value) => {
+ const num = Number(value)
+ if (!Number.isFinite(num)) return
+ const clamped = Math.max(2000, Math.min(20000, Math.round(num)))
+ if (clamped !== value) chapterWordTarget.value = clamped
+})
+
+const estimatedChapters = computed(() => {
+ const total = Number(targetWordCount.value) || 50000
+ const per = Math.max(2000, Math.min(20000, Number(chapterWordTarget.value) || 3000))
+ return Math.max(1, Math.ceil(total / per))
+})
+
 const activePresets = computed(() => {
  if (genMode.value === 'book') return [{ label: '5万字', value: 50000 }, { label: '10万字', value: 100000 }, { label: '30万字', value: 300000 }, { label: '50万字', value: 500000 }]
  return [{ label: '1000字', value: 1000 }, { label: '2000字', value: 2000 }, { label: '3000字', value: 3000 }, { label: '5000字', value: 5000 }]
@@ -679,7 +741,7 @@ async function startGen() {
 
  // 如果没有填写大纲且是整本模式，先生成大纲让用户确认
  if (!outline.value.trim() && genMode.value === 'book') {
- const confirmedOutline = await showOutlineModal(selectedType.value, protagonistName.value, worldSetting.value, targetWordCount.value)
+ const confirmedOutline = await showOutlineModal(selectedType.value, protagonistName.value, worldSetting.value, targetWordCount.value, chapterWordTarget.value)
  if (!confirmedOutline) { preparingGeneration.value = false; return }
  outline.value = confirmedOutline
  }
@@ -708,6 +770,7 @@ async function startGen() {
  protagonistName: protagonistName.value,
  worldSetting: worldSetting.value,
  targetWordCount: targetWordCount.value,
+ chapterWordTarget: genMode.value === 'book' ? chapterWordTarget.value : undefined,
  mode: genMode.value,
  expertMode: expertMode.value,
  outline: outline.value,
@@ -720,11 +783,15 @@ async function startGen() {
  (event) => {
  if (event.type === 'outline') {
  outlineStreamingText.value = event.content
+ if (event.tokenUsage) outlineTokenUsage.value = event.tokenUsage
  } else if (event.type === 'novel_created') {
  genStatus.value = '大纲生成中...'
  generatedNovelId.value = event.novelId || generatedNovelId.value
  } else if (event.type === 'chapter_end') {
  generatedChapterNumber.value = Number(event.chapterNumber || generatedChapterNumber.value)
+ } else if (event.type === 'token_usage') {
+ // 累计 token 用量：不覆盖主状态文案，只更新用量徽标。
+ generationTokenUsage.value = event.usage || null
  } else if (event.type === 'status') {
  genStatus.value = event.message
  } else if (event.type === 'chapter_start') {
@@ -1281,11 +1348,45 @@ onMounted(async () => {
  border-color: var(--primary);
  color: var(--primary);
 }
+/* --- 每章字数（整本模式） --- */
+.chapter-words-input {
+ margin-top: 12px;
+ padding: 10px 12px;
+ border: 1px dashed var(--card-border);
+ border-radius: 8px;
+}
+.chapter-words-label {
+ display: flex;
+ align-items: center;
+ gap: 8px;
+}
+.chapter-words-title {
+ font-size: 13px;
+ font-weight: 600;
+ color: var(--text-primary);
+ white-space: nowrap;
+}
+.chapter-words-label .input {
+ flex: 1;
+ max-width: 140px;
+}
+.chapter-words-hint {
+ margin-top: 6px;
+ font-size: 11px;
+ color: var(--text-light);
+ line-height: 1.45;
+}
 
 /* --- Status --- */
 .gen-status {
  margin-top: 12px;
  text-align: center;
+}
+.gen-token-usage {
+ margin-top: 6px;
+ text-align: center;
+ font-size: 12px;
+ color: var(--text-light);
 }
 
 /* --- Stream Output --- */
@@ -1498,6 +1599,7 @@ onMounted(async () => {
  box-shadow: 0 0 0 3px rgba(63,125,90,0.14);
  outline: none;
 }
+.outline-modal-token { margin-top:8px; font-size:12px; color:var(--text-light); text-align:right; }
 .outline-modal-actions {
  display: flex;
  gap: 10px;

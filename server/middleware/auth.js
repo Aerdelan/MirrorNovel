@@ -14,6 +14,11 @@ const auth = async (req, res, next) => {
     if (!user) {
       return res.status(401).json({ message: '用户不存在' });
     }
+    // 禁用拦截必须放在每次鉴权里：只拦登录的话，已签发的 token 在有效期内
+    // 仍能调用所有受保护接口，禁用形同虚设。
+    if (user.disabled) {
+      return res.status(403).json({ message: '账号已被禁用，请联系管理员', disabled: true });
+    }
 
     req.user = user;
     req.userId = user._id;

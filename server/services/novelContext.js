@@ -221,6 +221,62 @@ ${requestSection}
 6. 每章结束时标注【未完待续】`
 }
 
+// ====== 大纲分层渲染（token 消耗优化） =====
+//
+// 长篇生成时每章都重发整份大纲是最大的 token 黑洞：一份 5 万字大纲约
+// 3.3 万 token，200 章就是数百万 token 的重复输入。分层策略按写作进度
+// 分桶（每 20% 一档），只保留大纲开头的设定/人物与结尾的终局落点——
+// 中段剧情本就由章节计划和动态故事蓝图承载，逐字重发大纲中段没有收益。
+// 关键点：同一进度桶内各章渲染结果逐字节一致，这保证了提示词前缀稳定，
+// 可以命中服务商（DeepSeek/GLM 等）的前缀缓存，命中部分按约 1/10 计价。
+const OUTLINE_TIERS = [
+  { headChars: 8000, tailChars: 2400 }, // 进度 0-20%：保留最完整的开篇信息
+  { headChars: 4200, tailChars: 2400 }, // 20-40%
+  { headChars: 3200, tailChars: 2400 }, // 40-60%
+  { headChars: 2400, tailChars: 2400 }, // 60-80%
+  { headChars: 1800, tailChars: 2800 }, // 80-100%：临近结局，终局细节权重更高
+];
+const OUTLINE_FULL_PASS_LIMIT = 6000;
+
+function softCutHead(text, maxChars) {
+  if (text.length <= maxChars) return text;
+  const cut = text.slice(0, maxChars);
+  const boundary = Math.max(cut.lastIndexOf('\n'), cut.lastIndexOf('。'));
+  return boundary > maxChars * 0.7 ? cut.slice(0, boundary + 1) : cut;
+}
+
+function softCutTail(text, maxChars) {
+  if (text.length <= maxChars) return text;
+  const start = text.length - maxChars;
+  const boundary = [text.indexOf('\n', start), text.indexOf('。', start)]
+    .filter((index) => index > start && index < start + maxChars * 0.3);
+  return boundary.length ? text.slice(boundary[0] + 1) : text.slice(start);
+}
+
+/**
+ * 按写作进度渲染分层大纲。
+ * - 短大纲（<= 6000 字）原样返回，不值得分层；
+ * - 长大纲按进度桶保留“开头 + 结尾”，中段用固定说明替换；
+ * - 同一桶内返回值完全一致（前缀缓存命中条件）。
+ */
+function renderOutlineForContext(outline, currentChapter, totalChapters) {
+  const text = String(outline || '').trim();
+  if (!text || text.length <= OUTLINE_FULL_PASS_LIMIT) return text;
+
+  const total = Math.max(1, Number(totalChapters) || 1);
+  const chapter = Math.max(1, Math.min(Number(currentChapter) || 1, total));
+  const bucket = Math.min(OUTLINE_TIERS.length - 1, Math.floor(((chapter - 1) / total) * OUTLINE_TIERS.length));
+  const tier = OUTLINE_TIERS[bucket];
+
+  if (tier.headChars + tier.tailChars >= text.length) return text;
+
+  const head = softCutHead(text, tier.headChars);
+  const tail = softCutTail(text, tier.tailChars);
+  return `${head}
+…（大纲中段已按当前进度分层省略：已写剧情以“章节剧情脉络/阶段记忆”为准，当前阶段目标以“后续计划摘要”和“动态故事蓝图”为准，结局落点见下方末段）…
+${tail}`;
+}
+
 module.exports = {
   buildAugmentedContext,
   extractActiveCharacters,
@@ -233,6 +289,7 @@ module.exports = {
   buildContextFromDocs,
   buildContextMemoryCheckpoint,
   selectRelevantHistory,
+  renderOutlineForContext,
 }
 
 /**

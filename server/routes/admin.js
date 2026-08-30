@@ -30,21 +30,63 @@ router.get('/dashboard', async (req, res) => {
 
 router.get('/users', async (req, res) => {
   try {
-    const { page = 1, pageSize = 20, keyword } = req.query;
-    const query = keyword ? { $or: [{ email: new RegExp(keyword, 'i') }, { nickname: new RegExp(keyword, 'i') }] } : {};
-    const total = await User.countDocuments(query);
-    const users = await User.find(query).select('-password').sort({ createdAt: -1 }).skip((page - 1) * pageSize).limit(Number(pageSize));
-    res.json({ users, total, page: Number(page), pageSize: Number(pageSize) });
+    const { page = 1, pageSize = 50, keyword } = req.query;
+    // 旧版前端不传分页参数时后端默认只回 20 条，第 21 个用户开始"凭空消失"。
+    // 默认页大小提到 50 并显式返回 total，前端据此渲染分页。
+    const size = Math.min(200, Math.max(1, Number(pageSize) || 50));
+    const query = keyword ? { $or: [{ email: new RegExp(escapeRegExp(keyword), 'i') }, { nickname: new RegExp(escapeRegExp(keyword), 'i') }] } : {};
+    const [total, users] = await Promise.all([
+      User.countDocuments(query),
+      User.find(query).select('-password').sort({ createdAt: -1 }).skip((Number(page) - 1) * size).limit(size).lean(),
+    ]);
+
+    // 每个用户的 token 消耗：聚合其名下所有小说的 tokenUsage 账本。
+    const userIds = users.map((user) => user._id);
+    const novels = await Novel.find({ userId: { $in: userIds } })
+      .select('userId tokenUsage')
+      .lean();
+    const usageByUser = new Map();
+    for (const novel of novels) {
+      const usage = novel.tokenUsage;
+      if (!usage || typeof usage !== 'object') continue;
+      const entry = usageByUser.get(String(novel.userId)) || { inputTokens: 0, outputTokens: 0, cacheSavedTokens: 0, calls: 0, novelCount: 0 };
+      entry.inputTokens += Number(usage.inputTokens) || 0;
+      entry.outputTokens += Number(usage.outputTokens) || 0;
+      entry.cacheSavedTokens += Number(usage.cacheSavedTokens) || 0;
+      entry.calls += Number(usage.calls) || 0;
+      entry.novelCount += 1;
+      usageByUser.set(String(novel.userId), entry);
+    }
+    const usersWithUsage = users.map((user) => ({
+      ...user,
+      tokenUsage: usageByUser.get(String(user._id)) || { inputTokens: 0, outputTokens: 0, cacheSavedTokens: 0, calls: 0, novelCount: 0 },
+    }));
+
+    res.json({ users: usersWithUsage, total, page: Number(page), pageSize: size });
   } catch (error) {
     res.status(500).json({ message: '获取用户列表失败', error: error.message });
   }
 });
+
+function escapeRegExp(text) {
+  return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 router.put('/users/:id', async (req, res) => {
   try {
     const { nickname, role, disabled } = req.body;
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ message: '用户不存在' });
+    // 禁用/降级保护：不能禁用自己，也不能禁用或降级其他管理员——
+    // 否则最后一个管理员被误禁用后整个后台无人能进。
+    if (disabled !== undefined || role !== undefined) {
+      const selfTargeted = String(user._id) === String(req.userId);
+      const adminTargeted = user.role === 'admin';
+      if (selfTargeted) return res.status(400).json({ message: '不能对当前登录的管理员账号执行禁用或降级' });
+      if (adminTargeted && (disabled === true || (role !== undefined && role !== 'admin'))) {
+        return res.status(400).json({ message: '不能禁用或降级其他管理员账号' });
+      }
+    }
     if (nickname !== undefined) user.nickname = nickname;
     if (role !== undefined) user.role = role;
     if (disabled !== undefined) user.disabled = disabled;

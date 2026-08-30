@@ -147,7 +147,9 @@ function parseChapterPlan(rawPlan) {
 function buildFallbackChapterPlan(novel, options = {}) {
   const targetWords = Math.max(3000, Number(options.targetWords || novel?.targetWordCount || 50000));
   const startChapter = Math.max(1, Number(options.startChapter || 1));
-  const totalChapters = Math.max(startChapter, Math.ceil(targetWords / 3000));
+  // 每章字数随作品设定（用户在生成页选择的每章字数，福尔摩斯式大章可到 1 万+）。
+  const chapterWords = Math.max(1200, Math.min(20000, Number(options.chapterWordTarget || novel?.chapterWordTarget || 3000)));
+  const totalChapters = Math.max(startChapter, Math.ceil(targetWords / chapterWords));
   const outline = String(novel?.outline || '').replace(/\s+/g, ' ').trim();
   const phases = [
     { until: 0.18, name: '开端', goal: '建立人物处境、核心目标与第一个明确阻力' },
@@ -164,7 +166,7 @@ function buildFallbackChapterPlan(novel, options = {}) {
     const breathing = !finalChapter && number > 3 && number % 7 === 0;
     chapters.push(normalizePlanChapter({
       chapterNumber: number,
-      wordTarget: 3000,
+      wordTarget: chapterWords,
       phase: phase.name,
       coreEvent: finalChapter
         ? `依据大纲完成主线收束：${outline.slice(0, 120) || '给出主角目标的具体结果'}`
@@ -424,8 +426,12 @@ function getAdaptiveChapterWordTarget(options) {
   const totalWeight = weights.reduce((sum, value) => sum + value, 0) || remainingChapters * fallbackWeight;
   const currentWeight = Number(currentPlan.wordTarget) || fallbackWeight;
   const weightedTarget = Math.round(remainingWords * currentWeight / totalWeight);
+  // 字数带宽要尊重计划自身的尺度：大章计划（如每章 1 万字的长篇悬疑）
+  // 不能被压回 5200 上限，否则每章都会被截短。默认计划维持旧口径。
+  const plannedAverage = Math.round(totalWeight / Math.max(1, remainingPlan.length));
+  const bandCeiling = Math.max(5200, Math.ceil(plannedAverage * 1.4));
   const minTarget = Math.max(500, Math.min(1800, Math.floor(remainingWords / remainingChapters * 0.6)));
-  const maxTarget = Math.max(2600, Math.min(5200, Math.ceil(remainingWords / remainingChapters * 1.75)));
+  const maxTarget = Math.max(2600, Math.min(bandCeiling, Math.ceil(remainingWords / remainingChapters * 1.75)));
   return Math.max(minTarget, Math.min(maxTarget, weightedTarget));
 }
 
@@ -433,8 +439,10 @@ function getChapterOutputTokenLimit(wordTarget) {
   // Chinese prose normally consumes more tokens than characters on the
   // configured providers. This cap prevents one abnormal chapter from using a
   // large share of a long-book budget while leaving reasonable headroom.
+  // 大章（如每章 1 万+ 字的长篇悬疑）需要按比例抬高的输出预算，否则正文
+  // 会在中途被 max_tokens 截断；24000 token 约对应 1.7 万字，覆盖上限。
   const target = Math.max(1, Number(wordTarget) || 1800);
-  return Math.max(2200, Math.min(7600, Math.ceil(target * 1.35)));
+  return Math.max(2200, Math.min(24000, Math.ceil(target * 1.35)));
 }
 
 /** Return the concrete blockers that prevent a planned long-form work ending. */

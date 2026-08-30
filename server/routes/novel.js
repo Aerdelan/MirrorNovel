@@ -11,7 +11,7 @@ const { typeTemplates, buildTemplatePrompt } = novelTemplates;
 const {
   buildSystemPrompt, buildPersonaPrompt: importedBuildPersonaPrompt, buildInitialPrompt, buildContinuePrompt,
   buildImportContinuePrompt, buildOutlinePrompt, getOutlineRequirements, buildOutlineSpec, getChapterPlanOutputTokens,
-  buildChapterPlan, buildStoryStateSummary, buildGenreStyleContract,
+  buildChapterPlan, buildStoryStateSummary, buildGenreStyleContract, normalizeChapterWordTarget,
   buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, extractChapterSummary,
   streamGenerate, resolveApiConfig, countTokens, humanizeRewrite, getFriendlyErrorMessage,
 } = require('../services/aiService');
@@ -52,7 +52,9 @@ const {
   updateForeshadowingDoc,
   buildContextMemoryCheckpoint,
   selectRelevantHistory,
+  renderOutlineForContext,
 } = require('../services/novelContext');
+const { recordTokenUsage, usageSnapshot, callUsageStats } = require('../services/tokenUsage');
 const { processChapter } = require('../services/chapterToolchain');
 const { runEditorialPipeline, STAGES } = require('../services/editorialEngine');
 const {
@@ -156,7 +158,7 @@ function notifyBlueprintProposal(user, novel, proposal) {
   });
 }
 
-async function createStoryBlueprintProposal({ user, novel, persona, signal }) {
+async function createStoryBlueprintProposal({ user, novel, persona, signal, onUsage }) {
   if ((novel.storyBlueprintProposals || []).some((proposal) => proposal.status === 'pending')) return null;
   const chapterNumber = getHighestChapterNumber(novel);
   const totalChapters = getTotalPlannedChapters(parseChapterPlan(novel.chapterPlanData || novel.chapterPlan || ''), novel.targetWordCount, chapterNumber);
@@ -203,9 +205,10 @@ ${(novel.plotThreads || []).map((thread) => `${thread.title || thread.id}：${th
     resolveApiConfig(user?.modelConfig, 'reasoning'),
     1,
     0.3,
-    2200,
-    60000
+    8000,
+    300000
   );
+  onUsage && onUsage('reasoning', result);
   const parsed = parseJsonObject(result.content);
   if (!parsed) throw new Error('剧情蓝图审核返回格式无效');
   blueprint.lastReviewedChapter = chapterNumber;
@@ -224,6 +227,8 @@ ${(novel.plotThreads || []).map((thread) => `${thread.title || thread.id}：${th
     affectedChapters: Array.from(new Set((Array.isArray(parsed.affectedChapters) ? parsed.affectedChapters : []).map(Number).filter((number) => number > chapterNumber && number <= totalChapters))).slice(0, 30),
     changes,
     proposedBlueprint,
+    // 蓝图提案的单次 token 用量，前端提案卡片展示。
+    tokenUsage: callUsageStats(result),
   };
   if (!Array.isArray(novel.storyBlueprintProposals)) novel.storyBlueprintProposals = [];
   novel.storyBlueprintProposals.push(proposal);
@@ -247,11 +252,90 @@ function getTotalPlannedChapters(planData, targetWordCount, completedChapterNumb
   return Math.max(Number(completedChapterNumber || 0) + 1, Math.ceil(target / 3000));
 }
 
+// 仅当用户显式传入每章字数时才覆盖默认 3000，避免把空值/0 当成有效设置。
+function isFiniteChapterWordTarget(value) {
+  return Number.isFinite(Number(value)) && Number(value) > 0;
+}
+
 function getChapterTemperature(contract) {
   const tension = Number(contract?.emotion?.tension || 6);
   const value = Math.max(0.72, Math.min(0.86, 0.78 + (tension - 5) * 0.012));
   // Some OpenAI-compatible providers reject a temperature with over two decimals.
   return Number(value.toFixed(2));
+}
+
+// ====== 章节提示词组装（token 缓存友好的固定顺序） =====
+//
+// 请求前缀的稳定顺序：system（全书固定）→ user 头部（类型/主角/世界观 +
+// 分层大纲 + 阶段记忆 + 开放剧情线，同一进度桶内逐字节一致）→ 逐章变化的
+// 契约与计划。DeepSeek/GLM 等服务商按前缀缓存命中计费（约 1/10 价格），
+// 把稳定内容前置可以直接换算成账单折扣。
+function buildStableChapterHead({ typeName, protagonistName, worldSetting, contextFromDocs }) {
+  return `请继续创作这部${typeName}小说。
+
+主角：${protagonistName || '未设定'}
+世界观：${worldSetting || '自由发挥'}
+
+【已写内容与当前状态】
+${contextFromDocs || '（故事开场，先建立人物当下处境。）'}`;
+}
+
+function buildChapterTail({ contract, planData, ch, novel, totalPlannedChapters, currentTotal, targetWordCount, variant }) {
+  return `
+【后续计划摘要】
+${renderPlanForContext(planData, ch) || '按故事主线自然推进。'}
+
+${renderChapterContract(contract)}
+
+${renderStoryBlueprintForContext(novel, ch, totalPlannedChapters)}
+
+          当前总字数：${currentTotal}/${targetWordCount}。即使总字数已经达到目标，也必须完成本章计划与所有后续章节，不能提前写结局。
+写作要求：
+${variant}`;
+}
+
+// 记账 + 通过 SSE 向前端披露累计 token 用量。记账失败不影响生成主流程。
+// chapterStats：可选的收集容器；传入时把单次调用用量按角色追加进去，
+// 供调用方在章节落库时写进 qualityReport.tokens（逐章展示用）。
+function emitTokenUsage(res, novel, role, stats, chapterStats) {
+  let snapshot;
+  try {
+    snapshot = recordTokenUsage(novel, role, stats);
+  } catch (error) {
+    console.warn('[TokenUsage] 记账失败:', error.message);
+    return null;
+  }
+  if (!snapshot) return null;
+  if (chapterStats && typeof chapterStats === 'object') {
+    const entry = chapterStats[role] || (chapterStats[role] = { inputTokens: 0, outputTokens: 0, cacheSavedTokens: 0, calls: 0 });
+    const call = callUsageStats(stats);
+    entry.inputTokens += call.inputTokens;
+    entry.outputTokens += call.outputTokens;
+    entry.cacheSavedTokens += call.cacheSavedTokens;
+    entry.calls += 1;
+  }
+  try { res.write(`data: ${JSON.stringify({ type: 'token_usage', role, usage: snapshot })}\n\n`); } catch {}
+  return snapshot;
+}
+
+/**
+ * 把单章各角色用量汇总为 qualityReport.tokens 结构（含合计）。
+ * 前端逐章展示："输入 X / 输出 Y token（含审稿/修订）"。
+ */
+function summarizeChapterTokens(chapterStats) {
+  if (!chapterStats || typeof chapterStats !== 'object') return null;
+  const roles = Object.entries(chapterStats).filter(([, v]) => v && v.calls > 0);
+  if (!roles.length) return null;
+  const byRole = {};
+  let inputTokens = 0, outputTokens = 0, cacheSavedTokens = 0, calls = 0;
+  for (const [role, value] of roles) {
+    byRole[role] = { ...value };
+    inputTokens += value.inputTokens || 0;
+    outputTokens += value.outputTokens || 0;
+    cacheSavedTokens += value.cacheSavedTokens || 0;
+    calls += value.calls || 0;
+  }
+  return { inputTokens, outputTokens, cacheSavedTokens, calls, byRole };
 }
 
 function formatChapterTitle(chapterNumber, shortTitle) {
@@ -387,7 +471,7 @@ function applyChapterRevision(novel, chapterNumber, content, { source = 'manual'
   return { chapter, continuity, originalLength: originalContent.length, finalLength: finalContent.length };
 }
 
-async function runExpertReview({ user, content, contract, signal, onStatus, persona }) {
+async function runExpertReview({ user, content, contract, signal, onStatus, persona, onUsage }) {
   const original = String(content || '').trim();
   if (original.length < 500) return { content: original, review: null };
 
@@ -426,9 +510,10 @@ ${reviewSource}`;
       resolveApiConfig(user?.modelConfig, 'reasoning'),
       0,
       0.25,
-      1200,
-      30000
+      8000,
+      300000
     );
+    onUsage && onUsage('reasoning', reviewResult);
   } catch (error) {
     console.warn('[Expert] 审稿失败，保留原稿:', error.message);
     return { content: original, review: null };
@@ -465,8 +550,9 @@ ${original}
       1,
       0.55,
       getChapterOutputTokenLimit(Math.ceil(original.length * 0.9)),
-      60000
+      600000
     );
+    onUsage && onUsage('polish', revised);
     const revisedText = String(revised?.content || '').trim();
     if (revisedText.length >= Math.max(500, original.length * 0.55)) {
       return { content: revisedText, review: report };
@@ -553,7 +639,7 @@ function ensureExecutableChapterPlan(novel, targetWordCount) {
   let plan = prepareCreativeState(novel);
   if (plan.chapters.length || !String(novel.outline || '').trim()) return plan;
 
-  plan = buildFallbackChapterPlan(novel, { targetWords: targetWordCount });
+  plan = buildFallbackChapterPlan(novel, { targetWords: targetWordCount, chapterWordTarget: novel.chapterWordTarget });
   novel.chapterPlanData = plan;
   if (!String(novel.chapterPlan || '').trim()) {
     novel.chapterPlan = JSON.stringify(plan);
@@ -576,7 +662,7 @@ router.get('/types/full', (req, res) => {
 // 单独生成大纲（同步返回，供前端弹窗确认使用）
 router.post('/generate-outline', auth, async (req, res) => {
   try {
-    const { novelTypeId, protagonistName, worldSetting, targetWordCount, personaId } = req.body;
+    const { novelTypeId, protagonistName, worldSetting, targetWordCount, personaId, chapterWordTarget } = req.body;
     if (!novelTypeId) return res.status(400).json({ message: '请选择小说类型' });
 
     let type = novelTypes.find(t => t.id === novelTypeId || t.name === novelTypeId);
@@ -592,21 +678,24 @@ router.post('/generate-outline', auth, async (req, res) => {
 
     let outlinePrompt;
     const persona = personaId ? await resolveNovelPersona(req.user.id, null, personaId) : null;
-    outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona);
+    // 大纲按每章字数估算章数并给出对应的大章节奏指导。
+    const chapterWords = normalizeChapterWordTarget(chapterWordTarget);
+    outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona, chapterWords);
 
     const systemPrompt = `你是一位专业的小说大纲策划师。${buildPersonaPrompt(persona, { includeDeslop: false })}`;
 
-    const outlineRequirements = getOutlineRequirements(targetWordCount);
+    const outlineRequirements = getOutlineRequirements(targetWordCount, chapterWords);
     const result = await streamGenerate(
       systemPrompt, outlinePrompt, null, null,
       resolveApiConfig(req.user?.modelConfig, 'outline'),
-      2, 0.82, outlineRequirements.outputTokens, 600000
+      2, 0.82, outlineRequirements.outputTokens, 1200000
     );
 
     const outline = result.content || '';
     if (!outline) return res.status(500).json({ message: '大纲生成失败' });
 
-    res.json({ outline });
+    // 大纲是独立调用（尚无小说文档可记账），把单次用量随响应返回供前端展示。
+    res.json({ outline, tokenUsage: callUsageStats(result) });
   } catch (error) {
     console.error('大纲生成失败:', error);
     res.status(500).json({ message: '大纲生成失败', error: error.message });
@@ -616,17 +705,18 @@ router.post('/generate-outline', auth, async (req, res) => {
 // 生成页使用的初始故事蓝图：在创建小说前确认，不写入数据库，不会静默改变剧情。
 router.post('/generate-blueprint', auth, async (req, res) => {
   try {
-    const { novelTypeId, protagonistName, worldSetting, targetWordCount, outline, personaId } = req.body || {};
+    const { novelTypeId, protagonistName, worldSetting, targetWordCount, outline, personaId, chapterWordTarget } = req.body || {};
     if (!novelTypeId || !String(outline || '').trim()) return res.status(400).json({ message: '请先提供小说类型和大纲' });
     const target = Number(targetWordCount) || 50000;
+    const chapterWords = normalizeChapterWordTarget(chapterWordTarget);
     const persona = await resolveNovelPersona(req.userId, null, personaId);
-    const totalChapters = Math.max(1, Math.ceil(target / 3000));
-    const blueprintRequirements = getOutlineRequirements(target);
+    const totalChapters = Math.max(1, Math.ceil(target / chapterWords));
+    const blueprintRequirements = getOutlineRequirements(target, chapterWords);
     const prompt = `请为一部${novelTypeId}长篇小说制定“初始故事蓝图”，用于用户确认后再开始正文。蓝图必须补足大纲中没有展开的主要人物支线、主线侧枝、阶段目标、阶段阻力和可选反转，但不得违背大纲、世界观或已经确定的结局。不要把具体正文写进蓝图，也不要把每一章写成流水账。
 
 【主角】${protagonistName || '未设定'}
 【世界观】${worldSetting || '由大纲决定'}
-【目标字数】约${target}字，预计${totalChapters}章
+【目标字数】约${target}字，预计${totalChapters}章（每章约${chapterWords}字）
 【用户确认的大纲】
 ${String(outline).slice(0, 12000)}
 
@@ -642,7 +732,7 @@ ${String(outline).slice(0, 12000)}
       1,
       0.35,
       Math.max(2600, Math.min(12000, blueprintRequirements.phaseCount * 900)),
-      360000
+      900000
     );
     const rawContent = String(result.content || '').trim();
     if (!rawContent) return res.status(502).json({ message: '蓝图模型没有返回内容，请重试' });
@@ -668,7 +758,7 @@ ${String(outline).slice(0, 12000)}
     blueprint.lastReviewedChapter = 0;
     blueprint.autoReviewEnabled = false;
     blueprint.emailReminderEnabled = true;
-    res.json({ blueprint, warning: blueprintShapeValid ? '' : '模型返回格式异常，已根据已确认大纲生成保守蓝图，可直接编辑后确认' });
+    res.json({ blueprint, tokenUsage: callUsageStats(result), warning: blueprintShapeValid ? '' : '模型返回格式异常，已根据已确认大纲生成保守蓝图，可直接编辑后确认' });
   } catch (error) {
     console.error('[Blueprint] 初始蓝图生成失败:', error.message);
     res.status(error.isApiError ? 503 : 500).json({ message: error.isApiError ? error.message : '初始蓝图生成失败，请稍后重试' });
@@ -682,6 +772,11 @@ router.post('/generate', auth, async (req, res) => {
     let { novelTypeId, protagonistName, worldSetting, targetWordCount, personaId, storyBlueprint } = req.body;
     if (!novelTypeId) return res.status(400).json({ message: '请选择小说类型' });
     targetWordCount = Number(targetWordCount) || 50000;
+    // 每章字数是整本模式可选参数：影响大纲规模、章节计划、输出 token 预算
+    // 和兜底计划。未传时维持 3000 字/章的旧口径。
+    const chapterWordTarget = isFiniteChapterWordTarget(req.body.chapterWordTarget)
+      ? normalizeChapterWordTarget(req.body.chapterWordTarget)
+      : 3000;
     // 支持新旧两种类型系统：先用旧 ID 查找，失败则用名称匹配
     let type = novelTypes.find(t => t.id === novelTypeId || t.name === novelTypeId);
     if (!type) {
@@ -706,11 +801,12 @@ router.post('/generate', auth, async (req, res) => {
       novelTypeId, novelTypeName: type.name,
       protagonistName: protagonistName || '', worldSetting: worldSetting || '',
       targetWordCount,
+      chapterWordTarget,
       expertMode,
       status: 'generating', batchIndex: 0,
     });
     if (storyBlueprint && typeof storyBlueprint === 'object') {
-      const normalizedBlueprint = normalizeProposedBlueprint(storyBlueprint, novel, Math.max(1, Math.ceil(targetWordCount / 3000)));
+      const normalizedBlueprint = normalizeProposedBlueprint(storyBlueprint, novel, Math.max(1, Math.ceil(targetWordCount / chapterWordTarget)));
       normalizedBlueprint.version = 1;
       novel.storyBlueprint = normalizedBlueprint;
       novel.markModified('storyBlueprint');
@@ -787,29 +883,33 @@ ${tmpl.dynamicPrompt}
     let outline = req.body.outline || '';
     let outlineHb = null;
     if (isBook && !outline) {
-      res.write(`data: ${JSON.stringify({ type: 'status', message: '正在根据您的设定生成创作大纲（可能需要1-3分钟）...' })}\n\n`);
-      const outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona);
+      res.write(`data: ${JSON.stringify({ type: 'status', message: '正在根据您的设定生成创作大纲（大部头作品可能需要10分钟以上）...' })}\n\n`);
+      const outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona, chapterWordTarget);
       try {
         outlineHb = setInterval(() => {
           try { res.write(': outline-heartbeat\n\n'); } catch { clearInterval(outlineHb); }
         }, 10000);
         const ac = new AbortController();
-        const t = setTimeout(() => { try { ac.abort(); } catch {}; console.log('大纲生成超时(300s)'); }, 300000);
+        const t = setTimeout(() => { try { ac.abort(); } catch {}; console.log('大纲生成超时(900s)'); }, 900000);
         const outlineResult = await streamGenerate(
           `你是一位专业的小说大纲策划师。${buildPersonaPrompt(persona, { includeDeslop: false })}`,
           outlinePrompt, null, ac.signal,
           resolveApiConfig(req.user?.modelConfig, 'outline'),
           2,
           0.82,
-          getOutlineRequirements(targetWordCount).outputTokens,
-          300000
+          getOutlineRequirements(targetWordCount, chapterWordTarget).outputTokens,
+          870000
         );
+        emitTokenUsage(res, novel, 'outline', outlineResult);
         clearTimeout(t); clearInterval(outlineHb); outlineHb = null;
         outline = outlineResult.content || '';
         if (outline) {
           novel.outline = outline;
+          // 大纲级 token 标注：单次输入/输出量随 outline 事件返回给前端。
+          novel.outlineTokenUsage = callUsageStats(outlineResult);
+          novel.markModified('outlineTokenUsage');
           await novel.save();
-          res.write(`data: ${JSON.stringify({ type: 'outline', content: outline })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: 'outline', content: outline, tokenUsage: novel.outlineTokenUsage })}\n\n`);
           res.write(`data: ${JSON.stringify({ type: 'status', message: '大纲已生成，开始创作正文...' })}\n\n`);
         } else {
           throw new Error('大纲内容为空');
@@ -826,7 +926,7 @@ ${tmpl.dynamicPrompt}
 
     // 初始化一份保守的动态故事蓝图。它只复述用户已确认的信息，不增加
     // 隐形剧情；后续细化必须通过书内提案确认。
-    ensureStoryBlueprint(novel, Math.max(1, Math.ceil(targetWordCount / 3000)));
+    ensureStoryBlueprint(novel, Math.max(1, Math.ceil(targetWordCount / chapterWordTarget)));
     novel.markModified('storyBlueprint');
     await novel.save();
 
@@ -837,11 +937,13 @@ ${tmpl.dynamicPrompt}
     if (isBook && outline) {
       try {
         res.write(`data: ${JSON.stringify({ type: 'status', message: '正在制定章节计划表...' })}\n\n`);
-        const planPrompt = buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, persona, novel.storyBlueprint);
+        const planPrompt = buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, persona, novel.storyBlueprint, chapterWordTarget);
 
-        // 用 AbortController 施加超时 + 心跳保证连接不断
+        // 用 AbortController 施加超时 + 心跳保证连接不断。
+        // 思考型线路（reasoning 路由）思考阶段可能远超旧 45s/150s 预算，
+        // 放宽到 120s/600s；有蓝图时本地兜底计划可接管，不再卡死流程。
         const planController = new AbortController();
-        const planTimeoutMs = hasConfirmedBlueprint ? 45000 : 150000;
+        const planTimeoutMs = hasConfirmedBlueprint ? 120000 : 600000;
         const planTimeout = setTimeout(() => {
           console.log(`章节计划表生成超时(${Math.round(planTimeoutMs / 1000)}s)，将使用可用计划继续`);
           planController.abort();
@@ -855,9 +957,11 @@ ${tmpl.dynamicPrompt}
           planPrompt, null, planController.signal,
           resolveApiConfig(req.user?.modelConfig, 'reasoning'),
           1, 0.82,
-          typeof getChapterPlanOutputTokens === 'function' ? getChapterPlanOutputTokens(targetWordCount) : 16384,
+          typeof getChapterPlanOutputTokens === 'function' ? getChapterPlanOutputTokens(targetWordCount, chapterWordTarget) : 16384,
           planTimeoutMs
         ).finally(() => { clearTimeout(planTimeout); clearInterval(heartbeat); });
+
+        emitTokenUsage(res, novel, 'reasoning', planResult);
 
         if (planResult && planResult.content) {
           chapterPlan = planResult.content;
@@ -908,16 +1012,21 @@ ${tmpl.dynamicPrompt}
     /** 生成并保存一个章节 */
     async function generateOneChapter(chNum, prompt, contract) {
       let buffer = '';
+      // 本章各角色 token 用量（正文 + 专家审稿/修订），落库到 qualityReport.tokens。
+      const chapterTokenStats = {};
 
       try { res.write(`data: ${JSON.stringify({ type: 'chapter_start', chapterNumber: chNum, title: formatChapterTitle(chNum, contract?.title) })}\n\n`); } catch {}
 
       // 温度随章节压力稳定变化，避免每章随机切换作者声线。
       const chapterTemp = getChapterTemperature(contract);
 
-      await streamGenerate(systemPrompt, prompt, (chunk) => {
+      const genResult = await streamGenerate(systemPrompt, prompt, (chunk) => {
         buffer += chunk;
         try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
-      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget), undefined, createThinkingEmitter(res));
+      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget), 900000, createThinkingEmitter(res));
+
+      // 记录本章正文生成的实际 token 用量（含服务商前缀缓存命中数据）。
+      emitTokenUsage(res, novel, 'writing', genResult, chapterTokenStats);
 
       let chapterContent = buffer;
       let expertReview = null;
@@ -926,6 +1035,7 @@ ${tmpl.dynamicPrompt}
           user: req.user, novel, content: buffer, contract, signal: abortController.signal,
           persona,
           onStatus: (message) => { try { res.write(`data: ${JSON.stringify({ type: 'status', message })}\n\n`); } catch {} },
+          onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats, chapterTokenStats),
         });
         chapterContent = expertResult.content;
         expertReview = expertResult.review;
@@ -941,6 +1051,15 @@ ${tmpl.dynamicPrompt}
         contract,
         protagonistName,
       });
+      // 章节级 token 标注：写入 qualityReport.tokens（Mixed 字段，无需迁移）。
+      const chapterTokens = summarizeChapterTokens(chapterTokenStats);
+      if (chapterTokens) {
+        const savedChapter = novel.chapters[novel.chapters.length - 1];
+        if (savedChapter) {
+          savedChapter.qualityReport.tokens = chapterTokens;
+          novel.markModified('chapters');
+        }
+      }
       if (expertReview) {
         const savedChapter = novel.chapters[novel.chapters.length - 1];
         savedChapter.qualityReport.expert = expertReview;
@@ -981,7 +1100,7 @@ ${tmpl.dynamicPrompt}
 
           // 近期摘要和伏笔来自已落库状态；计划单独以紧凑结构注入。
           const contextFromDocs = buildContextFromDocs(
-            novel.chapterSummaryDoc, novel.foreshadowingDoc, outline, '', ch,
+            novel.chapterSummaryDoc, novel.foreshadowingDoc, renderOutlineForContext(outline, ch, totalPlannedChapters), '', ch,
             lastChapterContent ? extractChapterSummary(lastChapterContent) : '',
             {
               contextMemory: novel.contextMemory,
@@ -994,35 +1113,25 @@ ${tmpl.dynamicPrompt}
             }
           );
 
-          const chPrompt = `请继续创作这部${type.name}小说。
-
-主角：${protagonistName || '未设定'}
-世界观：${worldSetting || '自由发挥'}
-
-【已写内容与当前状态】
-${contextFromDocs || '（故事开场，先建立人物当下处境。）'}
-
-【后续计划摘要】
-${renderPlanForContext(planData, ch) || '按故事主线自然推进。'}
-
-${renderChapterContract(contract)}
-
-${renderStoryBlueprintForContext(novel, ch, totalPlannedChapters)}
-
-          当前总字数：${currentTotal}/${targetWordCount}。即使总字数已经达到目标，也必须完成本章计划与所有后续章节，不能提前写结局。
-写作要求：
-1. 只完成本章的唯一核心事件，并让因果、人物选择和章末状态自然衔接。
+          // 稳定头部（大纲/阶段记忆/剧情线）前置以命中服务商前缀缓存，
+          // 逐章变化的契约与字数状态放在尾部。
+          const chPrompt = `${buildStableChapterHead({ typeName: type.name, protagonistName, worldSetting, contextFromDocs })}
+${buildChapterTail({
+            contract, planData, ch, novel, totalPlannedChapters,
+            currentTotal, targetWordCount,
+            variant: `1. 只完成本章的唯一核心事件，并让因果、人物选择和章末状态自然衔接。
 2. 用具体动作、感官和可见后果推进，不复述前情，不用抽象总结代替戏剧动作。
 3. 对话应符合角色认知、关系和当下情绪，保留潜台词与停顿，但不要靠随机吐槽、走神或口头禅伪造人味。
 4. 段落与句长随场景自然变化；沉重题材的喘息只能服务关系、信息或伏笔，不能突兀搞笑。
-5. 不输出章节标题、提纲、说明或“【未完待续】”标签；结尾给出具体的下一步、未解问题或情绪余波。`;
+5. 不输出章节标题、提纲、说明或“【未完待续】”标签；结尾给出具体的下一步、未解问题或情绪余波。`,
+          })}`;
 
           const genResult = await generateOneChapter(ch, chPrompt, contract);
           lastChapterContent = genResult.content;
           currentChapterNum = ch + 1;
           if (novel.storyBlueprint?.autoReviewEnabled && ch % 6 === 0) {
             try {
-              const proposal = await createStoryBlueprintProposal({ user: req.user, novel, persona, signal: abortController.signal });
+              const proposal = await createStoryBlueprintProposal({ user: req.user, novel, persona, signal: abortController.signal, onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats) });
               if (proposal) {
                 await novel.save();
                 notifyBlueprintProposal(req.user, novel, proposal);
@@ -1195,15 +1304,18 @@ router.post('/continue/:novelId', auth, async (req, res) => {
     /** 生成并保存一个章节（内部函数） */
     async function generateOneChapter(chNum, prompt, contract) {
       let buffer = '';
+      const chapterTokenStats = {};
 
       try { res.write(`data: ${JSON.stringify({ type: 'chapter_start', chapterNumber: chNum, title: formatChapterTitle(chNum, contract?.title) })}\n\n`); } catch {}
 
       const chapterTemp = getChapterTemperature(contract);
 
-      await streamGenerate(systemPrompt, prompt, (chunk) => {
+      const contResult = await streamGenerate(systemPrompt, prompt, (chunk) => {
         buffer += chunk;
         try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
-      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget), undefined, createThinkingEmitter(res));
+      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget), 900000, createThinkingEmitter(res));
+
+      emitTokenUsage(res, novel, 'writing', contResult, chapterTokenStats);
 
       let chapterContent = buffer;
       let expertReview = null;
@@ -1212,6 +1324,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
           user: req.user, novel, content: buffer, contract, signal: abortController.signal,
           persona,
           onStatus: (message) => { try { res.write(`data: ${JSON.stringify({ type: 'status', message })}\n\n`); } catch {} },
+          onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats, chapterTokenStats),
         });
         chapterContent = expertResult.content;
         expertReview = expertResult.review;
@@ -1227,6 +1340,14 @@ router.post('/continue/:novelId', auth, async (req, res) => {
         contract,
         protagonistName,
       });
+      const chapterTokens = summarizeChapterTokens(chapterTokenStats);
+      if (chapterTokens) {
+        const savedChapter = novel.chapters[novel.chapters.length - 1];
+        if (savedChapter) {
+          savedChapter.qualityReport.tokens = chapterTokens;
+          novel.markModified('chapters');
+        }
+      }
       if (expertReview) {
         const savedChapter = novel.chapters[novel.chapters.length - 1];
         savedChapter.qualityReport.expert = expertReview;
@@ -1307,7 +1428,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
             previousChapter: novel.chapters.length ? novel.chapters[novel.chapters.length - 1] : null,
           });
           const contextFromDocs = (novel.chapterSummaryDoc || novel.foreshadowingDoc)
-            ? buildContextFromDocs(novel.chapterSummaryDoc, novel.foreshadowingDoc, outline, '', ch, '', {
+            ? buildContextFromDocs(novel.chapterSummaryDoc, novel.foreshadowingDoc, renderOutlineForContext(outline, ch, totalPlannedChapters), '', ch, '', {
               contextMemory: novel.contextMemory,
               relevantHistory: selectRelevantHistory(
                 novel.chapters,
@@ -1318,32 +1439,21 @@ router.post('/continue/:novelId', auth, async (req, res) => {
             })
             : buildAugmentedContext(novel.chapters);
 
-          const chPrompt = `请继续创作这部${typeName}小说。
-
-主角：${protagonistName || '未设定'}
-世界观：${worldSetting || '自由发挥'}
-
-【已写内容与当前状态】
-${contextFromDocs || '（故事开场，先建立人物当下处境。）'}
-
-【后续计划摘要】
-${renderPlanForContext(planData, ch) || '按故事主线自然推进。'}
-
-${renderChapterContract(contract)}
-
-${renderStoryBlueprintForContext(novel, ch, totalPlannedChapters)}
-
-          当前总字数：${curTotal}/${targetWordCount}。即使总字数已经达到目标，也必须完成本章计划与所有后续章节，不能提前写结局。
-写作要求：
-1. 只完成本章唯一核心事件，推进至少一条主线或关系线，不复述已有剧情。
+          // 与 /generate 相同的稳定前缀布局：全书固定信息前置，逐章契约后置。
+          const chPrompt = `${buildStableChapterHead({ typeName, protagonistName, worldSetting, contextFromDocs })}
+${buildChapterTail({
+            contract, planData, ch, novel, totalPlannedChapters,
+            currentTotal: curTotal, targetWordCount,
+            variant: `1. 只完成本章唯一核心事件，推进至少一条主线或关系线，不复述已有剧情。
 2. 通过行动、因果和人物选择衔接上一章；避免百科式解释、空泛升华和流水账。
 3. 对话要符合人物认知与关系，有潜台词和自然停顿，但不靠随机吐槽或突兀搞笑制造人味。
-4. 重题材的喘息内容必须带来关系、信息或伏笔变化；不输出标题、提纲或“【未完待续】”标签。`;
+4. 重题材的喘息内容必须带来关系、信息或伏笔变化；不输出标题、提纲或“【未完待续】”标签。`,
+          })}`;
 
           await generateOneChapter(ch, chPrompt, contract);
           if (novel.storyBlueprint?.autoReviewEnabled && ch % 6 === 0) {
             try {
-              const proposal = await createStoryBlueprintProposal({ user: req.user, novel, persona, signal: abortController.signal });
+              const proposal = await createStoryBlueprintProposal({ user: req.user, novel, persona, signal: abortController.signal, onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats) });
               if (proposal) {
                 await novel.save();
                 notifyBlueprintProposal(req.user, novel, proposal);
@@ -1585,7 +1695,7 @@ router.post('/continue-import', auth, async (req, res) => {
         },
         abortController.signal,
         resolveApiConfig(req.user?.modelConfig, 'writing'),
-        2, 0.85, 16384, 90000, createThinkingEmitter(res)
+        2, 0.85, 16384, 900000, createThinkingEmitter(res)
       );
 
       if (abortController.signal.aborted) {
@@ -1962,7 +2072,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
         appendBuffer += chunk;
         if (Date.now() - lastAutoSave > 5000) saveAppendProgress();
         res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`);
-      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, 0.85, 16384, 90000, createThinkingEmitter(res));
+      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, 0.85, 16384, 900000, createThinkingEmitter(res));
 
       if (abortController.signal.aborted) {
         activeStreams.delete(streamKey);
@@ -2104,7 +2214,8 @@ router.post('/deslop', auth, async (req, res) => {
       userPrompt,
       null,
       null,
-      resolveApiConfig(req.user?.modelConfig, 'polish')
+      resolveApiConfig(req.user?.modelConfig, 'polish'),
+      2, 0.85, undefined, 600000
     );
 
     res.json({ original: text, processed: processChapter(result.content).text });
@@ -2147,7 +2258,7 @@ router.post('/deslop-stream', auth, async (req, res) => {
           fullContent += chunk;
           res.write(`data: ${JSON.stringify({ type: 'content', content: chunk, pass: 1 })}\n\n`);
         },
-        null, apiConfig, 2, 0.92
+        null, apiConfig, 2, 0.92, undefined, 600000
       );
       if (result1 && result1.content && result1.content.length > text.length * 0.3) {
         fullContent = result1.content;
@@ -2193,7 +2304,7 @@ ${fullContent}`;
           finalContent += chunk;
           res.write(`data: ${JSON.stringify({ type: 'content', content: chunk, pass: 2 })}\n\n`);
         },
-        null, apiConfig, 2, 0.95
+        null, apiConfig, 2, 0.95, undefined, 600000
       );
 
       if (finalContent && finalContent.length > fullContent.length * 0.3) {
@@ -2299,7 +2410,7 @@ ${genreHint}\n${genreContract}${buildPersonaPrompt(persona)}`;
 ${text.slice(0, 8000)}`,
           null, abortController.signal,
           resolveApiConfig(req.user?.modelConfig, 'polish'),
-          1, 0.3, 600, 30000
+          1, 0.3, 8000, 300000
         );
         try {
           let raw = (diagResult?.content || '').replace(/```json|```/g, '').trim();
@@ -2648,7 +2759,7 @@ ${content}
 3. 关键字用逗号分隔，每类至少 2-3 个人物/场景
 4. 关键字可直接用于 AI 图像生成提示词的拼接`;
 
-    const result = await streamGenerate(systemPrompt, userPrompt, null, null, resolveApiConfig(req.user?.modelConfig, 'reasoning'));
+    const result = await streamGenerate(systemPrompt, userPrompt, null, null, resolveApiConfig(req.user?.modelConfig, 'reasoning'), 2, 0.7, 4000, 300000);
 
     if (!result || !result.content) {
       return res.status(500).json({ message: '关键字生成失败' });
@@ -2706,7 +2817,7 @@ async function runOptimizeTask(novelId, userId, apiConfig) {
     );
     const analysisResult = await streamGenerate(
       '你是一位专业的小说编辑。请分析小说全文，找出所有问题。',
-      analysisPrompt, null, null, apiConfig
+      analysisPrompt, null, null, apiConfig, 2, 0.5, 8000, 300000
     );
     const analysis = analysisResult?.content || '';
 
@@ -2744,7 +2855,7 @@ async function runOptimizeTask(novelId, userId, apiConfig) {
       );
       const chResult = await streamGenerate(
         '你是一位专业的小说编辑。请根据分析报告优化指定章节。',
-        chPrompt, null, null, apiConfig
+        chPrompt, null, null, apiConfig, 2, 0.75, undefined, 600000
       );
       let newContent = chResult?.content || '';
       const minRetainedLength = Math.max(120, Math.floor(sourceContent.length * 0.45));

@@ -127,7 +127,19 @@ async function emitText(content, onChunk, signal) {
       onChunk(text.slice(index, index + size));
     }
   }
-  return { content: text, tokenCount: text.length };
+  // 模拟服务商在流末尾返回的实际用量：prompt_tokens / completion_tokens /
+  // prompt_cache_hit_tokens（DeepSeek 口径）。routes/novel 的 token 账本
+  // 必须优先采用这些数字而不是本地估算。
+  return {
+    content: text,
+    tokenCount: text.length,
+    inputTokens: text.length * 2,
+    usage: {
+      prompt_tokens: text.length * 2 + 100,
+      completion_tokens: Math.max(1, text.length),
+      prompt_cache_hit_tokens: text.length,
+    },
+  };
 }
 
 async function defaultAiHandler(call) {
@@ -145,16 +157,20 @@ async function defaultAiHandler(call) {
   return emitText('', null, call.signal);
 }
 
+const realAiService = require(path.join(serverRoot, 'services/aiService.js'));
 const aiServiceMock = {
   buildSystemPrompt: (type) => `SYSTEM:${type}`,
   buildInitialPrompt: () => 'INITIAL_PROMPT',
   buildContinuePrompt: () => 'CONTINUE_PROMPT',
   buildImportContinuePrompt: () => 'IMPORT_CONTINUE_PROMPT',
   buildOutlinePrompt: () => 'OUTLINE_PROMPT',
-  buildChapterPlan: () => 'CHAPTER_PLAN_PROMPT',
+  // 章节计划提示词直接用真实实现：它是纯字符串构建函数（无 IO），
+  // 每章字数等参数只有经过它才能被端到端验证。
+  buildChapterPlan: realAiService.buildChapterPlan,
   buildStoryStateSummary: () => '',
   buildOptimizeAnalysisPrompt: () => '',
   buildOptimizeChapterPrompt: () => '',
+  normalizeChapterWordTarget: realAiService.normalizeChapterWordTarget,
   extractChapterSummary: (content) => String(content || '').slice(-120),
   resolveApiConfig: () => ({ provider: 'isolated-test' }),
   countTokens: (content) => String(content || '').length,
@@ -422,7 +438,8 @@ test('新书整本：已确认蓝图但计划为空时使用兜底计划直接�
   assert.equal(eventIndex(events, 'plan_needs_extension'), -1);
   assert.equal(getCreatedNovel(events).chapters.length, 1);
   assert.ok(state.aiCalls.some((call) => call.kind === 'chapter'));
-  assert.equal(state.aiCalls.find((call) => call.kind === 'plan').timeoutMs, 45000);
+  // 思考型线路的章节计划超时已放宽（120s），断言新值防止回退到旧 45s。
+  assert.equal(state.aiCalls.find((call) => call.kind === 'plan').timeoutMs, 120000);
 });
 
 test('新书整本：已确认蓝图且计划请求被取消时直接使用兜底计划', async () => {
@@ -772,4 +789,118 @@ test('主动暂停：中断 AI 信号、阻止并发续写，并允许之后重�
   assert.equal(resumed.events.at(-1).type, 'completed');
   assert.deepEqual(novel.chapters.map((chapter) => chapter.chapterNumber), [1, 2]);
   assert.equal(novel.status, 'paused');
+});
+
+test('token 账本：每章把服务商口径用量写进 qualityReport.tokens，整本累计进 novel.tokenUsage', async () => {
+  state.planContent = makePlan([
+    { chapterNumber: 1, wordTarget: 600, coreEvent: '收到匿名来信' },
+    { chapterNumber: 2, wordTarget: 600, coreEvent: '调查旧码头' },
+  ]);
+  const first = makeChapter('林舟收到匿名来信并决定追查旧案', 'token账本一');
+  const second = makeChapter('林舟在旧码头发现新的证据', 'token账本二');
+  state.chapterQueue = [first, second];
+
+  const { response, events } = await postSse('/generate', {
+    novelTypeId: 'xianxia',
+    protagonistName: '林舟',
+    targetWordCount: 1200,
+    outline: '林舟追查旧案并完成收束。',
+    mode: 'book',
+  });
+
+  assert.equal(response.status, 200);
+  const novel = getCreatedNovel(events);
+  assert.equal(novel.chapters.length, 2);
+
+  // 每章的 qualityReport.tokens：服务商口径优先（prompt_tokens 而非本地估算）。
+  for (const chapter of novel.chapters) {
+    const tokens = chapter.qualityReport?.tokens;
+    assert.ok(tokens, `第${chapter.chapterNumber}章缺少 qualityReport.tokens`);
+    assert.equal(tokens.inputTokens, chapter.content.length * 2 + 100);
+    assert.equal(tokens.outputTokens, chapter.content.length);
+    assert.equal(tokens.cacheSavedTokens, chapter.content.length);
+    assert.equal(tokens.byRole.writing.calls, 1);
+    // 合计 = 各角色之和
+    assert.equal(tokens.inputTokens, tokens.byRole.writing.inputTokens);
+  }
+
+  // 整本累计：两章 writing 调用 + 计划/大纲等其它角色调用都计入 novel.tokenUsage。
+  const ledger = novel.tokenUsage;
+  assert.ok(ledger.calls >= 2);
+  assert.equal(ledger.byRole.writing.calls, 2);
+  assert.equal(
+    ledger.byRole.writing.inputTokens,
+    novel.chapters.reduce((sum, chapter) => sum + chapter.qualityReport.tokens.byRole.writing.inputTokens, 0),
+  );
+  assert.equal(ledger.inputTokens >= ledger.byRole.writing.inputTokens, true);
+
+  // SSE 必须持续披露 token_usage 事件，前端据此显示累计消耗。
+  const tokenEvents = events.filter((event) => event.type === 'token_usage');
+  assert.ok(tokenEvents.length >= 2);
+  assert.ok(tokenEvents.every((event) => event.usage && event.usage.inputTokens > 0));
+});
+
+test('整本生成：每章字数设置贯穿大纲/计划提示词并落库', async () => {
+  // 大章设定：50 万字每章 1 万字 → 章节计划提示词按 50 章规划、
+  // 每章输出预算放大、小说字段持久化。buildChapterPlan 用的是真实实现
+  // （在模块加载时注入 mock 导出，端到端验证参数传递）。
+  state.planContent = makePlan([
+    { chapterNumber: 1, wordTarget: 9800, coreEvent: '收到匿名委托并勘察案发现场' },
+  ]);
+  state.chapterQueue = [makeChapter('林舟勘察案发现场并发现矛盾线索', '每章字数一')];
+
+  const { response, events } = await postSse('/generate', {
+    novelTypeId: 'xianxia',
+    protagonistName: '林舟',
+    worldSetting: '维多利亚时代的连环悬案',
+    targetWordCount: 500000,
+    chapterWordTarget: 10000,
+    outline: '林舟受托调查连环悬案，在证据矛盾中逼近真凶并完成收束。',
+    mode: 'book',
+  });
+
+  assert.equal(response.status, 200);
+  const novel = getCreatedNovel(events);
+  // 设定持久化到小说字段，续写/兜底计划都能沿用。
+  assert.equal(novel.chapterWordTarget, 10000);
+
+  // 大纲/计划提示词按每章 1 万字估算章数。
+  const planCall = state.aiCalls.find((call) => call.kind === 'plan');
+  assert.ok(planCall, '缺少章节计划调用');
+  assert.match(planCall.userPrompt, /预计50章（每章约10000字）/);
+  assert.match(planCall.userPrompt, /每章目标字数 6700-14000/);
+  // 大章模式必须包含完整信息链的节奏指导。
+  assert.match(planCall.userPrompt, /属于大章/);
+  // 章节正文的输出预算必须按 1 万字目标放大（约 1.35 万 token）。
+  const chapterCall = state.aiCalls.find((call) => call.kind === 'chapter');
+  assert.ok(chapterCall, '缺少正文调用');
+  assert.ok(chapterCall.maxTokens >= 13000, `大章输出预算被截断：${chapterCall.maxTokens}`);
+});
+
+test('续写单章：新章节同样落库 token 标注', async () => {
+  const first = makeChapter('林舟决定保存匿名来信并前往旧码头', 'token续写一');
+  const second = makeChapter('林舟发现旧码头的值班表被人替换', 'token续写二');
+  const planData = JSON.parse(makePlan([
+    { chapterNumber: 1, wordTarget: 600, coreEvent: '收到匿名来信' },
+    { chapterNumber: 2, wordTarget: 600, coreEvent: '调查旧码头值班表' },
+  ]));
+  const novel = await seedNovel({
+    _id: 'continue-token',
+    status: 'paused',
+    targetWordCount: 4000,
+    protagonistName: '林舟',
+    chapters: [{ chapterNumber: 1, title: '第1章', content: first, wordCount: first.length, qualityReport: {} }],
+    chapterPlan: JSON.stringify(planData),
+    chapterPlanData: planData,
+  });
+  state.chapterQueue = [second];
+
+  const { response } = await postSse(`/continue/${novel._id}`, { mode: 'chapter' });
+  assert.equal(response.status, 200);
+  assert.equal(novel.chapters.length, 2);
+
+  const tokens = novel.chapters[1].qualityReport?.tokens;
+  assert.ok(tokens, '续写章节缺少 qualityReport.tokens');
+  assert.equal(tokens.inputTokens, second.length * 2 + 100);
+  assert.equal(tokens.byRole.writing.calls, 1);
 });
