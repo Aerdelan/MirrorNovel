@@ -685,20 +685,61 @@ router.post('/generate-outline', auth, async (req, res) => {
     const systemPrompt = `你是一位专业的小说大纲策划师。${buildPersonaPrompt(persona, { includeDeslop: false })}`;
 
     const outlineRequirements = getOutlineRequirements(targetWordCount, chapterWords);
-    const result = await streamGenerate(
-      systemPrompt, outlinePrompt, null, null,
-      resolveApiConfig(req.user?.modelConfig, 'outline'),
-      2, 0.82, outlineRequirements.outputTokens, 1200000
-    );
 
-    const outline = result.content || '';
-    if (!outline) return res.status(500).json({ message: '大纲生成失败' });
+    // SSE 流式输出：思考模型生成大纲动辄十几分钟，前端需要实时看到思考/正文进度，
+    // 而不是一个长时间无反馈的挂起请求。超时翻倍到 40 分钟。
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    // 客户端断开（关闭弹窗/离开页面）时中止生成：大纲不落库，断开后继续生成只会空烧 token。
+    // 注意必须监听 res 的 close：POST 体读完时 req 就会触发 close（实测 +2ms），
+    // 此时监听器尚未注册；res close 才与连接真正关闭同步。
+    const abortController = new AbortController();
+    res.on('close', () => {
+      if (!res.writableEnded) abortController.abort();
+    });
+    // 客户端断开的套接字错误不能让进程崩溃
+    res.on('error', () => {});
+    const send = (event) => {
+      if (res.writableEnded || res.destroyed) return;
+      try { res.write(`data: ${JSON.stringify(event)}\n\n`); } catch {}
+    };
 
-    // 大纲是独立调用（尚无小说文档可记账），把单次用量随响应返回供前端展示。
-    res.json({ outline, tokenUsage: callUsageStats(result) });
+    try {
+      const result = await streamGenerate(
+        systemPrompt, outlinePrompt,
+        (chunk) => send({ type: 'content', content: chunk }),
+        abortController.signal,
+        resolveApiConfig(req.user?.modelConfig, 'outline'),
+        2, 0.82, outlineRequirements.outputTokens, 2400000,
+        (reasoning) => send({ type: 'reasoning', content: reasoning })
+      );
+
+      const outline = result.content || '';
+      if (!outline) {
+        send({ type: 'error', message: '大纲生成失败' });
+        return res.end();
+      }
+
+      // 大纲是独立调用（尚无小说文档可记账），把单次用量随完成事件返回供前端展示。
+      send({ type: 'completed', outline, tokenUsage: callUsageStats(result) });
+      res.end();
+    } catch (error) {
+      if (abortController.signal.aborted) {
+        console.log('大纲生成已取消（客户端断开）');
+        return res.end();
+      }
+      console.error('大纲生成失败:', error);
+      send({ type: 'error', message: error.message || '大纲生成失败' });
+      res.end();
+    }
   } catch (error) {
     console.error('大纲生成失败:', error);
-    res.status(500).json({ message: '大纲生成失败', error: error.message });
+    if (!res.headersSent) return res.status(500).json({ message: '大纲生成失败', error: error.message });
+    res.end();
   }
 });
 
@@ -723,45 +764,80 @@ ${String(outline).slice(0, 12000)}
 只输出 JSON，不要 markdown：
 {"mainArc":"保留大纲主线并补足因果","lockedFacts":["不可擅自改变的设定/事实"],"phases":[{"title":"阶段名称","startChapter":1,"endChapter":${Math.max(1, Math.ceil(totalChapters * 0.2))},"goal":"阶段目标","obstacle":"主要阻力","reversal":"可选反转或误导","threads":["支线1","支线2"]}]}
 要求严格规划${blueprintRequirements.phaseCount}个阶段；每个阶段必须有至少一条支线或人物关系线，并写清阶段进入条件、阶段反转和离开时留下的未决问题；百万字作品不能压缩成四个笼统阶段。lockedFacts 只能填写大纲明确给出的事实。`;
-    const result = await streamGenerate(
-      `你是一位重视因果、人物弧线和伏笔回收的长篇小说架构师。${buildPersonaPrompt(persona, { includeDeslop: false })}`,
-      prompt,
-      null,
-      null,
-      resolveApiConfig(req.user?.modelConfig, 'reasoning'),
-      1,
-      0.35,
-      Math.max(2600, Math.min(12000, blueprintRequirements.phaseCount * 900)),
-      900000
-    );
-    const rawContent = String(result.content || '').trim();
-    if (!rawContent) return res.status(502).json({ message: '蓝图模型没有返回内容，请重试' });
-    const parsed = parseBlueprintPayload(rawContent);
-    const blueprintShapeValid = parsed && typeof parsed === 'object'
-      && (Array.isArray(parsed.phases) || typeof parsed.mainArc === 'string');
-    // A non-empty but malformed model answer must not block the whole-book
-    // flow. Fall back to a conservative blueprint derived only from the user's
-    // confirmed outline; this keeps continuity safe and lets the user edit it.
-    const blueprintInput = blueprintShapeValid ? parsed : {};
-    const draft = {
-      novelTypeName: novelTypeId,
-      protagonistName: protagonistName || '',
-      worldSetting: worldSetting || '',
-      outline: String(outline),
-      targetWordCount: target,
-      storyBible: {},
-      plotThreads: [],
-      storyBlueprint: {},
+    // SSE 流式输出：蓝图由推理模型生成，耗时长，前端实时展示生成进度。超时翻倍到 30 分钟。
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    // 客户端断开即中止：蓝图不落库，断开后继续生成只会空烧 token。
+    // 必须监听 res 的 close（req close 在 POST 体读完时就触发，会过早中止）。
+    const abortController = new AbortController();
+    res.on('close', () => {
+      if (!res.writableEnded) abortController.abort();
+    });
+    res.on('error', () => {});
+    const send = (event) => {
+      if (res.writableEnded || res.destroyed) return;
+      try { res.write(`data: ${JSON.stringify(event)}\n\n`); } catch {}
     };
-    const blueprint = normalizeProposedBlueprint(blueprintInput, draft, totalChapters);
-    blueprint.version = 1;
-    blueprint.lastReviewedChapter = 0;
-    blueprint.autoReviewEnabled = false;
-    blueprint.emailReminderEnabled = true;
-    res.json({ blueprint, tokenUsage: callUsageStats(result), warning: blueprintShapeValid ? '' : '模型返回格式异常，已根据已确认大纲生成保守蓝图，可直接编辑后确认' });
+
+    try {
+      const result = await streamGenerate(
+        `你是一位重视因果、人物弧线和伏笔回收的长篇小说架构师。${buildPersonaPrompt(persona, { includeDeslop: false })}`,
+        prompt,
+        (chunk) => send({ type: 'content', content: chunk }),
+        abortController.signal,
+        resolveApiConfig(req.user?.modelConfig, 'reasoning'),
+        1,
+        0.35,
+        Math.max(2600, Math.min(12000, blueprintRequirements.phaseCount * 900)),
+        1800000,
+        (reasoning) => send({ type: 'reasoning', content: reasoning })
+      );
+      const rawContent = String(result.content || '').trim();
+      if (!rawContent) {
+        send({ type: 'error', message: '蓝图模型没有返回内容，请重试' });
+        return res.end();
+      }
+      const parsed = parseBlueprintPayload(rawContent);
+      const blueprintShapeValid = parsed && typeof parsed === 'object'
+        && (Array.isArray(parsed.phases) || typeof parsed.mainArc === 'string');
+      // A non-empty but malformed model answer must not block the whole-book
+      // flow. Fall back to a conservative blueprint derived only from the user's
+      // confirmed outline; this keeps continuity safe and lets the user edit it.
+      const blueprintInput = blueprintShapeValid ? parsed : {};
+      const draft = {
+        novelTypeName: novelTypeId,
+        protagonistName: protagonistName || '',
+        worldSetting: worldSetting || '',
+        outline: String(outline),
+        targetWordCount: target,
+        storyBible: {},
+        plotThreads: [],
+        storyBlueprint: {},
+      };
+      const blueprint = normalizeProposedBlueprint(blueprintInput, draft, totalChapters);
+      blueprint.version = 1;
+      blueprint.lastReviewedChapter = 0;
+      blueprint.autoReviewEnabled = false;
+      blueprint.emailReminderEnabled = true;
+      send({ type: 'completed', blueprint, tokenUsage: callUsageStats(result), warning: blueprintShapeValid ? '' : '模型返回格式异常，已根据已确认大纲生成保守蓝图，可直接编辑后确认' });
+      res.end();
+    } catch (error) {
+      if (abortController.signal.aborted) {
+        console.log('[Blueprint] 蓝图生成已取消（客户端断开）');
+        return res.end();
+      }
+      console.error('[Blueprint] 初始蓝图生成失败:', error.message);
+      send({ type: 'error', message: error.isApiError ? error.message : '初始蓝图生成失败，请稍后重试' });
+      res.end();
+    }
   } catch (error) {
     console.error('[Blueprint] 初始蓝图生成失败:', error.message);
-    res.status(error.isApiError ? 503 : 500).json({ message: error.isApiError ? error.message : '初始蓝图生成失败，请稍后重试' });
+    if (!res.headersSent) return res.status(error.isApiError ? 503 : 500).json({ message: error.isApiError ? error.message : '初始蓝图生成失败，请稍后重试' });
+    res.end();
   }
 });
 

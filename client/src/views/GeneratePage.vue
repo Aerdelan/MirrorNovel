@@ -93,7 +93,8 @@
    <button class="btn btn-secondary btn-sm" :disabled="generating || blueprintGenerating || !outline.trim()" :aria-busy="blueprintGenerating" @click="generateInitialBlueprint">{{ blueprintGenerating ? ' 正在规划蓝图...' : (initialBlueprint ? ' 重新生成蓝图' : ' 生成初始蓝图') }}</button>
    <span v-if="initialBlueprintConfirmed" class="blueprint-confirmed"> 已确认，将用于本次生成</span>
   </div>
-  <textarea v-if="initialBlueprintJson" v-model="initialBlueprintJson" :disabled="generating || blueprintGenerating" class="textarea blueprint-json-editor" rows="10" placeholder="蓝图 JSON"></textarea>
+  <div v-if="blueprintGenerating && blueprintReasoningText && !initialBlueprintJson" ref="blueprintReasoningRef" class="stream-reasoning-box">{{ blueprintReasoningText }}</div>
+  <textarea v-if="initialBlueprintJson" ref="blueprintJsonTextarea" v-model="initialBlueprintJson" :disabled="generating || blueprintGenerating" class="textarea blueprint-json-editor" rows="10" placeholder="蓝图 JSON"></textarea>
   <div v-if="initialBlueprintJson && !initialBlueprintConfirmed" class="blueprint-setup-actions">
    <button class="btn btn-primary btn-sm" :disabled="generating || blueprintGenerating" @click="confirmInitialBlueprint">确认蓝图并继续</button>
    <span class="blueprint-setup-hint">可直接编辑上方 JSON 后确认</span>
@@ -374,15 +375,16 @@
 
 <!-- ==================== 大纲预览/编辑弹窗 ==================== -->
  <Teleport to="body">
- <div v-if="outlineModal" class="modal-overlay" @click.self="outlineModal=false">
+ <div v-if="outlineModal" class="modal-overlay" @click.self="outlineReject()">
  <div class="outline-modal-card">
  <h3 class="outline-modal-title">{{ $t('generate.outlinePreview') }}</h3>
- <p class="outline-modal-desc">{{ $t('generate.outlineDesc') }}</p>
- <textarea v-model="outlineModalText" class="outline-modal-textarea" rows="12"></textarea>
+ <p class="outline-modal-desc">{{ outlineStreaming ? 'AI 正在实时生成大纲，完成后可编辑与确认…' : $t('generate.outlineDesc') }}</p>
+ <div v-if="outlineStreaming && outlineReasoningText && !outlineModalText" ref="outlineReasoningRef" class="stream-reasoning-box">{{ outlineReasoningText }}</div>
+ <textarea ref="outlineModalTextarea" v-model="outlineModalText" class="outline-modal-textarea" rows="12" @input="onOutlineInput"></textarea>
  <div v-if="outlineTokenUsage" class="outline-modal-token">{{ tokenUsageText(outlineTokenUsage) }}</div>
  <div class="outline-modal-actions">
- <button class="btn btn-secondary" @click="outlineModal=false; outlineReject()">{{ $t('common.cancel') }}</button>
- <button class="btn btn-primary" @click="outlineConfirm()">{{ $t('generate.outlineConfirm') }}</button>
+ <button class="btn btn-secondary" @click="outlineReject()">{{ $t('common.cancel') }}</button>
+ <button class="btn btn-primary" :disabled="outlineStreaming" @click="outlineConfirm()">{{ outlineStreaming ? '生成中…' : $t('generate.outlineConfirm') }}</button>
  </div>
  </div>
  </div>
@@ -606,6 +608,31 @@ const outlineModalText = ref('')
 let outlineConfirmCallback = null
 let outlineRejectCallback = null
 
+// 大纲/蓝图流式生成状态（SSE）：弹窗打开即开始实时展示，自动追踪最新内容
+const outlineStreaming = ref(false)
+const outlineUserEdited = ref(false)
+const outlineReasoningText = ref('')
+const blueprintReasoningText = ref('')
+const outlineModalTextarea = ref(null)
+const blueprintJsonTextarea = ref(null)
+const outlineReasoningRef = ref(null)
+const blueprintReasoningRef = ref(null)
+let outlineXhr = null
+let blueprintXhr = null
+
+function onOutlineInput() { outlineUserEdited.value = true }
+// 思考内容只保留尾部 4000 字，避免长时间思考导致 DOM 过大
+function appendReasoning(target, text) { target.value = (target.value + text).slice(-4000) }
+function scrollOutlineToBottom() {
+ nextTick(() => { const el = outlineModalTextarea.value; if (el) el.scrollTop = el.scrollHeight })
+}
+function scrollBlueprintToBottom() {
+ nextTick(() => { const el = blueprintJsonTextarea.value; if (el) el.scrollTop = el.scrollHeight })
+}
+function scrollReasoningBox(elRef) {
+ nextTick(() => { const el = elRef.value; if (el) el.scrollTop = el.scrollHeight })
+}
+
 // 大纲/蓝图生成的单次 token 消耗（接口返回，弹窗与蓝图卡片展示）
 const outlineTokenUsage = ref(null)
 const blueprintTokenUsage = ref(null)
@@ -623,43 +650,96 @@ function tokenUsageText(usage) {
  return `消耗：输入 ${formatTokenCount(usage.inputTokens)} / 输出 ${formatTokenCount(usage.outputTokens)} token`
 }
 
-async function generateOutline(selectedTypeId, charName, worldSetting, wordCount, perChapterWords) {
- try {
-  const payload = {
-  novelTypeId: selectedTypeId,
-  protagonistName: charName,
-  worldSetting: worldSetting,
-  targetWordCount: wordCount,
-  chapterWordTarget: perChapterWords || undefined,
-  personaId: selectedPersonaId.value || undefined,
-  }
- // 大纲生成对长篇小说耗时较长（思考模型需先完成长推理再输出），单独加长超时（20分钟），不修改全局默认超时
- const res = await api.post('/novel/generate-outline', payload, { timeout: 1200000 })
- outlineTokenUsage.value = res.data.tokenUsage || null
- return res.data.outline || ''
- } catch (e) {
- console.error('大纲生成失败:', e)
- outlineTokenUsage.value = null
- return ''
- }
-}
-
-async function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, perChapterWords) {
- genStatus.value = $t('generate.outlineGenerating')
- const outline = await generateOutline(selectedTypeId, charName, worldSetting, wordCount, perChapterWords)
- if (!outline) {
- genStatus.value = ''
- return null
- }
+// 大纲生成改为 SSE 流式：弹窗立即打开，实时展示思考/正文内容并自动滚动到最新位置，
+// 不再等待整个响应（思考模型耗时可达数十分钟，XHR 无超时限制）。
+function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, perChapterWords) {
  return new Promise((resolve) => {
- outlineModalText.value = outline
- outlineConfirmCallback = () => { outlineModal.value = false; resolve(outlineModalText.value) }
- outlineRejectCallback = () => { outlineModal.value = false; genStatus.value = ''; resolve(null) }
+ outlineModalText.value = ''
+ outlineTokenUsage.value = null
+ outlineReasoningText.value = ''
+ outlineUserEdited.value = false
+ outlineStreaming.value = true
+ genStatus.value = $t('generate.outlineGenerating')
  outlineModal.value = true
+
+ const payload = {
+ novelTypeId: selectedTypeId,
+ protagonistName: charName,
+ worldSetting: worldSetting,
+ targetWordCount: wordCount,
+ chapterWordTarget: perChapterWords || undefined,
+ personaId: selectedPersonaId.value || undefined,
+ }
+
+ const token = localStorage.getItem('token')
+ const xhr = new XMLHttpRequest()
+ outlineXhr = xhr
+ xhr.open('POST', '/api/novel/generate-outline')
+ xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+ xhr.setRequestHeader('Content-Type', 'application/json')
+ let lastIndex = 0
+ let sseBuffer = ''
+
+ xhr.onprogress = () => {
+ sseBuffer += xhr.responseText.substring(lastIndex)
+ lastIndex = xhr.responseText.length
+ const lines = sseBuffer.split('\n')
+ sseBuffer = lines.pop()
+ for (const line of lines) {
+ if (!line.startsWith('data: ')) continue
+ try {
+ const event = JSON.parse(line.substring(6))
+ if (event.type === 'reasoning') {
+ appendReasoning(outlineReasoningText, event.content)
+ scrollReasoningBox(outlineReasoningRef)
+ } else if (event.type === 'content') {
+ outlineModalText.value += event.content
+ scrollOutlineToBottom()
+ } else if (event.type === 'completed') {
+ // 用户未手动编辑时用最终结果整体覆盖（清掉失败重试可能残留的片段）
+ if (!outlineUserEdited.value) outlineModalText.value = event.outline || outlineModalText.value
+ outlineTokenUsage.value = event.tokenUsage || null
+ outlineStreaming.value = false
+ scrollOutlineToBottom()
+ } else if (event.type === 'error') {
+ outlineStreaming.value = false
+ genStatus.value = event.message || '大纲生成失败'
+ }
+ } catch {}
+ }
+ }
+
+ xhr.onloadend = () => {
+ outlineStreaming.value = false
+ outlineXhr = null
+ if (!outlineModalText.value.trim()) {
+ outlineModal.value = false
+ genStatus.value = ''
+ resolve(null)
+ }
+ }
+ xhr.onerror = () => { outlineStreaming.value = false; genStatus.value = '大纲生成失败，请稍后重试' }
+ xhr.send(JSON.stringify(payload))
+
+ outlineConfirmCallback = () => {
+ if (outlineXhr) { outlineXhr.abort(); outlineXhr = null }
+ outlineStreaming.value = false
+ outlineModal.value = false
+ genStatus.value = ''
+ resolve(outlineModalText.value)
+ }
+ outlineRejectCallback = () => {
+ if (outlineXhr) { outlineXhr.abort(); outlineXhr = null }
+ outlineStreaming.value = false
+ outlineModal.value = false
+ genStatus.value = ''
+ resolve(null)
+ }
  })
 }
 
-async function generateInitialBlueprint() {
+// 蓝图生成改为 SSE 流式：实时展示模型输出并自动滚动到最新位置（推理模型耗时长，无超时限制）
+function generateInitialBlueprint() {
  if (!selectedType.value || !outline.value.trim()) {
   blueprintSetupError.value = '请先选择小说类型并确认大纲'
   return
@@ -667,24 +747,61 @@ async function generateInitialBlueprint() {
  blueprintGenerating.value = true
  blueprintSetupError.value = ''
  blueprintWarning.value = ''
+ blueprintReasoningText.value = ''
  initialBlueprintConfirmed.value = false
+ initialBlueprintJson.value = ''
+ initialBlueprint.value = null
+
+ const token = localStorage.getItem('token')
+ const xhr = new XMLHttpRequest()
+ blueprintXhr = xhr
+ xhr.open('POST', '/api/novel/generate-blueprint')
+ xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+ xhr.setRequestHeader('Content-Type', 'application/json')
+ let lastIndex = 0
+ let sseBuffer = ''
+
+ xhr.onprogress = () => {
+ sseBuffer += xhr.responseText.substring(lastIndex)
+ lastIndex = xhr.responseText.length
+ const lines = sseBuffer.split('\n')
+ sseBuffer = lines.pop()
+ for (const line of lines) {
+ if (!line.startsWith('data: ')) continue
  try {
-  const res = await api.post('/novel/generate-blueprint', {
-   novelTypeId: selectedType.value,
-   protagonistName: protagonistName.value,
-   worldSetting: worldSetting.value,
-   targetWordCount: targetWordCount.value,
-   chapterWordTarget: chapterWordTarget.value,
-   outline: outline.value,
-   personaId: selectedPersonaId.value || undefined,
-  }, { timeout: 1200000 })
-  initialBlueprint.value = res.data.blueprint || null
-  initialBlueprintJson.value = JSON.stringify(initialBlueprint.value, null, 2)
-  blueprintWarning.value = res.data.warning || ''
-  blueprintTokenUsage.value = res.data.tokenUsage || null
- } catch (e) {
-  blueprintSetupError.value = e.response?.data?.message || e.message || '初始蓝图生成失败'
- } finally { blueprintGenerating.value = false }
+ const event = JSON.parse(line.substring(6))
+ if (event.type === 'reasoning') {
+ appendReasoning(blueprintReasoningText, event.content)
+ scrollReasoningBox(blueprintReasoningRef)
+ } else if (event.type === 'content') {
+ initialBlueprintJson.value += event.content
+ scrollBlueprintToBottom()
+ } else if (event.type === 'completed') {
+ initialBlueprint.value = event.blueprint || null
+ initialBlueprintJson.value = JSON.stringify(initialBlueprint.value, null, 2)
+ blueprintWarning.value = event.warning || ''
+ blueprintTokenUsage.value = event.tokenUsage || null
+ blueprintGenerating.value = false
+ scrollBlueprintToBottom()
+ } else if (event.type === 'error') {
+ blueprintSetupError.value = event.message || '初始蓝图生成失败'
+ blueprintGenerating.value = false
+ }
+ } catch {}
+ }
+ }
+
+ xhr.onloadend = () => { blueprintGenerating.value = false; blueprintXhr = null }
+ xhr.onerror = () => { blueprintSetupError.value = '初始蓝图生成失败，请稍后重试'; blueprintGenerating.value = false }
+ xhr.send(JSON.stringify({
+  novelTypeId: selectedType.value,
+  protagonistName: protagonistName.value,
+  worldSetting: worldSetting.value,
+  targetWordCount: targetWordCount.value,
+  chapterWordTarget: chapterWordTarget.value,
+  outline: outline.value,
+  personaId: selectedPersonaId.value || undefined,
+ }))
 }
 
 function confirmInitialBlueprint() {
@@ -1600,6 +1717,21 @@ onMounted(async () => {
  outline: none;
 }
 .outline-modal-token { margin-top:8px; font-size:12px; color:var(--text-light); text-align:right; }
+/* 流式生成时的模型思考过程预览（正文开始前展示，自动滚动） */
+.stream-reasoning-box {
+ max-height: 160px;
+ overflow-y: auto;
+ margin-bottom: 10px;
+ padding: 10px 12px;
+ border: 1px dashed var(--card-border);
+ border-radius: var(--radius);
+ background: rgba(63,125,90,0.05);
+ font-size: 12px;
+ line-height: 1.6;
+ color: var(--text-light);
+ white-space: pre-wrap;
+ word-break: break-word;
+}
 .outline-modal-actions {
  display: flex;
  gap: 10px;
