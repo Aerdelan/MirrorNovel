@@ -135,6 +135,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useNovelStore } from '../stores/novel'
 import { useAuthStore } from '../stores/auth'
 import { useI18n } from '../composables/useI18n'
+import { notifyModelError } from '../utils/notify'
 import api from '../api'
 
 const novelStore = useNovelStore()
@@ -239,6 +240,7 @@ function startPolish() {
  polishStatusText.value = event.message || ''
  } else if (event.type === 'error') {
  polishStatusText.value = ' ' + event.message; polishing.value = false
+ notifyModelError(event.message)
  }
  }
  )

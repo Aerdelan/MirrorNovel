@@ -460,9 +460,10 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
     apiKey: managedRoute.apiKey,
     model: managedRoute.model,
     routeId: managedRoute.id,
-    // GLM-4.7/同类思考模型在正文、普通大纲和润色任务中开启深度思考
-    // 会明显拉长首字等待；推理线路仍保留思考能力。
-    disableThinking: modelType !== 'reasoning',
+    // 平台已放弃支持强制深度推理模型：思考与正文共享输出预算，长推理会把
+    // 正文挤空且无法可靠限制。所有线路默认请求关闭思考；模型报"必须开启
+    // 深度思考"时直接报错提示切换模型（见 streamGenerate）。
+    disableThinking: true,
   };
 
   if (!userModelConfig || userModelConfig.provider === 'default' || userModelConfig.provider === 'system') {
@@ -480,7 +481,7 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
     if (!model) throw new Error('本地模型配置不完整，请先选择模型');
     return {
       baseUrl: userModelConfig.ollamaBaseUrl || 'http://localhost:11434',
-      apiKey: '', model, disableThinking: modelType !== 'reasoning',
+      apiKey: '', model, disableThinking: true,
     };
   }
 
@@ -492,7 +493,7 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
     return {
       baseUrl: userModelConfig.cloudBaseUrl,
       apiKey: userModelConfig.cloudApiKey,
-      model, disableThinking: modelType !== 'reasoning',
+      model, disableThinking: true,
     };
   }
 
@@ -599,21 +600,18 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         clearTimeout(timeoutId);
         // 思考参数与模型能力不符：识别"必须开启深度思考"（当前携带 disabled）
         // 与"不支持/无效 thinking 参数"，修正后免费重试一次。
+        // 平台不支持强制深度推理模型：即使开启思考也无法可靠限制思考篇幅
+        // （reasoning_effort 无效，思考可达正文的 3 倍预算），不再自动升级
+        // 为思考模式，直接让用户切换模型。
         if (!thinkingTweaked && /深度思考|thinking/i.test(errorText)) {
-          if (/必须开启|enable|required/i.test(errorText) && thinkingMode === 'disabled') {
-            thinkingMode = 'enabled';
+          if (/必须开启|enable|required/i.test(errorText)) {
             thinkingTweaked = true;
-            // 该线路强制思考，主动附上 reasoning_effort 限制思考篇幅。
-            reasoningEffort = reasoningEffort || 'medium';
-            // 强制思考模型的 reasoning 与正文共享 max_tokens：只按正文
-            // 估算的预算必然被思考挤空（实测 glm-5.3-flash 大纲任务思考
-            // 可达正文的 3 倍以上），放大预算给思考留出空间。
-            const previousLimit = outputLimit;
-            outputLimit = Math.min(65536, Math.ceil(outputLimit * 4));
-            console.warn(`AI API 要求开启深度思考，已改为 thinking:enabled，输出预算 ${previousLimit}→${outputLimit} 后重试`);
-            attempt -= 1;
-            continue;
+            const error = new Error('当前暂不支持深度推理模型接入，请切换模型');
+            error.isApiError = true;
+            error.forceThinking = true;
+            throw error;
           }
+          // 部分线路不认识 thinking 字段本身：去除后重试。
           if (thinkingMode) {
             thinkingMode = null;
             thinkingTweaked = true;
@@ -741,6 +739,8 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
 
     } catch (e) {
       clearTimeout(timeoutId);
+      // 强制深推模型换参数重试也必然失败，直接把提示抛给用户
+      if (e.forceThinking) throw e;
       if (signal?.aborted) {
         throw (e.name === 'AbortError')
           ? new Error('AI API 请求已取消')

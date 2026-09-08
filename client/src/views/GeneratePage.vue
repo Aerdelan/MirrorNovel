@@ -398,6 +398,7 @@ import { useRouter } from 'vue-router'
 import { useNovelStore } from '../stores/novel'
 import { useAuthStore } from '../stores/auth'
 import { usePersonaStore } from '../stores/persona'
+import { notifyModelError } from '../utils/notify'
 import { useI18n } from '../composables/useI18n'
 import api from '../api'
 
@@ -704,6 +705,7 @@ function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, per
  } else if (event.type === 'error') {
  outlineStreaming.value = false
  genStatus.value = event.message || '大纲生成失败'
+ notifyModelError(event.message)
  }
  } catch {}
  }
@@ -786,6 +788,7 @@ function generateInitialBlueprint() {
  } else if (event.type === 'error') {
  blueprintSetupError.value = event.message || '初始蓝图生成失败'
  blueprintGenerating.value = false
+ notifyModelError(event.message)
  }
  } catch {}
  }
@@ -937,6 +940,7 @@ async function startGen() {
  genStatus.value = event.message || '章节计划需要扩展'; generating.value = false
 } else if (event.type === 'error') {
  genStatus.value = ' ' + (event.message || '生成失败'); generating.value = false
+ notifyModelError(event.message)
  }
  }
  )
@@ -977,7 +981,8 @@ async function startDeslop() {
  deslopStatus.value = '去AI化完成'
  computeDiff()
  } else if (event.type === 'error') {
- deslopStatus.value = event.message || '去AI化失败'; deslopRunning.value = false
+ deslopStatus.value = event.message || '去AI味失败'; deslopRunning.value = false
+ notifyModelError(event.message)
  }
  } catch {}
  }
@@ -1254,6 +1259,7 @@ async function startLNGen() {
  lnStatus.value = event.message || '章节计划需要扩展'; lnGenerating.value = false
 } else if (event.type === 'error') {
  lnStatus.value = ' ' + (event.message || '生成失败'); lnGenerating.value = false
+ notifyModelError(event.message)
  }
  }
  )

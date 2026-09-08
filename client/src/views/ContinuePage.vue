@@ -103,6 +103,7 @@ import { useRouter } from 'vue-router'
 import { useNovelStore } from '../stores/novel'
 import { useAuthStore } from '../stores/auth'
 import { useI18n } from '../composables/useI18n'
+import { notifyModelError } from '../utils/notify'
 
 const router = useRouter()
 const novelStore = useNovelStore()
@@ -189,7 +190,7 @@ async function startContinue() {
  else if (status.type === 'thinking') { continueStatus.value = `模型正在整理本章结构（已处理 ${status.length || 0} 个思考单位）...` }
  else if (status.type === 'plan_needs_extension') { isGenerating.value = false; continueStatus.value = status.message || '章节计划需要扩展' }
  else if (status.type === 'token_exhausted') { isGenerating.value = false; continueStatus.value = '生成已停止' }
- else if (status.type === 'error') { isGenerating.value = false; continueStatus.value = status.message || '续写失败' }
+ else if (status.type === 'error') { isGenerating.value = false; continueStatus.value = status.message || '续写失败'; notifyModelError(status.message) }
  else if (status.type === 'paused') { isGenerating.value = false }
  }, genMode.value)
  } else {
@@ -203,7 +204,7 @@ async function startContinue() {
  }, (chunk, fullText) => { wordCount.value = fullText.length }, (status) => {
  if (status.type === 'completed') { generationDone.value = true; isGenerating.value = false; continueStatus.value = '' }
  else if (status.type === 'token_exhausted') { isGenerating.value = false; continueStatus.value = '生成已停止' }
- else if (status.type === 'error') { isGenerating.value = false; continueStatus.value = status.message || '续写失败' }
+ else if (status.type === 'error') { isGenerating.value = false; continueStatus.value = status.message || '续写失败'; notifyModelError(status.message) }
  else if (status.type === 'paused') { isGenerating.value = false }
  })
  }

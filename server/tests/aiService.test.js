@@ -27,71 +27,43 @@ test('provider max_tokens validation is parsed and retried within the hard limit
   }
 });
 
-test('thinking parameter self-corrects when the model rejects it instead of retrying blindly', async () => {
+test('force-thinking models fail immediately with a switch-model notice instead of escalating', async () => {
   const originalFetch = global.fetch;
   const thinkingBodies = [];
-  const fullBodies = [];
   try {
-    // glm-5.3-flash 场景：服务商返回"当前模型必须开启深度思考"。
-    // 第一次带 thinking:{type:'disabled'}，必须被自动改为 enabled，
-    // 同时放大输出预算（思考与正文共享 max_tokens）并附加 reasoning_effort。
+    // glm-5.3-flash 场景：请求默认带 thinking:{type:'disabled'}，
+    // 服务商返回"当前模型必须开启深度思考"。平台已放弃支持强制深推
+    // 模型：不升级为思考模式、不放大预算，直接抛出切换模型的提示。
     global.fetch = async (_url, options) => {
       const body = JSON.parse(options.body);
       thinkingBodies.push(body.thinking || null);
-      fullBodies.push(body);
-      if (thinkingBodies.length === 1) {
-        return { ok: false, status: 400, text: async () => '{"message":"AI 请求参数有误：当前模型必须开启深度思考"}' };
-      }
-      // read() 首帧返回数据，之后立即 done，模拟流结束。
-      let reads = 0;
-      return { ok: true, body: { getReader: () => ({
-        read: async () => {
-          reads += 1;
-          return reads === 1
-            ? { done: false, value: new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: '大纲内容' } }] })}\n\n`) }
-            : { done: true, value: undefined };
-        },
-      }) } };
+      return { ok: false, status: 400, text: async () => '{"message":"AI 请求参数有误：当前模型必须开启深度思考"}' };
     };
-    const result = await streamGenerate('系统提示', '用户提示', null, null, { baseUrl: 'https://example.test/v1', model: 'glm-5.3-flash', disableThinking: true }, 2, 0.8, 4000);
-    assert.equal(result.content, '大纲内容');
-    // 第一次 disabled 被拒，第二次修正为 enabled。
-    assert.deepEqual(thinkingBodies, [{ type: 'disabled' }, { type: 'enabled' }]);
-    // 强制思考线路：预算放大（思考与正文共享 max_tokens），并附 reasoning_effort 限思考。
-    assert.equal(fullBodies[1].max_tokens, 16000);
-    assert.equal(fullBodies[1].reasoning_effort, 'medium');
+    await assert.rejects(
+      streamGenerate('系统提示', '用户提示', null, null, { baseUrl: 'https://example.test/v1', model: 'glm-5.3-flash', disableThinking: true }, 2, 0.8, 4000),
+      (e) => e.message === '当前暂不支持深度推理模型接入，请切换模型' && e.isApiError === true && e.forceThinking === true,
+    );
+    // 只请求了一次：没有改参数的重试。
+    assert.deepEqual(thinkingBodies, [{ type: 'disabled' }]);
   } finally {
     global.fetch = originalFetch;
   }
 
-  // 相反场景：AI_THINKING_DISABLED=true 强制关闭时仍被拒（线路要求开启），
-  // 同样自动修正而不是重试三次同样的 400。
+  // AI_THINKING_DISABLED 环境变量场景行为一致：同样立即报错。
   const envForcedBodies = [];
   const originalEnv = process.env.AI_THINKING_DISABLED;
   try {
     process.env.AI_THINKING_DISABLED = 'true';
     global.fetch = async (_url, options) => {
       const body = JSON.parse(options.body);
-      envForcedBodies.push({ thinking: body.thinking || null, max_tokens: body.max_tokens, effort: body.reasoning_effort || null });
-      if (envForcedBodies.length === 1) {
-        return { ok: false, status: 400, text: async () => '{"message":"AI 请求参数有误：当前模型必须开启深度思考"}' };
-      }
-      let reads = 0;
-      return { ok: true, body: { getReader: () => ({
-        read: async () => {
-          reads += 1;
-          return reads === 1
-            ? { done: false, value: new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: 'ok' } }] })}\n\n`) }
-            : { done: true, value: undefined };
-        },
-      }) } };
+      envForcedBodies.push(body.thinking || null);
+      return { ok: false, status: 400, text: async () => '{"message":"AI 请求参数有误：当前模型必须开启深度思考"}' };
     };
-    const result = await streamGenerate('系统提示', '用户提示', null, null, { baseUrl: 'https://example.test/v1', model: 'glm-5.3-flash' }, 2, 0.8, 4000);
-    assert.equal(result.content, 'ok');
-    assert.deepEqual(envForcedBodies, [
-      { thinking: { type: 'disabled' }, max_tokens: 4000, effort: null },
-      { thinking: { type: 'enabled' }, max_tokens: 16000, effort: 'medium' },
-    ]);
+    await assert.rejects(
+      streamGenerate('系统提示', '用户提示', null, null, { baseUrl: 'https://example.test/v1', model: 'glm-5.3-flash' }, 2, 0.8, 4000),
+      (e) => e.message === '当前暂不支持深度推理模型接入，请切换模型',
+    );
+    assert.deepEqual(envForcedBodies, [{ type: 'disabled' }]);
   } finally {
     process.env.AI_THINKING_DISABLED = originalEnv;
     global.fetch = originalFetch;
@@ -102,16 +74,13 @@ test('thinking starves the content budget: empty output with finish=length escal
   const originalFetch = global.fetch;
   const requested = [];
   try {
-    // glm-5.3-flash 强制思考场景：修正为 enabled 后，思考吃满 max_tokens，
-    // 流以 finish_reason=length 结束且正文为空。重试必须放大预算并收紧
-    // reasoning_effort，否则同预算重试必然再次空输出。
+    // 兼容场景：个别线路不认识 thinking 参数（字段被去除后模型自行思考），
+    // 思考吃满 max_tokens、流以 finish_reason=length 结束且正文为空。
+    // 重试必须放大预算并收紧 reasoning_effort，否则同预算重试必然空输出。
     global.fetch = async (_url, options) => {
       const body = JSON.parse(options.body);
       requested.push({ max_tokens: body.max_tokens, effort: body.reasoning_effort || null });
       if (requested.length === 1) {
-        return { ok: false, status: 400, text: async () => '{"message":"当前模型必须开启深度思考"}' };
-      }
-      if (requested.length === 2) {
         // 只有 reasoning，没有正文，思考吃满预算被截断。
         const chunks = [
           `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: '推理'.repeat(200) } }] })}\n\n`,
@@ -126,7 +95,7 @@ test('thinking starves the content budget: empty output with finish=length escal
           },
         }) } };
       }
-      // 第二次（放大预算后）正常返回正文。
+      // 放大预算后正常返回正文。
       let reads = 0;
       return { ok: true, body: { getReader: () => ({
         read: async () => {
@@ -141,8 +110,7 @@ test('thinking starves the content budget: empty output with finish=length escal
     assert.equal(result.content, '大纲正文');
     assert.deepEqual(requested, [
       { max_tokens: 4000, effort: null },        // 初始 disabled
-      { max_tokens: 16000, effort: 'medium' },   // 修正 enabled + 放大预算
-      { max_tokens: 40000, effort: 'low' },      // 空输出 → 再放大并收紧 effort
+      { max_tokens: 10000, effort: 'low' },      // 空输出 → 放大预算并收紧 effort
     ]);
   } finally {
     global.fetch = originalFetch;
@@ -153,13 +121,25 @@ test('reasoning_effort is dropped automatically when the route rejects the field
   const originalFetch = global.fetch;
   const bodies = [];
   try {
-    // 修正思考后附带 reasoning_effort，部分线路不认识该字段（UNKNOWN_FIELD），
-    // 必须自动去除并免费重试，而不是把 400 当作最终失败。
+    // 空输出升级时附带 reasoning_effort=low，部分线路不认识该字段
+    // （UNKNOWN_FIELD），必须自动去除并免费重试，而不是把 400 当作最终失败。
     global.fetch = async (_url, options) => {
       const body = JSON.parse(options.body);
       bodies.push({ thinking: body.thinking || null, effort: body.reasoning_effort || null });
       if (bodies.length === 1) {
-        return { ok: false, status: 400, text: async () => '{"message":"当前模型必须开启深度思考"}' };
+        // 只有 reasoning、无正文且 finish=length：触发预算升级 + effort=low。
+        const chunks = [
+          `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: '推理'.repeat(200) } }] })}\n\n`,
+          `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'length' }] })}\n\n`,
+          'data: [DONE]\n\n',
+        ];
+        let reads = 0;
+        return { ok: true, body: { getReader: () => ({
+          read: async () => {
+            if (reads < chunks.length) { const v = chunks[reads]; reads += 1; return { done: false, value: new TextEncoder().encode(v) }; }
+            return { done: true, value: undefined };
+          },
+        }) } };
       }
       if (bodies.length === 2) {
         return { ok: false, status: 400, text: async () => '{"code":"UNKNOWN_FIELD","message":"未知请求字段：reasoning_effort","data":{"field":"reasoning_effort"}}' };
@@ -174,12 +154,12 @@ test('reasoning_effort is dropped automatically when the route rejects the field
         },
       }) } };
     };
-    const result = await streamGenerate('系统提示', '用户提示', null, null, { baseUrl: 'https://example.test/v1', model: 'glm-5.3-flash', disableThinking: true }, 0, 0.8, 4000);
+    const result = await streamGenerate('系统提示', '用户提示', null, null, { baseUrl: 'https://example.test/v1', model: 'glm-5.3-flash', disableThinking: true }, 1, 0.8, 4000);
     assert.equal(result.content, 'ok');
     assert.deepEqual(bodies, [
       { thinking: { type: 'disabled' }, effort: null },
-      { thinking: { type: 'enabled' }, effort: 'medium' },
-      { thinking: { type: 'enabled' }, effort: null },
+      { thinking: { type: 'disabled' }, effort: 'low' },
+      { thinking: { type: 'disabled' }, effort: null },
     ]);
   } finally {
     global.fetch = originalFetch;
@@ -314,11 +294,13 @@ test('managed route selection uses the configured task role override', () => {
   assert.equal(config.routeId, 'svip');
 });
 
-test('writing and polish routes disable deep thinking while reasoning keeps it', () => {
+test('all routes default to disabling deep thinking (force-thinking models unsupported)', () => {
   const writing = resolveApiConfig({ provider: 'system', routeId: 'normal_1' }, 'writing');
   const polish = resolveApiConfig({ provider: 'system', routeId: 'normal_1' }, 'polish');
   const reasoning = resolveApiConfig({ provider: 'system', routeId: 'normal_1' }, 'reasoning');
+  const outline = resolveApiConfig({ provider: 'system', routeId: 'normal_1' }, 'outline');
   assert.equal(writing.disableThinking, true);
   assert.equal(polish.disableThinking, true);
-  assert.equal(reasoning.disableThinking, false);
+  assert.equal(reasoning.disableThinking, true);
+  assert.equal(outline.disableThinking, true);
 });
