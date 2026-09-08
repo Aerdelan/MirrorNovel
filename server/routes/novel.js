@@ -82,6 +82,22 @@ const { sendBlueprintProposalNotification } = require('../services/emailService'
 // 全局活跃生成流跟踪
 const activeStreams = new Map();
 
+// 生成管线专用保存：同一部小说可能被多个请求并发保存（续写、编辑、蓝图应用等），
+// 全量保存撞上版本号变化会抛 Mongoose VersionError 并让整次生成报废
+// （线上日志反复出现 "No matching document found for id ... version N"）。
+// 这里在 VersionError 时以最新 __v 重放一次保存（生成字段以本进程内存状态为准，最后写入胜出）。
+async function saveNovelDoc(novel) {
+  try {
+    return await novel.save();
+  } catch (e) {
+    if (e?.name !== 'VersionError') throw e;
+    const fresh = await Novel.findById(novel._id).select('_id __v').lean();
+    if (!fresh) throw e;
+    novel.__v = fresh.__v;
+    return await novel.save();
+  }
+}
+
 function parseJsonObject(text) {
   const clean = String(text || '')
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
@@ -764,7 +780,7 @@ ${String(outline).slice(0, 12000)}
 只输出 JSON，不要 markdown：
 {"mainArc":"保留大纲主线并补足因果","lockedFacts":["不可擅自改变的设定/事实"],"phases":[{"title":"阶段名称","startChapter":1,"endChapter":${Math.max(1, Math.ceil(totalChapters * 0.2))},"goal":"阶段目标","obstacle":"主要阻力","reversal":"可选反转或误导","threads":["支线1","支线2"]}]}
 要求严格规划${blueprintRequirements.phaseCount}个阶段；每个阶段必须有至少一条支线或人物关系线，并写清阶段进入条件、阶段反转和离开时留下的未决问题；百万字作品不能压缩成四个笼统阶段。lockedFacts 只能填写大纲明确给出的事实。`;
-    // SSE 流式输出：蓝图由推理模型生成，耗时长，前端实时展示生成进度。超时翻倍到 30 分钟。
+    // SSE 流式输出：蓝图由推理模型生成，耗时长，前端实时展示生成进度。超时放宽到 60 分钟。
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -793,7 +809,7 @@ ${String(outline).slice(0, 12000)}
         1,
         0.35,
         Math.max(2600, Math.min(12000, blueprintRequirements.phaseCount * 900)),
-        1800000,
+        3600000,
         (reasoning) => send({ type: 'reasoning', content: reasoning })
       );
       const rawContent = String(result.content || '').trim();
@@ -933,7 +949,7 @@ ${tmpl.dynamicPrompt}
     }
 
     novel.generationContext = systemPrompt;
-    await novel.save();
+    await saveNovelDoc(novel);
 
     // SSE（先发，让客户端知道连接已建立）
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' });
@@ -984,7 +1000,7 @@ ${tmpl.dynamicPrompt}
           // 大纲级 token 标注：单次输入/输出量随 outline 事件返回给前端。
           novel.outlineTokenUsage = callUsageStats(outlineResult);
           novel.markModified('outlineTokenUsage');
-          await novel.save();
+          await saveNovelDoc(novel);
           res.write(`data: ${JSON.stringify({ type: 'outline', content: outline, tokenUsage: novel.outlineTokenUsage })}\n\n`);
           res.write(`data: ${JSON.stringify({ type: 'status', message: '大纲已生成，开始创作正文...' })}\n\n`);
         } else {
@@ -997,14 +1013,14 @@ ${tmpl.dynamicPrompt}
       }
     } else if (outline) {
       novel.outline = outline;
-      await novel.save();
+      await saveNovelDoc(novel);
     }
 
     // 初始化一份保守的动态故事蓝图。它只复述用户已确认的信息，不增加
     // 隐形剧情；后续细化必须通过书内提案确认。
     ensureStoryBlueprint(novel, Math.max(1, Math.ceil(targetWordCount / chapterWordTarget)));
     novel.markModified('storyBlueprint');
-    await novel.save();
+    await saveNovelDoc(novel);
 
     const hasConfirmedBlueprint = storyBlueprint && typeof storyBlueprint === 'object' && Object.keys(storyBlueprint).length > 0;
 
@@ -1047,7 +1063,7 @@ ${tmpl.dynamicPrompt}
           initializeCreativeState(novel);
           seedPlannedHooks(novel, parsedPlan);
           novel.markModified('chapterPlanData');
-          await novel.save();
+          await saveNovelDoc(novel);
           const planChCount = parsedPlan.chapters.length || (chapterPlan.match(/第\d+章/g) || []).length;
           res.write(`data: ${JSON.stringify({ type: 'status', message: `章节计划已制定（共 ${planChCount} 章）` })}\n\n`);
         } else {
@@ -1068,16 +1084,16 @@ ${tmpl.dynamicPrompt}
     if (isBook && !planData.chapters.length && String(outline || '').trim() && (targetWordCount >= 100000 || hasConfirmedBlueprint)) {
       planData = ensureExecutableChapterPlan(novel, targetWordCount);
       res.write(`data: ${JSON.stringify({ type: 'status', message: `章节计划输出不完整，已根据大纲自动补全 ${planData.chapters.length} 章执行计划，开始创作正文...` })}\n\n`);
-      await novel.save();
+      await saveNovelDoc(novel);
     }
-    await novel.save();
+    await saveNovelDoc(novel);
 
     // 整本生成必须建立在可机读章节计划上。计划生成失败时暂停，避免退化为无约束长循环。
     if (isBook && !planData.chapters.length) {
       generationDone = true;
       activeStreams.delete(streamKey);
       novel.status = 'paused';
-      await novel.save();
+      await saveNovelDoc(novel);
       res.write(`data: ${JSON.stringify({ type: 'plan_needs_extension', message: '未获得有效章节计划，已暂停生成，请先补充或重新生成章节计划' })}\n\n`);
       res.end();
       return;
@@ -1141,7 +1157,7 @@ ${tmpl.dynamicPrompt}
         savedChapter.qualityReport.expert = expertReview;
         novel.markModified('chapters');
       }
-      await novel.save();
+      await saveNovelDoc(novel);
       if (chapterResult.continuity.issues.length) {
         try { res.write(`data: ${JSON.stringify({ type: 'quality_notice', chapterNumber: chNum, report: chapterResult.continuity })}\n\n`); } catch {}
       }
@@ -1209,7 +1225,7 @@ ${buildChapterTail({
             try {
               const proposal = await createStoryBlueprintProposal({ user: req.user, novel, persona, signal: abortController.signal, onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats) });
               if (proposal) {
-                await novel.save();
+                await saveNovelDoc(novel);
                 notifyBlueprintProposal(req.user, novel, proposal);
                 try { res.write(`data: ${JSON.stringify({ type: 'blueprint_proposal', proposal, message: '已生成新的剧情蓝图提案，请在书内确认' })}\n\n`); } catch {}
               }
@@ -1219,7 +1235,7 @@ ${buildChapterTail({
 
         if (abortController.signal.aborted) {
           novel.status = 'paused';
-          await novel.save();
+          await saveNovelDoc(novel);
           activeStreams.delete(streamKey);
           try { res.write(`data: ${JSON.stringify({ type: 'paused', message: '生成已暂停' })}\n\n`); res.end(); } catch {}
           return;
@@ -1231,12 +1247,12 @@ ${buildChapterTail({
         // did not restate a scheduled hook verbatim in the final prose.
         if (!completion.complete && completion.wordTargetReached && completion.missingChapters.length === 0 && completion.unresolvedHooks.length) {
           const closedHooks = closeUnresolvedHooksAtEnding(novel, planData);
-          if (closedHooks) await novel.save();
+          if (closedHooks) await saveNovelDoc(novel);
         }
         const finalCompletion = assessStoryCompletion(novel, planData, targetWordCount);
         if (!finalCompletion.complete) {
           novel.status = 'paused';
-          await novel.save();
+          await saveNovelDoc(novel);
           activeStreams.delete(streamKey);
           const blockers = [];
           if (!finalCompletion.wordTargetReached) blockers.push(`当前 ${finalCompletion.currentWords}/${finalCompletion.wordTarget} 字，仍未达到目标字数`);
@@ -1249,7 +1265,7 @@ ${buildChapterTail({
         generationDone = true;
         activeStreams.delete(streamKey);
         novel.status = 'completed';
-        await novel.save();
+        await saveNovelDoc(novel);
         res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`);
         res.end();
 
@@ -1270,7 +1286,7 @@ ${buildChapterTail({
         generationDone = true;
         activeStreams.delete(streamKey);
         novel.status = 'completed';
-        await novel.save();
+        await saveNovelDoc(novel);
         res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`);
         res.end();
       }
@@ -1283,7 +1299,7 @@ ${buildChapterTail({
         console.error('❌ 正文生成失败:', streamError?.message || streamError);
       }
       novel.status = 'paused';
-      await novel.save();
+      await saveNovelDoc(novel);
       activeStreams.delete(streamKey);
       try {
         if (isApiError) {
@@ -1314,6 +1330,7 @@ ${buildChapterTail({
 
 // 继续生成小说（SSE流式）—— 支持整本/单章模式
 router.post('/continue/:novelId', auth, async (req, res) => {
+  let streamKey = null;
   try {
     // 检查 Token 余额
 
@@ -1331,10 +1348,14 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       console.log(`[Continue] 小说 ${novel._id} 状态为已完成但未达目标字数，恢复续写`);
     }
 
-    const streamKey = novel._id.toString();
+    streamKey = novel._id.toString();
     if (activeStreams.has(streamKey)) {
       return res.status(409).json({ message: '这部小说正在生成，请等待当前任务完成或先暂停' });
     }
+    // 守卫与注册之间不允许有任何 await：否则双击续写的两个请求会同时通过守卫，
+    // 并发进入后互相覆盖保存，触发 Mongoose VersionError。
+    let abortController = new AbortController();
+    activeStreams.set(streamKey, abortController);
 
     const mode = req.body.mode || 'chapter'; // 'chapter' | 'book'
     const persona = await resolveNovelPersona(req.userId, novel);
@@ -1354,7 +1375,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
 
     // 更新状态，并将旧作品的计划/事件签名补入结构化状态。
     novel.status = 'generating';
-    await novel.save();
+    await saveNovelDoc(novel);
 
     // 设置 SSE
     res.writeHead(200, {
@@ -1366,9 +1387,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
 
     res.write(`data: ${JSON.stringify({ type: 'continue_start', novelId: novel._id })}\n\n`);
 
-    let abortController = new AbortController();
     let generationDone = false;
-    activeStreams.set(streamKey, abortController);
 
     req.on('close', async () => {
       if (!generationDone) {
@@ -1429,7 +1448,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
         savedChapter.qualityReport.expert = expertReview;
         novel.markModified('chapters');
       }
-      await novel.save();
+      await saveNovelDoc(novel);
       if (chapterResult.continuity.issues.length) {
         try { res.write(`data: ${JSON.stringify({ type: 'quality_notice', chapterNumber: chNum, report: chapterResult.continuity })}\n\n`); } catch {}
       }
@@ -1443,7 +1462,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
         // ====== 整本模式：循环生成多章直到目标字数 ======
         if (!planData.chapters.length) {
           novel.status = 'paused';
-          await novel.save();
+          await saveNovelDoc(novel);
           generationDone = true;
           activeStreams.delete(streamKey);
           res.write(`data: ${JSON.stringify({ type: 'plan_needs_extension', message: '缺少大纲和有效章节计划，已暂停，请先补充大纲或重新生成章节计划' })}\n\n`);
@@ -1456,7 +1475,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
           generationDone = true;
           activeStreams.delete(streamKey);
           novel.status = 'completed';
-          await novel.save();
+          await saveNovelDoc(novel);
           res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`);
           res.end();
           return;
@@ -1468,19 +1487,19 @@ router.post('/continue/:novelId', auth, async (req, res) => {
           let completion = assessStoryCompletion(novel, planData, targetWordCount);
           if (!completion.complete && completion.wordTargetReached && completion.missingChapters.length === 0 && completion.unresolvedHooks.length) {
             const closedHooks = closeUnresolvedHooksAtEnding(novel, planData);
-            if (closedHooks) await novel.save();
+            if (closedHooks) await saveNovelDoc(novel);
             completion = assessStoryCompletion(novel, planData, targetWordCount);
           }
           if (completion.complete) {
             generationDone = true;
             activeStreams.delete(streamKey);
             novel.status = 'completed';
-            await novel.save();
+            await saveNovelDoc(novel);
             try { res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`); res.end(); } catch {}
             return;
           }
           novel.status = 'paused';
-          await novel.save();
+          await saveNovelDoc(novel);
           activeStreams.delete(streamKey);
           const blockers = [];
           if (!completion.wordTargetReached) blockers.push(`当前 ${completion.currentWords}/${completion.wordTarget} 字，仍未达到目标字数`);
@@ -1531,7 +1550,7 @@ ${buildChapterTail({
             try {
               const proposal = await createStoryBlueprintProposal({ user: req.user, novel, persona, signal: abortController.signal, onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats) });
               if (proposal) {
-                await novel.save();
+                await saveNovelDoc(novel);
                 notifyBlueprintProposal(req.user, novel, proposal);
                 try { res.write(`data: ${JSON.stringify({ type: 'blueprint_proposal', proposal, message: '已生成新的剧情蓝图提案，请在书内确认' })}\n\n`); } catch {}
               }
@@ -1541,7 +1560,7 @@ ${buildChapterTail({
 
         if (abortController.signal.aborted) {
           novel.status = 'paused';
-          await novel.save();
+          await saveNovelDoc(novel);
           activeStreams.delete(streamKey);
           try { res.write(`data: ${JSON.stringify({ type: 'paused', message: '生成已暂停' })}\n\n`); res.end(); } catch {}
           return;
@@ -1556,25 +1575,25 @@ ${buildChapterTail({
             generationDone = true;
             activeStreams.delete(streamKey);
             novel.status = 'completed';
-            await novel.save();
+            await saveNovelDoc(novel);
             res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`);
             res.end();
             return;
           }
           novel.status = 'paused';
-          await novel.save();
+          await saveNovelDoc(novel);
           activeStreams.delete(streamKey);
           try { res.write(`data: ${JSON.stringify({ type: 'paused', message: `当前 ${getCompletedWordCount(novel)}/${targetWordCount} 字，已暂停，可再次点击续写` })}\n\n`); res.end(); } catch {}
           return;
         }
         if (!completion.complete && completion.wordTargetReached && completion.missingChapters.length === 0 && completion.unresolvedHooks.length) {
           const closedHooks = closeUnresolvedHooksAtEnding(novel, planData);
-          if (closedHooks) await novel.save();
+          if (closedHooks) await saveNovelDoc(novel);
         }
         const finalCompletion = assessStoryCompletion(novel, planData, targetWordCount);
         if (!finalCompletion.complete) {
           novel.status = 'paused';
-          await novel.save();
+          await saveNovelDoc(novel);
           activeStreams.delete(streamKey);
           const blockers = [];
           if (!finalCompletion.wordTargetReached) blockers.push(`当前 ${finalCompletion.currentWords}/${finalCompletion.wordTarget} 字，仍未达到目标字数`);
@@ -1587,7 +1606,7 @@ ${buildChapterTail({
         generationDone = true;
         activeStreams.delete(streamKey);
         novel.status = 'completed';
-        await novel.save();
+        await saveNovelDoc(novel);
         res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`);
         res.end();
 
@@ -1609,7 +1628,7 @@ ${buildChapterTail({
 
         if (abortController.signal.aborted) {
           novel.status = 'paused';
-          await novel.save();
+          await saveNovelDoc(novel);
           activeStreams.delete(streamKey);
           return;
         }
@@ -1618,7 +1637,7 @@ ${buildChapterTail({
         activeStreams.delete(streamKey);
         // completed 事件表示本次单章请求完成；作品仍可继续追加后续章节。
         novel.status = 'paused';
-        await novel.save();
+        await saveNovelDoc(novel);
 
         res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`);
         res.end();
@@ -1629,7 +1648,7 @@ ${buildChapterTail({
       if (isAbort) console.log('继续生成已暂停');
       else console.error('继续生成失败:', streamError.message);
       novel.status = 'paused';
-      await novel.save();
+      await saveNovelDoc(novel);
       activeStreams.delete(streamKey);
       try {
         if (isAbort) {
@@ -1644,6 +1663,8 @@ ${buildChapterTail({
     }
   } catch (error) {
     console.error('继续生成失败:', error.message);
+    // 释放并发守卫占位，避免早期失败导致该小说永久 409
+    if (streamKey) activeStreams.delete(streamKey);
     const msg = error.isApiError ? error.message : '继续生成失败，请稍后重试';
     if (res.headersSent) {
       try { res.write(`data: ${JSON.stringify({ type: 'error', message: msg })}\n\n`); res.end(); } catch {}
@@ -1675,7 +1696,7 @@ router.post('/continue-import', auth, async (req, res) => {
       isAppend = true;
       novel.status = 'generating';
       baseChapterNumber = (novel.currentChapterIndex || 0) + 1;
-      await novel.save();
+      await saveNovelDoc(novel);
     } else {
       // 创建全新记录
       const novelTitle = title || `续写：${typeName}小说`;
@@ -1689,7 +1710,7 @@ router.post('/continue-import', auth, async (req, res) => {
         status: 'generating',
         batchIndex: 0,
       });
-      await novel.save();
+      await saveNovelDoc(novel);
     }
 
     // 构建续写系统提示词；已有作品优先使用生成时锁定的人格。
@@ -1704,7 +1725,7 @@ router.post('/continue-import', auth, async (req, res) => {
 
     novel.lastPrompt = userPrompt;
     novel.generationContext = systemPrompt;
-    await novel.save();
+    await saveNovelDoc(novel);
 
     // SSE
     res.writeHead(200, {
@@ -1746,7 +1767,7 @@ router.post('/continue-import', auth, async (req, res) => {
       novel.currentWordCount = savedWords;
       novel.currentChapterIndex = chapterNumber;
       novel.status = status;
-      await novel.save();
+      await saveNovelDoc(novel);
     }
 
     req.on('close', async () => {
@@ -1891,7 +1912,7 @@ router.get('/:novelId/blueprint', auth, async (req, res) => {
     const total = getTotalPlannedChapters(parseChapterPlan(novel.chapterPlanData || novel.chapterPlan || ''), novel.targetWordCount);
     ensureStoryBlueprint(novel, total);
     if (!Array.isArray(novel.storyBlueprintProposals)) novel.storyBlueprintProposals = [];
-    await novel.save();
+    await saveNovelDoc(novel);
     res.json({ blueprint: novel.storyBlueprint, proposals: novel.storyBlueprintProposals.slice().sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)) });
   } catch (error) {
     res.status(500).json({ message: '获取故事蓝图失败', error: error.message });
@@ -1907,7 +1928,7 @@ router.put('/:novelId/blueprint/settings', auth, async (req, res) => {
     if (req.body?.autoReviewEnabled !== undefined) blueprint.autoReviewEnabled = Boolean(req.body.autoReviewEnabled);
     if (req.body?.emailReminderEnabled !== undefined) blueprint.emailReminderEnabled = Boolean(req.body.emailReminderEnabled);
     novel.markModified('storyBlueprint');
-    await novel.save();
+    await saveNovelDoc(novel);
     res.json({ blueprint });
   } catch (error) {
     res.status(500).json({ message: '保存蓝图设置失败', error: error.message });
@@ -1925,7 +1946,7 @@ router.post('/:novelId/blueprint/review', auth, async (req, res) => {
     const proposal = await createStoryBlueprintProposal({ user: req.user, novel, persona });
     novel.markModified('storyBlueprint');
     novel.markModified('storyBlueprintProposals');
-    await novel.save();
+    await saveNovelDoc(novel);
     notifyBlueprintProposal(req.user, novel, proposal);
     res.json({ proposal, message: proposal ? '已生成待确认的剧情蓝图提案' : '当前剧情无需调整' });
   } catch (error) {
@@ -1954,7 +1975,7 @@ router.post('/:novelId/blueprint/proposals/:proposalId/decision', auth, async (r
     novel.markModified('storyBlueprint');
     novel.markModified('storyBlueprintProposals');
     novel.markModified('plotThreads');
-    await novel.save();
+    await saveNovelDoc(novel);
     res.json({ message: req.body.decision === 'apply' ? '剧情蓝图已应用，后续章节将遵循新版本' : '已拒绝该剧情蓝图提案', blueprint: novel.storyBlueprint, proposal });
   } catch (error) {
     res.status(500).json({ message: '处理剧情蓝图提案失败', error: error.message });
@@ -1971,7 +1992,7 @@ router.get('/:novelId', auth, async (req, res) => {
     // Older works used a number-only chapter title. Fill those entries from
     // their existing plan locally when the work is opened, without rewriting
     // prose or invoking another model.
-    if (ensureChapterTitles(novel)) await novel.save();
+    if (ensureChapterTitles(novel)) await saveNovelDoc(novel);
     res.json(novel);
   } catch (error) {
     res.status(500).json({ message: '获取小说详情失败', error: error.message });
@@ -2007,7 +2028,7 @@ router.post('/pause/:novelId', auth, async (req, res) => {
     }
 
     novel.status = 'paused';
-    await novel.save();
+    await saveNovelDoc(novel);
     res.json({ message: '已暂停生成' });
   } catch (error) {
     res.status(500).json({ message: '暂停失败', error: error.message });
@@ -2020,7 +2041,7 @@ router.put('/:novelId/outline', auth, async (req, res) => {
     const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
     if (!novel) return res.status(404).json({ message: '小说不存在' });
     novel.outline = req.body.outline || '';
-    await novel.save();
+    await saveNovelDoc(novel);
     res.json({ message: '大纲已更新', outline: novel.outline });
   } catch (error) {
     res.status(500).json({ message: '更新大纲失败', error: error.message });
@@ -2044,7 +2065,7 @@ router.delete('/:novelId/chapter/:chapterNumber', auth, async (req, res) => {
     // 重排章节号
     novel.chapters.forEach((c, i) => { c.chapterNumber = i + 1; });
     novel.currentChapterIndex = novel.chapters.length;
-    await novel.save();
+    await saveNovelDoc(novel);
     res.json({ message: '章节已删除', chapters: novel.chapters, currentWordCount: novel.currentWordCount, currentChapterIndex: novel.currentChapterIndex });
   } catch (error) {
     res.status(500).json({ message: '删除失败', error: error.message });
@@ -2065,7 +2086,7 @@ router.put('/:novelId/chapter/:chapterNumber', auth, async (req, res) => {
     if (content === undefined) return res.status(400).json({ message: '请提供内容' });
 
     const revision = applyChapterRevision(novel, chNum, content, { source, metadata });
-    await novel.save();
+    await saveNovelDoc(novel);
     res.json({ message: '章节已更新，后续续写上下文已同步', chapter: revision.chapter, revision });
   } catch (error) {
     res.status(500).json({ message: '编辑失败', error: error.message });
@@ -2098,7 +2119,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
     }
 
     novel.status = 'generating';
-    await novel.save();
+    await saveNovelDoc(novel);
 
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' });
     res.write(`data: ${JSON.stringify({ type: 'chapter_start', chapterNumber: chNum, title: chapter.title || formatChapterTitle(chNum, deriveLocalChapterTitle({ notes })) })}\n\n`);
@@ -2138,7 +2159,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
       if (!generationDone) {
         abortController.abort();
         saveChapterContent(true);
-        novel.status = 'paused'; await novel.save();
+        novel.status = 'paused'; await saveNovelDoc(novel);
         try { res.write(`data: ${JSON.stringify({ type: 'paused' })}\n\n`); res.end(); } catch {}
       }
     });
@@ -2153,7 +2174,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
       if (abortController.signal.aborted) {
         activeStreams.delete(streamKey);
         saveChapterContent(true);
-        novel.status = 'paused'; await novel.save();
+        novel.status = 'paused'; await saveNovelDoc(novel);
         return;
       }
 
@@ -2161,7 +2182,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
       activeStreams.delete(streamKey);
       saveChapterContent(true);
       // completed 事件只表示本次指定章节续写完成，整部小说仍可继续创作。
-      novel.status = 'paused'; await novel.save();
+      novel.status = 'paused'; await saveNovelDoc(novel);
 
       res.write(`data: ${JSON.stringify({ type: 'chapter_continued', chapterNumber: chNum, addedLength: appendBuffer.length })}\n\n`);
       res.write(`data: ${JSON.stringify({ type: 'completed' })}\n\n`);
@@ -2169,7 +2190,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
     } catch (streamError) {
       activeStreams.delete(streamKey);
       saveChapterContent(true);
-      novel.status = 'paused'; await novel.save();
+      novel.status = 'paused'; await saveNovelDoc(novel);
       try { res.write(`data: ${JSON.stringify({ type: 'paused' })}\n\n`); res.end(); } catch {}
     }
   } catch (error) {
@@ -2791,7 +2812,7 @@ router.post('/polish-save', auth, async (req, res) => {
 
     novel.currentWordCount = (novel.chapters || []).reduce((s, c) => s + Number(c.wordCount || 0), 0);
     novel.markModified('chapters');
-    await novel.save();
+    await saveNovelDoc(novel);
 
     res.json({ message: '已保存回小说', novelId: novel._id, chapterNumber: chNum || 'append', currentWordCount: novel.currentWordCount });
   } catch (error) {

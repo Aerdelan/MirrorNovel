@@ -432,7 +432,7 @@ async function deslopChapter(chapter) {
  if (!confirm(`对第${chapter.chapterNumber}章进行去AI味处理？`)) return
  chapterActionBusy.value = `deslop:${chapter.chapterNumber}`
  try {
- const res = await api.post('/novel/deslop', { text: chapter.content || '', novelId: route.params.id }, { timeout: 1200000 })
+ const res = await api.post('/novel/deslop', { text: chapter.content || '', novelId: route.params.id }, { timeout: 2400000 })
  if (res.data.processed) { await api.put(`/novel/${route.params.id}/chapter/${chapter.chapterNumber}`, { content: res.data.processed, source: 'deslop' }); await refreshNovel(); alert(' 去AI味完成，后续续写上下文已同步！') }
  } catch (e) { alert('处理失败:'+(e.response?.data?.message||e.message)) }
  finally { chapterActionBusy.value = '' }
@@ -446,7 +446,7 @@ async function generateKeywords(chapter) {
  kwLoading.value = true
  showKeywordsDialog.value = true
  try {
- const res = await api.post(`/novel/chapter-keywords/${route.params.id}/${chapter.chapterNumber}`, null, { timeout: 1200000 })
+ const res = await api.post(`/novel/chapter-keywords/${route.params.id}/${chapter.chapterNumber}`, null, { timeout: 2400000 })
  keywordsData.value = res.data
  } catch (e) {
  kwError.value = e.response?.data?.message || e.message || '关键字生成失败'
@@ -541,7 +541,7 @@ async function deslopAllChapters() {
  const ch = chapters[i]
  deslopAllProgress.value = `正在处理第 ${i + 1}/${chapters.length} 章...`
  try {
- const res = await api.post('/novel/deslop', { text: ch.content || '', novelId: route.params.id }, { timeout: 1200000 })
+ const res = await api.post('/novel/deslop', { text: ch.content || '', novelId: route.params.id }, { timeout: 2400000 })
  if (res.data.processed) {
  await api.put(`/novel/${route.params.id}/chapter/${ch.chapterNumber}`, { content: res.data.processed, source: 'deslop' })
  success++
