@@ -1,208 +1,133 @@
-<p align="center">
-  <a href="#readme-zh">简体中文</a> | <a href="#readme-en">English</a>
-</p>
-
-<a id="readme-zh"></a>
+<div align="center">
 
 # MirrorNovel
 
-> 面向长篇创作的 AI 小说生成、续写、润色与故事连贯性管理平台。
+**面向长篇创作的 AI 小说写作平台**
 
-MirrorNovel 将小说类型、写作人格、大纲、故事蓝图、章节计划和持续上下文结合到同一创作流程中。它包含用户端 Web、管理端 Web、uni-app 移动端和 Express 服务端。
+从大纲到蓝图，从正文到润色 —— 一条由 AI 驱动、全程可确认、可干预的创作流水线
 
-## 目录
+[![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A518-339933?logo=node.js&logoColor=white)](https://nodejs.org)
+[![MongoDB](https://img.shields.io/badge/MongoDB-%E2%89%A56-47A248?logo=mongodb&logoColor=white)](https://www.mongodb.com)
+[![Vue 3](https://img.shields.io/badge/Vue-3-42b883?logo=vuedotjs&logoColor=white)](https://vuejs.org)
+[![Express](https://img.shields.io/badge/Express-4-000000?logo=express&logoColor=white)](https://expressjs.com)
+[![License](https://img.shields.io/badge/license-see_LICENSE-lightgrey)](LICENSE)
 
-- [核心能力](#核心能力)
-- [功能概览](#功能概览)
-- [项目结构](#项目结构)
-- [环境要求](#环境要求)
-- [快速开始](#快速开始)
-- [环境变量](#环境变量)
-- [模型线路配置](#模型线路配置)
-- [使用流程](#使用流程)
-- [API 概览](#api-概览)
-- [测试与构建](#测试与构建)
-- [部署建议](#部署建议)
-- [安全说明](#安全说明)
-- [开源协议](#开源协议)
+[简体中文](#-核心特性) · [English](#english-version)
 
-## 核心能力
+</div>
+
+<div align="center">
+  <img src="docs/screenshots/generate.png" alt="生成页" width="49%" />
+  <img src="docs/screenshots/outline-stream.png" alt="AI 大纲流式生成" width="40%" />
+</div>
+
+---
+
+<a id="readme-zh"></a>
+
+## ✨ 核心特性
 
 | 能力 | 说明 |
 |---|---|
-| 小说生成 | 支持普通小说、轻小说、单章和整本两种创作模式 |
-| 大纲与蓝图 | 先生成大纲，再让用户确认故事蓝图、阶段、支线和反转 |
-| 连续性管理 | 持久化章节摘要、伏笔、角色状态、情绪曲线、事实和未决问题 |
-| 写作人格 | 使用系统预设、手动模板或 AI 生成模板控制叙述声线和节奏 |
-| 导入续写 | 导入 TXT 后保持已有剧情、人物和设定继续写作 |
-| 润色与编辑 | 提供文本润色、去 AI 化、章节优化和编辑引擎工作流 |
-| 模型线路 | 支持默认线路以及 outline、writing、reasoning、polish 的任务级线路 |
-| 管理端 | 提供用户状态管理、基础概览和模型线路配置 |
-| 多端 | 提供 Vue Web 用户端、管理端及 uni-app 移动端页面 |
+| 📚 整本 & 单章创作 | 普通小说（男频/女频题材）与轻小说双模式，支持整本连写与单章精写 |
+| 🧭 大纲 → 蓝图 → 正文 | 大纲先生成、可编辑、需确认；故事蓝图由 AI 提出阶段/支线/反转，确认后才用于正文 |
+| 🌊 全程流式可视 | 大纲、蓝图、正文均以 SSE 实时推送，思考过程与正文同步展示并自动追踪最新内容；关闭页面即中止，不空烧 token |
+| 🧠 长篇连贯性引擎 | 持久化章节摘要、伏笔、角色状态、情绪曲线与未决问题，跨章自动回收伏笔 |
+| 🎭 写作人格 | 系统预设 / 手动模板 / AI 生成人格控制叙述声线与节奏；作品保存人格快照，改模板不影响已有作品 |
+| 👔 专家团模式 | 每章写作后自动连续性审稿，发现问题自动修订并提示 |
+| 🪄 润色与编辑引擎 | 流式润色导出、两遍法去 AI 味（含差异对比、回写章节）、三阶段编辑引擎（结构重构 → 风格一致 → 去 AI 化） |
+| 📥 导入续写 | 上传 `.txt` 或粘贴正文，AI 整理既有剧情上下文后继续创作 |
+| 🗃️ 书架与章节管理 | 章节查看/编辑/导出、关键字提取、后台全文调优任务 |
+| 🔌 多模型线路 | 按任务类型（大纲/正文/推理/润色/记忆）分别指定线路，支持任何 OpenAI Chat Completions 兼容服务与 Ollama |
+| 🧩 实时 token 用量 | 大纲、蓝图与整本生成过程实时展示输入/输出 token 消耗 |
+| 🛠️ 管理端 | 数据大屏、用户管理、模型线路统一维护 |
+| 📱 多端 | Vue 用户端、管理端与 uni-app 移动端 |
 
-## 功能概览
+> **模型兼容性说明**：平台默认请求关闭模型的深度思考（强制深度推理模型的长思考会挤占输出预算，导致正文为空）。若接入的模型强制开启深度推理，系统会立即提示「当前暂不支持深度推理模型接入，请切换模型」，不会重试浪费 token。
 
-### 小说创作
+## 📸 界面速览
 
-1. 选择男频、女频或轻小说题材。
-2. 填写主角和世界观，可让系统生成大纲。
-3. 在整本模式中确认初始故事蓝图。
-4. 选择写作人格和任务线路。
-5. 服务端通过 SSE 推送大纲、章节状态、思考进度、正文和完成事件。
-6. 每章写入作品后同步更新计划、上下文、伏笔和创作状态。
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/polish.png" width="100%"/><br/>润色 — 流式改写与导出</td>
+    <td align="center"><img src="docs/screenshots/continue.png" width="100%"/><br/>续写 — 导入 TXT 接着写</td>
+  </tr>
+</table>
 
-### 续写与书架
+## 🏗️ 系统架构
 
-- 从书架继续整本作品，或针对指定章节补写。
-- 导入 `.txt` 小说文本后继续创作。
-- 查看、编辑、删除章节并导出作品。
-- 上下文服务自动汇总近期剧情、角色状态、伏笔和阶段记忆，减少长篇续写漂移。
+```text
+浏览器 / uni-app 移动端
+        │
+        ├── 用户端 (Vue 3, :5173) ──┐
+        ├── 管理端 (Vue 3, :5174) ──┤  SSE 流式 / REST
+        ▼                          │
+Express API 服务 (Node.js, :3000) ─┘
+        │
+        ├── OpenAI-compatible 模型服务 / Ollama
+        ├── MongoDB（作品 / 章节 / 伏笔 / 人格 / 系统配置）
+        └── SMTP 邮箱（注册与找回密码验证码）
+```
 
-### 写作人格
-
-写作人格由以下内容构成：
-
-- 作者声线：视角、叙述距离、人称和叙述温度。
-- 语气与节奏：词汇密度、句法、段落节奏和轻重平衡。
-- 写作规则：题材约束、人物声音、对话和描写规则。
-- 词汇建议：推荐或避免使用的表达。
-
-每本新作品保存已选人格快照，因此后来修改模板不会影响已经创建的小说。
-
-### 润色与编辑引擎
-
-- 流式文本润色和导出。
-- 去 AI 化处理，并支持应用回指定章节。
-- 章节关键字提取。
-- 后台章节调优任务。
-- 编辑引擎按人格、结构、风格一致性和语言修订等阶段处理内容，并报告任务进度。
-
-### 密码找回
-
-用户端登录页提供“忘记密码”入口：
-
-1. 输入注册邮箱并获取重置验证码。
-2. 输入验证码和新密码。
-3. 服务端验证十分钟有效期的验证码后更新 bcrypt 密码哈希。
-
-## 项目结构
+## 📂 项目结构
 
 ```text
 MirrorNovel/
 ├── server/                       # Express + Mongoose 服务端
-│   ├── config/                   # 数据库、模型目录、题材、模板和编辑规则
+│   ├── config/                   # 数据库、模型目录、题材、模板与编辑规则
 │   ├── middleware/               # JWT 鉴权
 │   ├── models/                   # User、Novel、WritingPersona、SysConfig、VerificationCode
 │   ├── routes/                   # auth、novel、persona、admin
-│   ├── services/                 # AI、上下文、故事状态、编辑、采集辅助
-│   └── tests/                    # Node 内置测试
-├── client/                       # Vue 用户端 Web
-│   └── src/
-│       ├── views/                # 生成、续写、书架、润色、资料和认证页面
-│       ├── stores/               # Pinia 状态
-│       ├── router/               # 用户端路由
-│       └── locales/              # 中英文文案
-├── admin/                        # Vue 管理端 Web
+│   ├── services/                 # AI、上下文、故事状态、编辑引擎、token 统计
+│   └── tests/                    # Node 内置测试（69 用例）
+├── client/                       # Vue 3 用户端（生成/续写/书架/润色/资料）
+├── admin/                        # Vue 3 管理端（大屏/用户/模型线路）
 ├── app/                          # uni-app 移动端
-├── docs/                         # 补充文档
-├── PROJECT_ARCHITECTURE.md       # 当前代码的详细架构与 API 文档
+├── docs/                         # 补充文档与界面截图
+├── PROJECT_ARCHITECTURE.md       # 详细架构与 API 文档
 └── LICENSE
 ```
 
-## 环境要求
+## 🚀 快速开始
 
-- Node.js 18 或更高版本。
-- MongoDB 6 或更高版本。
-- 与 OpenAI Chat Completions 兼容的模型服务，或可访问的 Ollama 服务。
-- 如需使用内容导入辅助功能：Playwright Chromium。
+### 环境要求
 
-## 快速开始
+- Node.js ≥ 18
+- MongoDB ≥ 6
+- 任一 OpenAI Chat Completions 兼容模型服务，或可用的 Ollama
+- （可选）Playwright Chromium：用于内容导入辅助
 
-### 1. 克隆项目
+### 安装与启动
 
 ```bash
 git clone https://github.com/Aerdelan/MirrorNovel.git
 cd MirrorNovel
+
+# 安装依赖
+cd server && npm install && cd ../client && npm install && cd ../admin && npm install && cd ../app && npm install
+
+# 配置服务端环境变量
+cd ../server
+copy .env.example .env      # Windows
+# cp .env.example .env      # macOS / Linux
 ```
 
-### 2. 安装依赖
+启动（三个终端）：
 
 ```bash
-cd server
-npm install
-
-cd ../client
-npm install
-
-cd ../admin
-npm install
-
-cd ../app
-npm install
+cd server && npm run dev    # API 服务 :3000
+cd client && npm run dev    # 用户端 :5173
+cd admin && npm run dev     # 管理端 :5174
 ```
 
-### 3. 配置服务端环境变量
+用户端与管理端通过 Vite 代理把 `/api` 转发到 `:3000`。首次启动时服务端会按 `ADMIN_EMAIL` / `ADMIN_PASSWORD` 自动创建管理员账号。
 
-复制示例文件：
+## ⚙️ 环境变量
 
-```bash
-cd server
-copy .env.example .env
-```
-
-在 macOS 或 Linux 中使用：
-
-```bash
-cp .env.example .env
-```
-
-然后编辑 `server/.env`。至少需要 MongoDB、JWT 和一个可用模型线路。
-
-### 4. 启动 MongoDB
-
-确保 `MONGODB_URI` 对应的 MongoDB 实例正在运行。例如：
-
-```bash
-mongod --dbpath /path/to/mongodb-data
-```
-
-Windows 使用服务安装时，可在“服务”中启动 MongoDB Server，或按本机 MongoDB 安装方式启动。
-
-### 5. 启动开发服务
-
-分别打开终端运行：
-
-```bash
-# 终端 1：服务端，默认 http://localhost:3000
-cd server
-npm run dev
-
-# 终端 2：用户端，默认 http://localhost:5173
-cd client
-npm run dev
-
-# 终端 3：管理端，默认 http://localhost:5174
-cd admin
-npm run dev
-```
-
-用户端和管理端通过 Vite 代理把 `/api` 请求转发到 `http://localhost:3000`。
-
-### 6. 可选：安装 Playwright 浏览器
-
-如需使用依赖浏览器的内容导入辅助功能：
-
-```bash
-cd server
-npx playwright install chromium
-```
-
-## 环境变量
-
-以下为安全的最小示例。请不要把真实密钥提交到仓库。
+<details>
+<summary>server/.env 最小示例（点击展开）</summary>
 
 ```env
-# server/.env
 MONGODB_URI=mongodb://127.0.0.1:27017/mirrornovel
 PORT=3000
 
@@ -213,12 +138,12 @@ ADMIN_EMAIL=admin@example.com
 ADMIN_PASSWORD=replace_with_a_strong_password
 ADMIN_NICKNAME=管理员
 
-# 默认模型线路的 OpenAI-compatible 配置
+# 默认模型线路
 AI_API_BASE=https://api.example.com/v1
 AI_API_KEY=replace_with_your_api_key
 AI_MODEL=your-model-name
 
-# 邮箱验证码，可选；未配置时开发环境会在服务端日志中打印验证码
+# 邮箱验证码（可选，未配置时开发环境会在日志中打印验证码）
 EMAIL_HOST=smtp.example.com
 EMAIL_PORT=465
 EMAIL_USERNAME=noreply@example.com
@@ -226,27 +151,13 @@ EMAIL_PASSWORD=replace_with_smtp_password
 EMAIL_SECURE=true
 ```
 
-> 启动时若管理员账号不存在，服务端会根据 `ADMIN_EMAIL`、`ADMIN_PASSWORD` 和 `ADMIN_NICKNAME` 自动创建管理员。
+> 请勿提交真实密钥。
 
-## 模型线路配置
+</details>
 
-### 默认线路
+## 🔌 模型线路
 
-默认线路使用 `AI_API_BASE`、`AI_API_KEY` 和 `AI_MODEL`。若使用不同模型提供商，请确认其接口兼容 Chat Completions 请求格式。
-
-### 多线路环境变量
-
-服务端预置以下线路 ID：
-
-| ID | 环境变量前缀 |
-|---|---|
-| `normal_1` | `MODEL_NORMAL_1` |
-| `normal_2` | `MODEL_NORMAL_2` |
-| `advanced_1` | `MODEL_ADVANCED_1` |
-| `vip` | `MODEL_VIP` |
-| `svip` | `MODEL_SVIP` |
-
-每条线路可设置：
+预置线路 ID：`normal_1`、`normal_2`、`advanced_1`、`vip`、`svip`，前缀加 `_BASE_URL` / `_API_KEY` / `_MODEL` 即可通过环境变量配置：
 
 ```env
 MODEL_NORMAL_1_BASE_URL=https://api.example.com/v1
@@ -254,226 +165,138 @@ MODEL_NORMAL_1_API_KEY=replace_with_your_api_key
 MODEL_NORMAL_1_MODEL=your-model-name
 ```
 
-用户可在个人资料中选择默认线路，并针对 `outline`、`writing`、`reasoning`、`polish` 分别指定线路。管理员可在管理端统一维护线路地址、模型名和 API Key。
+- 用户在「个人资料」中选择默认线路，并可针对 `outline`、`writing`、`reasoning`、`polish`、`memory` 分别指定线路。
+- 管理员在管理端「模型配置」中统一维护线路地址、模型名与密钥。
+- Ollama：常见本机地址 `http://localhost:11434`；跨设备访问需按 Ollama 文档配置监听与 CORS。
 
-### Ollama
+## 📖 使用流程
 
-用户端可配置 Ollama 地址并查询可用模型。常见本机地址为：
+**创作一部新小说**
 
-```text
-http://localhost:11434
-```
+1. 登录后打开「生成」，选择题材（男频 / 女频 / 轻小说）
+2. 填写主角与世界观；整本模式下先生成大纲，实时流式展示，可编辑后确认
+3. 生成并确认初始故事蓝图（阶段 / 支线 / 反转，AI 只提方案，不改剧情）
+4. 选择写作人格与目标字数，开始创作 —— 正文逐段流入，章节计划、思考进度与 token 用量实时可见
+5. 在书架或作品详情中继续写作、编辑章节、去 AI 味、提取关键字或发起全文调优
 
-当 Web 前端与 Ollama 不在同一个设备时，需按 Ollama 文档配置监听地址和 CORS，并限制仅可信网络可访问。
+**导入续写**
 
-## 使用流程
+1. 打开「续写」，上传 UTF-8 `.txt` 或粘贴正文
+2. 填写续写方向、目标字数与模式
+3. 系统整理导入文本的上下文（人物 / 伏笔 / 事件）后开始续写
 
-### 创作一部新小说
+## 🔑 API 概览
 
-1. 访问用户端并登录。
-2. 打开“生成”，选择题材与创作模式。
-3. 填写主角和世界观。
-4. 整本模式下，生成并确认大纲和初始故事蓝图。
-5. 选择写作人格和目标字数。
-6. 开始生成，页面会实时接收正文和章节状态。
-7. 在书架或作品详情中继续、编辑、导出和优化章节。
-
-### 导入续写
-
-1. 打开“续写”。
-2. 上传 UTF-8 `.txt` 文件，或粘贴已有正文。
-3. 填写续写方向、目标字数和模式。
-4. 系统整理导入文本上下文后开始续写。
-
-### 管理模型线路
-
-1. 以管理员账号登录管理端。
-2. 打开“模型线路”。
-3. 填写接口地址、模型名称和 API Key。
-4. 保存后，服务端会更新模型目录配置。
-
-## API 概览
-
-完整接口表、数据模型和数据流请阅读 [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md)。
-
-### 认证
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| POST | `/api/auth/register` | 注册 |
-| POST | `/api/auth/login` | 登录 |
-| POST | `/api/auth/send-code` | 注册验证码 |
-| POST | `/api/auth/send-reset-code` | 密码重置验证码 |
-| POST | `/api/auth/reset-password` | 重置密码 |
-| GET/PUT | `/api/auth/model-config` | 获取/保存用户模型配置 |
-
-### 小说
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/api/novel/types` | 基础类型列表 |
-| GET | `/api/novel/types/full` | 完整分类数据 |
-| POST | `/api/novel/generate-outline` | 生成大纲 |
-| POST | `/api/novel/generate-blueprint` | 生成故事蓝图 |
-| POST | `/api/novel/generate` | SSE 小说生成 |
-| POST | `/api/novel/continue/:novelId` | SSE 续写 |
-| POST | `/api/novel/continue-import` | 导入续写 |
-| GET | `/api/novel/bookshelf` | 获取书架 |
-| POST | `/api/novel/polish` | SSE 文本润色 |
-
-### 写作人格与管理端
+完整接口与数据模型见 [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md)。
 
 | 前缀 | 说明 |
 |---|---|
-| `/api/persona` | 写作人格的列表、新建、编辑、克隆和 AI 生成 |
-| `/api/admin/users` | 管理用户 |
-| `/api/admin/models` | 管理模型线路 |
-| `/api/admin/dashboard` | 管理概览 |
+| `/api/auth` | 注册、登录、邮箱验证码、找回密码、模型配置 |
+| `/api/novel/types` | 题材分类 |
+| `/api/novel/generate-outline` | 大纲生成（SSE：思考 + 正文流式） |
+| `/api/novel/generate-blueprint` | 故事蓝图生成（SSE） |
+| `/api/novel/generate` | 整本 / 单章生成（SSE） |
+| `/api/novel/continue/:id` · `/continue-import` | 续写（SSE） |
+| `/api/novel/bookshelf` · `/novel/:id` | 书架与章节管理 |
+| `/api/novel/deslop-stream` · `/polish` · `/editorial-stream` | 去 AI 味 / 润色 / 编辑引擎（SSE） |
+| `/api/persona` | 写作人格增删改克隆与 AI 生成 |
+| `/api/admin` | 管理端：用户、模型线路、数据概览 |
 
-## 测试与构建
+## 🧪 测试与构建
 
 ```bash
-# 服务端测试
-cd server
-npm test
-
-# 用户端生产构建
-cd ../client
-npm run build
-
-# 管理端生产构建
-cd ../admin
-npm run build
-
-# uni-app H5 构建
-cd ../app
-npm run build:h5
+cd server && npm test        # 69 个用例：模型路由、思考参数兼容、故事状态、上下文、SSE 生成、续写、暂停、重复保护等
+cd client && npm run build   # 用户端构建
+cd admin && npm run build    # 管理端构建
+cd app && npm run build:h5   # uni-app H5 构建
 ```
 
-服务端测试覆盖提示词与模型路由、故事状态、上下文记忆、生成 SSE、续写、暂停和章节重复保护等核心行为。
+## 📦 部署建议
 
-## 部署建议
+- 用 `npm run build` 产出静态资源，经 Nginx / Caddy 托管，反代 `/api` 至 Express；
+- API 服务用 systemd / PM2 / Docker Compose 守护；
+- MongoDB 仅绑定受信网络；JWT 密钥、管理员密码、SMTP 与模型密钥各自独立且随机；
+- 开启 HTTPS、合理的反代超时（SSE 长连接）与日志轮转；定期备份并验证可恢复。
 
-```text
-浏览器 / 移动端
-        │
-        ├── 用户端静态资源
-        ├── 管理端静态资源
-        │
-        ▼
-Express API 服务
-        │
-        ├── OpenAI-compatible 模型服务 / Ollama
-        ├── SMTP 邮箱服务
-        └── MongoDB
-```
+## 🔒 安全说明
 
-生产环境建议：
+- 密码 bcrypt 哈希存储；API 使用 JWT 鉴权；重置验证码限时有效且不暴露账户存在性；
+- 生产环境请补充登录与验证码频率限制、审计日志与网络访问控制；
+- 不要提交 `.env`、数据库文件与任何密钥；
+- AI 输出仅作创作辅助，发布前请自行审核内容与合规要求。
 
-- 使用 `npm run build` 生成的静态资源，并通过 Nginx、Caddy 或同类服务托管。
-- 使用 systemd、PM2、Docker Compose 或平台进程管理器守护 API 服务。
-- MongoDB 只绑定受信网络，不暴露给公网。
-- 使用随机且独立的 JWT 密钥、管理员密码、SMTP 密码和模型 API Key。
-- 设置 HTTPS、反向代理超时和日志轮转。
-- 定期备份 MongoDB 数据，并在升级前验证备份可恢复。
+## ⚠️ 已知限制
 
-## 安全说明
+- 长篇生成质量依赖模型上下文能力与服务稳定性；
+- 强制深度推理模型暂不支持（见「模型兼容性说明」）；
+- 本地开发依赖可用的 MongoDB，未启动时 API 服务无法运行。
 
-- 密码使用 bcrypt 哈希存储。
-- API 鉴权使用 JWT。
-- 重置验证码带过期时间；请求不存在邮箱时不暴露账户存在性。
-- 请在生产环境增加登录与验证码频率限制、审计日志和适当的网络访问控制。
-- 不要提交 `.env`、数据库文件、模型密钥、邮箱密码或任何生产凭据。
-- AI 输出仅作为创作辅助，发布前请自行审核内容、版权、隐私与适用法律要求。
+## 📄 开源协议
 
-## 已知限制
-
-- 长篇生成依赖模型上下文能力、网络稳定性和模型输出质量。
-- 外部内容导入受站点规则、网络和浏览器环境影响。
-- 模型提供商的模型名、上下文长度和请求格式存在差异，需要在模型线路中正确配置。
-- 本地开发时，后端依赖可用的 MongoDB；数据库未运行会导致 API 服务无法启动。
-
-## 开源协议
-
-本项目采用仓库中的 [LICENSE](LICENSE) 所声明的协议。使用、修改或分发前请阅读协议全文，并遵守所使用模型服务、第三方库和内容来源的相应条款。
+见 [LICENSE](LICENSE)。使用、修改或分发前请阅读协议全文，并遵守所用模型服务、第三方库与内容来源的条款。
 
 ---
 
 <a id="readme-en"></a>
 
-# MirrorNovel
+## English Version
 
-> An AI-assisted platform for long-form novel generation, continuation, polishing, and story continuity management.
+<div align="center">
 
-MirrorNovel combines genre selection, writing personas, outlines, story blueprints, chapter plans, and persistent context in one workflow. It includes a Vue user web app, a Vue admin web app, a uni-app client, and an Express API.
+**AI-powered platform for long-form fiction writing**
 
-## Highlights
+Outline → Blueprint → Chapters → Polish — a fully streaming, always-confirmable AI writing pipeline
 
-- Generate a full novel or a single chapter, including light-novel presets.
-- Create and confirm outlines and story blueprints before full-book generation.
-- Persist chapter summaries, facts, plot hooks, character state, and tension history for continuation.
-- Manage system, user-authored, and AI-generated writing personas.
-- Import a TXT manuscript and continue writing from its existing story context.
-- Stream polishing, de-AI rewriting, chapter optimization, and editorial workflows.
-- Configure default and task-specific model routes for outline, writing, reasoning, and polishing.
-- Use web, admin, and uni-app clients against the same Express and MongoDB backend.
+</div>
 
-## Quick Start
+### ✨ Highlights
+
+| Capability | Description |
+|---|---|
+| 📚 Whole-book & single-chapter modes | Webnovel genres (male/female-oriented) and light novels |
+| 🧭 Outline → Blueprint → Prose | Outlines are generated live, editable, and must be confirmed; story blueprints (phases / subplots / reversals) are proposed by AI and only applied after confirmation |
+| 🌊 Streaming everywhere | Outline, blueprint, and prose are all pushed over SSE in real time with auto-scrolling; closing the page aborts generation — no wasted tokens |
+| 🧠 Long-range continuity engine | Chapter summaries, foreshadowing, character states, emotional curves and open questions persist and are reused across chapters |
+| 🎭 Writing personas | System presets, manual templates, or AI-generated personas control voice and rhythm; each book snapshots its persona |
+| 👔 Expert review mode | Automatic continuity review after every chapter, with auto-revision when needed |
+| 🪄 Polish & editorial engine | Streaming polish with export; two-pass de-AI rewriting with diff view; three-stage editorial workflow |
+| 📥 Import & continue | Upload `.txt` or paste existing prose; the AI reconstructs context and continues the story |
+| 🔌 Multi-route model config | Per-task routing (`outline` / `writing` / `reasoning` / `polish` / `memory`) across any OpenAI-compatible provider or Ollama |
+| 🧩 Live token usage | Input/output token costs are shown live during outline, blueprint, and generation |
+| 🛠️ Admin console | Dashboard, user management, model route maintenance |
+| 📱 Multi-platform | Vue web client, admin SPA, and uni-app mobile app |
+
+> **Model compatibility**: the platform always requests thinking disabled. If the configured model forces deep reasoning, requests fail fast with a clear "switch models" notice instead of burning tokens on retries.
+
+### 🚀 Quick Start
 
 ```bash
 git clone https://github.com/Aerdelan/MirrorNovel.git
 cd MirrorNovel
+cd server && npm install && cp .env.example .env   # fill in MongoDB / JWT / model route
+cd ../client && npm install && cd ../admin && npm install && cd ../app && npm install
 
-cd server && npm install
-cd ../client && npm install
-cd ../admin && npm install
-cd ../app && npm install
+cd ../server && npm run dev   # API  :3000
+cd client  && npm run dev     # Web  :5173
+cd admin   && npm run dev     # Admin:5174
 ```
 
-Create `server/.env` from the example, configure MongoDB, JWT, and at least one model route, then run:
+Requirements: Node.js ≥ 18, MongoDB ≥ 6, and any OpenAI Chat Completions compatible model service (or Ollama).
 
-```bash
-# API: http://localhost:3000
-cd server && npm run dev
+### Screenshots
 
-# User web: http://localhost:5173
-cd client && npm run dev
+| | |
+|---|---|
+| ![Polish](docs/screenshots/polish.png) | ![Continue](docs/screenshots/continue.png) |
 
-# Admin web: http://localhost:5174
-cd admin && npm run dev
-```
+### Docs
 
-The Vite apps proxy `/api` requests to `http://localhost:3000`. MongoDB must be running before the API can start.
+- Full architecture & API reference: [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md)
+- Security: bcrypt password hashing, JWT auth, expiring reset codes; never commit `.env` or keys.
+- License: see [LICENSE](LICENSE).
 
-## Configuration
+<div align="center">
 
-```env
-MONGODB_URI=mongodb://127.0.0.1:27017/mirrornovel
-PORT=3000
-JWT_SECRET=replace_with_a_long_random_secret
-JWT_EXPIRES_IN=7d
-AI_API_BASE=https://api.example.com/v1
-AI_API_KEY=replace_with_your_api_key
-AI_MODEL=your-model-name
-```
+<sub>Built for long-form storytelling — 让长篇创作有始有终。</sub>
 
-Use the `MODEL_<ROUTE>_BASE_URL`, `MODEL_<ROUTE>_API_KEY`, and `MODEL_<ROUTE>_MODEL` variables for route-specific overrides. The available route IDs are `normal_1`, `normal_2`, `advanced_1`, `vip`, and `svip`.
-
-## Build and Test
-
-```bash
-cd server && npm test
-cd ../client && npm run build
-cd ../admin && npm run build
-cd ../app && npm run build:h5
-```
-
-For the full architecture, route inventory, data models, and workflow diagrams, see [PROJECT_ARCHITECTURE.md](PROJECT_ARCHITECTURE.md).
-
-## Security
-
-Keep `.env`, database files, API keys, SMTP credentials, and production passwords out of source control. Use HTTPS, restrict MongoDB network access, and add request rate limiting before production use.
-
-## License
-
-See [LICENSE](LICENSE).
+</div>
