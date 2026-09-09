@@ -178,7 +178,7 @@ const aiServiceMock = {
   getFriendlyErrorMessage: (error) => error?.message || 'mock error',
   streamGenerate: async (systemPrompt, userPrompt, onChunk, signal, apiConfig, retries, temperature, maxTokens, timeoutMs) => {
     const call = { systemPrompt, userPrompt, onChunk, signal, apiConfig, retries, temperature, maxTokens, timeoutMs };
-    call.kind = onChunk ? 'chapter' : (systemPrompt.includes('章节规划师') ? 'plan' : (systemPrompt.includes('大纲策划师') ? 'outline' : 'other'));
+    call.kind = onChunk ? 'chapter' : (systemPrompt.includes('章节规划师') ? 'plan' : (systemPrompt.includes('大纲策划师') ? 'outline' : (systemPrompt.includes('连载审读员') ? 'hookAudit' : 'other')));
     state.aiCalls.push(call);
     return (state.aiHandler || defaultAiHandler)(call);
   },
@@ -333,9 +333,11 @@ test('专家团模式：正文后调用推理审稿，审稿失败时保留原�
   });
 
   assert.equal(response.status, 200);
-  assert.equal(state.aiCalls.filter((call) => call.onChunk).length, 1);
-  assert.equal(state.aiCalls.filter((call) => !call.onChunk).length, 1);
-  assert.match(state.aiCalls.at(-1).userPrompt, /连续性与叙事质量审稿专家/);
+  // hookAudit 是每章后的伏笔自评小调用，不属于本断言关心的调用面
+  const nonAuditCalls = state.aiCalls.filter((call) => call.kind !== 'hookAudit');
+  assert.equal(nonAuditCalls.filter((call) => call.onChunk).length, 1);
+  assert.equal(nonAuditCalls.filter((call) => !call.onChunk).length, 1);
+  assert.match(state.aiCalls.filter((call) => call.kind !== "hookAudit").at(-1).userPrompt, /连续性与叙事质量审稿专家/);
   assert.ok(events.some((event) => event.type === 'status' && event.message.includes('推理专家')));
   const novel = getCreatedNovel(events);
   assert.equal(novel.status, 'completed');
@@ -393,8 +395,8 @@ test('新书整本：先落结构化计划，再严格按章生成并回收伏�
   assert.equal(novel.foreshadowingLedger.length, 1);
   assert.equal(novel.foreshadowingLedger[0].status, 'resolved');
   assert.equal(novel.foreshadowingLedger[0].resolvedChapter, 2);
-  assert.deepEqual(state.aiCalls.map((call) => call.kind), ['plan', 'chapter', 'chapter']);
-  assert.match(state.aiCalls[2].userPrompt, /本章应回收伏笔：铜钥匙上的裂纹/);
+  assert.deepEqual(state.aiCalls.filter((call) => call.kind !== 'hookAudit').map((call) => call.kind), ['plan', 'chapter', 'chapter']);
+  assert.match(state.aiCalls.filter((call) => call.kind === "chapter")[1].userPrompt, /本章应回收伏笔：铜钥匙上的裂纹/);
 });
 
 test('新书整本：计划为空时暂停，不进入无约束正文循环', async () => {
@@ -580,7 +582,7 @@ test('续写整本：从最高章节号继续，按剩余计划完成全书', as
   assert.deepEqual(novel.chapters.map((chapter) => chapter.chapterNumber), [1, 2, 3]);
   assert.equal(novel.status, 'completed');
   assert.ok(novel.currentWordCount >= novel.targetWordCount);
-  assert.deepEqual(state.aiCalls.map((call) => call.kind), ['chapter', 'chapter']);
+  assert.deepEqual(state.aiCalls.filter((call) => call.kind !== 'hookAudit').map((call) => call.kind), ['chapter', 'chapter']);
   assert.ok(eventIndex(events, 'chapter_end', (event) => event.chapterNumber === 2) < eventIndex(events, 'chapter_start', (event) => event.chapterNumber === 3));
   assert.ok(eventIndex(events, 'chapter_end', (event) => event.chapterNumber === 3) < eventIndex(events, 'completed'));
 });

@@ -24,7 +24,7 @@ router.get('/dashboard', async (req, res) => {
     ]);
     res.json({ totalUsers, totalNovels, completedNovels, generatingNovels, recentRegistrations });
   } catch (error) {
-    res.status(500).json({ message: '获取数据失败', error: error.message });
+    res.status(500).json({ message: '获取数据失败' });
   }
 });
 
@@ -64,7 +64,7 @@ router.get('/users', async (req, res) => {
 
     res.json({ users: usersWithUsage, total, page: Number(page), pageSize: size });
   } catch (error) {
-    res.status(500).json({ message: '获取用户列表失败', error: error.message });
+    res.status(500).json({ message: '获取用户列表失败' });
   }
 });
 
@@ -93,7 +93,7 @@ router.put('/users/:id', async (req, res) => {
     await user.save();
     res.json({ message: '更新成功', user: user.toObject() });
   } catch (error) {
-    res.status(500).json({ message: '更新失败', error: error.message });
+    res.status(500).json({ message: '更新失败' });
   }
 });
 
@@ -116,7 +116,7 @@ router.get('/models', async (req, res) => {
     if (stored?.value) setCatalogOverrides(stored.value);
     res.json({ routes: createModelCatalog().map(modelRouteView) });
   } catch (error) {
-    res.status(500).json({ message: '读取模型配置失败', error: error.message });
+    res.status(500).json({ message: '读取模型配置失败' });
   }
 });
 
@@ -144,7 +144,7 @@ router.put('/models', async (req, res) => {
     setCatalogOverrides(overrides);
     res.json({ message: '模型线路配置已保存并即时生效', routes: createModelCatalog().map(modelRouteView) });
   } catch (error) {
-    res.status(500).json({ message: '保存失败', error: error.message });
+    res.status(500).json({ message: '保存失败' });
   }
 });
 

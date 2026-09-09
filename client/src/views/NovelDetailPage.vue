@@ -194,6 +194,7 @@ import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useNovelStore } from '../stores/novel'
 import { useI18n } from '../composables/useI18n'
+import { useSSE } from '../composables/useSSE'
 import api from '../api'
 
 const route = useRoute()
@@ -382,31 +383,20 @@ async function confirmGenSettings() { if (isContinuing.value) return; showGenSet
 async function startChapterGen(chapterNum, wc, notes) {
  isContinuing.value = true; continuingChapter.value = chapterNum; chapterStreamingText.value = ''; chapterThinkingLen.value = 0
  const token = localStorage.getItem('token')
- const xhr = new XMLHttpRequest()
- xhr.open('POST', `/api/novel/${route.params.id}/continue-chapter/${chapterNum}`)
- xhr.setRequestHeader('Authorization', `Bearer ${token}`)
- xhr.setRequestHeader('Content-Type', 'application/json')
- xhr.setRequestHeader('Accept', 'text/event-stream')
- let lastIdx = 0
- xhr.onprogress = () => {
- const newData = xhr.responseText.slice(lastIdx); lastIdx = xhr.responseText.length
- const lines = newData.split('\n').filter(l => l.startsWith('data: '))
- for (const line of lines) {
- try {
- const d = JSON.parse(line.slice(6))
- if (d.type === 'content') chapterStreamingText.value += d.content
- else if (d.type === 'thinking') chapterThinkingLen.value = d.length || 0
- else if (d.type === 'completed' || d.type === 'chapter_continued' || d.type === 'paused') { isContinuing.value = false; refreshNovel() }
- else if (d.type === 'error') { isContinuing.value = false; alert('生成失败:'+d.message) }
- } catch {}
- }
- }
- xhr.onerror = () => { isContinuing.value = false }
- xhr.onabort = () => { isContinuing.value = false; refreshNovel() }
- xhr.send(JSON.stringify({ wordCount: wc, notes }))
- window.__chapterGenXHR = xhr
+ const sse = useSSE()
+ sse.openSSE(`/api/novel/${route.params.id}/continue-chapter/${chapterNum}`, { wordCount: wc, notes }, {
+  token,
+  onContent: (content) => { chapterStreamingText.value += content },
+  onEvent: (d) => {
+   if (d.type === 'thinking') chapterThinkingLen.value = d.length || 0
+   else if (d.type === 'completed' || d.type === 'chapter_continued' || d.type === 'paused') { isContinuing.value = false; refreshNovel() }
+  },
+  onError: (message) => { isContinuing.value = false; alert('生成失败:' + message) },
+  onLoadend: () => { isContinuing.value = false; refreshNovel() },
+ })
+ window.__chapterGenSSE = sse
 }
-function stopChapterGen() { if (window.__chapterGenXHR) { window.__chapterGenXHR.abort(); window.__chapterGenXHR = null }; isContinuing.value = false }
+function stopChapterGen() { if (window.__chapterGenSSE) { window.__chapterGenSSE.abort(); window.__chapterGenSSE = null }; isContinuing.value = false }
 
 function openEdit(chapter) { if (!chapterActionBusy.value && !isContinuing.value) { editingChapter.value = chapter; editContent.value = chapter.content || ''; showEditModal.value = true } }
 async function saveEdit() {

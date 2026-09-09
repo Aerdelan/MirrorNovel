@@ -376,3 +376,63 @@ test('story blueprint stays conservative until a proposal is explicitly applied'
   assert.equal(novel.storyBlueprint.phases[0].title, '反转追查');
   assert.ok(novel.plotThreads.some((thread) => thread.title === '苏晚的隐瞒'));
 });
+
+test('compressPreviousChapter keeps beginning, turning point and ending instead of tail only', () => {
+  const { compressPreviousChapter } = require('../services/storyState');
+  const filler = '这是用来填充长度的普通句子。';
+  const content = `清晨的雨落在旧城屋檐上。${filler.repeat(40)}但是林舟在抽屉深处发现了那枚黄铜钥匙。${filler.repeat(40)}夜色渐深，他握紧钥匙走向了地下室。`;
+  const compressed = compressPreviousChapter(content);
+  assert.ok(compressed.length < content.length, '压缩后应短于原文');
+  assert.ok(compressed.startsWith('本章开端：'), '应保留本章开端');
+  assert.ok(compressed.includes('关键转折'), '应提取关键转折句');
+  assert.ok(compressed.includes('走向了地下室'), '必须保留章末状态');
+  // 短章节原样返回
+  assert.equal(compressPreviousChapter('短内容。'), '短内容。');
+  assert.equal(compressPreviousChapter(''), '');
+});
+
+test('hook resolution tolerates reworded prose via 2-gram coverage', () => {
+  const { updateCreativeState, buildChapterContract } = require('../services/storyState');
+  const novel = { foreshadowingLedger: [], recentEventSignatures: [], emotionCurve: [], plotThreads: [], characterStates: [] };
+  const contract = buildChapterContract({ novel, chapterNumber: 2, totalChapters: 10 });
+  // 契约先埋设
+  contract.setHooks = ['铜钥匙的下落'];
+  updateCreativeState(novel, 1, '林舟捡到一把铜钥匙，决定查清它的来历。', { ...contract, chapterNumber: 1 }, {});
+  assert.ok(novel.foreshadowingLedger.some((h) => h.status === 'pending'), '第1章应埋设 pending 伏笔');
+  // 第2章措辞部分改写地回收：不出现完整字面，但保留核心词序（启发式管中度改写，重度改写由模型自评兜底）
+  const reworded = "他终于弄明白了，那把黄铜钥匙正是通向地下室的下落所在，秘密就此揭开。";
+  updateCreativeState(novel, 2, reworded, { ...contract, chapterNumber: 2, resolveHooks: ['铜钥匙的下落'] }, {});
+  const hook = novel.foreshadowingLedger.find((h) => h.status === 'resolved');
+  assert.ok(hook, '措辞改写后的回收应被 2-gram 覆盖率识别');
+  assert.equal(hook.resolvedChapter, 2);
+});
+
+test('applyHookAudit patches missed resolutions, adds unplanned hooks and updates characters', () => {
+  const { applyHookAudit, updateCreativeState, buildChapterContract } = require('../services/storyState');
+  const novel = { foreshadowingLedger: [], recentEventSignatures: [], emotionCurve: [], plotThreads: [], characterStates: [] };
+  const contract = buildChapterContract({ novel, chapterNumber: 1, totalChapters: 10 });
+  contract.setHooks = ['老照片背后的秘密'];
+  updateCreativeState(novel, 1, '林舟翻出老照片，背面写着一个陌生的名字。', { ...contract, chapterNumber: 1 }, {});
+  const pending = novel.foreshadowingLedger.find((h) => h.status === 'pending');
+  assert.ok(pending, '前置：伏笔应处于 pending');
+
+  const audit = {
+    hooksResolved: [{ content: '老照片背后的秘密', evidence: '他终于认出照片背面正是父亲的名字。' }],
+    hooksSet: ['父亲名字与档案库编号的关联'],
+    characterUpdates: [{ name: '林舟', location: '阁楼书房', emotionalState: '震惊而克制', goal: '查清父亲与档案库的关系' }],
+  };
+  const applied = applyHookAudit(novel, 2, audit);
+  assert.equal(applied.resolved, 1);
+  assert.equal(applied.added, 1);
+  assert.equal(applied.characters, 1);
+  assert.equal(pending.status, 'resolved');
+  assert.equal(pending.resolvedChapter, 2);
+  assert.ok(novel.foreshadowingLedger.some((h) => h.status === 'pending' && h.content.includes('档案库')), '计划外伏笔应补录');
+  const state = novel.characterStates.find((c) => c.name === '林舟');
+  assert.equal(state.location, '阁楼书房');
+  assert.equal(state.lastChapter, 2);
+  // 幂等：重复应用不再重复计数
+  const again = applyHookAudit(novel, 2, audit);
+  assert.equal(again.resolved, 0);
+  assert.equal(again.added, 0);
+});

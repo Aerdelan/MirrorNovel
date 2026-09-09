@@ -19,7 +19,7 @@ router.get('/', auth, async (req, res) => {
     const list = await WritingPersona.find({ userId: req.user.id }).sort({ isSystem: -1, createdAt: 1 })
     res.json(list)
   } catch (e) {
-    res.status(500).json({ message: e.message })
+    res.status(500).json({ message: e.isApiError ? e.message : '操作失败，请稍后重试' })
   }
 })
 
@@ -30,7 +30,7 @@ router.get('/:id', auth, async (req, res) => {
     if (!doc) return res.status(404).json({ message: '未找到该写作人格' })
     res.json(doc)
   } catch (e) {
-    res.status(500).json({ message: e.message })
+    res.status(500).json({ message: e.isApiError ? e.message : '操作失败，请稍后重试' })
   }
 })
 
@@ -56,7 +56,7 @@ router.post('/', auth, async (req, res) => {
     })
     res.json(doc)
   } catch (e) {
-    res.status(500).json({ message: e.message })
+    res.status(500).json({ message: e.isApiError ? e.message : '操作失败，请稍后重试' })
   }
 })
 
@@ -92,7 +92,7 @@ router.put('/:id', auth, async (req, res) => {
     await doc.save()
     res.json(doc)
   } catch (e) {
-    res.status(500).json({ message: e.message })
+    res.status(500).json({ message: e.isApiError ? e.message : '操作失败，请稍后重试' })
   }
 })
 
@@ -105,7 +105,7 @@ router.delete('/:id', auth, async (req, res) => {
     await doc.deleteOne()
     res.json({ message: '已删除' })
   } catch (e) {
-    res.status(500).json({ message: e.message })
+    res.status(500).json({ message: e.isApiError ? e.message : '操作失败，请稍后重试' })
   }
 })
 
@@ -132,7 +132,7 @@ router.post('/:id/clone', auth, async (req, res) => {
     })
     res.json(doc)
   } catch (e) {
-    res.status(500).json({ message: e.message })
+    res.status(500).json({ message: e.isApiError ? e.message : '操作失败，请稍后重试' })
   }
 })
 
@@ -195,7 +195,7 @@ router.post('/ai-generate', auth, async (req, res) => {
     })
     res.json(doc)
   } catch (e) {
-    res.status(500).json({ message: e.message })
+    res.status(500).json({ message: e.isApiError ? e.message : '操作失败，请稍后重试' })
   }
 })
 

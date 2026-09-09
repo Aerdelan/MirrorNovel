@@ -399,6 +399,7 @@ import { useNovelStore } from '../stores/novel'
 import { useAuthStore } from '../stores/auth'
 import { usePersonaStore } from '../stores/persona'
 import { notifyModelError } from '../utils/notify'
+import { useSSE } from '../composables/useSSE'
 import { useI18n } from '../composables/useI18n'
 import api from '../api'
 
@@ -673,69 +674,54 @@ function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, per
  }
 
  const token = localStorage.getItem('token')
- const xhr = new XMLHttpRequest()
- outlineXhr = xhr
- xhr.open('POST', '/api/novel/generate-outline')
- xhr.setRequestHeader('Authorization', `Bearer ${token}`)
- xhr.setRequestHeader('Content-Type', 'application/json')
- let lastIndex = 0
- let sseBuffer = ''
-
- xhr.onprogress = () => {
- sseBuffer += xhr.responseText.substring(lastIndex)
- lastIndex = xhr.responseText.length
- const lines = sseBuffer.split('\n')
- sseBuffer = lines.pop()
- for (const line of lines) {
- if (!line.startsWith('data: ')) continue
- try {
- const event = JSON.parse(line.substring(6))
- if (event.type === 'reasoning') {
- appendReasoning(outlineReasoningText, event.content)
- scrollReasoningBox(outlineReasoningRef)
- } else if (event.type === 'content') {
- outlineModalText.value += event.content
- scrollOutlineToBottom()
- } else if (event.type === 'completed') {
- // 用户未手动编辑时用最终结果整体覆盖（清掉失败重试可能残留的片段）
- if (!outlineUserEdited.value) outlineModalText.value = event.outline || outlineModalText.value
- outlineTokenUsage.value = event.tokenUsage || null
- outlineStreaming.value = false
- scrollOutlineToBottom()
- } else if (event.type === 'error') {
- outlineStreaming.value = false
- genStatus.value = event.message || '大纲生成失败'
- notifyModelError(event.message)
- }
- } catch {}
- }
- }
-
- xhr.onloadend = () => {
- outlineStreaming.value = false
- outlineXhr = null
- if (!outlineModalText.value.trim()) {
- outlineModal.value = false
- genStatus.value = ''
- resolve(null)
- }
- }
- xhr.onerror = () => { outlineStreaming.value = false; genStatus.value = '大纲生成失败，请稍后重试' }
- xhr.send(JSON.stringify(payload))
+ const sse = useSSE()
+ outlineXhr = sse
+ sse.openSSE('/api/novel/generate-outline', payload, {
+  token,
+  onReasoning: (content) => {
+   appendReasoning(outlineReasoningText, content)
+   scrollReasoningBox(outlineReasoningRef)
+  },
+  onContent: (content) => {
+   outlineModalText.value += content
+   scrollOutlineToBottom()
+  },
+  onCompleted: (event) => {
+   // 用户未手动编辑时用最终结果整体覆盖（清掉失败重试可能残留的片段）
+   if (!outlineUserEdited.value) outlineModalText.value = event.outline || outlineModalText.value
+   outlineTokenUsage.value = event.tokenUsage || null
+   outlineStreaming.value = false
+   scrollOutlineToBottom()
+  },
+  onError: (message) => {
+   outlineStreaming.value = false
+   genStatus.value = message || '大纲生成失败'
+   notifyModelError(message)
+  },
+  onLoadend: () => {
+   outlineStreaming.value = false
+   outlineXhr = null
+   if (!outlineModalText.value.trim()) {
+    outlineModal.value = false
+    genStatus.value = ''
+    resolve(null)
+   }
+  },
+ })
 
  outlineConfirmCallback = () => {
- if (outlineXhr) { outlineXhr.abort(); outlineXhr = null }
- outlineStreaming.value = false
- outlineModal.value = false
- genStatus.value = ''
- resolve(outlineModalText.value)
+  if (outlineXhr) { outlineXhr.abort(); outlineXhr = null }
+  outlineStreaming.value = false
+  outlineModal.value = false
+  genStatus.value = ''
+  resolve(outlineModalText.value)
  }
  outlineRejectCallback = () => {
- if (outlineXhr) { outlineXhr.abort(); outlineXhr = null }
- outlineStreaming.value = false
- outlineModal.value = false
- genStatus.value = ''
- resolve(null)
+  if (outlineXhr) { outlineXhr.abort(); outlineXhr = null }
+  outlineStreaming.value = false
+  outlineModal.value = false
+  genStatus.value = ''
+  resolve(null)
  }
  })
 }
@@ -755,48 +741,9 @@ function generateInitialBlueprint() {
  initialBlueprint.value = null
 
  const token = localStorage.getItem('token')
- const xhr = new XMLHttpRequest()
- blueprintXhr = xhr
- xhr.open('POST', '/api/novel/generate-blueprint')
- xhr.setRequestHeader('Authorization', `Bearer ${token}`)
- xhr.setRequestHeader('Content-Type', 'application/json')
- let lastIndex = 0
- let sseBuffer = ''
-
- xhr.onprogress = () => {
- sseBuffer += xhr.responseText.substring(lastIndex)
- lastIndex = xhr.responseText.length
- const lines = sseBuffer.split('\n')
- sseBuffer = lines.pop()
- for (const line of lines) {
- if (!line.startsWith('data: ')) continue
- try {
- const event = JSON.parse(line.substring(6))
- if (event.type === 'reasoning') {
- appendReasoning(blueprintReasoningText, event.content)
- scrollReasoningBox(blueprintReasoningRef)
- } else if (event.type === 'content') {
- initialBlueprintJson.value += event.content
- scrollBlueprintToBottom()
- } else if (event.type === 'completed') {
- initialBlueprint.value = event.blueprint || null
- initialBlueprintJson.value = JSON.stringify(initialBlueprint.value, null, 2)
- blueprintWarning.value = event.warning || ''
- blueprintTokenUsage.value = event.tokenUsage || null
- blueprintGenerating.value = false
- scrollBlueprintToBottom()
- } else if (event.type === 'error') {
- blueprintSetupError.value = event.message || '初始蓝图生成失败'
- blueprintGenerating.value = false
- notifyModelError(event.message)
- }
- } catch {}
- }
- }
-
- xhr.onloadend = () => { blueprintGenerating.value = false; blueprintXhr = null }
- xhr.onerror = () => { blueprintSetupError.value = '初始蓝图生成失败，请稍后重试'; blueprintGenerating.value = false }
- xhr.send(JSON.stringify({
+ const sse = useSSE()
+ blueprintXhr = sse
+ sse.openSSE('/api/novel/generate-blueprint', {
   novelTypeId: selectedType.value,
   protagonistName: protagonistName.value,
   worldSetting: worldSetting.value,
@@ -804,7 +751,31 @@ function generateInitialBlueprint() {
   chapterWordTarget: chapterWordTarget.value,
   outline: outline.value,
   personaId: selectedPersonaId.value || undefined,
- }))
+ }, {
+  token,
+  onReasoning: (content) => {
+   appendReasoning(blueprintReasoningText, content)
+   scrollReasoningBox(blueprintReasoningRef)
+  },
+  onContent: (content) => {
+   initialBlueprintJson.value += content
+   scrollBlueprintToBottom()
+  },
+  onCompleted: (event) => {
+   initialBlueprint.value = event.blueprint || null
+   initialBlueprintJson.value = JSON.stringify(initialBlueprint.value, null, 2)
+   blueprintWarning.value = event.warning || ''
+   blueprintTokenUsage.value = event.tokenUsage || null
+   blueprintGenerating.value = false
+   scrollBlueprintToBottom()
+  },
+  onError: (message) => {
+   blueprintSetupError.value = message || '初始蓝图生成失败'
+   blueprintGenerating.value = false
+   notifyModelError(message)
+  },
+  onLoadend: () => { blueprintGenerating.value = false; blueprintXhr = null },
+ })
 }
 
 function confirmInitialBlueprint() {
@@ -957,42 +928,28 @@ async function startDeslop() {
  deslopStatus.value = '正在去AI化...'
 
  const token = localStorage.getItem('token')
- const xhr = new XMLHttpRequest()
- xhr.open('POST', '/api/novel/deslop-stream')
- xhr.setRequestHeader('Authorization', `Bearer ${token}`)
- xhr.setRequestHeader('Content-Type', 'application/json')
- let lastIndex = 0
-
- xhr.onprogress = () => {
- const newData = xhr.responseText.substring(lastIndex)
- lastIndex = xhr.responseText.length
- const lines = newData.split('\n').filter(l => l.startsWith('data: '))
- for (const line of lines) {
- try {
- const event = JSON.parse(line.substring(6))
- if (event.type === 'content') {
- deslopText.value += event.content
- nextTick(() => { if (deslopStreamRef.value) deslopStreamRef.value.scrollTop = deslopStreamRef.value.scrollHeight })
- } else if (event.type === 'status') {
- deslopStatus.value = event.message
- } else if (event.type === 'completed') {
- deslopText.value = event.content || deslopText.value
- deslopDone.value = true; deslopRunning.value = false
- deslopStatus.value = '去AI化完成'
- computeDiff()
- } else if (event.type === 'error') {
- deslopStatus.value = event.message || '去AI味失败'; deslopRunning.value = false
- notifyModelError(event.message)
- }
- } catch {}
- }
- }
-
- xhr.onloadend = () => {
- if (deslopRunning.value) { deslopDone.value = true; deslopRunning.value = false; deslopStatus.value = '去AI化完成'; computeDiff() }
- }
- xhr.onerror = () => { deslopStatus.value = '去AI化失败'; deslopRunning.value = false }
- xhr.send(JSON.stringify({ text: streamingText.value, novelId: generatedNovelId.value || undefined }))
+ const sse = useSSE()
+ sse.openSSE('/api/novel/deslop-stream', { text: streamingText.value, novelId: generatedNovelId.value || undefined }, {
+  token,
+  onContent: (content) => {
+   deslopText.value += content
+   nextTick(() => { if (deslopStreamRef.value) deslopStreamRef.value.scrollTop = deslopStreamRef.value.scrollHeight })
+  },
+  onStatus: (message) => { deslopStatus.value = message },
+  onCompleted: (event) => {
+   deslopText.value = event.content || deslopText.value
+   deslopDone.value = true; deslopRunning.value = false
+   deslopStatus.value = '去AI化完成'
+   computeDiff()
+  },
+  onError: (message) => {
+   deslopStatus.value = message || '去AI味失败'; deslopRunning.value = false
+   notifyModelError(message)
+  },
+  onLoadend: () => {
+   if (deslopRunning.value) { deslopDone.value = true; deslopRunning.value = false; deslopStatus.value = '去AI化完成'; computeDiff() }
+  },
+ })
 }
 
 function resetDeslop() {
@@ -1056,63 +1013,51 @@ async function startEditorial() {
  editorialStages.value.forEach(s => { s.active = false; s.done = false; s.error = false; s.errorMsg = '' })
 
  const token = localStorage.getItem('token')
- const xhr = new XMLHttpRequest()
- xhr.open('POST', '/api/novel/editorial-stream')
- xhr.setRequestHeader('Authorization', `Bearer ${token}`)
- xhr.setRequestHeader('Content-Type', 'application/json')
- let lastIndex = 0
-
- xhr.onprogress = () => {
- const newData = xhr.responseText.substring(lastIndex)
- lastIndex = xhr.responseText.length
- const lines = newData.split('\n').filter(l => l.startsWith('data: '))
- for (const line of lines) {
- try {
- const event = JSON.parse(line.substring(6))
- if (event.type === 'content') {
- editorialText.value += event.content
- nextTick(() => { if (editorialStreamRef.value) editorialStreamRef.value.scrollTop = editorialStreamRef.value.scrollHeight })
- } else if (event.type === 'status') {
- // 更新阶段状态
- const stage = editorialStages.value.find(s => s.id === event.stage)
- if (stage) {
- if (event.failed) {
- // 阶段失败
- stage.error = true; stage.errorMsg = event.message; stage.active = false
- } else if (event.phase === 'running') {
- // 阶段开始 - 清空之前阶段的流式内容，只展示当前阶段
- if (event.stage !== 'persona') {
-  editorialText.value = ''
- }
- stage.active = true
- const idx = editorialStages.value.findIndex(s => s.id === event.stage)
- for (let i = 0; i < idx; i++) { if (!editorialStages.value[i].error) { editorialStages.value[i].done = true; editorialStages.value[i].active = false } }
- } else {
- // 阶段完成
- stage.done = true; stage.active = false
- }
- }
- } else if (event.type === 'completed') {
- editorialText.value = event.content || editorialText.value
- editorialAnalysis.value = event.analysis || null
- editorialDone.value = true; editorialRunning.value = false
- editorialStages.value.forEach(s => { if (!s.error) { s.done = true; s.active = false } })
- } else if (event.type === 'error') {
- editorialRunning.value = false
- alert(event.message || '编辑引擎处理失败')
- }
- } catch {}
- }
- }
-
- xhr.onloadend = () => {
- if (editorialRunning.value) {
- editorialDone.value = true; editorialRunning.value = false
- editorialStages.value.forEach(s => { if (!s.error) { s.done = true; s.active = false } })
- }
- }
- xhr.onerror = () => { editorialRunning.value = false; alert('编辑引擎请求失败') }
- xhr.send(JSON.stringify({ text: streamingText.value, novelId: generatedNovelId.value || undefined }))
+ const sse = useSSE()
+ sse.openSSE('/api/novel/editorial-stream', { text: streamingText.value, novelId: generatedNovelId.value || undefined }, {
+  token,
+  onContent: (content) => {
+   editorialText.value += content
+   nextTick(() => { if (editorialStreamRef.value) editorialStreamRef.value.scrollTop = editorialStreamRef.value.scrollHeight })
+  },
+  onStatus: (message, event) => {
+   // 更新阶段状态
+   const stage = editorialStages.value.find(s => s.id === event.stage)
+   if (stage) {
+   if (event.failed) {
+   // 阶段失败
+   stage.error = true; stage.errorMsg = event.message; stage.active = false
+   } else if (event.phase === 'running') {
+   // 阶段开始 - 清空之前阶段的流式内容，只展示当前阶段
+   if (event.stage !== 'persona') {
+    editorialText.value = ''
+   }
+   stage.active = true
+   const idx = editorialStages.value.findIndex(s => s.id === event.stage)
+   for (let i = 0; i < idx; i++) { if (!editorialStages.value[i].error) { editorialStages.value[i].done = true; editorialStages.value[i].active = false } }
+   } else {
+   // 阶段完成
+   stage.done = true; stage.active = false
+   }
+   }
+  },
+  onCompleted: (event) => {
+   editorialText.value = event.content || editorialText.value
+   editorialAnalysis.value = event.analysis || null
+   editorialDone.value = true; editorialRunning.value = false
+   editorialStages.value.forEach(s => { if (!s.error) { s.done = true; s.active = false } })
+  },
+  onError: (message) => {
+   editorialRunning.value = false
+   alert(message || '编辑引擎处理失败')
+  },
+  onLoadend: () => {
+   if (editorialRunning.value) {
+   editorialDone.value = true; editorialRunning.value = false
+   editorialStages.value.forEach(s => { if (!s.error) { s.done = true; s.active = false } })
+   }
+  },
+ })
 }
 
 function resetEditorial() {

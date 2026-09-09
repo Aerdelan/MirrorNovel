@@ -496,6 +496,25 @@ function closeUnresolvedHooksAtEnding(novel, planData, reason = '计划已执行
   return changed;
 }
 
+/**
+ * 压缩上一章为"承接摘要"：开端 + 关键转折 + 章末，而不是只取末尾 260 字。
+ * 上一章末尾可能是回忆/插叙，单看结尾容易错位；摘要把场景起点和转折也带上。
+ */
+function compressPreviousChapter(content) {
+  const text = String(content || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  if (text.length <= 620) return text;
+  const head = text.slice(0, 170);
+  const sentences = text.split(/[。！？]/).map((item) => item.trim()).filter((item) => item.length >= 12);
+  const keyLine = (sentences.find((item) => /但是|然而|突然|没想到|竟然|终于|发现|原来|决定|答应|拒绝|失去/.test(item)) || '').slice(0, 130);
+  const tail = text.slice(-300);
+  return [
+    '本章开端：' + head + '…',
+    keyLine ? '关键转折：' + keyLine : '',
+    '章末（必须无缝衔接）：…' + tail,
+  ].filter(Boolean).join('\n');
+}
+
 function buildChapterContract(options) {
   options = options || {};
   const novel = initializeCreativeState(options.novel || {});
@@ -536,7 +555,7 @@ function buildChapterContract(options) {
     resolveHooks: planChapter.resolveHooks || [],
     pendingHooks,
     mustAdvance,
-    previousEnd: previous ? String(previous.content || '').slice(-260).replace(/\s+/g, ' ').trim() : '故事开场，建立人物的当下处境。',
+    previousEnd: previous ? compressPreviousChapter(previous.content) : '故事开场，建立人物的当下处境。',
     mustNot,
     emotion,
     progress: String(options.currentWords || 0) + '/' + String(options.targetWords || novel.targetWordCount || 50000),
@@ -587,6 +606,23 @@ function similarityByChunks(leftText, rightText) {
   return common / Math.max(left.size, right.size);
 }
 
+/**
+ * 伏笔内容在正文中的"措辞无关覆盖率"：把伏笔内容切成 2-gram，
+ * 统计有多少比例出现在正文里。模型回收伏笔时几乎必然改写措辞
+ * （"铜钥匙的下落" → "那把黄铜钥匙终于有了着落"），字面 includes
+ * 抓不到；2-gram 覆盖率对语序重排稳健。0.7 以上视为高置信命中。
+ */
+function hookMatchScore(hookContent, text) {
+  const source = String(hookContent || '').replace(/\s/g, '');
+  const grams = new Set();
+  for (let i = 0; i < source.length - 1; i++) grams.add(source.slice(i, i + 2));
+  if (!grams.size) return 0;
+  let hit = 0;
+  const target = String(text || '').replace(/\s/g, '');
+  for (const gram of grams) if (target.includes(gram)) hit++;
+  return hit / grams.size;
+}
+
 function checkChapterContinuity(content, previousChapter, contract) {
   const issues = [];
   const text = String(content || '').trim();
@@ -630,7 +666,13 @@ function updateCreativeState(novel, chapterNumber, content, contract, continuity
     if (targetChapter > 0 && Number(chapterNumber) < targetChapter) return;
     const key = String(hook.content || '').replace(/\s/g, '').slice(0, 12);
     const scheduled = resolvedByContract.some((item) => item.includes(key) || key.includes(item.slice(0, 12)));
-    if (key.length >= 6 && chapterNumber > Number(hook.setChapter || 0) && (compact.includes(key) || (scheduled && compact.includes(key.slice(0, 6))))) {
+    // 命中：字面包含（快速路径），或 2-gram 覆盖率达标（措辞被改写也能识别）；
+    // 计划回收的条目降低门槛（6 字覆盖率），因为契约已声明本章应收。
+    const coverage = hookMatchScore(hook.content, compact);
+    const literalHit = key.length >= 6 && compact.includes(key);
+    const scheduledHit = scheduled && coverage >= 0.6;
+    const looseHit = coverage >= 0.7;
+    if (chapterNumber > Number(hook.setChapter || 0) && (literalHit || scheduledHit || looseHit)) {
       hook.status = 'resolved';
       hook.resolvedChapter = chapterNumber;
       hook.resolution = extractEventSignature(content).slice(0, 120);
@@ -639,8 +681,82 @@ function updateCreativeState(novel, chapterNumber, content, contract, continuity
   return novel;
 }
 
-function seedPlannedHooks(novel, planData) {
+/**
+ * 把模型章末自评（结构化 JSON）回填到账本与角色状态。
+ * 自评失败时调用方直接跳过，本章保留启发式判定结果——这里只做"修正与补漏"：
+ * - hooksResolved：模型识别出的回收。启发式漏掉的（措辞改写、隐式回收）在这里补标；
+ *   启发式已标 resolved 的不动（双通道不冲突）。
+ * - hooksSet：模型发现本章实际埋了但契约没计划的伏笔 → 补录 pending。
+ * - characterUpdates：按名字 upsert 角色状态（位置/情绪/目标），供下一章契约与记忆检查点使用。
+ */
+function applyHookAudit(novel, chapterNumber, audit) {
+  if (!novel || !audit || typeof audit !== 'object') return { resolved: 0, added: 0, characters: 0 };
   initializeCreativeState(novel);
+  let resolvedCount = 0;
+  let addedCount = 0;
+  let characterCount = 0;
+
+  const findHook = (raw) => {
+    const id = String(raw && raw.id || '').trim();
+    const text = String(raw && (raw.content || raw.text || raw) || '').replace(/\s/g, '');
+    return novel.foreshadowingLedger.find((item) => {
+      if (id && item.id === id) return true;
+      const content = String(item.content || '').replace(/\s/g, '');
+      if (!text || !content) return false;
+      return text.includes(content.slice(0, 8)) || content.includes(text.slice(0, 8));
+    });
+  };
+
+  for (const raw of (Array.isArray(audit.hooksResolved) ? audit.hooksResolved : [])) {
+    const hook = findHook(raw);
+    if (!hook || !['pending', 'planned'].includes(hook.status)) continue;
+    hook.status = 'resolved';
+    hook.resolvedChapter = Number(chapterNumber) || hook.resolvedChapter;
+    hook.resolution = compactAuditText(String(raw && raw.evidence || raw && raw.reason || hook.content)).slice(0, 120);
+    resolvedCount++;
+  }
+
+  for (const raw of (Array.isArray(audit.hooksSet) ? audit.hooksSet : [])) {
+    const value = compactAuditText(typeof raw === 'string' ? raw : (raw && (raw.content || raw.text) || ''));
+    if (!value) continue;
+    const existing = novel.foreshadowingLedger.find((item) => {
+      const content = String(item.content || '').replace(/\s/g, '');
+      return content && (value.includes(content.slice(0, 8)) || content.includes(value.slice(0, 8)));
+    });
+    if (existing) continue;
+    const id = 'FH_' + chapterNumber + '_' + value.slice(0, 18).replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '');
+    novel.foreshadowingLedger.push({ id, content: value, setChapter: Number(chapterNumber) || 0, targetChapter: 0, status: 'pending' });
+    addedCount++;
+  }
+
+  if (Array.isArray(novel.characterStates)) {
+    for (const raw of (Array.isArray(audit.characterUpdates) ? audit.characterUpdates : [])) {
+      const name = compactAuditText(raw && raw.name, 20);
+      if (!name) continue;
+      let state = novel.characterStates.find((item) => item.name === name);
+      if (!state) { state = { name, location: '', emotionalState: '', goal: '', lastChapter: 0 }; novel.characterStates.push(state); }
+      if (raw.location) state.location = compactAuditText(raw.location, 50);
+      if (raw.emotionalState) state.emotionalState = compactAuditText(raw.emotionalState, 70);
+      if (raw.goal) state.goal = compactAuditText(raw.goal, 90);
+      state.lastChapter = Number(chapterNumber) || state.lastChapter;
+      characterCount++;
+    }
+  }
+
+  if (resolvedCount || addedCount) {
+    if (typeof novel.markModified === 'function') {
+      novel.markModified('foreshadowingLedger');
+      if (characterCount) novel.markModified('characterStates');
+    }
+  }
+  return { resolved: resolvedCount, added: addedCount, characters: characterCount };
+}
+
+function compactAuditText(value, maxLength = 200) {
+  return String(value == null ? '' : value).replace(/\s+/g, ' ').trim().slice(0, maxLength);
+}
+
+function seedPlannedHooks(novel, planData) {  initializeCreativeState(novel);
   const chapters = planData && Array.isArray(planData.chapters) ? planData.chapters : [];
   for (const plan of chapters) {
     for (const hook of plan.setHooks || []) {
@@ -684,4 +800,7 @@ module.exports = {
   checkChapterContinuity,
   updateCreativeState,
   seedPlannedHooks,
+  compressPreviousChapter,
+  hookMatchScore,
+  applyHookAudit,
 };

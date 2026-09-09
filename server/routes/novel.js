@@ -6,6 +6,7 @@ const Novel = require('../models/Novel');
 const User = require('../models/User');
 const WritingPersona = require('../models/WritingPersona');
 const novelTypes = require('../config/novelTypes');
+const { TIMEOUT } = require('../config/timeouts');
 const novelTemplates = require('../config/novelTemplates');
 const { typeTemplates, buildTemplatePrompt } = novelTemplates;
 const {
@@ -73,6 +74,7 @@ const {
   updateCreativeState,
   renderPlanForContext,
   seedPlannedHooks,
+  applyHookAudit,
   getChapterOutputTokenLimit,
   assessStoryCompletion,
   closeUnresolvedHooksAtEnding,
@@ -631,8 +633,63 @@ function finalizeGeneratedChapter({ novel, chapterNumber, rawContent, contract, 
   return { content: finalContent, wordCount: finalContent.length, title: formatChapterTitle(chapterNumber, contract?.title), continuity, toolchainReport };
 }
 
-function prepareCreativeState(novel) {
-  initializeCreativeState(novel);
+/**
+ * 章末结构化自评：让模型读"本章正文 + 当前未收伏笔 + 本章契约"，输出 JSON：
+ * { hooksSet:[], hooksResolved:[{id|content, evidence}], characterUpdates:[{name,location,emotionalState,goal}] }
+ * 用语义理解修正启发式判定的漏回收（措辞改写、隐式回收），并补录计划外伏笔、更新角色状态。
+ * 任何失败（超时/解析失败/异常）都静默返回 null——本章保留启发式判定结果，绝不阻塞主流程。
+ */
+async function auditChapterHooks({ user, novel, chapterNumber, content, contract, signal, onUsage }) {
+  try {
+    const text = String(content || '').trim();
+    if (text.length < 200) return null;
+    const openHooks = (novel.foreshadowingLedger || [])
+      .filter((item) => ['pending', 'planned'].includes(item.status))
+      .slice(0, 12)
+      .map((item) => `- id:${item.id} 内容：${String(item.content || '').slice(0, 80)}（第${item.setChapter || '?'}章埋设${item.targetChapter ? `，计划第${item.targetChapter}章回收` : ''}）`)
+      .join('\n');
+    const plannedSet = (contract?.setHooks || []).join('；') || '无';
+    const plannedResolve = (contract?.resolveHooks || []).join('；') || '无';
+
+    const prompt = `【本章正文】
+${text.slice(0, 6000)}
+
+【当前所有未回收伏笔账目】
+${openHooks || '（无）'}
+
+【本章计划埋设的伏笔】${plannedSet}
+【本章计划回收的伏笔】${plannedResolve}
+
+请通读本章正文，只依据正文实际内容回答，输出严格 JSON（不要 markdown、不要解释）：
+{"hooksSet":["本章实际新埋设、且账目中没有的伏笔，一句话概括。没有则空数组"],
+"hooksResolved":[{"content":"被回收伏笔的内容（须与账目中某条对应，可概括但保留核心名词）","evidence":"正文中回收它的原句，20-60字"}],
+"characterUpdates":[{"name":"角色名","location":"章末所在位置","emotionalState":"章末情绪状态","goal":"当前目标"}]}
+规则：只统计本章"实际发生"的埋设与回收，计划的但正文没写的不算；characterUpdates 只列本章出场且状态有变化的角色，最多 5 个；伏笔未回收就不要填进 hooksResolved。`;
+
+    const result = await streamGenerate(
+      '你是严谨的小说连载审读员，只依据正文事实输出 JSON，不添加任何解释。',
+      prompt,
+      null,
+      signal || null,
+      resolveApiConfig(user?.modelConfig, 'reasoning'),
+      0,
+      0.2,
+      2500,
+      180000
+    );
+    onUsage && onUsage('reasoning', result);
+    const audit = parseJsonObject(result.content);
+    if (!audit || (!Array.isArray(audit.hooksSet) && !Array.isArray(audit.hooksResolved) && !Array.isArray(audit.characterUpdates))) return null;
+    const applied = applyHookAudit(novel, chapterNumber, audit);
+    console.log(`[HookAudit] 第${chapterNumber}章自评：回收${applied.resolved}条、补录${applied.added}条、角色状态${applied.characters}个`);
+    return { audit, applied };
+  } catch (error) {
+    console.warn(`[HookAudit] 第${chapterNumber}章自评失败（保留启发式结果）:`, error.message);
+    return null;
+  }
+}
+
+function prepareCreativeState(novel) {  initializeCreativeState(novel);
   const planData = parseChapterPlan(
     novel.chapterPlanData && Array.isArray(novel.chapterPlanData.chapters)
       ? novel.chapterPlanData
@@ -730,7 +787,7 @@ router.post('/generate-outline', auth, async (req, res) => {
         (chunk) => send({ type: 'content', content: chunk }),
         abortController.signal,
         resolveApiConfig(req.user?.modelConfig, 'outline'),
-        2, 0.82, outlineRequirements.outputTokens, 2400000,
+        2, 0.82, outlineRequirements.outputTokens, TIMEOUT.OUTLINE,
         (reasoning) => send({ type: 'reasoning', content: reasoning })
       );
 
@@ -754,7 +811,7 @@ router.post('/generate-outline', auth, async (req, res) => {
     }
   } catch (error) {
     console.error('大纲生成失败:', error);
-    if (!res.headersSent) return res.status(500).json({ message: '大纲生成失败', error: error.message });
+    if (!res.headersSent) return res.status(500).json({ message: '大纲生成失败' });
     res.end();
   }
 });
@@ -809,7 +866,7 @@ ${String(outline).slice(0, 12000)}
         1,
         0.35,
         Math.max(2600, Math.min(12000, blueprintRequirements.phaseCount * 900)),
-        3600000,
+        TIMEOUT.BLUEPRINT,
         (reasoning) => send({ type: 'reasoning', content: reasoning })
       );
       const rawContent = String(result.content || '').trim();
@@ -1157,6 +1214,12 @@ ${tmpl.dynamicPrompt}
         savedChapter.qualityReport.expert = expertReview;
         novel.markModified('chapters');
       }
+      // 章末结构化自评：语义级修正伏笔回收/补录并更新角色状态，失败静默保留启发式结果
+      await auditChapterHooks({
+        user: req.user, novel, chapterNumber: chNum, content: chapterResult.content,
+        contract, signal: abortController.signal,
+        onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats, chapterTokenStats),
+      });
       await saveNovelDoc(novel);
       if (chapterResult.continuity.issues.length) {
         try { res.write(`data: ${JSON.stringify({ type: 'quality_notice', chapterNumber: chNum, report: chapterResult.continuity })}\n\n`); } catch {}
@@ -1448,6 +1511,12 @@ router.post('/continue/:novelId', auth, async (req, res) => {
         savedChapter.qualityReport.expert = expertReview;
         novel.markModified('chapters');
       }
+      // 章末结构化自评：语义级修正伏笔回收/补录并更新角色状态，失败静默保留启发式结果
+      await auditChapterHooks({
+        user: req.user, novel, chapterNumber: chNum, content: chapterResult.content,
+        contract, signal: abortController.signal,
+        onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats, chapterTokenStats),
+      });
       await saveNovelDoc(novel);
       if (chapterResult.continuity.issues.length) {
         try { res.write(`data: ${JSON.stringify({ type: 'quality_notice', chapterNumber: chNum, report: chapterResult.continuity })}\n\n`); } catch {}
@@ -1820,7 +1889,7 @@ router.post('/continue-import', auth, async (req, res) => {
     }
   } catch (error) {
     console.error('续写失败:', error);
-    res.status(500).json({ message: '续写失败', error: error.message });
+    res.status(500).json({ message: '续写失败' });
   }
 });
 
@@ -1832,7 +1901,7 @@ router.get('/bookshelf', auth, async (req, res) => {
       .sort({ updatedAt: -1 });
     res.json(novels);
   } catch (error) {
-    res.status(500).json({ message: '获取书架失败', error: error.message });
+    res.status(500).json({ message: '获取书架失败' });
   }
 });
 
@@ -1884,7 +1953,7 @@ async function exportNovels(req, res) {
 // 导出小说（POST，由前端 auth 中间件鉴权）
 router.post('/export', auth, async (req, res) => {
   try { await exportNovels(req, res); }
-  catch (error) { console.error('导出失败:', error); res.status(500).json({ message: '导出失败', error: error.message }); }
+  catch (error) { console.error('导出失败:', error); res.status(500).json({ message: '导出失败' }); }
 });
 
 // 导出小说（GET，用于手机浏览器直接导航下载）
@@ -1900,7 +1969,7 @@ router.get('/export', async (req, res) => {
   } catch (error) {
     if (error.name === 'TokenExpiredError') return res.status(401).json({ message: '登录已过期' });
     console.error('导出失败:', error);
-    res.status(500).json({ message: '导出失败', error: error.message });
+    res.status(500).json({ message: '导出失败' });
   }
 });
 
@@ -1915,7 +1984,7 @@ router.get('/:novelId/blueprint', auth, async (req, res) => {
     await saveNovelDoc(novel);
     res.json({ blueprint: novel.storyBlueprint, proposals: novel.storyBlueprintProposals.slice().sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0)) });
   } catch (error) {
-    res.status(500).json({ message: '获取故事蓝图失败', error: error.message });
+    res.status(500).json({ message: '获取故事蓝图失败' });
   }
 });
 
@@ -1931,7 +2000,7 @@ router.put('/:novelId/blueprint/settings', auth, async (req, res) => {
     await saveNovelDoc(novel);
     res.json({ blueprint });
   } catch (error) {
-    res.status(500).json({ message: '保存蓝图设置失败', error: error.message });
+    res.status(500).json({ message: '保存蓝图设置失败' });
   }
 });
 
@@ -1978,7 +2047,7 @@ router.post('/:novelId/blueprint/proposals/:proposalId/decision', auth, async (r
     await saveNovelDoc(novel);
     res.json({ message: req.body.decision === 'apply' ? '剧情蓝图已应用，后续章节将遵循新版本' : '已拒绝该剧情蓝图提案', blueprint: novel.storyBlueprint, proposal });
   } catch (error) {
-    res.status(500).json({ message: '处理剧情蓝图提案失败', error: error.message });
+    res.status(500).json({ message: '处理剧情蓝图提案失败' });
   }
 });
 
@@ -1995,7 +2064,7 @@ router.get('/:novelId', auth, async (req, res) => {
     if (ensureChapterTitles(novel)) await saveNovelDoc(novel);
     res.json(novel);
   } catch (error) {
-    res.status(500).json({ message: '获取小说详情失败', error: error.message });
+    res.status(500).json({ message: '获取小说详情失败' });
   }
 });
 
@@ -2008,7 +2077,7 @@ router.delete('/:novelId', auth, async (req, res) => {
     }
     res.json({ message: '删除成功' });
   } catch (error) {
-    res.status(500).json({ message: '删除失败', error: error.message });
+    res.status(500).json({ message: '删除失败' });
   }
 });
 
@@ -2031,7 +2100,7 @@ router.post('/pause/:novelId', auth, async (req, res) => {
     await saveNovelDoc(novel);
     res.json({ message: '已暂停生成' });
   } catch (error) {
-    res.status(500).json({ message: '暂停失败', error: error.message });
+    res.status(500).json({ message: '暂停失败' });
   }
 });
 
@@ -2044,7 +2113,7 @@ router.put('/:novelId/outline', auth, async (req, res) => {
     await saveNovelDoc(novel);
     res.json({ message: '大纲已更新', outline: novel.outline });
   } catch (error) {
-    res.status(500).json({ message: '更新大纲失败', error: error.message });
+    res.status(500).json({ message: '更新大纲失败' });
   }
 });
 
@@ -2068,7 +2137,7 @@ router.delete('/:novelId/chapter/:chapterNumber', auth, async (req, res) => {
     await saveNovelDoc(novel);
     res.json({ message: '章节已删除', chapters: novel.chapters, currentWordCount: novel.currentWordCount, currentChapterIndex: novel.currentChapterIndex });
   } catch (error) {
-    res.status(500).json({ message: '删除失败', error: error.message });
+    res.status(500).json({ message: '删除失败' });
   }
 });
 
@@ -2089,7 +2158,7 @@ router.put('/:novelId/chapter/:chapterNumber', auth, async (req, res) => {
     await saveNovelDoc(novel);
     res.json({ message: '章节已更新，后续续写上下文已同步', chapter: revision.chapter, revision });
   } catch (error) {
-    res.status(500).json({ message: '编辑失败', error: error.message });
+    res.status(500).json({ message: '编辑失败' });
   }
 });
 
@@ -2194,7 +2263,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
       try { res.write(`data: ${JSON.stringify({ type: 'paused' })}\n\n`); res.end(); } catch {}
     }
   } catch (error) {
-    res.status(500).json({ message: '续写出错', error: error.message });
+    res.status(500).json({ message: '续写出错' });
   }
 });
 
@@ -2317,7 +2386,7 @@ router.post('/deslop', auth, async (req, res) => {
 
     res.json({ original: text, processed: processChapter(result.content).text });
   } catch (error) {
-    res.status(500).json({ message: '去AI味处理失败', error: error.message });
+    res.status(500).json({ message: '去AI味处理失败' });
   }
 });
 
@@ -2774,7 +2843,7 @@ ${navItems}
     return res.status(400).json({ message: '不支持的导出格式，请使用 txt/md/epub' });
   } catch (error) {
     console.error('[PolishExport] 失败:', error);
-    res.status(500).json({ message: '导出失败', error: error.message });
+    res.status(500).json({ message: '导出失败' });
   }
 });
 
@@ -2817,7 +2886,7 @@ router.post('/polish-save', auth, async (req, res) => {
     res.json({ message: '已保存回小说', novelId: novel._id, chapterNumber: chNum || 'append', currentWordCount: novel.currentWordCount });
   } catch (error) {
     console.error('[PolishSave] 失败:', error);
-    res.status(500).json({ message: '保存失败', error: error.message });
+    res.status(500).json({ message: '保存失败' });
   }
 });
 
@@ -2874,7 +2943,7 @@ ${content}
     });
   } catch (error) {
     console.error('章节关键字总结失败:', error);
-    res.status(500).json({ message: '关键字生成失败', error: error.message });
+    res.status(500).json({ message: '关键字生成失败' });
   }
 });
 
@@ -3045,7 +3114,7 @@ router.post('/optimize/:novelId', auth, async (req, res) => {
     });
   } catch (error) {
     console.error('启动调优失败:', error);
-    res.status(500).json({ message: '启动调优失败', error: error.message });
+    res.status(500).json({ message: '启动调优失败' });
   }
 });
 
@@ -3066,7 +3135,7 @@ router.post('/optimize-status/:novelId', auth, async (req, res) => {
     });
   } catch (error) {
     console.error('查询调优状态失败:', error);
-    res.status(500).json({ message: '查询调优状态失败', error: error.message });
+    res.status(500).json({ message: '查询调优状态失败' });
   }
 });
 
@@ -3140,7 +3209,7 @@ router.post('/editorial-stream', auth, async (req, res) => {
     res.end();
   } catch (error) {
     console.error('编辑引擎请求失败:', error);
-    res.status(500).json({ message: '编辑引擎处理失败', error: error.message });
+    res.status(500).json({ message: '编辑引擎处理失败' });
   }
 });
 
@@ -3331,7 +3400,7 @@ router.post('/editorial-book/:novelId', auth, async (req, res) => {
     });
   } catch (error) {
     console.error('启动编辑引擎失败:', error);
-    res.status(500).json({ message: '启动编辑引擎失败', error: error.message });
+    res.status(500).json({ message: '启动编辑引擎失败' });
   }
 });
 
@@ -3352,7 +3421,7 @@ router.post('/editorial-status/:novelId', auth, async (req, res) => {
     });
   } catch (error) {
     console.error('查询编辑引擎状态失败:', error);
-    res.status(500).json({ message: '查询编辑引擎状态失败', error: error.message });
+    res.status(500).json({ message: '查询编辑引擎状态失败' });
   }
 });
 

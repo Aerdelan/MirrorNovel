@@ -234,7 +234,7 @@ router.post('/register', async (req, res) => {
     });
   } catch (error) {
     console.error('注册失败:', error);
-    res.status(500).json({ message: '注册失败', error: error.message });
+    res.status(500).json({ message: '注册失败' });
   }
 });
 
@@ -285,7 +285,7 @@ router.post('/login', async (req, res) => {
     });
   } catch (error) {
     console.error('登录失败:', error);
-    res.status(500).json({ message: '登录失败', error: error.message });
+    res.status(500).json({ message: '登录失败' });
   }
 });
 
@@ -327,7 +327,7 @@ router.put('/profile', auth, async (req, res) => {
     }
     res.json({ message: '更新成功', nickname: req.user.nickname });
   } catch (error) {
-    res.status(500).json({ message: '更新失败', error: error.message });
+    res.status(500).json({ message: '更新失败' });
   }
 });
 
@@ -401,7 +401,7 @@ router.put('/model-config', auth, async (req, res) => {
     await req.user.save();
     res.json({ message: '模型配置已保存', modelConfig: toPublicModelConfig(config) });
   } catch (error) {
-    res.status(500).json({ message: '保存配置失败', error: error.message });
+    res.status(500).json({ message: '保存配置失败' });
   }
 });
 
@@ -416,7 +416,7 @@ router.get('/stats', auth, async (req, res) => {
     const inProgressNovels = novels.filter(n => n.status === 'generating' || n.status === 'paused').length
     res.json({ totalNovels, totalWords, completedNovels, inProgressNovels })
   } catch (error) {
-    res.status(500).json({ message: '获取统计失败', error: error.message })
+    res.status(500).json({ message: '获取统计失败' })
   }
 })
 
