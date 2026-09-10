@@ -88,12 +88,14 @@ const menuItems = [
  { path: '/dashboard', label: '数据大屏', glyph: '览' },
  { path: '/users', label: '用户管理', glyph: '人' },
  { path: '/models', label: '模型配置', glyph: '线' },
+ { path: '/usage', label: '用量分析', glyph: '量' },
 ]
 
 const pageTitles = {
  '/dashboard': '数据大屏',
  '/users': '用户管理',
  '/models': '模型配置',
+ '/usage': 'Token 用量分析',
 }
 
 const currentTitle = computed(() => pageTitles[currentPath.value] || '管理后台')

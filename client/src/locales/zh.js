@@ -80,6 +80,9 @@ export default {
  outlinePreview: ' AI 大纲预览', outlineDesc: '以下是大纲，你可以直接编辑修改，确认无误后点击"确定开始"生成正文',
  outlineConfirm: '确定开始',
  outlineGenerating: ' AI 正在构思大纲...',
+ thinkingStatus: '深度思考中（已用 {seconds} 秒）…思考阶段不占用正文字数，完成后会自动开始输出',
+ thinkingHint: '思考型模型会先推理再输出，等待属正常现象；推理内容不计入正文字数。',
+ stopGeneration: '停止生成',
  // 模板匹配
  tmplMatched: ' 已匹配类型模板', tmplMatch: '匹配', tmplHint: '以上模板仅为参考，实际创作以你的世界观设定为主',
  // 去AI化
@@ -154,7 +157,9 @@ export default {
  writeMode: ' 续写方式 -', progress: '当前进度：{current} / {target} 字',
  continueBook: '继续生成整本', continueBookDesc: '自动续写到目标字数（{count}字）',
  continueChapter: '续写一章', continueChapterDesc: '跳转到续写页面，可自定义续写方向',
- aiWriting: ' AI 正在续写中...', currentChapter: '当前：第{num}章', generated: '已生成 {words} 字', thinking: '模型思考中（已思考 {words} 字），即将开始输出…',
+ aiWriting: ' AI 正在续写中...', currentChapter: '当前：第{num}章', generated: '已生成 {words} 字',
+ thinking: '深度思考进行中（已思考 {words} 字 · 已用 {seconds} 秒）…思考结束后才会输出正文，不计入正文字数',
+ thinkingWaiting: '深度思考进行中（已用 {seconds} 秒）…模型正在推理，稍候会自动开始输出正文',
  statusGenerating: '生成中', statusPaused: '已暂停', statusCompleted: '已完成', statusError: '出错了',
  editorial: '编辑引擎', editorialRunning: '编辑中',
  justNow: '刚刚', minAgo: '{m}分钟前', hourAgo: '{h}小时前',

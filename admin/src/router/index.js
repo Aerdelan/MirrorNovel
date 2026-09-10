@@ -23,10 +23,16 @@ const routes = [
  meta: { requiresAuth: true },
  },
  {
- path: '/models',
- name: 'Models',
- component: () => import('../views/AdminPage.vue'),
- meta: { requiresAuth: true },
+  path: '/models',
+  name: 'Models',
+  component: () => import('../views/AdminPage.vue'),
+  meta: { requiresAuth: true },
+ },
+ {
+  path: '/usage',
+  name: 'Usage',
+  component: () => import('../views/AdminPage.vue'),
+  meta: { requiresAuth: true },
  },
 ]
 

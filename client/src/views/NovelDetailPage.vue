@@ -127,7 +127,11 @@
  <span class="generating-indicator"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
  </div>
  <div class="streaming-content" ref="streamingRef">
- <div v-if="!chapterStreamingText && chapterThinkingLen > 0" style="color:#8a8f98;font-size:13px;margin-bottom:8px;">{{ $t('bookshelf.thinking', { words: chapterThinkingLen }) }}</div>
+ <div v-if="!chapterStreamingText && isContinuing" style="color:#8a8f98;font-size:13px;margin-bottom:8px;">
+  {{ chapterThinkingLen > 0
+     ? $t('bookshelf.thinking', { words: chapterThinkingLen, seconds: chapterThinkingElapsed })
+     : $t('bookshelf.thinkingWaiting', { seconds: chapterThinkingElapsed }) }}
+ </div>
  <div class="content-text">{{ chapterStreamingText }}</div>
  <div class="cursor-blink">|</div>
  </div>
@@ -208,6 +212,20 @@ const isContinuing = ref(false)
 const continuingChapter = ref(0)
 const chapterStreamingText = ref('')
 const chapterThinkingLen = ref(0)
+const chapterThinkingElapsed = ref(0)
+// 深度思考模型可能在数分钟内只思考不输出：本地秒表保证"已用时间"持续变化，
+// 服务端每 2 秒上报一次真实值进行校准。
+let chapterThinkingTicker = null
+function startChapterThinkingTicker() {
+ stopChapterThinkingTicker()
+ chapterThinkingTicker = setInterval(() => {
+  if (!isContinuing.value) { stopChapterThinkingTicker(); return }
+  chapterThinkingElapsed.value += 1
+ }, 1000)
+}
+function stopChapterThinkingTicker() {
+ if (chapterThinkingTicker) { clearInterval(chapterThinkingTicker); chapterThinkingTicker = null }
+}
 const streamingRef = ref(null)
 const showGenSettings = ref(false)
 const genWordCount = ref(2000)
@@ -381,18 +399,22 @@ async function decideBlueprint(decision) {
 async function confirmGenSettings() { if (isContinuing.value) return; showGenSettings.value = false; await startChapterGen(genTargetChapter.value, genWordCount.value, genNotes.value) }
 
 async function startChapterGen(chapterNum, wc, notes) {
- isContinuing.value = true; continuingChapter.value = chapterNum; chapterStreamingText.value = ''; chapterThinkingLen.value = 0
+ isContinuing.value = true; continuingChapter.value = chapterNum; chapterStreamingText.value = ''; chapterThinkingLen.value = 0; chapterThinkingElapsed.value = 0
+ startChapterThinkingTicker()
  const token = localStorage.getItem('token')
  const sse = useSSE()
  sse.openSSE(`/api/novel/${route.params.id}/continue-chapter/${chapterNum}`, { wordCount: wc, notes }, {
   token,
   onContent: (content) => { chapterStreamingText.value += content },
   onEvent: (d) => {
-   if (d.type === 'thinking') chapterThinkingLen.value = d.length || 0
+   if (d.type === 'thinking') {
+    chapterThinkingLen.value = d.length || 0
+    if (d.elapsedMs) chapterThinkingElapsed.value = Math.round(d.elapsedMs / 1000)
+   }
    else if (d.type === 'completed' || d.type === 'chapter_continued' || d.type === 'paused') { isContinuing.value = false; refreshNovel() }
   },
-  onError: (message) => { isContinuing.value = false; alert('生成失败:' + message) },
-  onLoadend: () => { isContinuing.value = false; refreshNovel() },
+  onError: (message) => { isContinuing.value = false; stopChapterThinkingTicker(); alert('生成失败:' + message) },
+  onLoadend: () => { isContinuing.value = false; stopChapterThinkingTicker(); refreshNovel() },
  })
  window.__chapterGenSSE = sse
 }

@@ -1,6 +1,21 @@
 const novelTypes = require('../config/novelTypes');
 const deslop = require('../config/deslop');
 const { getServerRoute } = require('../config/modelCatalog');
+const {
+  resolveThinkingPolicy,
+  thinkingFieldCandidates,
+  enableThinking,
+  tightenThinking,
+  describeThinkingPolicy,
+} = require('./thinkingPolicy');
+
+// 正文输出的最小可用预算：低于这个值任何任务都写不出有效内容。
+const MIN_CONTENT_TOKENS = 256;
+
+// 思考失控后的二次收紧手段：部分线路（如智谱 GLM）的 thinking 字段只支持
+// enabled/disabled，没有可调的预算数字，光压缩预算对请求没有实际影响。
+// 此时在系统提示里追加"简明思考"要求，是唯一能真正缩短思考的杠杆。
+const BRIEF_THINKING_NOTE = '\n\n【思考要求】如需思考，请保持简洁：先给结论再列必要依据，不要反复自我论证或复述题目；思考结束请立即开始输出正文。';
 
 /**
  * 将 AI API 错误转换为对用户友好的提示
@@ -387,9 +402,12 @@ ${continuityNote}
 请从第一章开始，保持风格统一，全局规划好剧情走向。每章结束时标注【未完待续】。`;
 }
 
-function buildContinuePrompt(novelId, novel, persona = novel?.writingPersonaSnapshot) {
+function buildContinuePrompt(novelId, novel, persona = novel?.writingPersonaSnapshot, outlineOverride) {
   const chapterContext = buildChapterContext(novel.chapters);
-  const outlineNote = novel.outline ? `\n【创作大纲】\n${novel.outline}\n` : '';
+  // outlineOverride：调用方按写作进度渲染的分层大纲（见 renderOutlineForContext），
+  // 避免单章续写把整份长篇大纲逐字重发。未传入时保持旧行为。
+  const outlineText = outlineOverride || novel.outline || '';
+  const outlineNote = outlineText ? `\n【创作大纲】\n${outlineText}\n` : '';
 
   return `请继续创作这部小说。${buildPersonaPrompt(persona)}
 
@@ -460,10 +478,11 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
     apiKey: managedRoute.apiKey,
     model: managedRoute.model,
     routeId: managedRoute.id,
-    // 平台已放弃支持强制深度推理模型：思考与正文共享输出预算，长推理会把
-    // 正文挤空且无法可靠限制。所有线路默认请求关闭思考；模型报"必须开启
-    // 深度思考"时直接报错提示切换模型（见 streamGenerate）。
-    disableThinking: true,
+    // 任务角色：思考策略按角色区分（正文限篇幅、大纲/审稿给大预算、润色不思考）。
+    role: modelType,
+    // 是否强制关闭思考。思考预算与正文预算已分离（见 services/thinkingPolicy.js），
+    // 因此默认交给策略决定，只有用户/管理端显式要求关闭时才强制禁用。
+    disableThinking: false,
   };
 
   if (!userModelConfig || userModelConfig.provider === 'default' || userModelConfig.provider === 'system') {
@@ -481,7 +500,7 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
     if (!model) throw new Error('本地模型配置不完整，请先选择模型');
     return {
       baseUrl: userModelConfig.ollamaBaseUrl || 'http://localhost:11434',
-      apiKey: '', model, disableThinking: true,
+      apiKey: '', model, role: modelType, disableThinking: true,
     };
   }
 
@@ -493,7 +512,8 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
     return {
       baseUrl: userModelConfig.cloudBaseUrl,
       apiKey: userModelConfig.cloudApiKey,
-      model, disableThinking: true,
+      model, role: modelType,
+      disableThinking: userModelConfig.disableThinking === true,
     };
   }
 
@@ -520,7 +540,37 @@ function extractProviderMaxTokens(errorText) {
   return Number.isFinite(limit) && limit >= 256 ? Math.floor(limit) : null;
 }
 
-async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConfig, retries = 2, temperature = 0.85, maxTokens = 16384, timeoutMs = 90000, onReasoning) {
+// 服务商 max_tokens 上限缓存：首次靠 400 报错探明上限后记住，后续请求直接用正确预算。
+// 否则长篇按章生成时，每一章都要先付一次"超限被拒"的往返（思考开通后总预算更大，
+// 这个浪费会被放大到每章一次）。
+const providerTokenCapCache = new Map();
+const PROVIDER_CAP_CACHE_LIMIT = 50;
+
+function providerCapKey(config) {
+  return `${config?.baseUrl || ''}::${config?.model || ''}`;
+}
+
+function rememberProviderCap(config, cap) {
+  const key = providerCapKey(config);
+  if (providerTokenCapCache.size >= PROVIDER_CAP_CACHE_LIMIT) {
+    providerTokenCapCache.delete(providerTokenCapCache.keys().next().value);
+  }
+  providerTokenCapCache.set(key, cap);
+}
+
+/**
+ * 截断续写时去掉"重复开头"：返回 head 与 existing 末尾重叠的字符数。
+ * 只在前 300 字范围内判定，避免把真正的正文误判为重复而丢弃。
+ */
+function countOverlapSuffix(existing, head) {
+  const max = Math.min(String(existing || '').length, String(head || '').length, 300);
+  for (let k = max; k > 0; k--) {
+    if (existing.endsWith(head.slice(0, k))) return k;
+  }
+  return 0;
+}
+
+async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConfig, retries = 2, temperature = 0.85, maxTokens = 16384, timeoutMs = 90000, onReasoning, options = {}) {
   const config = apiConfig || resolveApiConfig(null);
   if (!config.baseUrl || !config.model) {
     const error = new Error('AI 服务线路尚未配置，请联系管理员填写该线路的服务地址和模型名称');
@@ -535,32 +585,57 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
   const headers = { 'Content-Type': 'application/json' };
   if (config.apiKey) headers['Authorization'] = `Bearer ${config.apiKey}`;
 
-  // 支持按任务传入温度和输出上限。700k 是服务允许的最高返回预算，
-  // 各业务线路仍可传入更小的任务预算，避免无意义地放大响应时间。
-  let outputLimit = Math.max(256, Math.min(MAX_GENERATION_TOKENS, Number(maxTokens) || 16384));
-  // GLM-4.7 等思考模型默认开启 thinking，正文前会长时间输出 reasoning_content。
-  // 设置 AI_THINKING_DISABLED=true 可强制关闭思考，换取更快的首字响应。
-  const disableThinking = config.disableThinking === true
-    || String(process.env.AI_THINKING_DISABLED || '').toLowerCase() === 'true';
-  // 思考参数可能与模型能力不符：如 glm-5.3-flash 会拒绝禁用思考
-  // （"当前模型必须开启深度思考"），而部分线路不认识 thinking 字段。
-  // 这类确定性 400 带着同样参数重试只会原样失败，下方在识别后修正并
-  // 免费重试一次（每个方向只修正一次）。
-  let thinkingMode = disableThinking ? 'disabled' : null;
-  let thinkingTweaked = false;
-  // 思考模型（如 glm-5.3-flash）的 reasoning 与正文共享 max_tokens 预算，
-  // 复杂任务的思考可能耗尽预算导致正文为空。对确认要求思考的线路附加
-  // reasoning_effort 限制思考篇幅；不认识该字段的线路会在 400 后自动去除。
-  let reasoningEffort = null;
-  let effortTweaked = false;
+  // 调用方期望的"正文"输出预算（不含思考）。
+  const contentLimitRequested = Math.max(MIN_CONTENT_TOKENS, Math.min(MAX_GENERATION_TOKENS, Number(maxTokens) || 16384));
+  // 思考策略：预算分离（思考不吃正文预算）、按线路家族选字段、看门狗阈值。
+  // 详见 services/thinkingPolicy.js。
+  let thinkingPolicy = resolveThinkingPolicy({
+    role: config.role || 'writing',
+    baseUrl: config.baseUrl,
+    contentLimitTokens: contentLimitRequested,
+    // 已知上限（历史 400 探明）直接用于预算分配，省掉一次失败的往返。
+    providerCapTokens: providerTokenCapCache.get(providerCapKey(config)) || null,
+    forceDisabled: config.disableThinking === true,
+  });
+  // 思考字段候选：被服务商拒绝时逐级降级（最后一档不带思考字段）。
+  // 线路明确要求"必须开启思考"时，候选顺序改为显式开启字段优先。
+  let preferExplicitThinking = false;
+  const rebuildCandidates = (preferExplicit) => {
+    if (preferExplicit !== undefined) preferExplicitThinking = preferExplicit;
+    fieldCandidates = thinkingFieldCandidates(thinkingPolicy, { preferExplicitEnable: preferExplicitThinking });
+    candidateIndex = 0;
+  };
+  let fieldCandidates = thinkingFieldCandidates(thinkingPolicy);
+  let candidateIndex = 0;
+  let thinkingDowngrades = 0;
+  let watchdogHits = 0;
+  let emptyReasoningHits = 0;
+  // 跨尝试累计的思考字数：被看门狗掐断的那一次思考同样是真实开销，
+  // 只统计最后一次会让"思考到底花了多少"失真。
+  let totalReasoningChars = 0;
+  // 追加"简明思考"要求：线路不支持数字限制思考篇幅时，从第一次请求就主动约束，
+  // 避免模型把数万字思考写满才输出正文（这是"首字响应慢"的主因之一）。
+  let briefThinkingNote = thinkingPolicy.enabled && !thinkingPolicy.budgetEnforced;
+  const MAX_WATCHDOG_HITS = 2;
   // 输入 token 估算（无服务商用量时回退使用）。system+user 在重试间不变，
   // 只需计算一次。
   const estimatedInputTokens = countTokens(systemPrompt) + countTokens(userPrompt);
-  const buildRequestBody = () => isOllama
-    ? { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, options: { temperature, num_predict: outputLimit } }
-    : { model: config.model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], stream: true, temperature, max_tokens: outputLimit,
-      ...(thinkingMode ? { thinking: { type: thinkingMode } } : {}),
-      ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}) };
+
+  const currentCandidate = () => fieldCandidates[Math.min(candidateIndex, fieldCandidates.length - 1)];
+
+  const buildRequestBody = () => {
+    const system = briefThinkingNote ? `${systemPrompt}${BRIEF_THINKING_NOTE}` : systemPrompt;
+    return isOllama
+      ? { model: config.model, messages: [{ role: 'system', content: system }, { role: 'user', content: userPrompt }], stream: true, options: { temperature, num_predict: thinkingPolicy.contentBudget } }
+      : {
+        model: config.model,
+        messages: [{ role: 'system', content: system }, { role: 'user', content: userPrompt }],
+        stream: true,
+        temperature,
+        max_tokens: thinkingPolicy.maxTokens,
+        ...currentCandidate().fields,
+      };
+  };
 
   for (let attempt = 0; attempt <= retries; attempt++) {
     // An external abort is a caller decision (for example, the chapter-plan
@@ -598,41 +673,44 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
       if (!response.ok) {
         const errorText = await response.text();
         clearTimeout(timeoutId);
-        // 思考参数与模型能力不符：识别"必须开启深度思考"（当前携带 disabled）
-        // 与"不支持/无效 thinking 参数"，修正后免费重试一次。
-        // 平台不支持强制深度推理模型：即使开启思考也无法可靠限制思考篇幅
-        // （reasoning_effort 无效，思考可达正文的 3 倍预算），不再自动升级
-        // 为思考模式，直接让用户切换模型。
-        if (!thinkingTweaked && /深度思考|thinking/i.test(errorText)) {
-          if (/必须开启|enable|required/i.test(errorText)) {
-            thinkingTweaked = true;
-            const error = new Error('当前暂不支持深度推理模型接入，请切换模型');
-            error.isApiError = true;
-            error.forceThinking = true;
-            throw error;
-          }
-          // 部分线路不认识 thinking 字段本身：去除后重试。
-          if (thinkingMode) {
-            thinkingMode = null;
-            thinkingTweaked = true;
-            console.warn('AI API 拒绝 thinking 参数，已去除该字段后重试');
-            attempt -= 1;
+        // 1) 模型要求"必须开启深度思考"：不再直接报"不支持"，而是开启思考并把
+        //    思考预算纳入预算分离（正文预算不受影响），这样深度思考模型可以直接使用。
+        if (/必须开启|must\s+(be\s+)?enable|required/i.test(errorText) && /深度思考|thinking|reasoning/i.test(errorText)) {
+          const nextPolicy = enableThinking(thinkingPolicy);
+          const changed = !thinkingPolicy.enabled || thinkingPolicy.thinkingBudget !== nextPolicy.thinkingBudget;
+          thinkingPolicy = nextPolicy;
+          rebuildCandidates(true);
+          if (changed) {
+            console.warn(`AI 线路要求必须开启深度思考，已按策略开启：${describeThinkingPolicy(thinkingPolicy)}`);
+            attempt -= 1; // 参数适配不计入重试次数
             continue;
           }
         }
-        // 部分线路不认识 reasoning_effort 字段，去除后免费重试。
-        if (!effortTweaked && reasoningEffort && /reasoning_effort/i.test(errorText)) {
-          reasoningEffort = null;
-          effortTweaked = true;
-          console.warn('AI API 拒绝 reasoning_effort 参数，已去除该字段后重试');
+        // 2) 思考字段不被识别（thinking / enable_thinking / reasoning_effort）：
+        //    逐级降级到下一组候选，最后一档会完全不带思考字段。
+        if (/thinking|reasoning_effort|enable_thinking|budget_tokens/i.test(errorText)
+            && /(unknown|unsupported|invalid|not\s+support|不支持|无效|无法识别|参数)/i.test(errorText)
+            && candidateIndex < fieldCandidates.length - 1) {
+          const rejected = currentCandidate().label;
+          candidateIndex += 1;
+          thinkingDowngrades += 1;
+          console.warn(`AI API 拒绝思考参数（${rejected}），降级为 ${currentCandidate().label} 后重试`);
           attempt -= 1;
           continue;
         }
+        // 3) max_tokens 超出线路上限：优先压缩思考预算，正文预算尽量保住。
         const providerMaxTokens = extractProviderMaxTokens(errorText);
-        if (providerMaxTokens && outputLimit > providerMaxTokens) {
-          outputLimit = Math.min(outputLimit, providerMaxTokens);
-          console.warn(`AI API max_tokens 超出线路上限，自动调整为 ${outputLimit} 后重试`);
-          // Do not consume a retry slot for this deterministic request fix.
+        if (providerMaxTokens && thinkingPolicy.maxTokens > providerMaxTokens) {
+          const previous = thinkingPolicy;
+          rememberProviderCap(config, providerMaxTokens);
+          thinkingPolicy = resolveThinkingPolicy({
+            role: config.role || 'writing',
+            baseUrl: config.baseUrl,
+            contentLimitTokens: contentLimitRequested,
+            providerCapTokens: providerMaxTokens,
+            forceDisabled: config.disableThinking === true,
+          });
+          console.warn(`AI API max_tokens 超限（${previous.maxTokens}→${thinkingPolicy.maxTokens}，上限 ${providerMaxTokens}），已优先压缩思考预算：${describeThinkingPolicy(thinkingPolicy)}`);
           attempt -= 1;
           continue;
         }
@@ -658,11 +736,12 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
       // prompt_cache_hit_tokens，OpenAI 兼容线路在 prompt_tokens_details.cached_tokens
       // 中给出前缀缓存命中量。不做请求体改动，被动捕获即可，兼容所有线路。
       let providerUsage = null;
-      // finish_reason 与 reasoning 累计用于空输出诊断：思考模型（如
-      // glm-5.3-flash）的 reasoning 与正文共享 max_tokens，若 reasoning
-      // 吃满预算（finish=length 且无正文），同预算重试必然再失败。
+      // finish_reason 与 reasoning 累计用于空输出诊断与看门狗判定。
       let finishReason = null;
       let reasoningChars = 0;
+      // 看门狗：思考长度超过策略上限且正文仍未开始 → 立刻掐断本次尝试。
+      // 旧实现只能等模型把思考写完（实测可达数万字、数百秒）才知道正文没了。
+      let watchdogTripped = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -706,28 +785,116 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
             }
           }
         }
+
+        // 看门狗判定：思考已经超出预算且正文仍未开始输出，继续等下去只会烧时间与 token。
+        // 阈值由 thinkingPolicy 给出（按思考预算换算为字数）。
+        if (!watchdogTripped
+            && thinkingPolicy.maxReasoningChars > 0
+            && reasoningChars > thinkingPolicy.maxReasoningChars
+            && fullContent.trim().length < 200) {
+          watchdogTripped = true;
+          console.warn(`[Thinking] 思考已达 ${reasoningChars} 字（上限 ${thinkingPolicy.maxReasoningChars} 字）且正文未开始，掐断本次尝试`);
+          try { await reader.cancel(); } catch {}
+          break;
+        }
       } // while
 
       // 超时需覆盖整个流式读取过程：头部到达即停表会让慢速流（思考模型
       // 长推理）在无超时保护下无限挂起。到这里流已结束，停表。
       clearTimeout(timeoutId);
+      totalReasoningChars += reasoningChars;
 
-      // v4: 空输出检测 — 模型返回 200 但内容为空，视为失败并重试。
-      // 思考模型 reasoning 吃满预算（finish=length 且 reasoning 很长）时，
-      // 同预算重试必然原样失败：先放大预算再重试，同时收紧 reasoning_effort。
+      // 看门狗掐断：收紧思考策略（连续掐断则直接关闭思考）后立即重试。
+      // 这是"深度思考模型响应慢"的主要止血点——不再等模型把失控的思考写完。
+      if (watchdogTripped && watchdogHits < MAX_WATCHDOG_HITS) {
+        watchdogHits += 1;
+        const disable = watchdogHits >= MAX_WATCHDOG_HITS;
+        thinkingPolicy = tightenThinking(thinkingPolicy, { disableThinking: disable });
+        rebuildCandidates();
+        // 仍保留思考的线路（无预算数字可调）改用提示层收紧。
+        if (thinkingPolicy.enabled) briefThinkingNote = true;
+        console.warn(`[Thinking] 第 ${watchdogHits} 次掐断，收紧为：${describeThinkingPolicy(thinkingPolicy)}`);
+        attempt -= 1; // 参数适配不计入重试次数
+        await new Promise(r => setTimeout(r, 400));
+        continue;
+      }
+
+      // 空输出检测：模型返回 200 但正文为空，视为失败并重试。
+      // 若原因是思考吃满预算（finish=length 且有 reasoning），旧实现"放大总预算"
+      // 只会让下一次思考更长更慢；改为压缩/关闭思考并保持正文预算不变。
       if (!fullContent.trim() && attempt < retries) {
         const delay = Math.pow(2, attempt) * 1500;
         if (finishReason === 'length' && reasoningChars > 0) {
-          const previousLimit = outputLimit;
-          outputLimit = Math.min(MAX_GENERATION_TOKENS, Math.ceil(outputLimit * 2.5));
-          if (!effortTweaked && reasoningEffort !== 'low') {
-            reasoningEffort = 'low';
-          }
-          console.warn(`AI 思考耗尽输出预算（reasoning ${reasoningChars} 字，finish=length），预算 ${previousLimit}→${outputLimit} 并收紧 reasoning_effort 后重试`);
+          emptyReasoningHits += 1;
+          const disable = emptyReasoningHits >= 2;
+          thinkingPolicy = tightenThinking(thinkingPolicy, { disableThinking: disable });
+          rebuildCandidates();
+          if (thinkingPolicy.enabled) briefThinkingNote = true;
+          console.warn(`AI 思考耗尽输出预算（reasoning ${reasoningChars} 字），${disable ? '已关闭思考' : '已压缩思考预算'}并保持正文预算 ${thinkingPolicy.contentBudget} 后重试：${describeThinkingPolicy(thinkingPolicy)}`);
         }
         console.warn(`AI API 返回空内容，第 ${attempt + 1} 次重试，等待 ${delay}ms`);
         await new Promise(r => setTimeout(r, delay));
         continue;
+      }
+
+      // 截断续写：finish=length 说明正文被输出预算截断，此时结果本身是可用正文，
+      // 与其把半截章节丢弃，不如补一次"从中断处继续"。仅调用方显式开启时生效，
+      // 且最多补 maxStitchRounds 轮，避免无限续写放大成本。
+      let stitchedRounds = 0;
+      const maxStitchRounds = options.stitchOnTruncation === true
+        ? Math.max(0, Math.min(2, Number(options.maxStitchRounds ?? 1)))
+        : 0;
+      while (finishReason === 'length'
+             && fullContent.trim().length >= 200
+             && stitchedRounds < maxStitchRounds) {
+        stitchedRounds += 1;
+        const overlapLimit = 300;
+        const tail = fullContent.slice(-1200);
+        const continuationPrompt = `你的上一次输出因为长度限制被截断了。请**只输出尚未写完的剩余部分**，严格从中断处接续，不要重复已经写过的内容，不要重新开头，不要输出任何解释或标记。\n\n【已输出内容的结尾片段（仅供衔接参考，切勿重复）】\n${tail}`;
+        // 续写内容先缓冲前 300 字用于去掉与既有内容的重复前缀，其余实时透传，
+        // 避免前端出现"重复了一段"的观感。emitted 记录"已发给前端的新增部分"，
+        // 保证服务端累加值与前端所见完全一致。
+        let held = '';
+        let flushing = false;
+        let emitted = '';
+        const forward = (chunk) => {
+          if (flushing) { emitted += chunk; if (onChunk) onChunk(chunk); return; }
+          held += chunk;
+          if (held.length >= overlapLimit) {
+            const overlap = countOverlapSuffix(fullContent, held.slice(0, overlapLimit));
+            const rest = held.slice(overlap);
+            held = '';
+            flushing = true;
+            if (rest) { emitted += rest; if (onChunk) onChunk(rest); }
+          }
+        };
+        try {
+          const continued = await streamGenerate(
+            systemPrompt, continuationPrompt, forward, signal, apiConfig,
+            0, temperature, Math.max(1024, Math.floor(thinkingPolicy.contentBudget * 0.5)),
+            timeoutMs, onReasoning, { stitchOnTruncation: false }
+          );
+          // 流已结束但缓冲未满 300 字：此时才能判定重复前缀并补发。
+          if (!flushing) {
+            const overlap = countOverlapSuffix(fullContent, held.slice(0, overlapLimit));
+            const rest = held.slice(overlap);
+            held = '';
+            if (rest) { emitted += rest; if (onChunk) onChunk(rest); }
+          }
+          if (!emitted) {
+            console.warn('[Stitch] 续写未产生新增内容，停止拼接');
+            break;
+          }
+          fullContent = `${fullContent}${emitted}`;
+          finishReason = continued?.finishReason || null;
+          if (continued?.usage) providerUsage = continued.usage;
+          if (continued?.reasoningChars) totalReasoningChars += continued.reasoningChars;
+          console.log(`[Stitch] 第 ${stitchedRounds} 轮补全完成，正文 ${fullContent.length} 字（继续状态：${finishReason || 'done'}）`);
+        } catch (error) {
+          // 续写失败不应让已产出的正文作废：保留当前内容直接返回。
+          console.warn('[Stitch] 截断续写失败，保留已生成内容:', error.message);
+          break;
+        }
       }
 
       return {
@@ -735,6 +902,18 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         tokenCount: countTokens(fullContent),
         inputTokens: estimatedInputTokens,
         usage: providerUsage,
+        // 诊断字段：思考字数与截断状态供调用方记账/展示。
+        reasoningChars: totalReasoningChars,
+        finishReason,
+        stitchedRounds,
+        thinkingDowngrades,
+        thinkingPolicy: {
+          enabled: thinkingPolicy.enabled,
+          family: thinkingPolicy.family,
+          budgetTokens: thinkingPolicy.thinkingBudget,
+          contentBudget: thinkingPolicy.contentBudget,
+          effort: thinkingPolicy.effort,
+        },
       };
 
     } catch (e) {

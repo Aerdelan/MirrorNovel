@@ -53,6 +53,70 @@
    <p v-if="message" :class="{ error: errorMessage }">{{ message }}</p>
   </section>
 
+  <section v-else-if="activeTab === 'usage'" class="usage-section">
+   <div class="section-head">
+    <h2>Token 用量归因</h2>
+    <div class="usage-actions">
+     <label class="usage-limit">Top 作品数
+      <select v-model.number="usageLimit" class="input" @change="loadUsage">
+       <option :value="10">10</option>
+       <option :value="20">20</option>
+       <option :value="50">50</option>
+      </select>
+     </label>
+     <button :disabled="usageLoading" @click="loadUsage">{{ usageLoading ? '加载中...' : '刷新' }}</button>
+    </div>
+   </div>
+
+   <div class="grid usage-cards">
+    <div class="card"><strong>{{ formatTokenCount(usage.totals.inputTokens) }}</strong><span>输入 Token</span></div>
+    <div class="card"><strong>{{ formatTokenCount(usage.totals.outputTokens) }}</strong><span>输出 Token</span></div>
+    <div class="card"><strong>{{ formatTokenCount(usage.totals.cacheSavedTokens) }}</strong><span>前缀缓存命中</span></div>
+    <div class="card"><strong>{{ formatPercent(usage.totals.cacheHitRate) }}</strong><span>缓存命中率</span></div>
+    <div class="card"><strong>{{ formatTokenCount(usage.totals.calls) }}</strong><span>累计调用次数</span></div>
+    <div class="card"><strong>{{ usage.totals.novelCount }}</strong><span>计费作品数</span></div>
+   </div>
+
+   <h3 class="usage-subhead">按任务角色归因（输入占比决定优化方向）</h3>
+   <div class="table-wrap"><table><thead><tr>
+    <th>角色</th><th>输入 Token</th><th>输入占比</th><th>输出 Token</th><th>缓存命中</th><th>调用次数</th><th>说明</th>
+   </tr></thead><tbody>
+    <tr v-for="row in usage.byRole" :key="row.role">
+     <td><strong>{{ row.label }}</strong></td>
+     <td>{{ formatTokenCount(row.inputTokens) }}</td>
+     <td>
+      <div class="share-cell">
+       <div class="share-bar"><span :style="{ width: formatPercent(row.inputShare) }"></span></div>
+       <span class="share-text">{{ formatPercent(row.inputShare) }}</span>
+      </div>
+     </td>
+     <td>{{ formatTokenCount(row.outputTokens) }}</td>
+     <td>{{ formatTokenCount(row.cacheSavedTokens) }}</td>
+     <td>{{ row.calls }}</td>
+     <td class="usage-note">{{ roleNote(row.role) }}</td>
+    </tr>
+    <tr v-if="!usage.byRole.length && !usageLoading"><td colspan="7" class="empty">暂无用量数据（尚无作品产生计费调用）</td></tr>
+   </tbody></table></div>
+
+   <h3 class="usage-subhead">单本作品消耗 Top {{ usageLimit }}（每千字输入越低越省）</h3>
+   <div class="table-wrap"><table><thead><tr>
+    <th>作品</th><th>类型</th><th>状态</th><th>字数</th><th>输入 Token</th><th>输出 Token</th><th>缓存命中</th><th>每千字输入</th>
+   </tr></thead><tbody>
+    <tr v-for="novel in usage.topNovels" :key="novel.id">
+     <td class="usage-title">{{ novel.title }}</td>
+     <td>{{ novel.novelTypeName || '—' }}</td>
+     <td>{{ novel.status || '—' }}</td>
+     <td>{{ novel.currentWordCount }}</td>
+     <td>{{ formatTokenCount(novel.inputTokens) }}</td>
+     <td>{{ formatTokenCount(novel.outputTokens) }}</td>
+     <td>{{ formatTokenCount(novel.cacheSavedTokens) }}</td>
+     <td>{{ novel.inputPerThousandWords }}</td>
+    </tr>
+    <tr v-if="!usage.topNovels.length && !usageLoading"><td colspan="8" class="empty">暂无作品用量数据</td></tr>
+   </tbody></table></div>
+   <p v-if="message" :class="{ error: errorMessage }">{{ message }}</p>
+  </section>
+
   <section v-else class="empty">该管理功能已精简。</section>
  </SidebarLayout>
 </template>
@@ -124,6 +188,47 @@ async function toggleUser(user) {
  } finally { updatingUserId.value = '' }
 }
 async function loadModels() { routes.value = (await api.get('/admin/models')).data.routes || [] }
+
+// ====== 用量分析：角色归因 + 单本作品排行 ======
+const usageLimit = ref(10)
+const usageLoading = ref(false)
+const emptyUsagePayload = () => ({
+ totals: { inputTokens: 0, outputTokens: 0, cacheSavedTokens: 0, calls: 0, cacheHitRate: 0, novelCount: 0 },
+ byRole: [],
+ topNovels: [],
+})
+const usage = ref(emptyUsagePayload())
+
+function formatPercent(value) {
+ const number = Number(value) || 0
+ return `${(number * 100).toFixed(1)}%`
+}
+
+// 角色说明：告诉运维"这个环节为什么会花这么多"，而不只是一个数字。
+function roleNote(role) {
+ if (role === 'writing') return '每章必调，输入以分层大纲 + 剧情脉络为主，是总量最大项'
+ if (role === 'reasoning') return '审稿/伏笔自评/蓝图提案；已加本地门控减少无效调用'
+ if (role === 'polish') return '仅审稿评分偏低或主动去 AI 味时触发'
+ if (role === 'outline') return '每本书一次，输出预算已封顶'
+ return '历史数据或未归类角色'
+}
+
+async function loadUsage() {
+ usageLoading.value = true
+ message.value = ''
+ try {
+  const response = await api.get('/admin/token-usage', { params: { limit: usageLimit.value } })
+  usage.value = {
+   totals: { ...emptyUsagePayload().totals, ...(response.data.totals || {}) },
+   byRole: response.data.byRole || [],
+   topNovels: response.data.topNovels || [],
+  }
+  errorMessage.value = false
+ } catch (error) {
+  message.value = error.response?.data?.message || error.message
+  errorMessage.value = true
+ } finally { usageLoading.value = false }
+}
 async function saveModels() {
  saving.value = true; message.value = ''
  try { const response = await api.put('/admin/models', { routes: routes.value }); routes.value = response.data.routes || routes.value; message.value = response.data.message; errorMessage.value = false }
@@ -134,6 +239,7 @@ async function loadCurrent() {
  if (activeTab.value === 'dashboard') await loadDashboard()
  if (activeTab.value === 'users') await loadUsers()
  if (activeTab.value === 'models') await loadModels()
+ if (activeTab.value === 'usage') await loadUsage()
 }
 watch(activeTab, loadCurrent)
 onMounted(loadCurrent)
@@ -149,5 +255,18 @@ onMounted(loadCurrent)
 .users-toolbar { display:flex; align-items:center; gap:12px; }.users-toolbar .input { width:280px; margin-top:0; }.users-total { color:#66736c; font-size:13px; }
 .badge-ok { color:#1a7f37; }.badge-disabled { color:#b42318; font-weight:600; }
 .token-cell { font-variant-numeric:tabular-nums; }.token-cache { color:#1a7f37; font-size:12px; }.token-empty { color:#b6beb9; }
+.usage-actions { display:flex; align-items:center; gap:10px; }
+.usage-limit { display:flex; align-items:center; gap:6px; color:#66736c; font-size:13px; }
+.usage-limit .input { width:auto; margin-top:0; padding:6px 8px; }
+.usage-cards { margin-top:14px; grid-template-columns:repeat(6,minmax(0,1fr)); }
+.usage-subhead { margin:22px 0 0; font-size:15px; color:#243b2e; }
+.share-cell { display:flex; align-items:center; gap:8px; min-width:120px; }
+.share-bar { flex:1; height:8px; border-radius:999px; background:#edf0ee; overflow:hidden; }
+.share-bar span { display:block; height:100%; background:#3f7f5c; }
+.share-text { min-width:44px; color:#66736c; font-size:12px; font-variant-numeric:tabular-nums; }
+.usage-note { color:#66736c; font-size:12px; max-width:320px; }
+.usage-title { max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+@media (max-width:1100px) { .usage-cards { grid-template-columns:repeat(3,minmax(0,1fr)); } }
+@media (max-width:760px) { .usage-cards { grid-template-columns:repeat(2,minmax(0,1fr)); } .usage-actions { flex-wrap:wrap; } }
 .pager { display:flex; align-items:center; gap:10px; margin-top:12px; color:#66736c; font-size:13px; }
 </style>

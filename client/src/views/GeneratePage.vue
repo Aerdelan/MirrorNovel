@@ -91,7 +91,14 @@
   <div class="blueprint-setup-desc">在开始整本生成前，先把主线阶段、人物支线和可能的反转确认下来。AI 只会提出方案，确认后才用于正文。</div>
   <div class="blueprint-setup-actions">
    <button class="btn btn-secondary btn-sm" :disabled="generating || blueprintGenerating || !outline.trim()" :aria-busy="blueprintGenerating" @click="generateInitialBlueprint">{{ blueprintGenerating ? ' 正在规划蓝图...' : (initialBlueprint ? ' 重新生成蓝图' : ' 生成初始蓝图') }}</button>
+   <button v-if="blueprintGenerating" class="btn btn-outline btn-sm" @click="cancelBlueprint">{{ $t('generate.stopGeneration') }}</button>
    <span v-if="initialBlueprintConfirmed" class="blueprint-confirmed"> 已确认，将用于本次生成</span>
+  </div>
+  <div v-if="blueprintGenerating" class="thinking-hint">
+   {{ blueprintThinkingChars > 0
+      ? `${$t('generate.thinkingStatus', { seconds: blueprintThinkingElapsed })}（已思考 ${blueprintThinkingChars} 字）`
+      : $t('generate.thinkingStatus', { seconds: blueprintThinkingElapsed }) }}
+   <span class="thinking-tip">{{ $t('generate.thinkingHint') }}</span>
   </div>
   <div v-if="blueprintGenerating && blueprintReasoningText && !initialBlueprintJson" ref="blueprintReasoningRef" class="stream-reasoning-box">{{ blueprintReasoningText }}</div>
   <textarea v-if="initialBlueprintJson" ref="blueprintJsonTextarea" v-model="initialBlueprintJson" :disabled="generating || blueprintGenerating" class="textarea blueprint-json-editor" rows="10" placeholder="蓝图 JSON"></textarea>
@@ -380,6 +387,12 @@
  <h3 class="outline-modal-title">{{ $t('generate.outlinePreview') }}</h3>
  <p class="outline-modal-desc">{{ outlineStreaming ? 'AI 正在实时生成大纲，完成后可编辑与确认…' : $t('generate.outlineDesc') }}</p>
  <div v-if="outlineStreaming && outlineReasoningText && !outlineModalText" ref="outlineReasoningRef" class="stream-reasoning-box">{{ outlineReasoningText }}</div>
+ <div v-if="outlineStreaming && !outlineModalText" class="thinking-hint">
+  {{ outlineThinkingChars > 0
+     ? `${$t('generate.thinkingStatus', { seconds: outlineThinkingElapsed })}（已思考 ${outlineThinkingChars} 字）`
+     : $t('generate.thinkingStatus', { seconds: outlineThinkingElapsed }) }}
+  <span class="thinking-tip">{{ $t('generate.thinkingHint') }}</span>
+ </div>
  <textarea ref="outlineModalTextarea" v-model="outlineModalText" class="outline-modal-textarea" rows="12" @input="onOutlineInput"></textarea>
  <div v-if="outlineTokenUsage" class="outline-modal-token">{{ tokenUsageText(outlineTokenUsage) }}</div>
  <div class="outline-modal-actions">
@@ -615,6 +628,32 @@ const outlineStreaming = ref(false)
 const outlineUserEdited = ref(false)
 const outlineReasoningText = ref('')
 const blueprintReasoningText = ref('')
+// 深度思考模型的首字延迟可能很长：单独记录"已思考字数 + 已用秒数"，
+// 让等待过程始终有可见进度，而不是一个静止的"生成中…"。
+const outlineThinkingChars = ref(0)
+const outlineThinkingElapsed = ref(0)
+const blueprintThinkingChars = ref(0)
+const blueprintThinkingElapsed = ref(0)
+const genThinkingChars = ref(0)
+const genThinkingElapsed = ref(0)
+let thinkingTicker = null
+
+// 本地秒表：服务端每 2 秒上报一次真实耗时，本地每秒自增保证画面持续变化
+// （服务商长时间不下发任何分片时，用户也不会以为卡死）。
+function startThinkingTicker() {
+  stopThinkingTicker()
+  thinkingTicker = setInterval(() => {
+    let active = false
+    if (outlineStreaming.value) { outlineThinkingElapsed.value += 1; active = true }
+    if (blueprintGenerating.value) { blueprintThinkingElapsed.value += 1; active = true }
+    if (generating.value) { genThinkingElapsed.value += 1; active = true }
+    // 所有任务结束后自动停表，避免定时器空转（无需在每个结束分支手动清理）
+    if (!active) stopThinkingTicker()
+  }, 1000)
+}
+function stopThinkingTicker() {
+  if (thinkingTicker) { clearInterval(thinkingTicker); thinkingTicker = null }
+}
 const outlineModalTextarea = ref(null)
 const blueprintJsonTextarea = ref(null)
 const outlineReasoningRef = ref(null)
@@ -661,6 +700,9 @@ function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, per
  outlineReasoningText.value = ''
  outlineUserEdited.value = false
  outlineStreaming.value = true
+ outlineThinkingChars.value = 0
+ outlineThinkingElapsed.value = 0
+ startThinkingTicker()
  genStatus.value = $t('generate.outlineGenerating')
  outlineModal.value = true
 
@@ -678,6 +720,10 @@ function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, per
  outlineXhr = sse
  sse.openSSE('/api/novel/generate-outline', payload, {
   token,
+  onThinking: (event) => {
+   outlineThinkingChars.value = event.length || 0
+   outlineThinkingElapsed.value = Math.round((event.elapsedMs || 0) / 1000)
+  },
   onReasoning: (content) => {
    appendReasoning(outlineReasoningText, content)
    scrollReasoningBox(outlineReasoningRef)
@@ -701,6 +747,7 @@ function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, per
   onLoadend: () => {
    outlineStreaming.value = false
    outlineXhr = null
+   stopThinkingTicker()
    if (!outlineModalText.value.trim()) {
     outlineModal.value = false
     genStatus.value = ''
@@ -739,6 +786,9 @@ function generateInitialBlueprint() {
  initialBlueprintConfirmed.value = false
  initialBlueprintJson.value = ''
  initialBlueprint.value = null
+ blueprintThinkingChars.value = 0
+ blueprintThinkingElapsed.value = 0
+ startThinkingTicker()
 
  const token = localStorage.getItem('token')
  const sse = useSSE()
@@ -753,6 +803,10 @@ function generateInitialBlueprint() {
   personaId: selectedPersonaId.value || undefined,
  }, {
   token,
+  onThinking: (event) => {
+   blueprintThinkingChars.value = event.length || 0
+   blueprintThinkingElapsed.value = Math.round((event.elapsedMs || 0) / 1000)
+  },
   onReasoning: (content) => {
    appendReasoning(blueprintReasoningText, content)
    scrollReasoningBox(blueprintReasoningRef)
@@ -767,15 +821,25 @@ function generateInitialBlueprint() {
    blueprintWarning.value = event.warning || ''
    blueprintTokenUsage.value = event.tokenUsage || null
    blueprintGenerating.value = false
+   stopThinkingTicker()
    scrollBlueprintToBottom()
   },
   onError: (message) => {
    blueprintSetupError.value = message || '初始蓝图生成失败'
    blueprintGenerating.value = false
+   stopThinkingTicker()
    notifyModelError(message)
   },
-  onLoadend: () => { blueprintGenerating.value = false; blueprintXhr = null },
+  onLoadend: () => { blueprintGenerating.value = false; blueprintXhr = null; stopThinkingTicker() },
  })
+}
+
+// 深度思考模型的首字延迟可能很长，允许用户主动中止，不必干等。
+function cancelBlueprint() {
+ if (blueprintXhr) { try { blueprintXhr.abort() } catch {} blueprintXhr = null }
+ blueprintGenerating.value = false
+ stopThinkingTicker()
+ genStatus.value = ''
 }
 
 function confirmInitialBlueprint() {
@@ -846,6 +910,8 @@ async function startGen() {
 
  preparingGeneration.value = false
  generating.value = true; genStatus.value = ''; genOk.value = false
+ genThinkingChars.value = 0; genThinkingElapsed.value = 0
+ startThinkingTicker()
  streamingText.value = ''; outlineStreamingText.value = ''
  rawStreamingText.value = ''
  generatedNovelId.value = ''; generatedChapterNumber.value = 0
@@ -888,7 +954,13 @@ async function startGen() {
  } else if (event.type === 'chapter_start') {
  genStatus.value = `正在生成 ${event.title || '第' + event.chapterNumber + '章'}...`
  } else if (event.type === 'thinking') {
-  genStatus.value = `模型正在整理本章结构（已处理 ${event.length || 0} 个思考单位）...`
+  // 深度思考模型：思考阶段没有正文，必须让用户看到"仍在推进"（字数 + 已用时间），
+  // 并说明思考不会占用正文字数，避免误判为卡死或"字数被吃掉"。
+  genThinkingChars.value = event.length || 0
+  genThinkingElapsed.value = Math.round((event.elapsedMs || 0) / 1000)
+  genStatus.value = genThinkingChars.value > 0
+   ? `${$t('generate.thinkingStatus', { seconds: genThinkingElapsed.value })}（已思考 ${genThinkingChars.value} 字）`
+   : $t('generate.thinkingStatus', { seconds: genThinkingElapsed.value })
  } else if (event.type === 'quality_notice') {
  const issues = event.report?.issues?.join('；') || '章节存在连贯性风险，已记录供后续章节参考'
  genStatus.value = `第${event.chapterNumber}章质量提示：${issues}`
@@ -1477,6 +1549,9 @@ onMounted(async () => {
 .blueprint-confirmed { color: var(--success); font-size: 12px; }
 .blueprint-setup-hint { color: var(--text-light); font-size: 12px; }
 .blueprint-setup-error { margin-top: 8px; color: #cf1322; background: #fff1f0; border-radius: 6px; padding: 7px 9px; font-size: 12px; }
+/* 深度思考模型的等待提示：把"正在思考多久了"讲清楚，减少用户误判卡死 */
+.thinking-hint { margin-top: 8px; color: var(--text-secondary, #4a5568); font-size: 12px; line-height: 1.6; }
+.thinking-tip { display: block; margin-top: 2px; color: var(--text-light); font-size: 11px; }
 
 /* --- Light Novel Tab --- */
 .ln-grid {

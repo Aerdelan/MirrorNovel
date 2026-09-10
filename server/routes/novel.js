@@ -34,17 +34,37 @@ async function resolveNovelPersona(userId, novel, personaId) {
 }
 
 // 思考型模型（如 GLM-4.7）正文前会长时间输出思考内容，向前端节流推送思考进度，避免界面假死在“已生成 0 字”。
+// 关键补强：思考阶段服务商可能长时间不下发任何分片（推理在服务端进行），
+// 只靠分片驱动会让前端停在 0 字看起来像卡死。因此额外挂一个定时心跳，
+// 上报"已思考字数 + 已用时间"，即使一个字都没收到，用户也能看到仍在工作。
 function createThinkingEmitter(res) {
   let total = 0;
   let lastEmit = 0;
-  return (chunk) => {
-    total += chunk.length;
-    const now = Date.now();
-    if (now - lastEmit >= 500) {
-      lastEmit = now;
-      try { res.write(`data: ${JSON.stringify({ type: 'thinking', length: total })}\n\n`); } catch {}
-    }
+  const startedAt = Date.now();
+  let timer = null;
+  const stop = () => {
+    if (timer) { clearInterval(timer); timer = null; }
   };
+  const emit = (extra) => {
+    if (res.writableEnded || res.destroyed) { stop(); return; }
+    lastEmit = Date.now();
+    try {
+      res.write(`data: ${JSON.stringify({ type: 'thinking', length: total, elapsedMs: Date.now() - startedAt, ...(extra || {}) })}\n\n`);
+    } catch {}
+  };
+  timer = setInterval(() => { emit({ waiting: total === 0 }); }, 2000);
+  if (typeof timer.unref === 'function') timer.unref();
+  // 连接结束即清理，调用方无需关心生命周期。
+  res.on('close', stop);
+  res.on('finish', stop);
+
+  const emitter = (chunk) => {
+    total += String(chunk || '').length;
+    if (Date.now() - lastEmit >= 500) emit();
+  };
+  emitter.stop = stop;
+  emitter.reasoningChars = () => total;
+  return emitter;
 }
 const {
   buildAugmentedContext,
@@ -56,6 +76,8 @@ const {
   renderOutlineForContext,
 } = require('../services/novelContext');
 const { recordTokenUsage, usageSnapshot, callUsageStats } = require('../services/tokenUsage');
+const { localExpertGate, shouldAuditChapterHooks } = require('../services/generationGates');
+const { saveNovelDoc } = require('../services/novelPersist');
 const { processChapter } = require('../services/chapterToolchain');
 const { runEditorialPipeline, STAGES } = require('../services/editorialEngine');
 const {
@@ -83,22 +105,6 @@ const { sendBlueprintProposalNotification } = require('../services/emailService'
 
 // 全局活跃生成流跟踪
 const activeStreams = new Map();
-
-// 生成管线专用保存：同一部小说可能被多个请求并发保存（续写、编辑、蓝图应用等），
-// 全量保存撞上版本号变化会抛 Mongoose VersionError 并让整次生成报废
-// （线上日志反复出现 "No matching document found for id ... version N"）。
-// 这里在 VersionError 时以最新 __v 重放一次保存（生成字段以本进程内存状态为准，最后写入胜出）。
-async function saveNovelDoc(novel) {
-  try {
-    return await novel.save();
-  } catch (e) {
-    if (e?.name !== 'VersionError') throw e;
-    const fresh = await Novel.findById(novel._id).select('_id __v').lean();
-    if (!fresh) throw e;
-    novel.__v = fresh.__v;
-    return await novel.save();
-  }
-}
 
 function parseJsonObject(text) {
   const clean = String(text || '')
@@ -331,6 +337,11 @@ function emitTokenUsage(res, novel, role, stats, chapterStats) {
     entry.outputTokens += call.outputTokens;
     entry.cacheSavedTokens += call.cacheSavedTokens;
     entry.calls += 1;
+    // 思考型模型的额外开销与截断情况：让"思考占了多久/多少字"可观测，
+    // 否则用户只能感知"慢"而无法归因。
+    if (Number(stats?.reasoningChars) > 0) entry.reasoningChars = (entry.reasoningChars || 0) + Number(stats.reasoningChars);
+    if (Number(stats?.stitchedRounds) > 0) entry.stitchedRounds = (entry.stitchedRounds || 0) + Number(stats.stitchedRounds);
+    if (stats?.finishReason === 'length') entry.truncatedCalls = (entry.truncatedCalls || 0) + 1;
   }
   try { res.write(`data: ${JSON.stringify({ type: 'token_usage', role, usage: snapshot })}\n\n`); } catch {}
   return snapshot;
@@ -346,14 +357,24 @@ function summarizeChapterTokens(chapterStats) {
   if (!roles.length) return null;
   const byRole = {};
   let inputTokens = 0, outputTokens = 0, cacheSavedTokens = 0, calls = 0;
+  let reasoningChars = 0, stitchedRounds = 0, truncatedCalls = 0;
   for (const [role, value] of roles) {
     byRole[role] = { ...value };
     inputTokens += value.inputTokens || 0;
     outputTokens += value.outputTokens || 0;
     cacheSavedTokens += value.cacheSavedTokens || 0;
     calls += value.calls || 0;
+    reasoningChars += value.reasoningChars || 0;
+    stitchedRounds += value.stitchedRounds || 0;
+    truncatedCalls += value.truncatedCalls || 0;
   }
-  return { inputTokens, outputTokens, cacheSavedTokens, calls, byRole };
+  return {
+    inputTokens, outputTokens, cacheSavedTokens, calls, byRole,
+    // 思考开销与截断诊断（仅在有值时给出，避免污染旧数据形状）
+    ...(reasoningChars ? { reasoningChars } : {}),
+    ...(stitchedRounds ? { stitchedRounds } : {}),
+    ...(truncatedCalls ? { truncatedCalls } : {}),
+  };
 }
 
 function formatChapterTitle(chapterNumber, shortTitle) {
@@ -798,6 +819,9 @@ router.post('/generate-outline', auth, async (req, res) => {
       }
 
       // 大纲是独立调用（尚无小说文档可记账），把单次用量随完成事件返回供前端展示。
+      if (result.finishReason === 'length') {
+        send({ type: 'status', message: '模型输出达到长度上限，大纲中后段可能被截断，建议重新生成或改用输出上限更大的线路' });
+      }
       send({ type: 'completed', outline, tokenUsage: callUsageStats(result) });
       res.end();
     } catch (error) {
@@ -896,7 +920,15 @@ ${String(outline).slice(0, 12000)}
       blueprint.lastReviewedChapter = 0;
       blueprint.autoReviewEnabled = false;
       blueprint.emailReminderEnabled = true;
-      send({ type: 'completed', blueprint, tokenUsage: callUsageStats(result), warning: blueprintShapeValid ? '' : '模型返回格式异常，已根据已确认大纲生成保守蓝图，可直接编辑后确认' });
+      // 截断要单独说清楚：否则用户只会看到"格式异常"，误以为是模型能力问题，
+      // 实际是输出被长度上限截断（思考型模型的思考会挤占输出预算的典型表现）。
+      const blueprintTruncated = result.finishReason === 'length';
+      const blueprintWarning = blueprintShapeValid
+        ? (blueprintTruncated ? '模型输出达到长度上限，蓝图可能不完整，建议检查阶段覆盖或改用更大输出上限的线路' : '')
+        : (blueprintTruncated
+          ? '模型输出被长度上限截断，已根据已确认大纲生成保守蓝图，可直接编辑后确认'
+          : '模型返回格式异常，已根据已确认大纲生成保守蓝图，可直接编辑后确认');
+      send({ type: 'completed', blueprint, tokenUsage: callUsageStats(result), warning: blueprintWarning });
       res.end();
     } catch (error) {
       if (abortController.signal.aborted) {
@@ -1172,7 +1204,7 @@ ${tmpl.dynamicPrompt}
       const genResult = await streamGenerate(systemPrompt, prompt, (chunk) => {
         buffer += chunk;
         try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
-      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget), 900000, createThinkingEmitter(res));
+      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget), 900000, createThinkingEmitter(res), { stitchOnTruncation: true });
 
       // 记录本章正文生成的实际 token 用量（含服务商前缀缓存命中数据）。
       emitTokenUsage(res, novel, 'writing', genResult, chapterTokenStats);
@@ -1180,16 +1212,24 @@ ${tmpl.dynamicPrompt}
       let chapterContent = buffer;
       let expertReview = null;
       if (expertMode) {
-        const expertResult = await runExpertReview({
-          user: req.user, novel, content: buffer, contract, signal: abortController.signal,
-          persona,
-          onStatus: (message) => { try { res.write(`data: ${JSON.stringify({ type: 'status', message })}\n\n`); } catch {} },
-          onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats, chapterTokenStats),
-        });
-        chapterContent = expertResult.content;
-        expertReview = expertResult.review;
-        if (chapterContent !== buffer) {
-          try { res.write(`data: ${JSON.stringify({ type: 'expert_revision', chapterNumber: chNum, content: chapterContent })}\n\n`); } catch {}
+        const gate = localExpertGate(buffer);
+        if (gate.gate) {
+          console.log(`[Expert] 第${chNum}章本地质检通过（${gate.reason}），跳过推理审稿`);
+          try { res.write(`data: ${JSON.stringify({ type: 'status', message: `本地质检通过（${gate.reason}），已跳过推理审稿` })}\n\n`); } catch {}
+          expertReview = { gated: true, localScore: gate.local.score, summary: '本地质量门控通过，未发起 AI 审稿' };
+        } else {
+          console.log(`[Expert] 第${chNum}章进入 AI 审稿（${gate.reason}）`);
+          const expertResult = await runExpertReview({
+            user: req.user, novel, content: buffer, contract, signal: abortController.signal,
+            persona,
+            onStatus: (message) => { try { res.write(`data: ${JSON.stringify({ type: 'status', message })}\n\n`); } catch {} },
+            onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats, chapterTokenStats),
+          });
+          chapterContent = expertResult.content;
+          expertReview = expertResult.review;
+          if (chapterContent !== buffer) {
+            try { res.write(`data: ${JSON.stringify({ type: 'expert_revision', chapterNumber: chNum, content: chapterContent })}\n\n`); } catch {}
+          }
         }
       }
 
@@ -1215,11 +1255,17 @@ ${tmpl.dynamicPrompt}
         novel.markModified('chapters');
       }
       // 章末结构化自评：语义级修正伏笔回收/补录并更新角色状态，失败静默保留启发式结果
-      await auditChapterHooks({
-        user: req.user, novel, chapterNumber: chNum, content: chapterResult.content,
-        contract, signal: abortController.signal,
-        onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats, chapterTokenStats),
-      });
+      // 零 token 预筛：无可对账伏笔且正文无新悬念时跳过这次推理调用。
+      const auditGate = shouldAuditChapterHooks({ novel, contract, content: chapterResult.content });
+      if (auditGate.audit) {
+        await auditChapterHooks({
+          user: req.user, novel, chapterNumber: chNum, content: chapterResult.content,
+          contract, signal: abortController.signal,
+          onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats, chapterTokenStats),
+        });
+      } else {
+        console.log(`[HookAudit] 第${chNum}章跳过自评：${auditGate.reason}`);
+      }
       await saveNovelDoc(novel);
       if (chapterResult.continuity.issues.length) {
         try { res.write(`data: ${JSON.stringify({ type: 'quality_notice', chapterNumber: chNum, report: chapterResult.continuity })}\n\n`); } catch {}
@@ -1343,7 +1389,9 @@ ${buildChapterTail({
           targetWords: targetWordCount,
           previousChapter: null,
         });
-        const userPrompt = `${buildInitialPrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, mode, outline, persona)}\n\n${renderChapterContract(contract)}\n\n请只输出正文，用具体事件和人物选择完成这章，不输出标题、提纲或“【未完待续】”标签。`;
+        // 单章模式同样走分层大纲：大纲中段已由章节契约与剧情脉络承载，不必逐字重发。
+        const singleChapterOutline = renderOutlineForContext(outline, 1, getTotalPlannedChapters(planData, targetWordCount));
+        const userPrompt = `${buildInitialPrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, mode, singleChapterOutline, persona)}\n\n${renderChapterContract(contract)}\n\n请只输出正文，用具体事件和人物选择完成这章，不输出标题、提纲或“【未完待续】”标签。`;
         await generateOneChapter(1, userPrompt, contract);
 
         generationDone = true;
@@ -1471,23 +1519,31 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       const contResult = await streamGenerate(systemPrompt, prompt, (chunk) => {
         buffer += chunk;
         try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
-      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget), 900000, createThinkingEmitter(res));
+      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget), 900000, createThinkingEmitter(res), { stitchOnTruncation: true });
 
       emitTokenUsage(res, novel, 'writing', contResult, chapterTokenStats);
 
       let chapterContent = buffer;
       let expertReview = null;
       if (novel.expertMode) {
-        const expertResult = await runExpertReview({
-          user: req.user, novel, content: buffer, contract, signal: abortController.signal,
-          persona,
-          onStatus: (message) => { try { res.write(`data: ${JSON.stringify({ type: 'status', message })}\n\n`); } catch {} },
-          onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats, chapterTokenStats),
-        });
-        chapterContent = expertResult.content;
-        expertReview = expertResult.review;
-        if (chapterContent !== buffer) {
-          try { res.write(`data: ${JSON.stringify({ type: 'expert_revision', chapterNumber: chNum, content: chapterContent })}\n\n`); } catch {}
+        const gate = localExpertGate(buffer);
+        if (gate.gate) {
+          console.log(`[Expert] 第${chNum}章本地质检通过（${gate.reason}），跳过推理审稿`);
+          try { res.write(`data: ${JSON.stringify({ type: 'status', message: `本地质检通过（${gate.reason}），已跳过推理审稿` })}\n\n`); } catch {}
+          expertReview = { gated: true, localScore: gate.local.score, summary: '本地质量门控通过，未发起 AI 审稿' };
+        } else {
+          console.log(`[Expert] 第${chNum}章进入 AI 审稿（${gate.reason}）`);
+          const expertResult = await runExpertReview({
+            user: req.user, novel, content: buffer, contract, signal: abortController.signal,
+            persona,
+            onStatus: (message) => { try { res.write(`data: ${JSON.stringify({ type: 'status', message })}\n\n`); } catch {} },
+            onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats, chapterTokenStats),
+          });
+          chapterContent = expertResult.content;
+          expertReview = expertResult.review;
+          if (chapterContent !== buffer) {
+            try { res.write(`data: ${JSON.stringify({ type: 'expert_revision', chapterNumber: chNum, content: chapterContent })}\n\n`); } catch {}
+          }
         }
       }
 
@@ -1512,11 +1568,17 @@ router.post('/continue/:novelId', auth, async (req, res) => {
         novel.markModified('chapters');
       }
       // 章末结构化自评：语义级修正伏笔回收/补录并更新角色状态，失败静默保留启发式结果
-      await auditChapterHooks({
-        user: req.user, novel, chapterNumber: chNum, content: chapterResult.content,
-        contract, signal: abortController.signal,
-        onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats, chapterTokenStats),
-      });
+      // 零 token 预筛：无可对账伏笔且正文无新悬念时跳过这次推理调用。
+      const auditGate = shouldAuditChapterHooks({ novel, contract, content: chapterResult.content });
+      if (auditGate.audit) {
+        await auditChapterHooks({
+          user: req.user, novel, chapterNumber: chNum, content: chapterResult.content,
+          contract, signal: abortController.signal,
+          onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats, chapterTokenStats),
+        });
+      } else {
+        console.log(`[HookAudit] 第${chNum}章跳过自评：${auditGate.reason}`);
+      }
       await saveNovelDoc(novel);
       if (chapterResult.continuity.issues.length) {
         try { res.write(`data: ${JSON.stringify({ type: 'quality_notice', chapterNumber: chNum, report: chapterResult.continuity })}\n\n`); } catch {}
@@ -1692,7 +1754,9 @@ ${buildChapterTail({
           targetWords: targetWordCount,
           previousChapter: novel.chapters.length ? novel.chapters[novel.chapters.length - 1] : null,
         });
-        const userPrompt = `${buildContinuePrompt(novel._id, novel, persona)}\n\n${renderChapterContract(contract)}\n\n仅输出正文。严格承接上一章，完成本章唯一核心事件；用人物行动和具体后果推进，不输出标题、提纲或“【未完待续】”标签。`;
+        // 单章续写同样按进度分层注入大纲，避免长篇大纲整份重发。
+        const singleChapterOutline = renderOutlineForContext(outline, chapterNumber, totalPlannedChapters);
+        const userPrompt = `${buildContinuePrompt(novel._id, novel, persona, singleChapterOutline)}\n\n${renderChapterContract(contract)}\n\n仅输出正文。严格承接上一章，完成本章唯一核心事件；用人物行动和具体后果推进，不输出标题、提纲或“【未完待续】”标签。`;
         await generateOneChapter(chapterNumber, userPrompt, contract);
 
         if (abortController.signal.aborted) {
@@ -1861,7 +1925,8 @@ router.post('/continue-import', auth, async (req, res) => {
         },
         abortController.signal,
         resolveApiConfig(req.user?.modelConfig, 'writing'),
-        2, 0.85, 16384, 900000, createThinkingEmitter(res)
+        2, 0.85, 16384, 900000, createThinkingEmitter(res),
+        { stitchOnTruncation: true }
       );
 
       if (abortController.signal.aborted) {
@@ -2238,7 +2303,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
         appendBuffer += chunk;
         if (Date.now() - lastAutoSave > 5000) saveAppendProgress();
         res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`);
-      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, 0.85, 16384, 900000, createThinkingEmitter(res));
+      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, 0.85, 16384, 900000, createThinkingEmitter(res), { stitchOnTruncation: true });
 
       if (abortController.signal.aborted) {
         activeStreams.delete(streamKey);

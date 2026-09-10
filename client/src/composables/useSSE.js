@@ -30,6 +30,9 @@ export function useSSE() {
           if (event.type === 'reasoning' && handlers.onReasoning) handlers.onReasoning(event.content, event)
           else if (event.type === 'content' && handlers.onContent) handlers.onContent(event.content, event)
           else if (event.type === 'status' && handlers.onStatus) handlers.onStatus(event.message, event)
+          // 思考进度心跳：服务商在思考阶段可能不下发任何分片，服务端定时上报
+          // "已思考字数 + 已用时间"，让等待过程始终有可见反馈。
+          else if (event.type === 'thinking' && handlers.onThinking) handlers.onThinking(event)
           else if (event.type === 'completed' && handlers.onCompleted) handlers.onCompleted(event)
           else if (event.type === 'error' && handlers.onError) handlers.onError(event.message, event)
         } catch {}

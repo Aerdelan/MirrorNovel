@@ -97,6 +97,110 @@ router.put('/users/:id', async (req, res) => {
   }
 });
 
+// Token 用量归因：把 Novel.tokenUsage 账本按"任务角色"和"单本作品"两个维度聚合。
+// 目的不是展示总量，而是回答"钱花在哪个环节"——大纲/正文/审稿/润色四类角色的
+// 输入占比决定了下一轮优化的方向（详见 docs/OPTIMIZATION_AND_TOKEN_CACHE_PLAN.md）。
+const USAGE_ROLE_LABELS = {
+  outline: '大纲生成',
+  writing: '正文生成',
+  reasoning: '审稿/推理',
+  polish: '润色修订',
+  other: '其他',
+};
+
+function emptyUsageCell() {
+  return { inputTokens: 0, outputTokens: 0, cacheSavedTokens: 0, calls: 0 };
+}
+
+function addUsageCell(target, source) {
+  target.inputTokens += Number(source?.inputTokens) || 0;
+  target.outputTokens += Number(source?.outputTokens) || 0;
+  target.cacheSavedTokens += Number(source?.cacheSavedTokens) || 0;
+  target.calls += Number(source?.calls) || 0;
+  return target;
+}
+
+router.get('/token-usage', async (req, res) => {
+  try {
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 10));
+    const [roleRows, totalsRows, countedNovels, topNovels] = await Promise.all([
+      Novel.aggregate([
+        { $match: { 'tokenUsage.byRole': { $type: 'object' } } },
+        { $project: { roles: { $objectToArray: '$tokenUsage.byRole' } } },
+        { $unwind: '$roles' },
+        {
+          $group: {
+            _id: '$roles.k',
+            inputTokens: { $sum: '$roles.v.inputTokens' },
+            outputTokens: { $sum: '$roles.v.outputTokens' },
+            cacheSavedTokens: { $sum: '$roles.v.cacheSavedTokens' },
+            calls: { $sum: '$roles.v.calls' },
+          },
+        },
+        { $sort: { inputTokens: -1 } },
+      ]),
+      Novel.aggregate([
+        {
+          $group: {
+            _id: null,
+            inputTokens: { $sum: '$tokenUsage.inputTokens' },
+            outputTokens: { $sum: '$tokenUsage.outputTokens' },
+            cacheSavedTokens: { $sum: '$tokenUsage.cacheSavedTokens' },
+            calls: { $sum: '$tokenUsage.calls' },
+          },
+        },
+      ]),
+      Novel.countDocuments({ 'tokenUsage.calls': { $gt: 0 } }),
+      Novel.find({ 'tokenUsage.calls': { $gt: 0 } })
+        .select('title novelTypeName currentWordCount status tokenUsage updatedAt')
+        .sort({ 'tokenUsage.inputTokens': -1 })
+        .limit(limit)
+        .lean(),
+    ]);
+
+    const totals = addUsageCell(emptyUsageCell(), totalsRows[0] || {});
+    const byRole = roleRows
+      .map((row) => ({
+        role: String(row._id || 'other'),
+        label: USAGE_ROLE_LABELS[row._id] || USAGE_ROLE_LABELS.other,
+        ...addUsageCell(emptyUsageCell(), row),
+      }))
+      .map((row) => ({
+        ...row,
+        // 输入 token 占比：优化决策看这个比例，而不是绝对值。
+        inputShare: totals.inputTokens > 0 ? Number((row.inputTokens / totals.inputTokens).toFixed(4)) : 0,
+      }));
+
+    res.json({
+      totals: {
+        ...totals,
+        // cacheSavedTokens 是服务商前缀缓存命中量（其本身已计入 inputTokens），
+        // 命中率越高，账单口径越接近 1/10 单价。
+        cacheHitRate: totals.inputTokens > 0 ? Number((totals.cacheSavedTokens / totals.inputTokens).toFixed(4)) : 0,
+        novelCount: Number(countedNovels) || 0,
+      },
+      byRole,
+      topNovels: topNovels.map((novel) => {
+        const usage = addUsageCell(emptyUsageCell(), novel.tokenUsage || {});
+        const words = Number(novel.currentWordCount) || 0;
+        return {
+          id: String(novel._id),
+          title: novel.title || '未命名',
+          novelTypeName: novel.novelTypeName || '',
+          status: novel.status || '',
+          currentWordCount: words,
+          ...usage,
+          // 每千字输入消耗：跨作品可比的长篇效率指标。
+          inputPerThousandWords: words > 0 ? Math.round((usage.inputTokens / words) * 1000) : 0,
+          updatedAt: novel.updatedAt || null,
+        };
+      }),
+    });
+  } catch (error) {
+    res.status(500).json({ message: '获取用量数据失败' });
+  }
+});
+
 function modelRouteView(route) {
   return {
     id: route.id,
