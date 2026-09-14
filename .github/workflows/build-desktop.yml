@@ -1,0 +1,56 @@
+name: Build Desktop App (Windows)
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install dependencies
+        working-directory: desktop
+        run: npm install
+
+      - name: Build installer (NSIS)
+        working-directory: desktop
+        run: npm run dist
+        env:
+          # 官方源（CI 在国外，比 npmmirror 稳）
+          ELECTRON_MIRROR: https://github.com/electron/electron/releases/download/
+          ELECTRON_BUILDER_BINARIES_MIRROR: https://github.com/electron-userland/electron-builder-binaries/releases/download/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MirrorNovel-Windows
+          path: |
+            desktop/release/*.exe
+            desktop/release/*.blockmap
+          retention-days: 30
+
+      # 打 tag 时把安装包挂到 GitHub Release（资源托管下载入口）
+      - name: Attach installer to Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: desktop/release/*.exe
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -12,11 +12,46 @@
 [![Express](https://img.shields.io/badge/Express-4-000000?logo=express&logoColor=white)](https://expressjs.com)
 [![License](https://img.shields.io/badge/license-see_LICENSE-lightgrey)](LICENSE)
 
-[简体中文](#核心特性) · [English](#english-version)
+[![Download Windows 桌面版](https://img.shields.io/badge/Download-Windows%20%E6%A1%8C%E9%9D%A2%E7%89%88-2ea44f?logo=windows&logoColor=white)](https://github.com/Aerdelan/MirrorNovel/releases/latest)
+
+[简体中文](#核心特性) · [English](#english-version) · [**桌面端下载**](#桌面端下载)
 
 </div>
 
 > **交流**：作者平时上班较忙，可以加企鹅群 **1019601998** 直接和作者交流
+
+---
+
+## 桌面端下载
+
+**不想自己部署？直接下 Windows 桌面版，装上就能写。**
+
+### 👉 [前往 GitHub Releases 下载最新版](https://github.com/Aerdelan/MirrorNovel/releases/latest)
+
+安装包由 GitHub Actions 在打 tag 时自动构建，并作为附件托管在 GitHub Release（单文件约 79 MB，GitHub 单附件上限 2 GB，够用）。
+
+| 下载方式 | 文件 | 说明 |
+|---|---|---|
+| **Windows 安装版（推荐）** | `MirrorNovel Setup x.y.z.exe` | 双击安装；可选安装目录，自动创建桌面 / 开始菜单快捷方式 |
+| **Windows 免安装版** | 解压 `win-unpacked` 后运行 `MirrorNovel.exe` | 绿色版，不写注册表，删目录即卸载 |
+| **Android APK** | [Actions](https://github.com/Aerdelan/MirrorNovel/actions) → `Build Android APK` 产物 | 移动端由 Actions 构建后提供下载 |
+
+**须知**
+
+- **系统要求**：Windows 10 / 11（64 位）
+- **安装提示**：当前安装包**未做代码签名**，首次安装 Windows SmartScreen 会提示"未知发布者"，点「更多信息 → 仍要运行」即可
+- **后端连接**：桌面端是"界面外壳"，数据仍由服务端提供。安装版默认连接正式服务器（界面底部会显示当前地址），可在应用内「偏好设置」改成你自己的服务器
+- **移动端能力**：桌面端复用与网页端相同的界面，登录同一账号即可看到自己的作品
+
+**自己出包**（想改默认后端或自行分发）：
+
+```bash
+cd desktop
+npm install        # 首次会下载 Electron 运行时（约 110 MB）
+npm run dist       # 产物：desktop/release/MirrorNovel Setup x.y.z.exe
+```
+
+> 发布新版本：改好 `desktop/package.json` 的 `version`，推送形如 `v1.0.1` 的 tag，Actions 会自动构建并把安装包挂到 Release 上。
 
 ---
 
@@ -87,6 +122,7 @@ MirrorNovel/
 ├── client/                       # Vue 3 用户端（生成/续写/书架/润色/资料）
 ├── admin/                        # Vue 3 管理端（大屏/用户/模型线路）
 ├── app/                          # uni-app 移动端
+├── desktop/                      # Electron 桌面端（自绘外壳 + 内嵌静态服务与 API 反代 + NSIS 打包）
 ├── docs/                         # 补充文档与界面截图
 ├── PROJECT_ARCHITECTURE.md       # 详细架构与 API 文档
 └── LICENSE
@@ -213,6 +249,7 @@ cd server && npm test        # 69 个用例：模型路由、思考参数兼容�
 cd client && npm run build   # 用户端构建
 cd admin && npm run build    # 管理端构建
 cd app && npm run build:h5   # uni-app H5 构建
+cd desktop && npm run dist   # 桌面端安装包（Windows NSIS，产物在 desktop/release/）
 ```
 
 ## 部署建议
@@ -254,6 +291,15 @@ Outline → Blueprint → Chapters → Polish — a fully streaming, always-conf
 </div>
 
 > **Contact**: the author is usually busy on workdays — join QQ group **1019601998** to reach the author directly.
+
+### Desktop App (Windows)
+
+**[⬇ Download the latest installer from GitHub Releases](https://github.com/Aerdelan/MirrorNovel/releases/latest)** — the package is built by GitHub Actions on every version tag and hosted as a Release asset (about 79 MB).
+
+- **Windows 10 / 11 (64-bit)**; a portable `win-unpacked` folder is provided as well (run `MirrorNovel.exe` inside it).
+- The installer is **not code-signed** yet, so SmartScreen may show "Unknown publisher" — choose *More info → Run anyway*.
+- The desktop app is a shell around the same UI: it still talks to a backend (the official server by default — the current address is shown at the bottom of the window; change it in *Preferences*).
+- Build it yourself: `cd desktop && npm install && npm run dist` → `desktop/release/MirrorNovel Setup x.y.z.exe`.
 
 ### Highlights
 
