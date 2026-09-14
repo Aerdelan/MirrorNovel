@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>桌面端样稿 V2 — 图标窄栏 + 二级面板</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+<div class="spec-note">
+  <b>V2 图标窄栏 + 二级面板</b>：左侧只留 64px 图标栏，二级列表按需展开（书架 → 作品/最近打开；生成 → 模板/模式）。横向留给内容的空间最大，适合作品多、需要频繁切换的用户。常态比 V1 多一列列表面板，信息密度更高。<code>推荐指数：内容优先</code>
+</div>
+
+<div class="window">
+  <div class="shell">
+    <!-- 图标窄栏 -->
+    <nav class="rail">
+      <span class="brand-mark" style="margin-bottom:8px">M</span>
+      <button class="icon-btn" style="background:var(--primary-light);border-color:var(--primary-subtle);color:var(--primary)" title="生成">◈</button>
+      <button class="icon-btn" title="续写">↻</button>
+      <button class="icon-btn" title="润色">✦</button>
+      <button class="icon-btn" title="书架">▤</button>
+      <button class="icon-btn" title="人格">◱</button>
+      <span style="flex:1"></span>
+      <button class="icon-btn" title="偏好设置">⚙</button>
+      <span class="avatar" style="margin-top:4px">阿</span>
+    </nav>
+
+    <!-- 二级列表栏 -->
+    <aside class="panel">
+      <div class="side-brand" style="padding:0 12px">
+        <span class="brand-name" style="font-size:13px">我的书架</span>
+        <button class="btn btn-sm" style="margin-left:auto">+ 新建</button>
+      </div>
+      <div style="padding:10px 12px 6px">
+        <div class="search" style="width:100%">筛选作品…<kbd>/</kbd></div>
+      </div>
+      <div class="side-scroll" style="padding:6px 8px">
+        <div class="nav-group-title" style="padding-left:8px">进行中</div>
+        <button class="nav-item active">
+          <span class="ico">▤</span>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">旧城录音带</span>
+          <span class="badge">28 章</span>
+        </button>
+        <button class="nav-item">
+          <span class="ico">▤</span>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">雾港夜航</span>
+          <span class="badge">12 章</span>
+        </button>
+        <button class="nav-item">
+          <span class="ico">▤</span>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">十七号当铺</span>
+          <span class="badge">4 章</span>
+        </button>
+        <div class="nav-group-title" style="padding-left:8px;margin-top:12px">已完成</div>
+        <button class="nav-item">
+          <span class="ico">▤</span>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">夏日回声</span>
+          <span class="badge">40 章</span>
+        </button>
+        <button class="nav-item">
+          <span class="ico">▤</span>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">山中来信</span>
+          <span class="badge">22 章</span>
+        </button>
+        <div class="nav-group-title" style="padding-left:8px;margin-top:12px">草稿</div>
+        <button class="nav-item">
+          <span class="ico">▤</span>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">未命名作品</span>
+          <span class="badge">1 章</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- 主区 -->
+    <div class="main">
+      <div class="topbar">
+        <h1>旧城录音带</h1>
+        <span class="tag tag-ok">生成中</span>
+        <span class="crumb">都市异能 · 28 / 40 章 · 8.6 万字</span>
+        <span class="spacer"></span>
+        <button class="btn btn-sm">继续写作</button>
+        <button class="btn btn-sm">去 AI 味</button>
+        <button class="icon-btn" title="导出">⇩</button>
+      </div>
+
+      <div class="content">
+        <div class="grid-3" style="margin-bottom:14px">
+          <div class="card"><div class="stat-row" style="border:0"><span>已写字数</span><span>86,420</span></div></div>
+          <div class="card"><div class="stat-row" style="border:0"><span>待回收伏笔</span><span>7 条</span></div></div>
+          <div class="card"><div class="stat-row" style="border:0"><span>累计 token</span><span>1.24M</span></div></div>
+        </div>
+
+        <div class="card" style="padding:0">
+          <div style="padding:12px 14px;border-bottom:1px solid var(--card-border);display:flex;align-items:center;gap:8px">
+            <strong style="font-size:13px">章节列表</strong>
+            <span class="crumb">按 Ctrl 多选 · 右键批量操作</span>
+            <span class="spacer" style="flex:1"></span>
+            <button class="btn btn-sm">批量导出</button>
+          </div>
+          <table>
+            <thead>
+              <tr><th style="width:56px">章号</th><th>标题</th><th style="width:90px">字数</th><th style="width:90px">状态</th><th style="width:130px">本章用量</th><th style="width:90px">操作</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>26</td><td>磁带 B 面的杂音</td><td>2,610</td><td><span class="tag tag-ok">已审校</span></td><td>18.2k↑ / 2.4k↓</td><td>编辑</td></tr>
+              <tr><td>27</td><td>父亲留下的第三把钥匙</td><td>2,480</td><td><span class="tag tag-ok">已审校</span></td><td>19.1k↑ / 2.6k↓</td><td>编辑</td></tr>
+              <tr><td>28</td><td>雾里的电台频率</td><td>2,530</td><td><span class="tag tag-warn">待复核</span></td><td>21.4k↑ / 2.8k↓</td><td>编辑</td></tr>
+              <tr><td>29</td><td>——</td><td>—</td><td><span class="tag tag-info">生成中</span></td><td>思考中 3.2k 字</td><td>暂停</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <span><span class="dot-ok"></span>已连接</span>
+    <span>后台任务 1 个</span>
+    <span class="right"><span>磁盘占用 142 MB</span><span>自动备份：开启</span></span>
+  </div>
+</div>
+</body>
+</html>

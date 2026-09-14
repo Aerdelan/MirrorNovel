@@ -35,11 +35,11 @@
    @click="!generationBusy && selectPersona(p)"
  >
    <div class="persona-card-head">
-     <span class="persona-name">{{ p.name }}</span>
+     <span class="persona-name">{{ $tp(p.name) }}</span>
      <span v-if="p.isSystem" class="persona-tag sys">{{ $t('generate.personaSys') }}</span>
      <span v-else-if="p.source === 'ai-generated'" class="persona-tag ai">AI</span>
-   </div>
-   <div class="persona-card-desc">{{ p.description || p.voice?.slice(0, 40) }}</div>
+     </div>
+     <div class="persona-card-desc">{{ $tp(p.name, 'desc') || p.description || p.voice?.slice(0, 40) }}</div>
  </div>
  <div class="persona-card persona-add" :class="{ locked: generationBusy }" @click="!generationBusy && (showPersonaModal = true)">
    <span class="persona-add-icon">＋</span>
@@ -48,7 +48,7 @@
 </div>
 <div v-if="selectedPersona" class="persona-selected-info">
  <span class="persona-selected-label">{{ $t('generate.personaCurrent') }}：</span>
- <strong>{{ selectedPersona.name }}</strong>
+ <strong>{{ $tp(selectedPersona.name) }}</strong>
  <span v-if="selectedPersona.overrideDeslop" class="persona-override-badge">{{ $t('generate.personaOverrideOn') }}</span>
 </div>
 </div>
@@ -87,24 +87,24 @@
  </div>
 
  <div v-if="genMode === 'book'" class="card blueprint-setup-card">
-  <div class="section-title"> 初始故事蓝图</div>
-  <div class="blueprint-setup-desc">在开始整本生成前，先把主线阶段、人物支线和可能的反转确认下来。AI 只会提出方案，确认后才用于正文。</div>
+  <div class="section-title"> {{ $t('generate.blueprintTitle') }}</div>
+  <div class="blueprint-setup-desc">{{ $t('generate.blueprintDesc') }}</div>
   <div class="blueprint-setup-actions">
-   <button class="btn btn-secondary btn-sm" :disabled="generating || blueprintGenerating || !outline.trim()" :aria-busy="blueprintGenerating" @click="generateInitialBlueprint">{{ blueprintGenerating ? ' 正在规划蓝图...' : (initialBlueprint ? ' 重新生成蓝图' : ' 生成初始蓝图') }}</button>
+   <button class="btn btn-secondary btn-sm" :disabled="generating || blueprintGenerating || !outline.trim()" :aria-busy="blueprintGenerating" @click="generateInitialBlueprint">{{ blueprintGenerating ? ' ' + $t('generate.blueprintPlanning') : (initialBlueprint ? ' ' + $t('generate.blueprintRegenerate') : ' ' + $t('generate.blueprintGenerate')) }}</button>
    <button v-if="blueprintGenerating" class="btn btn-outline btn-sm" @click="cancelBlueprint">{{ $t('generate.stopGeneration') }}</button>
-   <span v-if="initialBlueprintConfirmed" class="blueprint-confirmed"> 已确认，将用于本次生成</span>
+   <span v-if="initialBlueprintConfirmed" class="blueprint-confirmed"> {{ $t('generate.blueprintConfirmed') }}</span>
   </div>
   <div v-if="blueprintGenerating" class="thinking-hint">
    {{ blueprintThinkingChars > 0
-      ? `${$t('generate.thinkingStatus', { seconds: blueprintThinkingElapsed })}（已思考 ${blueprintThinkingChars} 字）`
+      ? `${$t('generate.thinkingStatus', { seconds: blueprintThinkingElapsed })}${$t('generate.thinkingCharsSuffix', { n: blueprintThinkingChars })}`
       : $t('generate.thinkingStatus', { seconds: blueprintThinkingElapsed }) }}
    <span class="thinking-tip">{{ $t('generate.thinkingHint') }}</span>
   </div>
   <div v-if="blueprintGenerating && blueprintReasoningText && !initialBlueprintJson" ref="blueprintReasoningRef" class="stream-reasoning-box">{{ blueprintReasoningText }}</div>
-  <textarea v-if="initialBlueprintJson" ref="blueprintJsonTextarea" v-model="initialBlueprintJson" :disabled="generating || blueprintGenerating" class="textarea blueprint-json-editor" rows="10" placeholder="蓝图 JSON"></textarea>
+  <textarea v-if="initialBlueprintJson" ref="blueprintJsonTextarea" v-model="initialBlueprintJson" :disabled="generating || blueprintGenerating" class="textarea blueprint-json-editor" rows="10" :placeholder="$t('generate.blueprintJsonPlaceholder')"></textarea>
   <div v-if="initialBlueprintJson && !initialBlueprintConfirmed" class="blueprint-setup-actions">
-   <button class="btn btn-primary btn-sm" :disabled="generating || blueprintGenerating" @click="confirmInitialBlueprint">确认蓝图并继续</button>
-   <span class="blueprint-setup-hint">可直接编辑上方 JSON 后确认</span>
+   <button class="btn btn-primary btn-sm" :disabled="generating || blueprintGenerating" @click="confirmInitialBlueprint">{{ $t('generate.blueprintConfirm') }}</button>
+   <span class="blueprint-setup-hint">{{ $t('generate.blueprintEditHint') }}</span>
   </div>
   <div v-if="blueprintWarning" class="blueprint-setup-hint">{{ blueprintWarning }}</div>
   <div v-if="blueprintTokenUsage" class="blueprint-setup-hint">{{ tokenUsageText(blueprintTokenUsage) }}</div>
@@ -135,14 +135,14 @@
  <!-- 每章字数：整本模式可选。福尔摩斯式长篇悬疑需要 1 万+ 字的大章节奏。 -->
  <div v-if="genMode === 'book'" class="chapter-words-input">
  <label class="chapter-words-label">
- <span class="chapter-words-title">每章字数</span>
+ <span class="chapter-words-title">{{ $t('generate.chapterWordsTitle') }}</span>
  <input v-model.number="chapterWordTarget" class="input" :disabled="generationBusy" type="number" min="2000" max="20000" step="500" />
- <span class="unit">字/章</span>
+ <span class="unit">{{ $t('generate.unitPerChapter') }}</span>
  </label>
  <div class="word-count-presets">
  <span v-for="p in chapterWordPresets" :key="p.value" class="preset-btn" :class="{ active: chapterWordTarget === p.value, locked: generationBusy }" @click="!generationBusy && (chapterWordTarget = p.value)">{{ p.label }}</span>
  </div>
- <div class="chapter-words-hint">预计约 {{ estimatedChapters }} 章{{ chapterWordTarget >= 6000 ? ' · 大章节奏：每章承载完整的线索链与冲突推进' : '' }}</div>
+ <div class="chapter-words-hint">{{ $t('generate.estimatedChapters', { n: estimatedChapters }) }}{{ chapterWordTarget >= 6000 ? $t('generate.bigChapterHint') : '' }}</div>
  </div>
  <label class="expert-mode-toggle">
  <input type="checkbox" v-model="expertMode" :disabled="generationBusy" />
@@ -161,7 +161,7 @@
 
  <div v-if="genStatus" class="gen-status" :class="{ ok: genOk }">{{ genStatus }}</div>
  <div v-if="generationTokenUsage" class="gen-token-usage">
- 累计 token：输入 {{ formatTokenCount(generationTokenUsage.inputTokens) }} / 输出 {{ formatTokenCount(generationTokenUsage.outputTokens) }}<span v-if="generationTokenUsage.cacheSavedTokens > 0">（缓存命中 {{ formatTokenCount(generationTokenUsage.cacheSavedTokens) }}）</span>
+ {{ $t('generate.usageTotalLabel') }}{{ $t('generate.usageInput') }} {{ formatTokenCount(generationTokenUsage.inputTokens) }} / {{ $t('generate.usageOutput') }} {{ formatTokenCount(generationTokenUsage.outputTokens) }}<span v-if="generationTokenUsage.cacheSavedTokens > 0">（{{ $t('generate.usageCache') }} {{ formatTokenCount(generationTokenUsage.cacheSavedTokens) }}）</span>
  </div>
 
  <!-- 生成结果弹框 -->
@@ -190,7 +190,7 @@
  </div>
  <!-- 编辑引擎分析报告 -->
  <div v-if="editorialDone && editorialAnalysis" class="gen-editorial-analysis">
- <div class="gen-text-label">AI特征分析报告</div>
+ <div class="gen-text-label">{{ $t('generate.editorialAnalysis') }}</div>
  <div class="analysis-bars">
  <div v-for="(val, key) in editorialAnalysis" :key="key" class="analysis-bar-item">
  <span class="analysis-label">{{ analysisLabel(key) }}</span>
@@ -322,14 +322,14 @@
    <div class="persona-toolbar">
      <button class="btn btn-sm btn-primary" @click="openEditPersona(null)">{{ $t('generate.personaNew') }}</button>
      <button class="btn btn-sm btn-secondary" @click="aiGenInput.novelType ? null : (aiGenInput.novelType = selectedType ? $tn(selectedType) : '') ; personaStatus=''; ">{{ $t('generate.personaAIGen') }}</button>
-     <span v-if="personaBusy" class="persona-busy"><span class="spinner" style="width:14px;height:14px;display:inline-block;vertical-align:middle;"></span> {{ personaStatus || '处理中...' }}</span>
+     <span v-if="personaBusy" class="persona-busy"><span class="spinner" style="width:14px;height:14px;display:inline-block;vertical-align:middle;"></span> {{ personaStatus || $t('generate.processing') }}</span>
    </div>
 
    <!-- AI 生成输入区 -->
    <div v-if="aiGenInput.novelType !== '' || personaStatus" class="persona-ai-gen">
-     <div class="label-sm">AI 生成写作人格</div>
-     <input v-model="aiGenInput.novelType" class="input" placeholder="想写的小说类型，如：玄幻修仙、甜宠言情" />
-     <textarea v-model="aiGenInput.hint" class="textarea" rows="2" placeholder="额外要求（可选），如：节奏紧凑、第一人称"></textarea>
+     <div class="label-sm">{{ $t('generate.personaAIGenTitle') }}</div>
+     <input v-model="aiGenInput.novelType" class="input" :placeholder="$t('generate.personaAIGenTypePlaceholder')" />
+     <textarea v-model="aiGenInput.hint" class="textarea" rows="2" :placeholder="$t('generate.personaAIGenHintPlaceholder')"></textarea>
      <div class="persona-ai-actions">
        <button class="btn btn-sm btn-primary" :disabled="personaBusy" @click="aiGeneratePersona">{{ $t('generate.personaAIGen') }}</button>
        <button class="btn btn-sm btn-secondary" @click="aiGenInput = { novelType: '', hint: '' }; personaStatus=''">{{ $t('common.cancel') }}</button>
@@ -340,11 +340,11 @@
    <div class="persona-list">
      <div v-for="p in personas" :key="p._id" class="persona-list-item" :class="{ active: selectedPersonaId === p._id }" @click="selectPersona(p)">
        <div class="persona-list-head">
-         <span class="persona-list-name">{{ p.name }}</span>
+         <span class="persona-list-name">{{ $tp(p.name) }}</span>
          <span v-if="p.isSystem" class="persona-tag sys">{{ $t('generate.personaSys') }}</span>
          <span v-else-if="p.source === 'ai-generated'" class="persona-tag ai">AI</span>
        </div>
-       <div class="persona-list-desc">{{ p.description || p.voice?.slice(0, 60) }}</div>
+       <div class="persona-list-desc">{{ $tp(p.name, 'desc') || p.description || p.voice?.slice(0, 60) }}</div>
        <div class="persona-list-actions" @click.stop>
          <button class="btn btn-xs btn-secondary" @click="openEditPersona(p)">{{ $t('common.edit') }}</button>
          <button v-if="!p.isSystem" class="btn btn-xs btn-secondary" @click="clonePersona(p)">{{ $t('generate.personaClone') }}</button>
@@ -385,11 +385,11 @@
  <div v-if="outlineModal" class="modal-overlay" @click.self="outlineReject()">
  <div class="outline-modal-card">
  <h3 class="outline-modal-title">{{ $t('generate.outlinePreview') }}</h3>
- <p class="outline-modal-desc">{{ outlineStreaming ? 'AI 正在实时生成大纲，完成后可编辑与确认…' : $t('generate.outlineDesc') }}</p>
+ <p class="outline-modal-desc">{{ outlineStreaming ? $t('generate.outlineStreamingDesc') : $t('generate.outlineDesc') }}</p>
  <div v-if="outlineStreaming && outlineReasoningText && !outlineModalText" ref="outlineReasoningRef" class="stream-reasoning-box">{{ outlineReasoningText }}</div>
  <div v-if="outlineStreaming && !outlineModalText" class="thinking-hint">
   {{ outlineThinkingChars > 0
-     ? `${$t('generate.thinkingStatus', { seconds: outlineThinkingElapsed })}（已思考 ${outlineThinkingChars} 字）`
+     ? `${$t('generate.thinkingStatus', { seconds: outlineThinkingElapsed })}${$t('generate.thinkingCharsSuffix', { n: outlineThinkingChars })}`
      : $t('generate.thinkingStatus', { seconds: outlineThinkingElapsed }) }}
   <span class="thinking-tip">{{ $t('generate.thinkingHint') }}</span>
  </div>
@@ -397,7 +397,7 @@
  <div v-if="outlineTokenUsage" class="outline-modal-token">{{ tokenUsageText(outlineTokenUsage) }}</div>
  <div class="outline-modal-actions">
  <button class="btn btn-secondary" @click="outlineReject()">{{ $t('common.cancel') }}</button>
- <button class="btn btn-primary" :disabled="outlineStreaming" @click="outlineConfirm()">{{ outlineStreaming ? '生成中…' : $t('generate.outlineConfirm') }}</button>
+ <button class="btn btn-primary" :disabled="outlineStreaming" @click="outlineConfirm()">{{ outlineStreaming ? $t('generate.outlineGenerating') : $t('generate.outlineConfirm') }}</button>
  </div>
  </div>
  </div>
@@ -420,7 +420,7 @@ const router = useRouter()
 const novelStore = useNovelStore()
 const authStore = useAuthStore()
 const personaStore = usePersonaStore()
-const { $t } = useI18n()
+const { $t, $tn, $tt } = useI18n()
 
 const streamRef = ref(null)
 
@@ -489,7 +489,7 @@ function openEditPersona(p) {
 
 async function savePersona() {
  const f = personaForm.value
- if (!f.name.trim()) return alert('请填写模板名称')
+ if (!f.name.trim()) return alert($t('generate.personaErrName'))
  personaBusy.value = true
  try {
    if (editingPersona.value?._id) {
@@ -500,20 +500,20 @@ async function savePersona() {
    personas.value = personaStore.personas
    openEditPersona(null)
  } catch (e) {
-   alert(e.response?.data?.message || e.message || '保存失败')
+   alert(e.response?.data?.message || e.message || $t('generate.personaErrSave'))
  } finally {
    personaBusy.value = false
  }
 }
 
 async function deletePersona(p) {
- if (!confirm(`确认删除「${p.name}」？`)) return
+ if (!confirm($t('generate.confirmDeletePersona', { name: p.name }))) return
  try {
    await personaStore.remove(p._id)
    personas.value = personaStore.personas
    if (selectedPersonaId.value === p._id) selectedPersonaId.value = ''
  } catch (e) {
-   alert(e.response?.data?.message || e.message || '删除失败')
+   alert(e.response?.data?.message || e.message || $t('generate.personaErrDelete'))
  }
 }
 
@@ -522,14 +522,14 @@ async function clonePersona(p) {
    await personaStore.clone(p._id)
    personas.value = personaStore.personas
  } catch (e) {
-   alert(e.response?.data?.message || e.message || '克隆失败')
+   alert(e.response?.data?.message || e.message || $t('generate.personaErrClone'))
  }
 }
 
 async function aiGeneratePersona() {
- if (!aiGenInput.value.novelType.trim()) return alert('请输入想写的小说类型')
+ if (!aiGenInput.value.novelType.trim()) return alert($t('generate.personaErrNeedType'))
  personaBusy.value = true
- personaStatus.value = 'AI 正在生成写作人格...'
+ personaStatus.value = $t('generate.personaAIGenerating')
  try {
    await personaStore.aiGenerate(aiGenInput.value.novelType, aiGenInput.value.hint)
    personas.value = personaStore.personas
@@ -537,7 +537,7 @@ async function aiGeneratePersona() {
    personaStatus.value = ''
  } catch (e) {
    personaStatus.value = ''
-   alert(e.response?.data?.message || e.message || 'AI 生成失败')
+   alert(e.response?.data?.message || e.message || $t('generate.personaErrAIGen'))
  } finally {
    personaBusy.value = false
  }
@@ -576,17 +576,17 @@ const editorialText = ref('')
 const editorialAnalysis = ref(null)
 const editorialStreamRef = ref(null)
 const editorialStages = ref([
-  { id: 'persona', name: '人格', active: false, done: false, error: false, errorMsg: '' },
-  { id: 'structural', name: '结构重构', active: false, done: false, error: false, errorMsg: '' },
-  { id: 'polish', name: '风格一致性', active: false, done: false, error: false, errorMsg: '' },
-  { id: 'deAI', name: '去AI化', active: false, done: false, error: false, errorMsg: '' },
+  { id: 'persona', name: $t('generate.stagePersona'), active: false, done: false, error: false, errorMsg: '' },
+  { id: 'structural', name: $t('generate.stageStructural'), active: false, done: false, error: false, errorMsg: '' },
+  { id: 'polish', name: $t('generate.stageStyle'), active: false, done: false, error: false, errorMsg: '' },
+  { id: 'deAI', name: $t('generate.stageDeAI'), active: false, done: false, error: false, errorMsg: '' },
 ])
 const editorialStageErrors = computed(() => editorialStages.value.filter(s => s.error))
 
 const analysisLabelMap = {
-  explain: '解释型语言', sentence: '平均句式', repeat: '重复结构', flow: '流水账',
-  dialogue: '对话模板化', environment: '环境重复', transition: 'AI连接词',
-  summary: '总结结尾', worldbuilding: '世界观说明', psychology: '心理单一',
+  explain: $t('generate.traitExplain'), sentence: $t('generate.traitSentence'), repeat: $t('generate.traitRepeat'), flow: $t('generate.traitFlow'),
+  dialogue: $t('generate.traitDialogue'), environment: $t('generate.traitEnvironment'), transition: $t('generate.traitTransition'),
+  summary: $t('generate.traitSummary'), worldbuilding: $t('generate.traitWorldbuilding'), psychology: $t('generate.traitPsychology'),
 }
 function analysisLabel(key) { return analysisLabelMap[key] || key }
 
@@ -682,13 +682,13 @@ const generationTokenUsage = ref(null)
 function formatTokenCount(value) {
  const number = Number(value) || 0
  if (number >= 1000000) return `${(number / 1000000).toFixed(2)}M`
- if (number >= 10000) return `${(number / 10000).toFixed(1)}万`
+ if (number >= 10000) return $t('generate.wanCount', { n: (number / 10000).toFixed(1) })
  if (number >= 1000) return `${(number / 1000).toFixed(1)}k`
  return String(number)
 }
 function tokenUsageText(usage) {
  if (!usage) return ''
- return `消耗：输入 ${formatTokenCount(usage.inputTokens)} / 输出 ${formatTokenCount(usage.outputTokens)} token`
+ return $t('generate.usageLine', { input: formatTokenCount(usage.inputTokens), output: formatTokenCount(usage.outputTokens) })
 }
 
 // 大纲生成改为 SSE 流式：弹窗立即打开，实时展示思考/正文内容并自动滚动到最新位置，
@@ -741,7 +741,7 @@ function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, per
   },
   onError: (message) => {
    outlineStreaming.value = false
-   genStatus.value = message || '大纲生成失败'
+   genStatus.value = message || $t('generate.errOutline')
    notifyModelError(message)
   },
   onLoadend: () => {
@@ -776,7 +776,7 @@ function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, per
 // 蓝图生成改为 SSE 流式：实时展示模型输出并自动滚动到最新位置（推理模型耗时长，无超时限制）
 function generateInitialBlueprint() {
  if (!selectedType.value || !outline.value.trim()) {
-  blueprintSetupError.value = '请先选择小说类型并确认大纲'
+  blueprintSetupError.value = $t('generate.errNeedTypeOutline')
   return
  }
  blueprintGenerating.value = true
@@ -825,7 +825,7 @@ function generateInitialBlueprint() {
    scrollBlueprintToBottom()
   },
   onError: (message) => {
-   blueprintSetupError.value = message || '初始蓝图生成失败'
+   blueprintSetupError.value = message || $t('generate.errBlueprintGen')
    blueprintGenerating.value = false
    stopThinkingTicker()
    notifyModelError(message)
@@ -845,13 +845,13 @@ function cancelBlueprint() {
 function confirmInitialBlueprint() {
  try {
   const parsed = JSON.parse(initialBlueprintJson.value)
-  if (!parsed || !Array.isArray(parsed.phases) || !parsed.phases.length) throw new Error('至少需要一个剧情阶段')
+  if (!parsed || !Array.isArray(parsed.phases) || !parsed.phases.length) throw new Error($t('generate.errBlueprintPhases'))
   initialBlueprint.value = parsed
   initialBlueprintConfirmed.value = true
   blueprintSetupError.value = ''
  } catch (e) {
   initialBlueprintConfirmed.value = false
-  blueprintSetupError.value = `蓝图格式无效：${e.message}`
+  blueprintSetupError.value = $t('generate.errBlueprintFormat', { message: e.message })
  }
 }
 
@@ -864,12 +864,17 @@ function outlineReject() {
 
 const maxWordCount = computed(() => genMode.value === 'chapter' ? 20000 : 10000000)
 
-const chapterWordPresets = [
- { label: '3000字/章', value: 3000 },
- { label: '5000字/章', value: 5000 },
- { label: '8000字/章', value: 8000 },
- { label: '10000字/章', value: 10000 },
-]
+// 字数预设文案随语言切换（中文"字/章"，英文 words/ch）
+function wordCountLabel(value, unit) {
+ if (unit === 'book') {
+  return value >= 1000000
+   ? $t('generate.wordPresetBookM', { n: value / 1000000 })
+   : $t('generate.wordPresetBook', { n: value / 10000 })
+ }
+ return $t('generate.wordPresetChapter', { n: value })
+}
+const chapterWordPresets = computed(() => [3000, 5000, 8000, 10000]
+ .map((value) => ({ label: wordCountLabel(value, 'chapter'), value })))
 
 // 输入越界时夹回 [2000, 20000]，与后端 normalizeChapterWordTarget 同口径。
 watch(chapterWordTarget, (value) => {
@@ -886,8 +891,9 @@ const estimatedChapters = computed(() => {
 })
 
 const activePresets = computed(() => {
- if (genMode.value === 'book') return [{ label: '5万字', value: 50000 }, { label: '10万字', value: 100000 }, { label: '30万字', value: 300000 }, { label: '50万字', value: 500000 }]
- return [{ label: '1000字', value: 1000 }, { label: '2000字', value: 2000 }, { label: '3000字', value: 3000 }, { label: '5000字', value: 5000 }]
+ const isBook = genMode.value === 'book'
+ const values = isBook ? [50000, 100000, 300000, 500000] : [1000, 2000, 3000, 5000]
+ return values.map((value) => ({ label: wordCountLabel(value, isBook ? 'book' : 'chapter'), value }))
 })
 
 async function startGen() {
@@ -903,7 +909,7 @@ async function startGen() {
 
  if (genMode.value === 'book' && !initialBlueprintConfirmed.value) {
   if (!initialBlueprintJson.value) await generateInitialBlueprint()
-  genStatus.value = blueprintSetupError.value || '请确认初始故事蓝图后再开始生成'
+  genStatus.value = blueprintSetupError.value || $t('generate.errNeedBlueprint')
   preparingGeneration.value = false
   return
  }
@@ -917,7 +923,7 @@ async function startGen() {
  generatedNovelId.value = ''; generatedChapterNumber.value = 0
  generatedApplyBusy.value = false; generatedApplyMessage.value = ''
  showGenModal.value = true
- genModalTitle.value = `${selectedType.value} - ${protagonistName.value || '未命名'}`
+ genModalTitle.value = `${selectedType.value} - ${protagonistName.value || $t('generate.untitled')}`
  deslopDone.value = false; deslopText.value = ''; deslopRunning.value = false; diffHtml.value = ''
  editorialDone.value = false; editorialText.value = ''; editorialRunning.value = false; editorialAnalysis.value = null
  editorialStages.value.forEach(s => { s.active = false; s.done = false; s.error = false; s.errorMsg = '' })
@@ -942,7 +948,7 @@ async function startGen() {
  outlineStreamingText.value = event.content
  if (event.tokenUsage) outlineTokenUsage.value = event.tokenUsage
  } else if (event.type === 'novel_created') {
- genStatus.value = '大纲生成中...'
+ genStatus.value = $t('generate.statusOutline')
  generatedNovelId.value = event.novelId || generatedNovelId.value
  } else if (event.type === 'chapter_end') {
  generatedChapterNumber.value = Number(event.chapterNumber || generatedChapterNumber.value)
@@ -952,37 +958,37 @@ async function startGen() {
  } else if (event.type === 'status') {
  genStatus.value = event.message
  } else if (event.type === 'chapter_start') {
- genStatus.value = `正在生成 ${event.title || '第' + event.chapterNumber + '章'}...`
+ genStatus.value = $t('generate.statusGeneratingChapter', { title: event.title || $t('generate.chapterTitle', { n: event.chapterNumber }) })
  } else if (event.type === 'thinking') {
   // 深度思考模型：思考阶段没有正文，必须让用户看到"仍在推进"（字数 + 已用时间），
   // 并说明思考不会占用正文字数，避免误判为卡死或"字数被吃掉"。
   genThinkingChars.value = event.length || 0
   genThinkingElapsed.value = Math.round((event.elapsedMs || 0) / 1000)
   genStatus.value = genThinkingChars.value > 0
-   ? `${$t('generate.thinkingStatus', { seconds: genThinkingElapsed.value })}（已思考 ${genThinkingChars.value} 字）`
+   ? `${$t('generate.thinkingStatus', { seconds: genThinkingElapsed.value })}${$t('generate.thinkingCharsSuffix', { n: genThinkingChars.value })}`
    : $t('generate.thinkingStatus', { seconds: genThinkingElapsed.value })
  } else if (event.type === 'quality_notice') {
- const issues = event.report?.issues?.join('；') || '章节存在连贯性风险，已记录供后续章节参考'
- genStatus.value = `第${event.chapterNumber}章质量提示：${issues}`
+ const issues = event.report?.issues?.join('；') || $t('generate.qualityFallback')
+ genStatus.value = $t('generate.statusQualityNotice', { n: event.chapterNumber, issues })
  } else if (event.type === 'humanized') {
  // 服务器返回改写后文本，替换显示
  streamingText.value = event.content
- genStatus.value = `第${event.chapterNumber}章改写完成`
+ genStatus.value = $t('generate.statusRewritten', { n: event.chapterNumber })
  scrollToBottom()
  } else if (event.type === 'expert_revision') {
   streamingText.value = event.content || streamingText.value
-  genStatus.value = `第${event.chapterNumber}章已完成专家复核`
+  genStatus.value = $t('generate.statusReviewed', { n: event.chapterNumber })
   scrollToBottom()
  } else if (event.type === 'completed') {
- genStatus.value = '生成完成！'; genOk.value = true; generating.value = false
+ genStatus.value = $t('generate.statusDone'); genOk.value = true; generating.value = false
  } else if (event.type === 'paused') {
- genStatus.value = '️ 已暂停'; generating.value = false
+ genStatus.value = $t('generate.statusPaused'); generating.value = false
  } else if (event.type === 'token_exhausted') {
- genStatus.value = '生成已停止'; generating.value = false
+ genStatus.value = $t('generate.statusStopped'); generating.value = false
  } else if (event.type === 'plan_needs_extension') {
- genStatus.value = event.message || '章节计划需要扩展'; generating.value = false
+ genStatus.value = event.message || $t('generate.statusPlanExtend'); generating.value = false
 } else if (event.type === 'error') {
- genStatus.value = ' ' + (event.message || '生成失败'); generating.value = false
+ genStatus.value = ' ' + (event.message || $t('generate.errGen')); generating.value = false
  notifyModelError(event.message)
  }
  }
@@ -997,7 +1003,7 @@ function scrollToBottom() {
 async function startDeslop() {
  if (!streamingText.value || streamingText.value.length < 50) return
  deslopRunning.value = true; deslopDone.value = false; deslopText.value = ''; diffHtml.value = ''
- deslopStatus.value = '正在去AI化...'
+ deslopStatus.value = $t('generate.deslopRunning')
 
  const token = localStorage.getItem('token')
  const sse = useSSE()
@@ -1011,15 +1017,15 @@ async function startDeslop() {
   onCompleted: (event) => {
    deslopText.value = event.content || deslopText.value
    deslopDone.value = true; deslopRunning.value = false
-   deslopStatus.value = '去AI化完成'
+   deslopStatus.value = $t('generate.deslopDone')
    computeDiff()
   },
   onError: (message) => {
-   deslopStatus.value = message || '去AI味失败'; deslopRunning.value = false
+   deslopStatus.value = message || $t('generate.errDeslop'); deslopRunning.value = false
    notifyModelError(message)
   },
   onLoadend: () => {
-   if (deslopRunning.value) { deslopDone.value = true; deslopRunning.value = false; deslopStatus.value = '去AI化完成'; computeDiff() }
+   if (deslopRunning.value) { deslopDone.value = true; deslopRunning.value = false; deslopStatus.value = $t('generate.deslopDone'); computeDiff() }
   },
  })
 }
@@ -1066,19 +1072,7 @@ async function startEditorial() {
  // 总计 ≈ textLen*9 + 1500，保守取 1.3 倍系数
  const estTimeMin = Math.max(1, Math.round((textLen * 9 + 1500) * 1.3 / 3000))
 
- if (!confirm(
- `确认执行编辑引擎？\n\n` +
- `文本长度：${textLen} 字\n` +
- `处理阶段（3次AI调用）：\n` +
- `  ⓪ 作者人格（本地生成）\n` +
- `  ① 结构重构（压缩+节奏+人物）\n` +
- `  ② 风格一致性（润色+一致性检查）\n` +
- `  ③ 去AI化（最终，注入人类特征）\n\n` +
- `预计耗时：约 ${estTimeMin} 分钟\n\n` +
- `去AI化放在最后一步，\n` +
- `避免后续润色重新引入AI特征。\n` +
- `处理期间请勿关闭页面。`
- )) return
+ if (!confirm($t('generate.confirmEditorial', { textLen, estTimeMin }))) return
 
  editorialRunning.value = true; editorialDone.value = false; editorialText.value = ''; editorialAnalysis.value = null
  // 重置阶段状态
@@ -1121,7 +1115,7 @@ async function startEditorial() {
   },
   onError: (message) => {
    editorialRunning.value = false
-   alert(message || '编辑引擎处理失败')
+   alert(message || $t('generate.errEditorial'))
   },
   onLoadend: () => {
    if (editorialRunning.value) {
@@ -1211,20 +1205,21 @@ const lnStreamRef = ref(null)
 const lnTraits = ['元气', '冷酷', '温柔', '傲娇', '天然呆', '腹黑', '高冷', '治愈', '热血', '神秘', '活泼', '冷静']
 
 const lnActivePresets = computed(() => {
- if (lnGenMode.value === 'book') return [{ label: '5万字', value: 50000 }, { label: '10万字', value: 100000 }, { label: '30万字', value: 300000 }, { label: '50万字', value: 500000 }]
- return [{ label: '1000字', value: 1000 }, { label: '2000字', value: 2000 }, { label: '3000字', value: 3000 }, { label: '5000字', value: 5000 }]
+ const isBook = lnGenMode.value === 'book'
+ const values = isBook ? [50000, 100000, 300000, 500000] : [1000, 2000, 3000, 5000]
+ return values.map((value) => ({ label: wordCountLabel(value, isBook ? 'book' : 'chapter'), value }))
 })
 
 async function startLNGen() {
- if (!lnSelectedType.value) return alert('请选择轻小说类型')
+ if (!lnSelectedType.value) return alert($t('generate.errNeedLNType'))
 
  // 轻小说整本模式：先生成大纲
  let lnOutline = ''
  if (lnGenMode.value === 'book') {
  const lnTypeObj = lnTypes.find(t => t.id === lnSelectedType.value)
  const lnName = lnTypeObj?.name || ''
- const lnChar = (lnCharName.value + (lnCharTrait.value ? `（${lnCharTrait.value}属性）` : '')).trim() || '未命名'
- const lnWorld = lnWorldSetting.value || `${lnName}题材的日式轻小说世界`
+ const lnChar = (lnCharName.value + (lnCharTrait.value ? $t('generate.lnTraitSuffix', { trait: $tt(lnCharTrait.value) }) : '')).trim() || $t('generate.untitled')
+ const lnWorld = lnWorldSetting.value || $t('generate.lnWorldByGenre', { genre: $tn(lnName) })
  const confirmedOutline = await showOutlineModal(lnSelectedType.value, lnChar, lnWorld, lnTargetWordCount.value)
  if (!confirmedOutline) return
  lnOutline = confirmedOutline
@@ -1233,13 +1228,13 @@ async function startLNGen() {
  lnGenerating.value = true; lnStatus.value = ''; lnOk.value = false
  lnStreamingText.value = ''
 
- const traitDesc = lnCharTrait.value ? `（${lnCharTrait.value}属性）` : ''
+ const traitDesc = lnCharTrait.value ? $t('generate.lnTraitSuffix', { trait: $tt(lnCharTrait.value) }) : ''
  const params = {
  novelTypeId: lnSelectedType.value,
- protagonistName: (lnCharName.value + traitDesc).trim() || '未命名',
+ protagonistName: (lnCharName.value + traitDesc).trim() || $t('generate.untitled'),
  worldSetting: lnWorldSetting.value || (() => {
  const type = lnTypes.find(t => t.id === lnSelectedType.value)
- return type ? `${type.name}题材的日式轻小说世界` : '日式轻小说世界'
+ return type ? $t('generate.lnWorldByGenre', { genre: $tn(type.name) }) : $t('generate.lnWorldFallback')
  })(),
  targetWordCount: lnTargetWordCount.value,
  mode: lnGenMode.value,
@@ -1251,31 +1246,31 @@ async function startLNGen() {
  (chunk) => { lnStreamingText.value += chunk; lnScrollToBottom() },
  (event) => {
  if (event.type === 'outline') {
- lnStatus.value = '大纲生成中...'
+ lnStatus.value = $t('generate.statusOutline')
  } else if (event.type === 'novel_created') {
- lnStatus.value = '大纲生成中...'
+ lnStatus.value = $t('generate.statusOutline')
  } else if (event.type === 'status') {
  lnStatus.value = event.message
  } else if (event.type === 'chapter_start') {
- lnStatus.value = `正在生成 ${event.title || '第' + event.chapterNumber + '章'}...`
+ lnStatus.value = $t('generate.statusGeneratingChapter', { title: event.title || $t('generate.chapterTitle', { n: event.chapterNumber }) })
  } else if (event.type === 'thinking') {
-  lnStatus.value = `模型正在整理本章结构（已处理 ${event.length || 0} 个思考单位）...`
+  lnStatus.value = $t('generate.statusThinkingUnits', { n: event.length || 0 })
  } else if (event.type === 'quality_notice') {
- const issues = event.report?.issues?.join('；') || '章节存在连贯性风险，已记录供后续章节参考'
- lnStatus.value = `第${event.chapterNumber}章质量提示：${issues}`
+ const issues = event.report?.issues?.join('；') || $t('generate.qualityFallback')
+ lnStatus.value = $t('generate.statusQualityNotice', { n: event.chapterNumber, issues })
  } else if (event.type === 'expert_revision') {
   lnStreamingText.value = event.content || lnStreamingText.value
-  lnStatus.value = `第${event.chapterNumber}章已完成专家复核`
+  lnStatus.value = $t('generate.statusReviewed', { n: event.chapterNumber })
  } else if (event.type === 'completed') {
- lnStatus.value = '生成完成！'; lnOk.value = true; lnGenerating.value = false
+ lnStatus.value = $t('generate.statusDone'); lnOk.value = true; lnGenerating.value = false
  } else if (event.type === 'paused') {
- lnStatus.value = '⏸️ 已暂停'; lnGenerating.value = false
+ lnStatus.value = '⏸️ ' + $t('generate.statusPaused'); lnGenerating.value = false
  } else if (event.type === 'token_exhausted') {
- lnStatus.value = '生成已停止'; lnGenerating.value = false
+ lnStatus.value = $t('generate.statusStopped'); lnGenerating.value = false
  } else if (event.type === 'plan_needs_extension') {
- lnStatus.value = event.message || '章节计划需要扩展'; lnGenerating.value = false
+ lnStatus.value = event.message || $t('generate.statusPlanExtend'); lnGenerating.value = false
 } else if (event.type === 'error') {
- lnStatus.value = ' ' + (event.message || '生成失败'); lnGenerating.value = false
+ lnStatus.value = ' ' + (event.message || $t('generate.errGen')); lnGenerating.value = false
  notifyModelError(event.message)
  }
  }

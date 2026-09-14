@@ -11,6 +11,8 @@ const {
   MODEL_ROLE_KEYS,
   toPublicModelConfig,
 } = require('../config/modelCatalog');
+const { seal, open } = require('../services/secretBox');
+const { getFriendlyErrorMessage } = require('../services/aiService');
 
 // 是否启用邮箱发送——如果连接不上就退化为控制台打印
 let emailEnabled = true;
@@ -389,12 +391,24 @@ router.put('/model-config', auth, async (req, res) => {
       config.ollamaPolishModel = ollamaPolishModel || '';
       config.ollamaReasoningModel = ollamaReasoningModel || '';
     } else if (provider === 'cloud') {
-      config.cloudBaseUrl = req.body.cloudBaseUrl || '';
-      config.cloudApiKey = req.body.cloudApiKey || '';
+      // 用户自带模型（桌面端"存进账号"模式）：
+      //  - 密钥加密后再入库，避免数据库备份/直连查询泄露明文；
+      //  - 提交空密钥表示"保持原密钥不变"，而不是把它清空（前端只回显尾部提示）。
+      const submittedBaseUrl = String(req.body.cloudBaseUrl || '').trim();
+      if (submittedBaseUrl && !/^https?:\/\//i.test(submittedBaseUrl)) {
+        return res.status(400).json({ message: '接口地址需以 http:// 或 https:// 开头' });
+      }
+      const submittedKey = String(req.body.cloudApiKey || '').trim();
+      const existingKey = req.user.modelConfig?.cloudApiKey || '';
+      const plainKey = submittedKey || open(existingKey);
+      config.cloudBaseUrl = submittedBaseUrl;
+      config.cloudApiKey = seal(plainKey);
       config.cloudOutlineModel = cloudOutlineModel || '';
       config.cloudWritingModel = cloudWritingModel || '';
       config.cloudPolishModel = cloudPolishModel || '';
       config.cloudReasoningModel = cloudReasoningModel || '';
+      if (!config.cloudBaseUrl) return res.status(400).json({ message: '请填写模型接口地址' });
+      if (!config.cloudWritingModel) return res.status(400).json({ message: '请至少填写写作模型名称' });
     }
 
     req.user.modelConfig = config;
@@ -402,6 +416,54 @@ router.put('/model-config', auth, async (req, res) => {
     res.json({ message: '模型配置已保存', modelConfig: toPublicModelConfig(config) });
   } catch (error) {
     res.status(500).json({ message: '保存配置失败' });
+  }
+});
+
+/**
+ * 连通性测试：桌面端「模型线路」页填完 URL / Key / 模型后可直接验证，
+ * 不必先跑一次真实生成才发现填错。服务端代发请求也顺便绕开了浏览器 CORS 限制。
+ */
+router.post('/model-config/verify', auth, async (req, res) => {
+  const baseUrl = String(req.body?.baseUrl || '').trim().replace(/\/+$/, '');
+  const apiKey = String(req.body?.apiKey || '').trim();
+  const model = String(req.body?.model || '').trim();
+  if (!baseUrl || !model) return res.status(400).json({ message: '请先填写接口地址与模型名称' });
+  if (!/^https?:\/\//i.test(baseUrl)) return res.status(400).json({ message: '接口地址需以 http:// 或 https:// 开头' });
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  const startedAt = Date.now();
+  try {
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: 'ping' }],
+        max_tokens: 1,
+        stream: false,
+      }),
+      signal: controller.signal,
+    });
+    const latencyMs = Date.now() - startedAt;
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      const friendly = getFriendlyErrorMessage(response.status, text);
+      return res.json({ ok: false, status: response.status, latencyMs, message: friendly });
+    }
+    res.json({ ok: true, status: response.status, latencyMs, message: '连接成功，模型可用' });
+  } catch (error) {
+    const aborted = error.name === 'AbortError';
+    res.json({
+      ok: false,
+      latencyMs: Date.now() - startedAt,
+      message: aborted ? '连接超时（20 秒），请检查地址与网络' : `连接失败：${error.message}`,
+    });
+  } finally {
+    clearTimeout(timer);
   }
 });
 

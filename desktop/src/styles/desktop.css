@@ -1,0 +1,70 @@
+/* ============================================
+   MirrorNovel 桌面端样式覆盖层
+   背景：渲染层直接复用 client/src 的页面组件（移动端优先布局），
+   这里只做"外壳级"覆盖——不改页面内部样式，因此 Web 端与桌面端可长期共用同一套页面。
+   ============================================ */
+
+:root {
+  /* 用变量归零底部 TabBar 占位，页面里任何依赖它的间距在桌面端自动失效 */
+  --tab-height: 0px;
+  --desktop-content-padding: 20px 24px 28px;
+  --desktop-content-max: 1240px;
+}
+
+html, body, #app {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  /* 桌面端不需要移动端的点击高亮与文本选择限制 */
+  -webkit-tap-highlight-color: transparent;
+  user-select: text;
+}
+
+/* 主内容区：给页面内容一个舒适的最大宽度与留白，超宽屏不拉伸成一条长线 */
+.desktop-content {
+  padding: var(--desktop-content-padding);
+}
+.desktop-content > * {
+  width: 100%;
+  max-width: var(--desktop-content-max);
+  margin-inline: auto;
+}
+
+/* 工作台类页面（作品详情）需要占满整个内容区，不受上面的最大宽度限制 */
+.desktop-content.workbench {
+  padding: 0;
+}
+.desktop-content.workbench > * {
+  max-width: none;
+}
+
+/* ===== 桌面端滚动条：细、低对比，避免打断阅读 ===== */
+.desktop-content ::-webkit-scrollbar,
+.rail-nav::-webkit-scrollbar,
+.editor-pane ::-webkit-scrollbar { width: 10px; height: 10px; }
+.desktop-content ::-webkit-scrollbar-thumb,
+.rail-nav::-webkit-scrollbar-thumb,
+.editor-pane ::-webkit-scrollbar-thumb {
+  background: rgba(63, 125, 90, 0.22);
+  border: 2px solid transparent;
+  background-clip: content-box;
+  border-radius: 8px;
+}
+.desktop-content ::-webkit-scrollbar-thumb:hover,
+.rail-nav::-webkit-scrollbar-thumb:hover { background: rgba(63, 125, 90, 0.38); background-clip: content-box; }
+.desktop-content ::-webkit-scrollbar-track { background: transparent; }
+
+/* ===== 屏幕够宽时，把移动端"单列窄卡片"的观感放开 ===== */
+@media (min-width: 1100px) {
+  .desktop-content .card,
+  .desktop-content .section { border-radius: var(--radius-lg); }
+}
+
+/* ===== 桌面端不需要页面的底部安全区留白 ===== */
+.desktop-content [class*="page"],
+.desktop-content [class*="container"] {
+  padding-bottom: 0;
+}

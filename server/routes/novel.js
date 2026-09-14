@@ -807,7 +807,7 @@ router.post('/generate-outline', auth, async (req, res) => {
         systemPrompt, outlinePrompt,
         (chunk) => send({ type: 'content', content: chunk }),
         abortController.signal,
-        resolveApiConfig(req.user?.modelConfig, 'outline'),
+        resolveApiConfig(req.userModelConfig, 'outline'),
         2, 0.82, outlineRequirements.outputTokens, TIMEOUT.OUTLINE,
         (reasoning) => send({ type: 'reasoning', content: reasoning })
       );
@@ -886,7 +886,7 @@ ${String(outline).slice(0, 12000)}
         prompt,
         (chunk) => send({ type: 'content', content: chunk }),
         abortController.signal,
-        resolveApiConfig(req.user?.modelConfig, 'reasoning'),
+        resolveApiConfig(req.userModelConfig, 'reasoning'),
         1,
         0.35,
         Math.max(2600, Math.min(12000, blueprintRequirements.phaseCount * 900)),
@@ -1075,7 +1075,7 @@ ${tmpl.dynamicPrompt}
         const outlineResult = await streamGenerate(
           `你是一位专业的小说大纲策划师。${buildPersonaPrompt(persona, { includeDeslop: false })}`,
           outlinePrompt, null, ac.signal,
-          resolveApiConfig(req.user?.modelConfig, 'outline'),
+          resolveApiConfig(req.userModelConfig, 'outline'),
           2,
           0.82,
           getOutlineRequirements(targetWordCount, chapterWordTarget).outputTokens,
@@ -1136,7 +1136,7 @@ ${tmpl.dynamicPrompt}
         const planResult = await streamGenerate(
           '你是一位专业的小说章节规划师。你的任务是制定详细的章节计划表，确保每章有明确目标、伏笔合理铺设和回收、结局节奏自然。',
           planPrompt, null, planController.signal,
-          resolveApiConfig(req.user?.modelConfig, 'reasoning'),
+          resolveApiConfig(req.userModelConfig, 'reasoning'),
           1, 0.82,
           typeof getChapterPlanOutputTokens === 'function' ? getChapterPlanOutputTokens(targetWordCount, chapterWordTarget) : 16384,
           planTimeoutMs
@@ -1204,7 +1204,7 @@ ${tmpl.dynamicPrompt}
       const genResult = await streamGenerate(systemPrompt, prompt, (chunk) => {
         buffer += chunk;
         try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
-      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget), 900000, createThinkingEmitter(res), { stitchOnTruncation: true });
+      }, abortController.signal, resolveApiConfig(req.userModelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget), 900000, createThinkingEmitter(res), { stitchOnTruncation: true });
 
       // 记录本章正文生成的实际 token 用量（含服务商前缀缓存命中数据）。
       emitTokenUsage(res, novel, 'writing', genResult, chapterTokenStats);
@@ -1519,7 +1519,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       const contResult = await streamGenerate(systemPrompt, prompt, (chunk) => {
         buffer += chunk;
         try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
-      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget), 900000, createThinkingEmitter(res), { stitchOnTruncation: true });
+      }, abortController.signal, resolveApiConfig(req.userModelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget), 900000, createThinkingEmitter(res), { stitchOnTruncation: true });
 
       emitTokenUsage(res, novel, 'writing', contResult, chapterTokenStats);
 
@@ -1924,7 +1924,7 @@ router.post('/continue-import', auth, async (req, res) => {
           res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`);
         },
         abortController.signal,
-        resolveApiConfig(req.user?.modelConfig, 'writing'),
+        resolveApiConfig(req.userModelConfig, 'writing'),
         2, 0.85, 16384, 900000, createThinkingEmitter(res),
         { stitchOnTruncation: true }
       );
@@ -2303,7 +2303,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
         appendBuffer += chunk;
         if (Date.now() - lastAutoSave > 5000) saveAppendProgress();
         res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`);
-      }, abortController.signal, resolveApiConfig(req.user?.modelConfig, 'writing'), 2, 0.85, 16384, 900000, createThinkingEmitter(res), { stitchOnTruncation: true });
+      }, abortController.signal, resolveApiConfig(req.userModelConfig, 'writing'), 2, 0.85, 16384, 900000, createThinkingEmitter(res), { stitchOnTruncation: true });
 
       if (abortController.signal.aborted) {
         activeStreams.delete(streamKey);
@@ -2445,7 +2445,7 @@ router.post('/deslop', auth, async (req, res) => {
       userPrompt,
       null,
       null,
-      resolveApiConfig(req.user?.modelConfig, 'polish'),
+      resolveApiConfig(req.userModelConfig, 'polish'),
       2, 0.85, undefined, 600000
     );
 
@@ -2469,7 +2469,7 @@ router.post('/deslop-stream', auth, async (req, res) => {
       'X-Accel-Buffering': 'no',
     });
 
-    const apiConfig = resolveApiConfig(req.user?.modelConfig, 'polish');
+    const apiConfig = resolveApiConfig(req.userModelConfig, 'polish');
     const deslop = require('../config/deslop');
     const styleNovel = novelId ? await Novel.findOne({ _id: novelId, userId: req.userId }) : null;
     const persona = await resolveNovelPersona(req.userId, styleNovel, personaId);
@@ -2640,7 +2640,7 @@ ${genreHint}\n${genreContract}${buildPersonaPrompt(persona)}`;
 【原文】
 ${text.slice(0, 8000)}`,
           null, abortController.signal,
-          resolveApiConfig(req.user?.modelConfig, 'polish'),
+          resolveApiConfig(req.userModelConfig, 'polish'),
           1, 0.3, 8000, 300000
         );
         try {
@@ -2676,7 +2676,7 @@ ${text.slice(0, 8000)}`,
         userPrompt,
         wrappedOnChunk,
         abortController.signal,
-        resolveApiConfig(req.user?.modelConfig, 'polish'),
+        resolveApiConfig(req.userModelConfig, 'polish'),
         1,
         0.65,
         polishMaxTokens,
@@ -2704,7 +2704,7 @@ ${text.slice(0, 8000)}`,
             deslopPrompt,
             deslopOnChunk,
             abortController.signal,
-            resolveApiConfig(req.user?.modelConfig, 'polish'),
+            resolveApiConfig(req.userModelConfig, 'polish'),
             1,
             0.65,
             getChapterOutputTokenLimit(Math.ceil(polished.length * 1.1)),
@@ -2990,7 +2990,7 @@ ${content}
 3. 关键字用逗号分隔，每类至少 2-3 个人物/场景
 4. 关键字可直接用于 AI 图像生成提示词的拼接`;
 
-    const result = await streamGenerate(systemPrompt, userPrompt, null, null, resolveApiConfig(req.user?.modelConfig, 'reasoning'), 2, 0.7, 4000, 300000);
+    const result = await streamGenerate(systemPrompt, userPrompt, null, null, resolveApiConfig(req.userModelConfig, 'reasoning'), 2, 0.7, 4000, 300000);
 
     if (!result || !result.content) {
       return res.status(500).json({ message: '关键字生成失败' });
@@ -3168,7 +3168,7 @@ router.post('/optimize/:novelId', auth, async (req, res) => {
       return res.status(409).json({ message: '已有调优任务正在运行，请等待完成' });
     }
 
-    const apiConfig = resolveApiConfig(req.user?.modelConfig, 'polish');
+    const apiConfig = resolveApiConfig(req.userModelConfig, 'polish');
 
     // 后台执行，不 await
     runOptimizeTask(req.params.novelId, req.userId, apiConfig);
@@ -3220,7 +3220,7 @@ router.post('/editorial-stream', auth, async (req, res) => {
       'X-Accel-Buffering': 'no',
     });
 
-    const apiConfig = resolveApiConfig(req.user?.modelConfig, 'polish');
+    const apiConfig = resolveApiConfig(req.userModelConfig, 'polish');
     const persona = await resolveNovelPersona(req.userId, novelId ? await Novel.findOne({ _id: novelId, userId: req.userId }) : null, personaId);
 
     // 心跳
@@ -3453,7 +3453,7 @@ router.post('/editorial-book/:novelId', auth, async (req, res) => {
       return res.status(409).json({ message: '编辑引擎正在运行中，请等待完成' });
     }
 
-    const apiConfig = resolveApiConfig(req.user?.modelConfig, 'polish');
+    const apiConfig = resolveApiConfig(req.userModelConfig, 'polish');
 
     // 后台执行，不 await
     runEditorialBookTask(req.params.novelId, req.userId, apiConfig);

@@ -1,9 +1,16 @@
 import { ref, computed } from 'vue'
 import zh from '../locales/zh'
 import en from '../locales/en'
+import desktopZh from '../locales/desktop.zh'
+import desktopEn from '../locales/desktop.en'
 
 const locale = ref(localStorage.getItem('locale') || 'zh')
-const locales = { zh, en }
+// 桌面端专用文案合并为 desktop 段（见 locales/desktop.zh.js），
+// 与 Web 端文案互不干扰，用法一致：$t('desktop.nav.generate')
+const locales = {
+  zh: { ...zh, desktop: desktopZh },
+  en: { ...en, desktop: desktopEn },
+}
 
 export function useI18n() {
  function setLocale(l) {
@@ -45,15 +52,28 @@ export function useI18n() {
 
  // 翻译标签名
  function $tt(name) {
- if (!name) return name
- const map = locales[locale.value]?.tagNames || {}
- return map[name] || locales['zh']?.tagNames?.[name] || name
+  if (!name) return name
+  const map = locales[locale.value]?.tagNames || {}
+  return map[name] || locales['zh']?.tagNames?.[name] || name
+ }
+
+ /**
+  * 写作风格（人格）名称/描述的翻译。
+  * 这些内容由服务端下发（内置人格是中文数据），所以按"中文名"作为 key 查语言包：
+  *   $tp(name)          → 译名
+  *   $tp(name, 'desc')  → 译描述
+  * 用户自建人格没有映射，原样返回，不会出现空白。
+  */
+ function $tp(name, field = 'name') {
+  if (!name) return name
+  const entry = locales[locale.value]?.writingPersonas?.[name]
+  return entry?.[field] || (field === 'name' ? name : '')
  }
 
  const currentLocale = computed(() => locale.value)
  const isZh = computed(() => locale.value === 'zh')
 
- return { locale: currentLocale, isZh, setLocale, $t, t: $t, $tn, $tt }
+ return { locale: currentLocale, isZh, setLocale, $t, t: $t, $tn, $tt, $tp }
 }
 
 // 单例，所有组件共享同一状态

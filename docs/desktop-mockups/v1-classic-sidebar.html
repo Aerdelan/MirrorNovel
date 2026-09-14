@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>桌面端样稿 V1 — 经典固定侧栏</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+<div class="spec-note">
+  <b>V1 经典固定侧栏</b>：最接近现有 Web 端的心智模型，改动最小、上手最快。左侧 232px 常驻导航（分组：创作 / 作品 / 账户），顶部工具栏承载搜索与全局操作，底部状态栏显示后端连接与 token 用量。<code>推荐指数：稳妥首选</code>
+</div>
+
+<div class="window">
+  <div class="shell">
+    <!-- 侧栏 -->
+    <aside class="sidebar">
+      <div class="side-brand">
+        <span class="brand-mark">M</span>
+        <span class="brand-name">MirrorNovel</span>
+        <span class="brand-ver">v1.0</span>
+      </div>
+
+      <div class="side-scroll">
+        <div class="nav-group">
+          <div class="nav-group-title">创作</div>
+          <button class="nav-item active">
+            <span class="ico">◈</span><span>生成小说</span>
+          </button>
+          <button class="nav-item">
+            <span class="ico">↻</span><span>小说续写</span>
+          </button>
+          <button class="nav-item">
+            <span class="ico">✦</span><span>润色文本</span>
+          </button>
+        </div>
+
+        <div class="nav-group">
+          <div class="nav-group-title">作品</div>
+          <button class="nav-item">
+            <span class="ico">▤</span><span>我的书架</span><span class="badge">12</span>
+          </button>
+          <button class="nav-item">
+            <span class="ico">◱</span><span>写作人格</span>
+          </button>
+          <button class="nav-item">
+            <span class="ico">⇩</span><span>导出与备份</span>
+          </button>
+        </div>
+
+        <div class="nav-group">
+          <div class="nav-group-title">账户</div>
+          <button class="nav-item">
+            <span class="ico">◑</span><span>模型线路</span>
+          </button>
+          <button class="nav-item">
+            <span class="ico">⚙</span><span>偏好设置</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="side-foot">
+        <div class="user-card">
+          <span class="avatar">阿</span>
+          <div class="user-meta">
+            <strong>Aerdelan</strong>
+            <span>剩余 86.2 万 token</span>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 主区 -->
+    <div class="main">
+      <div class="topbar">
+        <h1>生成小说</h1>
+        <span class="crumb">创作 / 新建作品</span>
+        <span class="spacer"></span>
+        <div class="search">搜索作品、章节、人格…<kbd>Ctrl K</kbd></div>
+        <button class="icon-btn" title="通知">◔</button>
+        <button class="icon-btn" title="设置">⚙</button>
+      </div>
+
+      <div class="content">
+        <div class="grid-main">
+          <!-- 左：表单 -->
+          <div>
+            <div class="card">
+              <div class="card-title"><span class="step">1</span>选择题材</div>
+              <div class="chip-row">
+                <span class="chip active">都市异能</span>
+                <span class="chip">玄幻修仙</span>
+                <span class="chip">悬疑推理</span>
+                <span class="chip">历史架空</span>
+                <span class="chip">轻小说</span>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title"><span class="step">2</span>主角与世界观</div>
+              <div class="grid-2">
+                <div class="field">
+                  <label>主角名字</label>
+                  <input class="input" value="林舟" />
+                </div>
+                <div class="field">
+                  <label>目标字数</label>
+                  <select class="select"><option>10 万字（约 40 章）</option></select>
+                </div>
+              </div>
+              <div class="field">
+                <label>世界观设定</label>
+                <textarea class="textarea">近未来沿海旧城，主角靠修复旧录音带谋生，意外发现亡父留下的线索与一桩未结旧案有关。</textarea>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="card-title"><span class="step">3</span>创作模式</div>
+              <div class="chip-row" style="margin-bottom:12px">
+                <span class="chip active">整本连写</span>
+                <span class="chip">单章精写</span>
+              </div>
+              <div class="switch-row">
+                <span class="switch"></span>
+                <div>
+                  <strong>专家团模式</strong>
+                  <small>每章生成后自动做连续性审稿，发现问题自动修订（本地质检通过时会自动跳过，节省消耗）</small>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 右：概览 -->
+          <div>
+            <div class="card">
+              <div class="card-title">本次生成概览</div>
+              <div class="stat-row"><span>预计章节</span><span>40 章</span></div>
+              <div class="stat-row"><span>每章字数</span><span>2,500 字</span></div>
+              <div class="stat-row"><span>模型线路</span><span>advanced_1</span></div>
+              <div class="stat-row"><span>专家模式</span><span>开启</span></div>
+              <div class="field" style="margin-top:12px">
+                <label>写作人格</label>
+                <select class="select"><option>冷峻克制 · 第三人称限知</option></select>
+              </div>
+              <button class="btn btn-primary btn-block" style="margin-top:6px">开始创作</button>
+              <div class="spec-note" style="margin:10px 0 0;border-style:solid;background:var(--bg)">
+                桌面端优势：可关闭窗口后台继续生成，托盘图标显示进度。
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 状态栏 -->
+  <div class="statusbar">
+    <span><span class="dot-ok"></span>已连接 api.blockstory.top</span>
+    <span>当前作品：未创建</span>
+    <span class="right">
+      <span>本次用量 0 / 0 token</span>
+      <span>本地缓存 3 部作品</span>
+    </span>
+  </div>
+</div>
+</body>
+</html>

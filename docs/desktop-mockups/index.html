@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>MirrorNovel 桌面端版式评审</title>
+<link rel="stylesheet" href="shared.css" />
+<style>
+  body { background: #dde5de; }
+  .wrap { max-width: 1240px; margin: 0 auto; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .lead { color: var(--text-secondary); font-size: 13px; margin-bottom: 18px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .ver { background: var(--card); border: 1px solid var(--card-border); border-radius: var(--radius-lg); box-shadow: var(--card-shadow); overflow: hidden; }
+  .ver-head { padding: 12px 14px; border-bottom: 1px solid var(--card-border); display: flex; align-items: center; gap: 8px; }
+  .ver-head strong { font-size: 13.5px; }
+  .ver-head a { margin-left: auto; }
+  .thumb { height: 272px; overflow: hidden; background: #eef3ee; position: relative; }
+  .thumb iframe { width: 1280px; height: 800px; border: 0; transform: scale(0.34); transform-origin: 0 0; pointer-events: none; }
+  .ver-body { padding: 11px 14px; font-size: 12.5px; color: var(--text-secondary); }
+  .ver-body ul { margin: 6px 0 0 16px; }
+  .ver-body li { margin-bottom: 3px; }
+  .section { margin-top: 26px; }
+  .section > h2 { font-size: 15px; margin-bottom: 8px; }
+  pre { background: var(--card); border: 1px solid var(--card-border); border-radius: var(--radius); padding: 12px 14px; font-family: var(--font-mono); font-size: 12px; line-height: 1.7; overflow: auto; }
+  ol.q { margin-left: 18px; font-size: 13px; color: var(--text-secondary); }
+  ol.q li { margin-bottom: 6px; }
+  .pick { background: var(--primary-light); border: 1px solid var(--primary-subtle); color: var(--primary-hover); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>MirrorNovel 桌面端 — 版式评审</h1>
+  <p class="lead">
+    四版样稿均复用现有设计令牌（森林绿 #3f7d5a / 暖阳橙 #e8943a、卡片 #fffdf9、圆角 8/12/16）。
+    每版展示的功能页不同，重点看<strong>导航结构</strong>与<strong>信息分区</strong>的差别，配色与卡片风格保持一致。
+  </p>
+
+  <div class="grid2">
+    <div class="ver">
+      <div class="ver-head"><strong>V1 经典固定侧栏</strong><a class="btn btn-sm" href="v1-classic-sidebar.html" target="_blank">打开整版预览</a></div>
+      <div class="thumb"><iframe src="v1-classic-sidebar.html" scrolling="no"></iframe></div>
+      <div class="ver-body">
+        展示页：生成小说。左侧 232px 常驻导航（创作 / 作品 / 账户分组）+ 顶部工具栏 + 底部状态栏。
+        <ul>
+          <li>优点：与现有 Web 端心智一致，学习和迁移成本最低</li>
+          <li>代价：横向被吃掉 232px，宽内容略拥挤</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="ver">
+      <div class="ver-head"><strong>V2 图标窄栏 + 二级面板</strong><a class="btn btn-sm" href="v2-rail-panel.html" target="_blank">打开整版预览</a></div>
+      <div class="thumb"><iframe src="v2-rail-panel.html" scrolling="no"></iframe></div>
+      <div class="ver-body">
+        展示页：我的书架。64px 图标栏 + 260px 二级列表（作品分组、最近打开）。
+        <ul>
+          <li>优点：作品多时切换最快，内容区横向空间最大</li>
+          <li>代价：两级导航需要一次适应，状态略分散</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="ver">
+      <div class="ver-head"><strong>V3 三栏写作工作台（修订版）</strong>
+        <span class="tag tag-ok pick" style="margin-left:6px">推荐</span>
+        <a class="btn btn-sm" href="v3-workbench.html" target="_blank">打开整版预览</a></div>
+      <div class="thumb"><iframe src="v3-workbench.html" scrolling="no"></iframe></div>
+      <div class="ver-body">
+        展示页：作品详情 / 写作。章节栏 + 正文流 + 右侧上下文检查器（伏笔 / 角色状态 / 本章用量 / 质量）。
+        <ul>
+          <li><strong>左侧栏可展开</strong>：收起 64px 仅图标（悬停出提示），展开 216px 出完整文字；点「展开侧栏」或 <code>Ctrl+B</code> 切换</li>
+          <li><strong>菜单与 Web 原版完全对齐</strong>，并把「我的」内的模型线路 / 人格 / 设置提到侧栏</li>
+          <li>优点：长篇写作不用跳页，伏笔与角色状态常驻；右侧可折叠</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="ver">
+      <div class="ver-head"><strong>V4 无边框融合标题栏</strong><a class="btn btn-sm" href="v4-frameless-titlebar.html" target="_blank">打开整版预览</a></div>
+      <div class="thumb"><iframe src="v4-frameless-titlebar.html" scrolling="no"></iframe></div>
+      <div class="ver-body">
+        展示页：润色（左右对照）。去掉系统标题栏，36px 自定义标题栏 + 自绘窗口控制。
+        <ul>
+          <li>优点：最像原生桌面应用，沉浸感强</li>
+          <li>代价：需处理拖拽区、macOS 红绿灯留白、最大化吸附等系统细节</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>菜单对齐清单（确保不比 Web 端少）</h2>
+    <table>
+      <thead><tr><th style="width:200px">Web 原版入口</th><th style="width:150px">桌面端侧栏位置</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>底部 Tab：生成（`/generate`）</td><td>创作 › 生成小说</td><td>原样保留</td></tr>
+        <tr><td>底部 Tab：润色（`/polish`）</td><td>创作 › 润色文本</td><td>原样保留</td></tr>
+        <tr><td>底部 Tab：书架（`/bookshelf`）</td><td>作品 › 我的书架</td><td>原样保留，带作品数徽标</td></tr>
+        <tr><td>底部 Tab：我的（`/profile`）</td><td>账户 › 我的</td><td>原样保留（桌面端作为一级入口，不再挤在角落）</td></tr>
+        <tr><td>非 Tab 路由：续写（`/continue`）</td><td>创作 › 小说续写</td><td>桌面端提升为侧栏常驻项，比 Web 端更好找</td></tr>
+        <tr><td>资料页内：写作人格</td><td>作品 › 写作人格</td><td>从二级页提升为一级入口</td></tr>
+        <tr><td>资料页内：模型线路</td><td>账户 › 模型线路</td><td>从二级页提升为一级入口</td></tr>
+        <tr><td>资料页内：账号 / 偏好</td><td>账户 › 偏好设置</td><td>新增桌面偏好（主题、快捷键、开机自启、托盘）</td></tr>
+        <tr><td>导出相关（原分散在详情页）</td><td>作品 › 导出与备份</td><td>新增桌面端批量导出入口</td></tr>
+        <tr><td>管理端（独立站点）</td><td>账户（管理员可见）</td><td>管理员登录后出现「管理端」入口，新开窗口</td></tr>
+      </tbody>
+    </table>
+    <p class="lead" style="margin-top:8px">
+      收起态只隐藏文字，图标与顺序完全一致——两种状态共用同一份菜单配置，不存在"收起后少了几项"的情况。
+    </p>
+  </div>
+
+  <div class="section">
+    <h2>技术选型建议（沿用现有技术栈）</h2>
+    <pre>桌面外壳：Electron（主进程 Node.js，渲染层直接复用现有 Vue 3 + Vite 代码）
+打包：electron-builder（Windows nsis / macOS dmg / Linux AppImage）
+复用方式：新增 desktop/ 包，通过 Vite alias 指向 ../client/src，
+          views / stores / api / locales 全部复用，仅替换外壳与样式层。
+
+MirrorNovel/
+├── client/          # 现有 Web 端（保持不变）
+├── desktop/         # 新增：Electron 外壳
+│   ├── electron/main.js        # 主进程：窗口、托盘、菜单、自动更新
+│   ├── electron/preload.js     # 安全桥：文件对话框、窗口控制、剪贴板
+│   ├── src/                    # 渲染层入口（alias 复用 client/src）
+│   │   ├── layouts/DesktopShell.vue   # 侧栏 + 标题栏 + 状态栏骨架
+│   │   └── styles/desktop.css         # 桌面端样式覆盖（不改 Web 端）
+│   └── vite.config.js          # 指向 client/src，产出桌面端专属 bundle
+└── ...</pre>
+    <p class="lead" style="margin-top:8px">
+      备选 Tauri：体积小（约 10MB vs Electron 约 90MB）、内存占用低，但需要 Rust 工具链与额外构建链；
+      本项目现有生态是纯 Node，Electron 的迁移成本最低。
+    </p>
+  </div>
+
+  <div class="section">
+    <h2>功能复刻清单（现有 9 页 → 桌面端）</h2>
+    <table>
+      <thead><tr><th style="width:180px">现有功能</th><th>桌面端增强（不改变原有逻辑）</th></tr></thead>
+      <tbody>
+        <tr><td>生成小说 /generate</td><td>侧栏常驻；表单支持多窗口并行生成；托盘显示生成进度</td></tr>
+        <tr><td>小说续写 /continue</td><td>选择本地 .txt 用系统文件对话框；断点续传在后台继续</td></tr>
+        <tr><td>我的书架 /bookshelf</td><td>本地缓存作品列表，离线可浏览；支持导入导出整本</td></tr>
+        <tr><td>作品详情 /novel/:id</td><td>三栏工作台；章节列表支持 Ctrl 多选与批量导出</td></tr>
+        <tr><td>润色文本 /polish</td><td>左右对照视图；差异对比原生可滚动</td></tr>
+        <tr><td>我的 /profile</td><td>账户、模型线路、人格管理；新增应用偏好（主题、快捷键、开机自启）</td></tr>
+        <tr><td>登录 / 注册 / 找回密码</td><td>支持"记住登录状态"与本地加密存储 token</td></tr>
+        <tr><td>管理端 admin</td><td>V1 版可选内置为独立窗口（仅管理员可见），或保持 Web 访问</td></tr>
+        <tr><td>移动端 app</td><td>不动，继续走 uni-app</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <h2>请你确认的 5 个决策点</h2>
+    <ol class="q">
+      <li><strong>选哪一版为主版式</strong>？我的建议：<strong>V3 为主</strong>（写作台），把 V1 的固定侧栏作为"精简模式"开关；V4 的无边框标题栏可以作为可选项叠加。</li>
+      <li><strong>窗口默认尺寸</strong>：建议 1280×800 起，最小 1024×680；是否需要"记住上次窗口位置"？</li>
+      <li><strong>后端连接方式</strong>：默认连线上服务器（可切换自定义地址），还是内置本地服务端进程（需要本机装 MongoDB，成本高）？建议前者。</li>
+      <li><strong>离线能力</strong>：是否需要本地缓存已生成章节、支持离线阅读与导出？生成本身必须联网。</li>
+      <li><strong>打包目标平台</strong>：Windows 优先 / 三平台都要？是否需要自动更新（electron-updater）？</li>
+    </ol>
+  </div>
+
+  <div class="section">
+    <h2>实施顺序建议（确认版式后）</h2>
+    <ol class="q">
+      <li>搭 Electron 外壳 + 复用 client/src 跑通登录与生成（验证 alias 复用可行）</li>
+      <li>实现 DesktopShell（侧栏 / 标题栏 / 状态栏）+ 桌面端样式覆盖层</li>
+      <li>逐页适配 9 个页面（先书架、作品详情，再生成/续写/润色）</li>
+      <li>桌面专属能力：托盘、全局快捷键、文件对话框、批量导出</li>
+      <li>打包与自动更新</li>
+    </ol>
+  </div>
+</div>
+</body>
+</html>

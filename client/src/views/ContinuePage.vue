@@ -28,7 +28,8 @@
  <label>{{ $t('continue.styleType') }}</label>
  <select v-model="novelTypeName" class="input select-input">
  <option value="">{{ $t('continue.selectStyle') }}</option>
- <option v-for="t in novelStore.novelTypes" :key="t.id" :value="t.name">{{ t.icon }} {{ t.name }}</option>
+ <!-- 题材名是数据里的中文，必须走 $tn 才会随语言切换（GeneratePage 已是这个写法） -->
+ <option v-for="t in novelStore.novelTypes" :key="t.id" :value="t.name">{{ t.icon }} {{ $tn(t.name) }}</option>
  <option value="自定义">{{ $t('continue.otherStyle') }}</option>
  </select>
  </div>
@@ -129,7 +130,7 @@ function handleFileUpload(e) {
  const file = e.target.files?.[0]
  if (!file) return
  const ext = file.name.split('.').pop()?.toLowerCase()
- if (ext !== 'txt') { alert('仅支持 .txt 文件'); return }
+ if (ext !== 'txt') { alert($t('continue.onlyTxt')); return }
  fileName.value = file.name
  const reader = new FileReader()
  reader.onload = (ev) => { importedText.value = ev.target?.result || '' }
@@ -137,15 +138,20 @@ function handleFileUpload(e) {
  e.target.value = ''
 }
 
-const bookPresets = [
- { label: '1万字', value: 10000 }, { label: '3万字', value: 30000 }, { label: '5万字', value: 50000 },
- { label: '10万字', value: 100000 }, { label: '20万字', value: 200000 }, { label: '50万字', value: 500000 }, { label: '100万字', value: 1000000 },
-]
-const chapterPresets = [
- { label: '500字', value: 500 }, { label: '1000字', value: 1000 }, { label: '2000字', value: 2000 },
- { label: '3000字', value: 3000 }, { label: '5000字', value: 5000 }, { label: '8000字', value: 8000 },
-]
-const activePresets = computed(() => genMode.value === 'book' ? bookPresets : chapterPresets)
+// 字数预设的文案随语言切换：中文用"万字/字"，英文用 k/M words
+function countLabel(value, unit) {
+ if (unit === 'book') {
+  return value >= 1000000
+   ? $t('continue.wordPresetBookM', { n: value / 1000000 })
+   : $t('continue.wordPresetBook', { n: value / 10000 })
+ }
+ return $t('continue.wordPresetUnit', { n: value })
+}
+const bookPresets = computed(() => [10000, 30000, 50000, 100000, 200000, 500000, 1000000]
+ .map((value) => ({ label: countLabel(value, 'book'), value })))
+const chapterPresets = computed(() => [500, 1000, 2000, 3000, 5000, 8000]
+ .map((value) => ({ label: countLabel(value, 'chapter'), value })))
+const activePresets = computed(() => (genMode.value === 'book' ? bookPresets.value : chapterPresets.value))
 
 watch(genMode, (mode) => {
  if (mode === 'chapter' && targetWordCount.value > 8000) targetWordCount.value = 3000
@@ -176,7 +182,7 @@ function isTokenExhaustedError(message) {
  return message === 'TOKEN_EXHAUSTED' ||
  message.includes('Token') ||
  message.includes('token') ||
- message.includes('余额不足')
+ /(余额不足|insufficient)/i.test(message)
 }
 
 async function startContinue() {
@@ -186,11 +192,11 @@ async function startContinue() {
  if (continueNovelId.value) {
  await novelStore.continueGeneration(continueNovelId.value, (chunk, fullText) => { wordCount.value = fullText.length }, (status) => {
  if (status.type === 'completed') { generationDone.value = true; isGenerating.value = false; continueStatus.value = '' }
- else if (status.type === 'quality_notice') { continueStatus.value = `第${status.chapterNumber}章质量提示：${status.report?.issues?.join('；') || '已记录连贯性风险'}` }
- else if (status.type === 'thinking') { continueStatus.value = `模型正在整理本章结构（已处理 ${status.length || 0} 个思考单位）...` }
- else if (status.type === 'plan_needs_extension') { isGenerating.value = false; continueStatus.value = status.message || '章节计划需要扩展' }
- else if (status.type === 'token_exhausted') { isGenerating.value = false; continueStatus.value = '生成已停止' }
- else if (status.type === 'error') { isGenerating.value = false; continueStatus.value = status.message || '续写失败'; notifyModelError(status.message) }
+ else if (status.type === 'quality_notice') { continueStatus.value = $t('generate.statusQualityNotice', { n: status.chapterNumber, issues: status.report?.issues?.join('；') || $t('continue.qualityRecorded') }) }
+ else if (status.type === 'thinking') { continueStatus.value = $t('generate.statusThinkingUnits', { n: status.length || 0 }) }
+ else if (status.type === 'plan_needs_extension') { isGenerating.value = false; continueStatus.value = status.message || $t('generate.statusPlanExtend') }
+ else if (status.type === 'token_exhausted') { isGenerating.value = false; continueStatus.value = $t('generate.statusStopped') }
+ else if (status.type === 'error') { isGenerating.value = false; continueStatus.value = status.message || $t('continue.errContinue'); notifyModelError(status.message) }
  else if (status.type === 'paused') { isGenerating.value = false }
  }, genMode.value)
  } else {
@@ -203,15 +209,15 @@ async function startContinue() {
  targetWordCount: targetWordCount.value,
  }, (chunk, fullText) => { wordCount.value = fullText.length }, (status) => {
  if (status.type === 'completed') { generationDone.value = true; isGenerating.value = false; continueStatus.value = '' }
- else if (status.type === 'token_exhausted') { isGenerating.value = false; continueStatus.value = '生成已停止' }
- else if (status.type === 'error') { isGenerating.value = false; continueStatus.value = status.message || '续写失败'; notifyModelError(status.message) }
+ else if (status.type === 'token_exhausted') { isGenerating.value = false; continueStatus.value = $t('generate.statusStopped') }
+ else if (status.type === 'error') { isGenerating.value = false; continueStatus.value = status.message || $t('continue.errContinue'); notifyModelError(status.message) }
  else if (status.type === 'paused') { isGenerating.value = false }
  })
  }
  } catch (e) {
  isGenerating.value = false
- if (isTokenExhaustedError(e.message)) alert('生成请求已停止，请稍后重试')
- else if (e.message !== 'paused') alert('续写失败：' + e.message)
+ if (isTokenExhaustedError(e.message)) alert($t('continue.alertStopped'))
+ else if (e.message !== 'paused') alert($t('continue.alertContinueFailed', { message: e.message }))
  }
 }
 
@@ -222,7 +228,7 @@ async function stopContinue() {
   if (continueNovelId.value) await novelStore.pauseNovel(continueNovelId.value)
   novelStore.stopGeneration()
   isGenerating.value = false
-  continueStatus.value = '已暂停'
+  continueStatus.value = $t('generate.statusPaused')
  } finally { stopping.value = false }
 }
 function goToBookshelf() { router.push('/bookshelf') }

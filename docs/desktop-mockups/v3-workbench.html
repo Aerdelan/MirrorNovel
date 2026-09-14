@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>桌面端样稿 V3 — 三栏写作工作台（最终交互版）</title>
+<link rel="stylesheet" href="shared.css" />
+<style>
+  /* ===== V3 专属交互：侧栏三态（固定展开 / 固定收起 / 悬停临时展开）===== */
+  .rail-slot { width: var(--rail-w); flex: 0 0 var(--rail-w); position: relative; transition: flex-basis var(--transition), width var(--transition); }
+  .shell.rail-pinned .rail-slot { width: 216px; flex-basis: 216px; }
+  .rail-slot .rail { position: absolute; top: 0; left: 0; bottom: 0; width: var(--rail-w); }
+  .shell.rail-pinned .rail-slot .rail { width: 216px; }
+  /* 悬停临时展开：只加宽并覆盖，不推挤右侧内容，带阴影提示这是浮层 */
+  .rail-slot .rail.hover-open {
+    width: 216px;
+    box-shadow: 8px 0 20px rgba(32, 53, 42, 0.14);
+    z-index: 30;
+  }
+  /* 章节栏纯手动收起（不受窗口尺寸影响） */
+  .panel.chapters { width: 236px; flex-basis: 236px; transition: width var(--transition), flex-basis var(--transition); position: relative; }
+  .panel.chapters.collapsed { width: 0; flex-basis: 0; border-right: 0; overflow: hidden; }
+  .panel-reopen {
+    position: absolute; top: 10px; left: 0; z-index: 20;
+    width: 22px; height: 34px;
+    display: none; align-items: center; justify-content: center;
+    border: 1px solid var(--card-border); border-left: 0;
+    border-radius: 0 6px 6px 0;
+    background: var(--card); color: var(--text-tertiary);
+    font-size: 11px; cursor: pointer;
+  }
+  .panel.chapters.collapsed .panel-reopen { display: flex; }
+  .demo-bar { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .demo-bar .btn.active { background: var(--primary-light); border-color: var(--primary-subtle); color: var(--primary); font-weight: 600; }
+  #win { transition: width var(--transition); }
+</style>
+</head>
+<body>
+<div class="spec-note">
+  <b>V3 三栏写作工作台（最终交互版）</b> —— 点下面的按钮可以现场验证 4 条交互规则：
+  <div class="demo-bar">
+    <button class="btn btn-sm" id="btn1280" onclick="setWidth(1280)">模拟 1280 宽（应默认收起侧栏）</button>
+    <button class="btn btn-sm" id="btn1600" onclick="setWidth(1600)">模拟 1600 宽（应默认展开侧栏）</button>
+    <button class="btn btn-sm" onclick="togglePin()">手动切换侧栏（覆盖自动判断）</button>
+    <button class="btn btn-sm" onclick="resetPref()">恢复自动判断</button>
+    <button class="btn btn-sm" onclick="toggleChapters()">收起/展开章节栏（纯手动）</button>
+    <span style="color:var(--text-tertiary)">当前：<b id="stateText">—</b></span>
+  </div>
+  <div style="margin-top:6px">
+    规则：窗口 ≥1440px 默认展开；1200–1440 默认收起；&lt;1200 强制收起且禁用悬停展开。用户手动切换后记住（优先级最高）。
+    收起态<strong>鼠标移入侧栏会浮层展开</strong>（不推挤正文），移出收回。章节栏只受手动控制。
+  </div>
+</div>
+
+<div class="window" id="win">
+  <div class="shell" id="shell">
+    <!-- 可展开侧栏（含悬停浮层展开） -->
+    <div class="rail-slot">
+      <aside class="rail expandable expanded" id="rail" onmouseenter="onRailEnter()" onmouseleave="onRailLeave()">
+        <div class="rail-head">
+          <span class="brand-mark">M</span>
+          <span class="brand-name" style="font-size:13.5px">MirrorNovel</span>
+        </div>
+
+        <button class="rail-toggle" onclick="togglePin()">
+          <span id="railToggleIcon">«</span><span id="railToggleText">收起侧栏</span>
+        </button>
+
+        <nav class="rail-nav">
+          <div class="rail-group">
+            <div class="rail-group-title">创作</div>
+            <button class="nav-item" data-tip="生成小说"><span class="ico">◈</span><span class="lbl">生成小说</span></button>
+            <button class="nav-item" data-tip="小说续写"><span class="ico">↻</span><span class="lbl">小说续写</span></button>
+            <button class="nav-item" data-tip="润色文本"><span class="ico">✦</span><span class="lbl">润色文本</span></button>
+          </div>
+
+          <div class="rail-group">
+            <div class="rail-group-title">作品</div>
+            <button class="nav-item active" data-tip="我的书架"><span class="ico">▤</span><span class="lbl">我的书架</span><span class="badge">12</span></button>
+            <button class="nav-item" data-tip="写作人格"><span class="ico">◱</span><span class="lbl">写作人格</span></button>
+            <button class="nav-item" data-tip="导出与备份"><span class="ico">⇩</span><span class="lbl">导出与备份</span></button>
+          </div>
+
+          <div class="rail-group">
+            <div class="rail-group-title">账户</div>
+            <button class="nav-item" data-tip="我的"><span class="ico">◑</span><span class="lbl">我的</span></button>
+            <button class="nav-item" data-tip="模型线路"><span class="ico">⚡</span><span class="lbl">模型线路</span></button>
+            <button class="nav-item" data-tip="偏好设置"><span class="ico">⚙</span><span class="lbl">偏好设置</span></button>
+          </div>
+        </nav>
+
+        <div class="rail-foot">
+          <div class="user-card">
+            <span class="avatar">阿</span>
+            <div class="user-meta"><strong>Aerdelan</strong><span>86.2 万 token</span></div>
+          </div>
+        </div>
+      </aside>
+    </div>
+
+    <!-- 章节栏（纯手动收起） -->
+    <aside class="panel chapters" id="chapters">
+      <button class="panel-reopen" onclick="toggleChapters()" title="展开章节栏">›</button>
+      <div class="side-brand" style="padding:0 12px;gap:6px">
+        <button class="icon-btn" style="width:26px;height:26px" onclick="toggleChapters()" title="收起章节栏">‹</button>
+        <span class="brand-name" style="font-size:13px">旧城录音带</span>
+      </div>
+      <div style="padding:9px 10px 5px">
+        <div class="search" style="width:100%">章节 / 关键词<kbd>⌘F</kbd></div>
+      </div>
+      <div class="side-scroll" style="padding:4px 6px">
+        <button class="nav-item"><span class="ico">26</span><span class="lbl" style="flex:1">磁带 B 面的杂音</span></button>
+        <button class="nav-item"><span class="ico">27</span><span class="lbl" style="flex:1">父亲留下的第三把钥匙</span></button>
+        <button class="nav-item active"><span class="ico">28</span><span class="lbl" style="flex:1">雾里的电台频率</span></button>
+        <button class="nav-item"><span class="ico">29</span><span class="lbl" style="flex:1">待生成</span><span class="badge">生成中</span></button>
+        <button class="nav-item"><span class="ico">30</span><span class="lbl" style="flex:1">待生成</span></button>
+      </div>
+      <div style="padding:9px;border-top:1px solid var(--card-border)">
+        <button class="btn btn-primary btn-block btn-sm">继续生成下一章</button>
+      </div>
+    </aside>
+
+    <!-- 正文流 -->
+    <div class="main">
+      <div class="topbar">
+        <h1>第 28 章 · 雾里的电台频率</h1>
+        <span class="tag tag-ok">已自动保存</span>
+        <span class="spacer"></span>
+        <div class="thinking" style="padding:5px 10px">
+          <span class="pulse"></span>
+          深度思考中 · 已思考 3,240 字 · 已用 42 秒（不计入正文字数）
+        </div>
+      </div>
+
+      <div class="editor">
+        <h2>第 28 章 雾里的电台频率</h2>
+        <div class="doc-meta">都市异能 · 本章目标 2,500 字 · 已写 1,180 字 · 生成中</div>
+        <p>雨从后半夜开始下，一直没停。他把收音机搬到窗台上，天线拉到最长，声音还是被雨点盖住大半。</p>
+        <p class="dialog">“你听清楚了吗？”她在身后问。</p>
+        <p>“没有。”他调着旋钮，指节因为用力有些发白，“只有杂音。”</p>
+        <p>杂音里其实藏着东西。他听出来了，但她没听出来——那种每隔十几秒就重复一次的、极轻的滴答声，像是有人在很远的地方敲一面很薄的铁皮。</p>
+        <p>他想起父亲留下的那台旧录音机。第三次翻找时，他在电池仓的垫片下面摸到一张对折的纸。纸上只有一行数字，和一个被涂掉的频率。<span class="stream-cursor"></span></p>
+      </div>
+    </div>
+
+    <!-- 右侧检查器（页签记忆） -->
+    <aside class="inspector">
+      <div class="insp-tabs">
+        <span class="active" onclick="pickTab(this)">上下文</span>
+        <span onclick="pickTab(this)">用量</span>
+        <span onclick="pickTab(this)">质量</span>
+      </div>
+      <div class="insp-body">
+        <div class="insp-block">
+          <h4>本章契约</h4>
+          <div class="stat-row"><span>核心事件</span><span>发现涂改频率</span></div>
+          <div class="stat-row"><span>情绪张力</span><span>7.2 / 10</span></div>
+          <div class="stat-row"><span>必须推进</span><span>2 项</span></div>
+        </div>
+        <div class="insp-block">
+          <h4>待回收伏笔（7）</h4>
+          <div class="hook"><span class="dot"></span><span>第 12 章 · 铜钥匙的齿痕（计划第 30 章回收）</span></div>
+          <div class="hook"><span class="dot"></span><span>第 21 章 · 磁带 B 面的杂音</span></div>
+          <div class="hook"><span class="dot"></span><span>第 26 章 · 父亲生前的最后一次通话</span></div>
+          <div class="hook resolved"><span class="dot"></span><span>第 19 章 · 旧城改造公告 —— 本章已回收</span></div>
+        </div>
+        <div class="insp-block">
+          <h4>角色状态</h4>
+          <div class="stat-row"><span>林舟</span><span>旧城 / 警惕 / 查证父亲线索</span></div>
+          <div class="stat-row"><span>苏晚</span><span>旧城 / 迟疑 / 隐瞒电台来源</span></div>
+        </div>
+        <div class="insp-block">
+          <h4>本章用量</h4>
+          <div class="stat-row"><span>思考</span><span>3,240 字（0 计入正文）</span></div>
+          <div class="stat-row"><span>输入</span><span>21.4k</span></div>
+          <div class="stat-row"><span>输出</span><span>2.8k</span></div>
+          <div class="stat-row"><span>前缀缓存</span><span>62%（省 13.3k）</span></div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="statusbar">
+    <span><span class="dot-ok"></span>生成流已连接（SSE）</span>
+    <span>可关闭窗口，后台继续</span>
+    <span class="right"><span>Ctrl+B 侧栏</span><span>Ctrl+\\ 章节栏</span><span>Ctrl+Enter 续写本章</span></span>
+  </div>
+</div>
+
+<script>
+  // ===== 侧栏三态：pinned(用户手动) / auto(按窗口宽度) / hover(悬停浮层) =====
+  const BREAKPOINT_EXPAND = 1440   // ≥1440 默认展开
+  const BREAKPOINT_MIN = 1200      // <1200 强制收起且禁用悬停展开
+  const narrowWidth = 1280         // 样稿默认窗口宽度
+
+  let userPref = localStorage.getItem('mn_rail_pref') || 'auto' // 'auto' | 'expanded' | 'collapsed'
+  let simulatedWidth = narrowWidth
+  let hoverOpen = false
+
+  function autoExpanded(width) {
+    if (width < BREAKPOINT_MIN) return false
+    return width >= BREAKPOINT_EXPAND
+  }
+  function pinned() {
+    if (userPref === 'expanded') return true
+    if (userPref === 'collapsed') return false
+    return autoExpanded(simulatedWidth)
+  }
+  function render() {
+    const shell = document.getElementById('shell')
+    const rail = document.getElementById('rail')
+    const isPinned = pinned()
+    shell.classList.toggle('rail-pinned', isPinned)
+    // 悬停浮层仅在"收起且窗口够宽"时启用
+    const canHover = !isPinned && simulatedWidth >= BREAKPOINT_MIN
+    rail.classList.toggle('hover-open', canHover && hoverOpen)
+    rail.classList.toggle('expanded', isPinned || (canHover && hoverOpen))
+    document.getElementById('railToggleIcon').textContent = isPinned ? '«' : '»'
+    document.getElementById('railToggleText').textContent = isPinned ? '收起侧栏' : '展开侧栏'
+    document.getElementById('btn1280').classList.toggle('active', simulatedWidth === 1280)
+    document.getElementById('btn1600').classList.toggle('active', simulatedWidth === 1600)
+    const mode = userPref === 'auto' ? '自动判断' : (userPref === 'expanded' ? '手动展开' : '手动收起')
+    document.getElementById('stateText').textContent =
+      `窗口 ${simulatedWidth}px · ${mode} · 侧栏${isPinned ? '展开' : '收起'}${!isPinned && canHover ? '（悬停可浮层展开）' : ''}`
+  }
+
+  function onRailEnter() { hoverOpen = true; render() }
+  function onRailLeave() { hoverOpen = false; render() }
+  function togglePin() {
+    userPref = pinned() ? 'collapsed' : 'expanded'
+    localStorage.setItem('mn_rail_pref', userPref)
+    render()
+  }
+  function resetPref() {
+    userPref = 'auto'
+    localStorage.setItem('mn_rail_pref', 'auto')
+    render()
+  }
+  function setWidth(width) {
+    simulatedWidth = width
+    document.getElementById('win').style.width = width + 'px'
+    render()
+  }
+  // 章节栏：纯手动，不随窗口尺寸变化
+  function toggleChapters() { document.getElementById('chapters').classList.toggle('collapsed') }
+  // 检查器页签记忆
+  function pickTab(el) {
+    el.parentElement.querySelectorAll('span').forEach(s => s.classList.remove('active'))
+    el.classList.add('active')
+    localStorage.setItem('mn_insp_tab', el.textContent.trim())
+  }
+  ;(function restoreInspTab() {
+    const saved = localStorage.getItem('mn_insp_tab')
+    if (!saved) return
+    document.querySelectorAll('.insp-tabs span').forEach(s => {
+      s.classList.toggle('active', s.textContent.trim() === saved)
+    })
+  })()
+
+  document.getElementById('win').style.width = simulatedWidth + 'px'
+  render()
+</script>
+</body>
+</html>

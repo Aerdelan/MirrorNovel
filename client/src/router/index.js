@@ -1,87 +1,10 @@
-import { createRouter, createWebHistory } from 'vue-router'
-import { useAuthStore } from '../stores/auth'
+import { createWebHistory } from 'vue-router'
+import { createAppRouter } from './createAppRouter'
+import { routes } from './routes'
 
-const routes = [
- {
- path: '/',
- redirect: '/generate',
- },
- {
- path: '/generate',
- name: 'Generate',
- component: () => import('../views/GeneratePage.vue'),
- meta: { title: '生成小说' },
- },
- {
- path: '/continue',
- name: 'Continue',
- component: () => import('../views/ContinuePage.vue'),
- meta: { title: '小说续写', requiresAuth: true },
- },
- {
- path: '/bookshelf',
- name: 'Bookshelf',
- component: () => import('../views/BookshelfPage.vue'),
- meta: { title: '我的书架', requiresAuth: true },
- },
- {
- path: '/profile',
- name: 'Profile',
- component: () => import('../views/ProfilePage.vue'),
- meta: { title: '我的' },
- },
- {
- path: '/login',
- name: 'Login',
- component: () => import('../views/LoginPage.vue'),
- meta: { title: '登录' },
- },
- {
- path: '/register',
- name: 'Register',
- component: () => import('../views/RegisterPage.vue'),
- meta: { title: '注册' },
- },
- {
- path: '/forgot-password',
- name: 'ForgotPassword',
- component: () => import('../views/ForgotPasswordPage.vue'),
- meta: { title: '找回密码' },
- },
- {
- path: '/novel/:id',
- name: 'NovelDetail',
- component: () => import('../views/NovelDetailPage.vue'),
- meta: { title: '小说详情', requiresAuth: true },
- },
- {
- path: '/polish',
- name: 'Polish',
- component: () => import('../views/PolishPage.vue'),
- meta: { title: '润色文本', requiresAuth: true },
- },
-]
+// Web 端入口：沿用 web history。
+// 桌面端（Electron）从 './routes' 与 './createAppRouter' 分别取纯模块，
+// 避免为了拿路由表而顺带实例化一个 web history 路由。
+export { createAppRouter, routes }
 
-const router = createRouter({
- history: createWebHistory(),
- routes,
-})
-
-// 路由守卫
-router.beforeEach((to, from, next) => {
- const authStore = useAuthStore()
-
- if (to.meta.requiresAuth && !authStore.isLoggedIn) {
- next({ name: 'Login', query: { redirect: to.fullPath } })
- return
- }
-
- if (to.meta.requiresAdmin && authStore.user?.role !== 'admin') {
- next({ name: 'Generate' })
- return
- }
-
- next()
-})
-
-export default router
+export default createAppRouter(createWebHistory())

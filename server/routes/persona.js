@@ -143,7 +143,7 @@ router.post('/ai-generate', auth, async (req, res) => {
     if (!novelType || !String(novelType).trim()) {
       return res.status(400).json({ message: '请提供想写的小说类型' })
     }
-    const apiConfig = resolveApiConfig(req.user.modelConfig, 'reasoning')
+    const apiConfig = resolveApiConfig(req.userModelConfig, 'reasoning')
 
     const systemPrompt = '你是一位资深的小说写作风格设计师。你的任务是根据用户给出的小说类型，设计一套完整的"写作人格"模板，用于指导 AI 小说生成器的输出风格。只输出合法 JSON，不要 Markdown、不要解释、不要代码块。'
 

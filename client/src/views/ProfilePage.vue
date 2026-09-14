@@ -19,7 +19,7 @@
  <div class="card user-card">
  <div class="avatar">{{ authStore.user?.email?.charAt(0).toUpperCase() || 'U' }}</div>
  <div class="user-info">
- <div class="user-name">{{ authStore.user?.nickname || '书友' }}</div>
+ <div class="user-name">{{ authStore.user?.nickname || $t('profile.userFallback') }}</div>
  <div class="user-email">{{ authStore.user?.email }}</div>
  </div>
  </div>
@@ -35,21 +35,21 @@
  </div>
  </div>
 
- <!-- 邀请 -->
- <div class="card invite-card">
- <div class="section-title"> 邀请好友</div>
+ <!-- 邀请（桌面端为单机版，没有邀请体系，隐藏此卡片） -->
+ <div v-if="!isDesktop" class="card invite-card">
+ <div class="section-title"> {{ $t('profile.inviteTitle') }}</div>
  <div class="invite-stats">
- <div class="invite-stat"><span class="stat-num">{{ inviteInfo.inviteCount }}</span><span>已邀请</span></div>
+ <div class="invite-stat"><span class="stat-num">{{ inviteInfo.inviteCount }}</span><span>{{ $t('profile.invited') }}</span></div>
  </div>
  <div class="invite-code-row">
- <span class="invite-label">邀请码</span>
+ <span class="invite-label">{{ $t('profile.inviteCode') }}</span>
  <span class="invite-code" @click="copyInviteCode">{{ inviteInfo.inviteCode }}</span>
- <button class="btn btn-sm btn-outline" :disabled="copyingInvite" @click="copyInviteLink">{{ copyingInvite ? $t('common.loading') : '复制链接' }}</button>
+ <button class="btn btn-sm btn-outline" :disabled="copyingInvite" @click="copyInviteLink">{{ copyingInvite ? $t('common.loading') : $t('profile.copyLink') }}</button>
  </div>
  <div class="invite-qr" v-if="inviteInfo.inviteLink">
  <img :src="'https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=' + encodeURIComponent(inviteInfo.inviteLink)" alt="QR" />
  </div>
- <div class="invite-hint">邀请好友一起使用 MirrorNovel</div>
+ <div class="invite-hint">{{ $t('profile.inviteHint') }}</div>
  </div>
 
  <!-- 昵称 -->
@@ -70,8 +70,37 @@
  </div>
  </div>
 
- <!-- 生成线路配置：仅传 routeId，不暴露底层模型信息 -->
- <div class="card model-config-card">
+ <!-- 生成线路配置（桌面端）：线路完全由用户自己配置，这里只做任务分配 -->
+ <div v-if="isDesktop" class="card model-config-card">
+ <div class="section-title">{{ $t('profile.aiConfig') }}</div>
+ <div class="config-desc">{{ $t('desktop.profile.routeDesc') }}</div>
+ <template v-if="localRoutes.length">
+ <div class="form-group route-selector">
+ <label for="desktop-default-route">{{ $t('desktop.profile.defaultRoute') }}</label>
+ <select id="desktop-default-route" v-model="desktopRoutes.defaultRouteId" class="input select-input">
+ <option v-for="route in localRoutes" :key="route.id" :value="route.id">{{ localRouteLabel(route) }}</option>
+ </select>
+ </div>
+ <details class="role-routes-details" open>
+ <summary>{{ $t('desktop.profile.taskRoutes') }}</summary>
+ <div class="config-desc role-routes-desc">{{ $t('desktop.profile.taskRoutesDesc') }}</div>
+ <div v-for="role in modelRoles" :key="role.key" class="form-group role-route-row">
+ <label :for="`desktop-role-${role.key}`">{{ $t(`profile.${role.labelKey}`) }}</label>
+ <select :id="`desktop-role-${role.key}`" v-model="desktopRoutes.taskRoutes[role.key]" class="input select-input">
+ <option value="">{{ $t('desktop.profile.followDefault') }}</option>
+ <option v-for="route in localRoutes" :key="route.id" :value="route.id">{{ localRouteLabel(route) }}</option>
+ </select>
+ </div>
+ </details>
+ <button class="btn btn-primary btn-block" style="margin-top:14px;" @click="saveDesktopRoutes">{{ $t('desktop.profile.saveAssign') }}</button>
+ </template>
+ <div v-else class="config-desc">{{ $t('desktop.profile.noRoutes') }}</div>
+ <button class="btn btn-outline btn-block" style="margin-top:10px;" @click="router.push('/models')">{{ $t('desktop.profile.goModelRoutes') }}</button>
+ <div v-if="configMsg" class="config-msg" :class="{ ok: configMsgOk }">{{ configMsg }}</div>
+ </div>
+
+ <!-- 生成线路配置（Web 端）：仅传 routeId，不暴露底层模型信息 -->
+ <div v-if="!isDesktop" class="card model-config-card">
  <div class="section-title">{{ $t('profile.aiConfig') }}</div>
  <div class="config-desc">{{ $t('profile.aiConfigDesc') }}</div>
  <div class="form-group route-selector">
@@ -120,11 +149,12 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useNovelStore } from '../stores/novel'
 import { useI18n } from '../composables/useI18n'
+import { readLocalModelConfig, writeLocalModelConfig, normalizeLocalConfig } from '../utils/modelOverride'
 
 const router = useRouter()
 const authStore = useAuthStore()
 const novelStore = useNovelStore()
-const { t, isZh, setLocale } = useI18n()
+const { t, setLocale, $t } = useI18n()
 const newNickname = ref('')
 
 // 邀请
@@ -151,9 +181,69 @@ const copyingInvite = ref(false)
 const configMsg = ref('')
 const configMsgOk = ref(false)
 
+// ===== 桌面端：线路完全由用户自己配置（本机），这里只负责"任务 → 线路"的分配 =====
+const isDesktop = typeof window !== 'undefined' && Boolean(window.mnDesktop?.isDesktop)
+const localRoutes = ref([])
+const desktopRoutes = ref({
+ defaultRouteId: '',
+ taskRoutes: { outline: '', writing: '', reasoning: '', polish: '' },
+})
+
+function localRouteLabel(route) {
+ return route?.name || route?.models?.writing || $t('profile.unnamedRoute')
+}
+
+function loadLocalRoutes() {
+ if (!isDesktop) return
+ const config = readLocalModelConfig()
+ localRoutes.value = config?.routes || []
+ desktopRoutes.value = {
+ defaultRouteId: config?.defaultRouteId || localRoutes.value[0]?.id || '',
+ taskRoutes: {
+  outline: config?.taskRoutes?.outline || '',
+  writing: config?.taskRoutes?.writing || '',
+  reasoning: config?.taskRoutes?.reasoning || '',
+  polish: config?.taskRoutes?.polish || '',
+ },
+ }
+}
+
+function saveDesktopRoutes() {
+ configMsg.value = ''
+ const config = readLocalModelConfig()
+ if (!config?.routes?.length) {
+ configMsg.value = $t('desktop.profile.errNoRoutes')
+ configMsgOk.value = false
+ return
+ }
+ // 复用共享模块的归一化：会自动纠正悬空的任务分配（指向已删除的线路）
+ const next = normalizeLocalConfig({
+ ...config,
+ defaultRouteId: desktopRoutes.value.defaultRouteId,
+ taskRoutes: desktopRoutes.value.taskRoutes,
+ })
+ if (!next) {
+ configMsg.value = $t('desktop.profile.errIncomplete')
+ configMsgOk.value = false
+ return
+ }
+ writeLocalModelConfig(next)
+ loadLocalRoutes()
+ configMsg.value = $t('desktop.profile.savedAssign')
+ configMsgOk.value = true
+}
+
+/**
+ * 线路显示名：优先用"实际在用的模型名"（如 glm-4.7、deepseek-chat），
+ * 这样用户看到的就是自己真正在用的模型，而不是"普通线路模型一/VIP线路模型"这类
+ * 内部档位叫法；模型名拿不到时才回落到别名。
+ */
 function routeLabel(routeId) {
- const route = routeDefinitions.find(item => item.id === routeId) || routeDefinitions[0]
- return t(`profile.${route.labelKey}`)
+ const route = publicRoutes.value.find(item => item.id === routeId) || routeDefinitions.find(item => item.id === routeId)
+ if (route?.model) return route.model
+ if (route?.alias) return route.alias
+ const fallback = routeDefinitions.find(item => item.id === routeId) || routeDefinitions[0]
+ return t(`profile.${fallback.labelKey}`)
 }
 
 function applyPublicRoutes(payload) {
@@ -161,9 +251,15 @@ function applyPublicRoutes(payload) {
  const availableIds = rawRoutes
   .map(route => route?.id || route?.routeId)
   .filter(id => routeDefinitions.some(route => route.id === id))
- publicRoutes.value = availableIds.length
+ const modelById = new Map()
+ rawRoutes.forEach(route => {
+  const id = route?.id || route?.routeId
+  if (id && route?.model) modelById.set(id, String(route.model))
+ })
+ publicRoutes.value = (availableIds.length
   ? routeDefinitions.filter(route => availableIds.includes(route.id))
   : [...routeDefinitions]
+ ).map(route => ({ ...route, model: modelById.get(route.id) || '' }))
 }
 
 // 统计
@@ -173,7 +269,8 @@ onMounted(async () => {
  if (!authStore.isLoggedIn) return
  loadStats()
  loadModelConfig()
- loadInviteInfo()
+ loadLocalRoutes()
+ if (!isDesktop) loadInviteInfo()
 })
 
 // 从 keep-alive 缓存重新激活时刷新数据
@@ -182,7 +279,8 @@ onActivated(() => {
  newNickname.value = ''
  configMsg.value = ''
  loadStats()
- loadInviteInfo()
+ loadLocalRoutes()
+ if (!isDesktop) loadInviteInfo()
 })
 
 async function loadInviteInfo() {
@@ -196,7 +294,7 @@ function copyToClipboard(text, label) {
  // 优先使用 Clipboard API（HTTPS 环境）
  if (navigator.clipboard && navigator.clipboard.writeText) {
  return navigator.clipboard.writeText(text).then(() => {
- alert(`${label}已复制`)
+ alert($t('profile.copied', { label }))
 }).catch(() => {
  return fallbackCopy(text, label)
  })
@@ -216,10 +314,10 @@ function fallbackCopy(text, label) {
  ta.setSelectionRange(0, text.length)
  try {
  document.execCommand('copy')
- alert(`${label}已复制`)
+ alert($t('profile.copied', { label }))
  } catch {
  // 全失败时引导用户手动复制
- prompt('请手动复制以下内容：', text)
+ prompt($t('profile.manualCopy'), text)
  }
  document.body.removeChild(ta)
  return Promise.resolve()
@@ -227,20 +325,20 @@ function fallbackCopy(text, label) {
 
 function copyInviteCode() {
  if (inviteInfo.value.inviteCode) {
- copyToClipboard(inviteInfo.value.inviteCode, '邀请码')
+ copyToClipboard(inviteInfo.value.inviteCode, $t('profile.inviteCode'))
  }
 }
 
 async function copyInviteLink() {
  if (!inviteInfo.value.inviteLink || copyingInvite.value) return
  copyingInvite.value = true
- try { await copyToClipboard(inviteInfo.value.inviteLink, '邀请链接') }
+ try { await copyToClipboard(inviteInfo.value.inviteLink, $t('profile.inviteLink')) }
  finally { copyingInvite.value = false }
 }
 
 async function loadStats() {
  try { stats.value = await authStore.getUserStats() }
- catch (e) { console.error('获取统计失败:', e) }
+ catch (e) { console.error('Failed to load invite stats:', e) }
 }
 
 async function loadModelConfig() {
@@ -255,7 +353,7 @@ async function loadModelConfig() {
   roleRoutes[key] = publicRoutes.value.some(route => route.id === value) ? value : ''
  })
  modelConfig.value = { routeId: routeId || 'normal_1', routeAlias: routeLabel(routeId), roleRoutes }
- } catch (e) { console.error('加载线路配置失败:', e) }
+ } catch (e) { console.error('Failed to load route config:', e) }
 }
 
 async function saveConfig() {

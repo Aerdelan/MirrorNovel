@@ -33,3 +33,8 @@ tmp_e2e_report/
 tmp_metrics/
 tmp_mongo_data/
 *.bak
+
+# 桌面端（Electron）构建与打包产物
+desktop/dist/
+desktop/release/
+desktop/node_modules/

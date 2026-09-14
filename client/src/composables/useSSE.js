@@ -1,8 +1,11 @@
+import { useI18n } from './useI18n'
+
 // 统一的 SSE 流式请求封装：消除各页面重复的 XHR + onprogress + 缓冲解析逻辑。
 // 只负责"把 data: {...} 事件解析出来分发给回调"，业务逻辑仍由调用方在各回调里处理。
 // 复杂场景（如编辑引擎的阶段状态机）可直接用 onEvent 自行 switch 整个事件对象。
 
 export function useSSE() {
+  const { $t } = useI18n()
   let xhr = null
 
   function openSSE(url, body, handlers = {}) {
@@ -40,7 +43,7 @@ export function useSSE() {
     }
 
     req.onloadend = () => { if (handlers.onLoadend) handlers.onLoadend() }
-    req.onerror = () => { if (handlers.onError) handlers.onError('请求失败，请稍后重试') }
+    req.onerror = () => { if (handlers.onError) handlers.onError($t('common.requestFailed')) }
     req.send(JSON.stringify(body || {}))
 
     return { abort }

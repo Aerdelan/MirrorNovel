@@ -54,12 +54,12 @@
  <div class="novel-title">{{ novel.title || $t('bookshelf.defaultTitle') }}</div>
  <div class="novel-type">{{ novel.novelTypeName }}</div>
  </div>
- <span v-if="novel.editorialTask?.status === 'running'" class="status-badge optimizing">⏳ 编辑中</span>
- <span v-else-if="novel.optimizeTask?.status === 'analyzing' || novel.optimizeTask?.status === 'optimizing'" class="status-badge optimizing">⏳ 调优中</span>
+ <span v-if="novel.editorialTask?.status === 'running'" class="status-badge optimizing">⏳ {{ $t('bookshelf.badgeEditing') }}</span>
+ <span v-else-if="novel.optimizeTask?.status === 'analyzing' || novel.optimizeTask?.status === 'optimizing'" class="status-badge optimizing">⏳ {{ $t('bookshelf.badgeOptimizing') }}</span>
  <span v-else class="status-badge" :class="novel.status">{{ statusMap[novel.status] || novel.status }}</span>
- <span v-if="novel.editorialTask?.status === 'completed'" class="status-badge editorial-applied">编辑已应用</span>
- <span v-else-if="novel.editorialTask?.partial" class="status-badge editorial-partial">部分应用</span>
- <span v-if="novel.storyBlueprintProposals?.some(p => p.status === 'pending')" class="status-badge blueprint-pending"> 剧情待确认</span>
+ <span v-if="novel.editorialTask?.status === 'completed'" class="status-badge editorial-applied">{{ $t('bookshelf.badgeEditorialApplied') }}</span>
+ <span v-else-if="novel.editorialTask?.partial" class="status-badge editorial-partial">{{ $t('bookshelf.badgeEditorialPartial') }}</span>
+ <span v-if="novel.storyBlueprintProposals?.some(p => p.status === 'pending')" class="status-badge blueprint-pending"> {{ $t('bookshelf.badgeBlueprintPending') }}</span>
  </div>
  <div class="novel-meta">
  <span> {{ novel.currentWordCount }} / {{ novel.targetWordCount }} {{ $t('generate.wordShort') }}</span>
@@ -117,7 +117,7 @@
  <Teleport to="body">
  <div v-if="editorialRunning" class="editorial-progress-overlay">
  <div class="editorial-progress-card">
- <div class="progress-title">四阶段编辑引擎运行中</div>
+ <div class="progress-title">{{ $t('bookshelf.editorialRunningTitle') }}</div>
  <div class="progress-novel-title">{{ editorialNovelTitle }}</div>
  <div class="progress-chapter">{{ editorialProgress }}</div>
  <div class="editorial-stages-display">
@@ -148,13 +148,14 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onActivated } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, onMounted, onActivated, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useNovelStore } from '../stores/novel'
 import { useAuthStore } from '../stores/auth'
 import { useI18n } from '../composables/useI18n'
 import api from '../api'
 
+const route = useRoute()
 const router = useRouter()
 const novelStore = useNovelStore()
 const authStore = useAuthStore()
@@ -180,10 +181,10 @@ const editorialRunning = ref(false)
 const editorialNovelTitle = ref('')
 const editorialProgress = ref('')
 const editorialStageDisplay = ref([
- { id: 'persona', num: 0, name: '人格', active: false, done: false, error: false, errorMsg: '' },
- { id: 'structural', num: 1, name: '结构重构', active: false, done: false, error: false, errorMsg: '' },
- { id: 'polish', num: 2, name: '风格一致性', active: false, done: false, error: false, errorMsg: '' },
- { id: 'deAI', num: 3, name: '去AI化', active: false, done: false, error: false, errorMsg: '' },
+ { id: 'persona', num: 0, name: $t('generate.stagePersona'), active: false, done: false, error: false, errorMsg: '' },
+ { id: 'structural', num: 1, name: $t('generate.stageStructural'), active: false, done: false, error: false, errorMsg: '' },
+ { id: 'polish', num: 2, name: $t('generate.stageStyle'), active: false, done: false, error: false, errorMsg: '' },
+ { id: 'deAI', num: 3, name: $t('generate.stageDeAI'), active: false, done: false, error: false, errorMsg: '' },
 ])
 let editorialPollTimer = null
 
@@ -198,7 +199,7 @@ const allSelected = computed(() => novelStore.bookshelf.length > 0 && selectedId
 
 onMounted(async () => {
  if (!authStore.isLoggedIn) { router.push('/login'); return }
- try { await novelStore.fetchBookshelf() } catch (e) { console.error('获取书架失败:', e) }
+ try { await novelStore.fetchBookshelf() } catch (e) { console.error('Failed to fetch bookshelf:', e) }
  loading.value = false
 })
 
@@ -206,7 +207,7 @@ onMounted(async () => {
 onActivated(async () => {
  if (!authStore.isLoggedIn) return
  loading.value = true
- try { await novelStore.fetchBookshelf() } catch (e) { console.error('书架刷新失败:', e) }
+ try { await novelStore.fetchBookshelf() } catch (e) { console.error('Failed to refresh bookshelf:', e) }
  loading.value = false
 })
 
@@ -221,7 +222,7 @@ function formatTime(dateStr) {
  if (diff < 60000) return $t('bookshelf.justNow')
  if (diff < 3600000) return $t('bookshelf.minAgo', { m: Math.floor(diff / 60000) })
  if (diff < 86400000) return $t('bookshelf.hourAgo', { h: Math.floor(diff / 3600000) })
- return `${date.getMonth() + 1}月${date.getDate()}日`
+ return $t('bookshelf.dateMonthDay', { month: date.getMonth() + 1, day: date.getDate() })
 }
 
 function openNovel(novel) { router.push(`/novel/${novel._id}`) }
@@ -233,7 +234,7 @@ function isTokenExhaustedError(message) {
  return message === 'TOKEN_EXHAUSTED' ||
  message.includes('Token') ||
  message.includes('token') ||
- message.includes('余额不足')
+ /(余额不足|insufficient)/i.test(message)
 }
 
 async function startBookContinue(novel) {
@@ -244,13 +245,13 @@ async function startBookContinue(novel) {
  if (status.type === 'chapter_start') { currentContinueChapter.value = status.chapterNumber || 0; continueThinkingCount.value = 0 }
  if (status.type === 'thinking') { continueThinkingCount.value = status.length || 0 }
  if (status.type === 'token_exhausted') { isContinuing.value = false; novelStore.fetchBookshelf() }
- else if (status.type === 'plan_needs_extension') { isContinuing.value = false; alert(status.message || '缺少章节计划，请先生成或补充计划后再续写整本'); novelStore.fetchBookshelf() }
+ else if (status.type === 'plan_needs_extension') { isContinuing.value = false; alert(status.message || $t('bookshelf.alertPlanMissing')); novelStore.fetchBookshelf() }
  else if (status.type === 'completed' || status.type === 'paused' || status.type === 'error') { isContinuing.value = false; novelStore.fetchBookshelf() }
  }, 'book')
  } catch (e) {
  isContinuing.value = false
- if (isTokenExhaustedError(e.message)) alert('生成请求已停止，请稍后重试')
- else if (e.message !== 'paused') alert('续写失败：' + e.message)
+ if (isTokenExhaustedError(e.message)) alert($t('bookshelf.alertStopped'))
+ else if (e.message !== 'paused') alert($t('bookshelf.alertContinueFailed', { message: e.message }))
  novelStore.fetchBookshelf()
  }
 }
@@ -261,7 +262,7 @@ async function startChapterContinue(novel) {
  continueDialogNovel.value = null
  try {
  const detail = await novelStore.fetchNovelDetail(novel._id)
- const fullText = (detail.chapters || []).map(ch => `${ch.title || `第${ch.chapterNumber}章`}\n${ch.content}`).join('\n\n')
+ const fullText = (detail.chapters || []).map(ch => `${ch.title || $t('generate.chapterTitle', { n: ch.chapterNumber })}\n${ch.content}`).join('\n\n')
  novelStore.setPrefillContinue({ novelId: detail._id, importedText: fullText, title: detail.title, novelTypeName: detail.novelTypeName })
  router.push('/continue')
  } catch (e) { alert($t('error.unknown')) }
@@ -269,8 +270,34 @@ async function startChapterContinue(novel) {
 }
 
 function goToGenerate() { router.push('/generate') }
-function enterBatchMode() { batchMode.value = true; selectedIds.value = [] }
-function exitBatchMode() { batchMode.value = false; selectedIds.value = [] }
+/**
+ * 批量导出模式的进出同步到地址栏的 ?action=export。
+ *
+ * 桌面端侧栏的「导出与备份」就是带这个参数进来的（见 desktop/src/nav/navItems.js），
+ * 之前没人读它，导致它和「书架」看起来是同一个页面、而且两个菜单同时高亮。
+ * 这里让地址与界面保持一致，侧栏也就能准确高亮对应菜单。
+ */
+function syncActionQuery(enabled) {
+ const alreadyOn = route.query.action === 'export'
+ if (alreadyOn === enabled) return
+ const query = { ...route.query }
+ if (enabled) query.action = 'export'
+ else delete query.action
+ router.replace({ query }).catch(() => {})
+}
+
+function enterBatchMode() { batchMode.value = true; selectedIds.value = []; syncActionQuery(true) }
+function exitBatchMode() { batchMode.value = false; selectedIds.value = []; syncActionQuery(false) }
+
+// 侧栏切到「导出与备份」时组件可能已被 keep-alive 缓存，用 watch 而不是 onMounted 才能响应
+watch(() => route.query.action, (action) => {
+ if (action === 'export') {
+  if (!batchMode.value) { batchMode.value = true; selectedIds.value = [] }
+ } else if (batchMode.value) {
+  batchMode.value = false
+  selectedIds.value = []
+ }
+}, { immediate: true })
 function toggleSelect(id) { const idx = selectedIds.value.indexOf(id); idx > -1 ? selectedIds.value.splice(idx, 1) : selectedIds.value.push(id) }
 function toggleSelectAll() { selectedIds.value = allSelected.value ? [] : novelStore.bookshelf.map(n => n._id) }
 
@@ -283,14 +310,14 @@ function downloadZip(novelIds, filename) {
 }
 
 function exportSingle(novel) { downloadZip([novel._id], `${(novel.title || $t('bookshelf.defaultTitle')).replace(/[<>:"/\\|?*]/g, '_').substring(0, 30)}.zip`) }
-function exportSelected() { if (selectedIds.value.length) downloadZip(selectedIds.value, `批量导出_${selectedIds.value.length}本_${Date.now()}.zip`) }
-function exportAll() { const allIds = novelStore.bookshelf.map(n => n._id); downloadZip(allIds, `批量导出_全部${allIds.length}本_${Date.now()}.zip`) }
+function exportSelected() { if (selectedIds.value.length) downloadZip(selectedIds.value, $t('bookshelf.zipBatchName', { n: selectedIds.value.length, ts: Date.now() })) }
+function exportAll() { const allIds = novelStore.bookshelf.map(n => n._id); downloadZip(allIds, $t('bookshelf.zipAllName', { n: allIds.length, ts: Date.now() })) }
 
 async function pauseNovel(novel) {
  if (novelActionBusy.value) return
  novelActionBusy.value = `pause:${novel._id}`
  try { await novelStore.pauseNovel(novel._id); await novelStore.fetchBookshelf() }
- catch (e) { alert($t('bookshelf.pause') + '失败') }
+ catch (e) { alert($t('bookshelf.alertPauseFailed')) }
  finally { novelActionBusy.value = '' }
 }
 async function confirmDelete(novel) {
@@ -300,7 +327,7 @@ async function confirmDelete(novel) {
  await novelStore.deleteNovel(novel._id)
  await novelStore.fetchBookshelf()
  } catch (e) {
- alert('删除失败: ' + (e.response?.data?.message || e.message))
+ alert($t('bookshelf.alertDeleteFailed', { message: e.response?.data?.message || e.message }))
  } finally { novelActionBusy.value = '' }
 }
 
@@ -308,20 +335,20 @@ function editOutline(novel) { if (!novelActionBusy.value) { outlineNovel.value =
 
 // ---- 编辑引擎 ----
 async function startEditorialBook(novel) {
- if (!confirm(`确定要对《${novel.title}》执行四阶段编辑引擎吗？\n\n将对全部 ${novel.currentChapterIndex || 0} 章逐章执行：\n1. 作者人格\n2. 结构重构\n3. 风格一致性\n4. 去AI化\n\n处理成功的章节会自动应用回原文；输出过短或失败的章节会保留原文并标记原因。\n处理时间较长，将在后台运行。`)) return
+ if (!confirm($t('bookshelf.confirmEditorialEngine', { title: novel.title, chapters: novel.currentChapterIndex || 0 }))) return
 
  try {
  const res = await api.post(`/novel/editorial-book/${novel._id}`)
  if (res.data) {
  editorialRunning.value = true
- editorialNovelTitle.value = novel.title || '未命名'
- editorialProgress.value = '已启动，正在处理...'
+ editorialNovelTitle.value = novel.title || $t('generate.untitled')
+ editorialProgress.value = $t('bookshelf.statusStarted')
  editorialStageDisplay.value.forEach(s => { s.active = false; s.done = false; s.error = false; s.errorMsg = '' })
  // 开始轮询状态
  startEditorialPolling(novel._id)
  }
  } catch (e) {
- alert('启动编辑引擎失败: ' + (e.response?.data?.message || e.message))
+ alert($t('bookshelf.alertEditorialStartFailed', { message: e.response?.data?.message || e.message }))
  }
 }
 
@@ -340,7 +367,7 @@ function startEditorialPolling(novelId) {
  const stage = editorialStageDisplay.value.find(s => s.id === task.currentStage)
  if (stage) {
  // 检测是否失败（progress 中包含“失败”）
- if (task.progress && task.progress.includes('失败')) {
+ if (task.progress && /(失败|fail)/i.test(task.progress)) {
  stage.error = true; stage.errorMsg = task.progress; stage.active = false
  } else {
  editorialStageDisplay.value.forEach(s => { if (!s.error) s.active = false })
@@ -357,13 +384,13 @@ function startEditorialPolling(novelId) {
  editorialStageDisplay.value.forEach(s => { if (!s.error) { s.done = true; s.active = false } })
  await novelStore.fetchBookshelf()
  if (task.status === 'completed' && !task.partial) {
- alert('编辑引擎完成！' + (task.progress || ''))
+ alert($t('bookshelf.alertEditorialDone', { progress: task.progress || '' }))
  } else {
- alert(task.partial ? ('编辑引擎部分完成：' + (task.progress || '失败章节已保留原文')) : ('编辑引擎出错: ' + (task.error || task.progress || '')))
+ alert(task.partial ? $t('bookshelf.alertEditorialPartialDone', { progress: task.progress || $t('bookshelf.alertEditorialFailedKeep') }) : $t('bookshelf.alertEditorialError', { message: task.error || task.progress || '' }))
  }
  }
  } catch (e) {
- console.error('轮询编辑引擎状态失败:', e)
+ console.error('Failed to poll editorial engine status:', e)
  }
  }, 5000)
 }

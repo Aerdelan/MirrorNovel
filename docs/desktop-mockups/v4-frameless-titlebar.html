@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>桌面端样稿 V4 — 无边框融合标题栏</title>
+<link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+<div class="spec-note">
+  <b>V4 无边框融合标题栏</b>：去掉系统标题栏，用 36px 自定义标题栏承载品牌、当前作品、同步状态与窗口控制（最小化/最大化/关闭），视觉更沉浸、更像原生应用。侧栏上移到与标题栏齐平。<code>推荐指数：最有"桌面感"，但需自绘窗口控制与拖拽区</code>
+</div>
+
+<div class="window">
+  <!-- 自定义标题栏 -->
+  <div class="titlebar">
+    <div class="tb-drag">
+      <span class="brand-dot"></span>
+      <strong style="font-size:12.5px">MirrorNovel</strong>
+      <span class="tb-title">—  润色文本 · 旧城录音带 · 第 27 章</span>
+      <span class="tag tag-ok" style="margin-left:6px">已同步</span>
+    </div>
+    <button class="icon-btn" style="width:26px;height:20px;border:0;background:transparent" title="全局搜索">⌕</button>
+    <div class="window-controls">
+      <span title="最小化">—</span>
+      <span title="最大化">▢</span>
+      <span class="close" title="关闭">✕</span>
+    </div>
+  </div>
+
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="side-scroll" style="padding-top:14px">
+        <div class="nav-group">
+          <div class="nav-group-title">创作</div>
+          <button class="nav-item"><span class="ico">◈</span><span>生成小说</span></button>
+          <button class="nav-item"><span class="ico">↻</span><span>小说续写</span></button>
+          <button class="nav-item active"><span class="ico">✦</span><span>润色文本</span></button>
+        </div>
+        <div class="nav-group">
+          <div class="nav-group-title">作品</div>
+          <button class="nav-item"><span class="ico">▤</span><span>我的书架</span><span class="badge">12</span></button>
+          <button class="nav-item"><span class="ico">◱</span><span>写作人格</span></button>
+        </div>
+        <div class="nav-group">
+          <div class="nav-group-title">账户</div>
+          <button class="nav-item"><span class="ico">◑</span><span>模型线路</span></button>
+          <button class="nav-item"><span class="ico">⚙</span><span>偏好设置</span></button>
+        </div>
+      </div>
+      <div class="side-foot">
+        <div class="user-card">
+          <span class="avatar">阿</span>
+          <div class="user-meta"><strong>Aerdelan</strong><span>86.2 万 token</span></div>
+        </div>
+      </div>
+    </aside>
+
+    <div class="main">
+      <div class="topbar">
+        <h1>润色 · 第 27 章</h1>
+        <span class="crumb">原文 2,480 字 → 润色后 2,502 字</span>
+        <span class="spacer"></span>
+        <button class="btn btn-sm">差异对比</button>
+        <button class="btn btn-sm">重新润色</button>
+        <button class="btn btn-primary btn-sm">应用并写回章节</button>
+      </div>
+
+      <div class="content">
+        <div class="grid-2" style="align-items:start">
+          <div class="card" style="padding:0">
+            <div style="padding:11px 14px;border-bottom:1px solid var(--card-border);display:flex;align-items:center">
+              <strong style="font-size:12.5px">原文</strong>
+              <span class="spacer" style="flex:1"></span>
+              <span class="crumb">只读</span>
+            </div>
+            <div style="padding:16px;max-height:430px;overflow:auto">
+              <p style="text-indent:2em;margin-bottom:11px;line-height:1.9;font-size:13.5px">他把钥匙插进锁孔，转动的时候听到了熟悉的声响，那声音在空旷的走廊里显得格外清晰。</p>
+              <p style="text-indent:2em;margin-bottom:11px;line-height:1.9;font-size:13.5px">房间里弥漫着一股陈旧的气息，仿佛时间在这里停滞了很久。他走到窗前，看着外面的雨。</p>
+              <p style="text-indent:2em;line-height:1.9;font-size:13.5px">心中不禁涌起一股复杂的情绪，他知道，有些事情终究要面对。</p>
+            </div>
+          </div>
+
+          <div class="card" style="padding:0">
+            <div style="padding:11px 14px;border-bottom:1px solid var(--card-border);display:flex;align-items:center;gap:8px">
+              <strong style="font-size:12.5px">润色结果</strong>
+              <span class="thinking" style="padding:3px 8px;font-size:11px"><span class="pulse"></span>流式生成中 · 已思考 820 字</span>
+              <span class="spacer" style="flex:1"></span>
+              <button class="btn btn-sm">停止</button>
+            </div>
+            <div style="padding:16px;max-height:430px;overflow:auto">
+              <p style="text-indent:2em;margin-bottom:11px;line-height:1.9;font-size:13.5px">钥匙插进锁孔，转动的那一刻，他听见了那声熟悉的响动。走廊太空，声音显得太清楚。</p>
+              <p style="text-indent:2em;margin-bottom:11px;line-height:1.9;font-size:13.5px">屋里是老房子特有的味道。他走到窗边，玻璃上蒙着一层薄雾，雨还在下。</p>
+              <p style="text-indent:2em;line-height:1.9;font-size:13.5px">他站了一会儿，没想清楚要在这里做什么。<span class="stream-cursor"></span></p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="statusbar">
+    <span><span class="dot-ok"></span>已连接</span>
+    <span>托盘常驻，可直接关闭窗口</span>
+    <span class="right"><span>Esc 退出全屏</span><span>当前线路 advanced_1</span></span>
+  </div>
+</div>
+</body>
+</html>

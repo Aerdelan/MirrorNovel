@@ -489,6 +489,20 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
     return defaults;
   }
 
+  // 桌面端"仅存本地"的多线路：每个任务可以各自走一条线路（baseUrl / 密钥 / 模型均独立）。
+  // 服务端已在 localModelConfig 中按任务解析好，这里直接取用，优先级高于下面的单线路字段。
+  const localRole = userModelConfig.localRoleConfigs?.[modelType];
+  if (localRole) {
+    return {
+      baseUrl: localRole.baseUrl,
+      apiKey: localRole.apiKey,
+      model: localRole.model,
+      routeId: 'local',
+      role: modelType,
+      disableThinking: false,
+    };
+  }
+
   const modelFieldMap = {
     outline: 'OutlineModel', writing: 'WritingModel',
     polish: 'PolishModel', reasoning: 'ReasoningModel',

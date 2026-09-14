@@ -4,7 +4,7 @@
  <div class="auth-header">
  <div class="auth-icon"></div>
  <h1>{{ $t('auth.register') }}</h1>
- <p>创建你的{{ $t('app.title') }}账号</p>
+ <p>{{ $t('auth.registerDesc', { app: $t('app.title') }) }}</p>
  </div>
  <div class="card auth-form">
  <div class="form-group">
@@ -12,7 +12,7 @@
  <input v-model.trim="email" class="input" type="email" autocomplete="email" :disabled="loading" :placeholder="$t('auth.placeholderEmail')" />
  </div>
  <div class="form-group">
- <label>{{ $t('auth.nickname') }}（{{ $t('common.no') }}选）</label>
+ <label>{{ $t('auth.nicknameOptional', { label: $t('auth.nickname') }) }}</label>
  <input v-model.trim="nickname" class="input" :disabled="loading" :placeholder="$t('auth.placeholderNick')" maxlength="20" />
  </div>
  <div class="form-group">
@@ -20,8 +20,8 @@
  <input v-model="password" class="input" type="password" autocomplete="new-password" :disabled="loading" :placeholder="$t('auth.placeholderPwdConfirm')" />
  </div>
  <div class="form-group">
- <label>确认{{ $t('auth.password') }}</label>
- <input v-model="confirmPassword" class="input" type="password" autocomplete="new-password" :disabled="loading" placeholder="再次输入密码" />
+ <label>{{ $t('auth.confirmPasswordLabel', { label: $t('auth.password') }) }}</label>
+ <input v-model="confirmPassword" class="input" type="password" autocomplete="new-password" :disabled="loading" :placeholder="$t('auth.confirmPasswordPlaceholder')" />
  </div>
  <div class="form-group">
  <label>{{ $t('auth.verifyCode') }}</label>
@@ -71,7 +71,7 @@ const canSendCode = computed(() => !loading.value && !codeSending.value && codeC
 const canRegister = computed(() => !loading.value && Boolean(email.value && password.value && confirmPassword.value && code.value))
 
 async function sendCode() {
- if (!email.value) { errorMsg.value = '请先输入邮箱'; return }
+ if (!email.value) { errorMsg.value = $t('auth.needEmail'); return }
  if (!emailRegex.test(email.value)) { errorMsg.value = $t('auth.invalidEmail'); return }
  codeSending.value = true; errorMsg.value = ''
  try {

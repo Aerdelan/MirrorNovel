@@ -1,3 +1,5 @@
+const { open, hintOf } = require('../services/secretBox');
+
 const MODEL_ROUTE_DEFINITIONS = Object.freeze([
   { id: 'normal_1', alias: '普通线路模型一', envPrefix: 'MODEL_NORMAL_1' },
   { id: 'normal_2', alias: '普通线路模型二', envPrefix: 'MODEL_NORMAL_2' },
@@ -79,7 +81,14 @@ function getServerRoute(value, catalog = createModelCatalog()) {
 }
 
 function getPublicRoutes(catalog = createModelCatalog()) {
-  return catalog.map((route) => ({ id: route.id, alias: route.alias }));
+  // 一并返回真实模型名：前端默认用"用户实际在用的模型名"作为线路显示名，
+  // 不再暴露"普通/VIP"这类内部档位叫法（那组别名只作为兜底）。
+  // 只回 id / alias / model，绝不回 baseUrl 与 apiKey。
+  return catalog.map((route) => ({
+    id: route.id,
+    alias: route.alias,
+    model: String(route.model || ''),
+  }));
 }
 
 function toPublicRoleRoutes(roleRoutes, catalog = createModelCatalog()) {
@@ -102,6 +111,36 @@ function toPublicModelConfig(modelConfig, catalog = createModelCatalog()) {
       routeId: route.id,
       routeAlias: route.alias,
       roleRoutes: toPublicRoleRoutes(modelConfig?.roleRoutes, catalog),
+    };
+  }
+  // 用户自带模型配置：只回传"是否已配置 + 尾部提示"，绝不回传密钥明文，
+  // 否则任何一次 /profile 或 /model-config 返回都会把密钥暴露给前端与日志。
+  if (provider === 'cloud') {
+    return {
+      provider: 'cloud',
+      managed: false,
+      baseUrl: String(modelConfig.cloudBaseUrl || ''),
+      apiKeyConfigured: Boolean(modelConfig.cloudApiKey),
+      apiKeyHint: hintOf(open(modelConfig.cloudApiKey)),
+      models: {
+        outline: String(modelConfig.cloudOutlineModel || ''),
+        writing: String(modelConfig.cloudWritingModel || ''),
+        reasoning: String(modelConfig.cloudReasoningModel || ''),
+        polish: String(modelConfig.cloudPolishModel || ''),
+      },
+    };
+  }
+  if (provider === 'ollama') {
+    return {
+      provider: 'ollama',
+      managed: false,
+      baseUrl: String(modelConfig.ollamaBaseUrl || ''),
+      models: {
+        outline: String(modelConfig.ollamaOutlineModel || ''),
+        writing: String(modelConfig.ollamaWritingModel || ''),
+        reasoning: String(modelConfig.ollamaReasoningModel || ''),
+        polish: String(modelConfig.ollamaPolishModel || ''),
+      },
     };
   }
   return { provider, managed: false };

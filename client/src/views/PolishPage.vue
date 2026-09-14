@@ -50,7 +50,8 @@
  <div class="card">
  <div class="section-title">④ {{ $t('polish.genreLabel') }}</div>
  <div class="polish-presets" :class="{ disabled: polishing }">
- <span v-for="g in genreOptions" :key="g.value" class="preset-btn" :class="{ active: polishGenre === g.value }" @click="polishGenre = g.value">{{ g.label }}</span>
+ <!-- 文风类型是题材名（数据里的中文），走 $tn 才会随语言切换；空值（自动）用 label -->
+ <span v-for="g in genreOptions" :key="g.value" class="preset-btn" :class="{ active: polishGenre === g.value }" @click="polishGenre = g.value">{{ $tn(g.value) || g.label }}</span>
  </div>
  </div>
 
@@ -94,7 +95,7 @@
  </div>
  </div>
  <div class="polish-preview" v-if="polishedText">{{ showFullPreview ? polishedText : (polishedText.length > 500 ? polishedText.substring(0,500)+'…' : polishedText) }}</div>
- <button v-if="polishedText.length > 500 && !showFullPreview" class="btn btn-outline btn-sm" @click="showFullPreview = true" style="margin-top:8px;">{{ $t('polish.previewFull') }}（{{ polishedText.length }} 字）</button>
+ <button v-if="polishedText.length > 500 && !showFullPreview" class="btn btn-outline btn-sm" @click="showFullPreview = true" style="margin-top:8px;">{{ $t('polish.previewFullWithCount', { label: $t('polish.previewFull'), n: polishedText.length }) }}</button>
  </div>
 
  <!-- 导出与保存面板 -->
@@ -121,7 +122,7 @@
  <div class="save-hint">{{ $t('polish.saveToNovelHint') }}</div>
  <select v-model="saveNovelId" class="input">
  <option value="">{{ $t('polish.saveSelectNovel') }}</option>
- <option v-for="n in bookshelf" :key="n._id" :value="n._id">{{ n.title }}（{{ n.currentWordCount || 0 }} 字）</option>
+ <option v-for="n in bookshelf" :key="n._id" :value="n._id">{{ n.title }}（{{ $t('polish.wordsCount', { n: n.currentWordCount || 0 }) }}）</option>
  </select>
  <button class="btn btn-primary btn-block" :disabled="!saveNovelId || saving" :aria-busy="saving" @click="saveToNovel">{{ saving ? $t('common.loading') : $t('polish.saveBtn') }}</button>
  <div v-if="saveMessage" class="save-msg" :class="{ ok: saveOk }">{{ saveMessage }}</div>
@@ -159,7 +160,7 @@ const diagnosis = ref(null)
 const showFullPreview = ref(false)
 
 const bookshelf = ref([])
-const exportTitle = ref('润色作品')
+const exportTitle = ref($t('polish.defaultTitle'))
 const exportFormat = ref('txt')
 const exporting = ref(false)
 const saveNovelId = ref('')
@@ -204,7 +205,7 @@ function handlePolishFile(e) {
  if (!file || !file.name.endsWith('.txt')) return alert($t('polish.hintFile'))
  polishFileName.value = file.name
  // 用文件名去后缀作为默认导出标题
- exportTitle.value = file.name.replace(/\.txt$/i, '') || '润色作品'
+ exportTitle.value = file.name.replace(/\.txt$/i, '') || $t('polish.defaultTitle')
  const reader = new FileReader()
  reader.onload = () => { polishFileContent.value = reader.result }
  reader.readAsText(file, 'UTF-8')
@@ -271,7 +272,7 @@ async function exportPolish() {
  a.href = url; a.download = suggested; a.click()
  setTimeout(() => URL.revokeObjectURL(url), 1000)
  } catch (e) {
- alert('导出失败：' + e.message)
+ alert(`${$t('polish.exportFailed')}：${e.message}`)
  } finally {
  exporting.value = false
  }
@@ -288,10 +289,10 @@ async function saveToNovel() {
  })
  saveOk.value = true
  const novel = bookshelf.value.find(n => n._id === saveNovelId.value)
- saveMessage.value = $t('polish.saveSuccess', { title: novel?.title || '' }) + `（累计 ${resp.data?.currentWordCount || 0} 字）`
+ saveMessage.value = $t('polish.saveSuccess', { title: novel?.title || '' }) + `（${$t('polish.wordsCount', { n: resp.data?.currentWordCount || 0 })}）`
  } catch (e) {
  saveOk.value = false
- saveMessage.value = e.response?.data?.message || e.message || '保存失败'
+ saveMessage.value = e.response?.data?.message || e.message || $t('polish.saveFailed')
  } finally {
  saving.value = false
  }
