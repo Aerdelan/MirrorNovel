@@ -552,8 +552,10 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
   const fieldSuffix = modelFieldMap[modelType] || 'WritingModel';
 
   if (userModelConfig.provider === 'ollama') {
-    const model = userModelConfig[`ollama${fieldSuffix}`];
-    if (!model) throw new Error('本地模型配置不完整，请先选择模型');
+    // 界面上非写作角色写的是"留空则跟随本线路的写作模型"，这里必须真的回退，
+    // 否则用户只填了写作模型时，大纲/推理/润色会莫名其妙失败。
+    const model = userModelConfig[`ollama${fieldSuffix}`] || userModelConfig.ollamaWritingModel;
+    if (!model) throw new Error('本地模型配置不完整，请先选择模型（至少填写作模型）');
     return {
       baseUrl: userModelConfig.ollamaBaseUrl || 'http://localhost:11434',
       apiKey: '', model, role: modelType, disableThinking: true,
@@ -561,9 +563,11 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
   }
 
   if (userModelConfig.provider === 'cloud') {
-    const model = userModelConfig[`cloud${fieldSuffix}`];
+    // 同上：非写作角色留空时回退到写作模型（界面就是这么承诺的），
+    // 之前这里直接抛错，导致"只填写作模型"的用户大纲/蓝图全线失败。
+    const model = userModelConfig[`cloud${fieldSuffix}`] || userModelConfig.cloudWritingModel;
     if (!userModelConfig.cloudBaseUrl || !userModelConfig.cloudApiKey || !model) {
-      throw new Error('自备云模型配置不完整，请填写地址、密钥和模型');
+      throw new Error('自备云模型配置不完整：请填写接口地址、密钥与模型（至少填写作模型）');
     }
     return {
       baseUrl: userModelConfig.cloudBaseUrl,
