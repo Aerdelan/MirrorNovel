@@ -641,7 +641,10 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
   if (config.apiKey) headers['Authorization'] = `Bearer ${config.apiKey}`;
 
   // 调用方期望的"正文"输出预算（不含思考）。
-  const contentLimitRequested = Math.max(MIN_CONTENT_TOKENS, Math.min(MAX_GENERATION_TOKENS, Number(maxTokens) || 16384));
+  let contentLimitRequested = Math.max(MIN_CONTENT_TOKENS, Math.min(MAX_GENERATION_TOKENS, Number(maxTokens) || 16384));
+  // 额度预扣型网关（按 max_tokens 预留额度）会对"要价太大"的请求直接回 402/余额不足：
+  // 这类错误原参数重试没有意义，但把输出预算砍小往往就能过 —— 只降级重试一次。
+  let quotaShrinkTried = false;
   // 思考策略：预算分离（思考不吃正文预算）、按线路家族选字段、看门狗阈值。
   // 详见 services/thinkingPolicy.js。
   let thinkingPolicy = resolveThinkingPolicy({
@@ -980,10 +983,31 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
           ? new Error('AI API 请求已取消')
           : e;
       }
-      // 余额不足 / Key 错误 / 模型名或地址错这类配置问题，重试不会自愈，
-      // 只会让用户多等（1s + 2s）并把真正原因埋在重试日志里 —— 直接抛出可读原因。
+      // ① 额度预扣型网关：按 max_tokens 预留额度，请求"要价"太大就直接回 402/余额不足
+      //    （同一个 key 在别的客户端能用，就是因为那边 max_tokens 小得多）。
+      //    原参数重试没用，但把输出预算砍到 1/4 并关掉思考后往往能过 → 降级重试一次。
+      const quotaRejected = /balance is insufficient|insufficient[_ ]?balance|insufficient_quota|insufficient funds|quota|402|余额|额度/i.test(String(e.message || ''));
+      if (quotaRejected && !quotaShrinkTried) {
+        quotaShrinkTried = true;
+        const previousBudget = thinkingPolicy.maxTokens;
+        contentLimitRequested = Math.max(1024, Math.floor(contentLimitRequested / 4));
+        thinkingPolicy = resolveThinkingPolicy({
+          role: config.role || 'writing',
+          baseUrl: config.baseUrl,
+          contentLimitTokens: contentLimitRequested,
+          forceDisabled: true,
+        });
+        fieldCandidates = thinkingFieldCandidates(thinkingPolicy, { preferExplicitEnable: false });
+        candidateIndex = 0;
+        console.warn(`[额度] 上游按预留额度拒绝请求（原 max_tokens≈${previousBudget}），改用更小预算重试：max_tokens≈${thinkingPolicy.maxTokens}，已关闭思考`);
+        continue;
+      }
+      // ② Key 错误 / 模型名或地址错这类配置问题，重试不会自愈，直接抛出可读原因；
+      //    额度类错误若已降级试过仍被拒，也在这里给出结论。
       const configError = describeConfigError(e.message);
-      if (configError) throw new Error(configError);
+      if (configError) {
+        throw new Error(quotaRejected && quotaShrinkTried ? `${configError}（已尝试更小的输出预算仍被拒）` : configError);
+      }
       if (attempt < retries) {
         const delay = Math.pow(2, attempt) * 1000;
         console.warn(`AI API 请求异常（${e.message}），第 ${attempt + 1} 次重试，等待 ${delay}ms`);
