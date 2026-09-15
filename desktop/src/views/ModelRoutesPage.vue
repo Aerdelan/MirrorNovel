@@ -284,7 +284,7 @@ function validate() {
   return errors
 }
 
-function saveLocal() {
+async function saveLocal() {
   message.value = ''
   const errors = validate()
   if (errors.length) {
