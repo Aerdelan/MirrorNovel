@@ -18,6 +18,37 @@ const MIN_CONTENT_TOKENS = 256;
 const BRIEF_THINKING_NOTE = '\n\n【思考要求】如需思考，请保持简洁：先给结论再列必要依据，不要反复自我论证或复述题目；思考结束请立即开始输出正文。';
 
 /**
+ * 接口地址归一化：允许用户把完整的请求地址粘进"接口地址"。
+ * 生成时会自动在末尾补 /chat/completions，若用户已经带上，就会拼成
+ * .../chat/completions/chat/completions → 上游直接 404（真实踩过）。
+ */
+function normalizeBaseUrl(baseUrl) {
+  return String(baseUrl || '')
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/chat\/completions$/i, '')
+    .replace(/\/+$/, '');
+}
+
+/**
+ * 配置/额度类错误：重试不会自愈，只会让用户多等几秒（两次重试 = 1s + 2s）
+ * 并掩盖真正原因。命中时返回可直接展示的中文提示，否则返回 null（属可重试的临时故障）。
+ */
+function describeConfigError(message) {
+  const text = String(message || '');
+  if (/balance is insufficient|insufficient[_ ]?balance|insufficient_quota|insufficient funds|quota exceeded|exceeded your current quota|余额不足|余额.*不足|额度已用完|欠费/i.test(text)) {
+    return '上游账户余额/额度不足：请为该线路充值，或换一条可用线路（重试不会恢复）';
+  }
+  if (/invalid api key|incorrect api key|invalid_api_key|unauthorized|authentication/i.test(text)) {
+    return 'AI 服务认证失败，请检查该线路的 API Key 是否正确';
+  }
+  if (/model not found|does not exist|unknown model|not found|404/i.test(text)) {
+    return '找不到该模型或接口地址有误（404）：请核对「接口地址」与「模型名」';
+  }
+  return null;
+}
+
+/**
  * 将 AI API 错误转换为对用户友好的提示
  */
 function getFriendlyErrorMessage(statusCode, errorBody) {
@@ -29,6 +60,12 @@ function getFriendlyErrorMessage(statusCode, errorBody) {
     errorCode = parsed.error?.code || parsed.code || '';
     apiMessage = parsed.error?.message || parsed.message || '';
   } catch {}
+
+  // 余额/额度不足（中转网关常见，如 "Sorry, your account balance is insufficient"）：
+  // 与状态码无关，必须优先识别并说清楚，否则用户只会看到"生成莫名其妙停了"。
+  if (/balance is insufficient|insufficient[_ ]?balance|insufficient_quota|insufficient funds|quota exceeded|余额不足|余额.*不足|额度已用完|欠费/i.test(`${apiMessage} ${errorBody}`)) {
+    return '上游账户余额/额度不足：请为该线路充值，或换一条可用线路';
+  }
 
   // 内容审核拦截（悬疑灵异/恐怖等题材常见）：与状态码无关，优先识别
   if (/flagged|usage policy|content policy|invalid prompt|moderation/i.test(apiMessage)) {
@@ -44,6 +81,11 @@ function getFriendlyErrorMessage(statusCode, errorBody) {
       return 'AI 服务额度已用完，请检查模型提供商配置';
     }
     return 'AI 服务请求过于频繁，请稍后再试';
+  }
+
+  // 402 支付要求：网关直接判定额度不足（AMD Radeon Cloud 免费模型额度用尽就是这个）
+  if (statusCode === 402) {
+    return `上游账户额度不足（HTTP 402）：请到模型提供方查看免费额度/代币是否用尽，或更换线路${apiMessage ? `（上游原文：${apiMessage}）` : ''}`;
   }
 
   // 503 服务不可用
@@ -591,10 +633,9 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
     error.isApiError = true;
     throw error;
   }
-  const isOllama = config.baseUrl && config.baseUrl.includes('localhost:11434');
-  const apiUrl = isOllama
-    ? `${config.baseUrl.replace(/\/+$/, '')}/api/chat`
-    : `${config.baseUrl.replace(/\/+$/, '')}/chat/completions`;
+  const baseUrl = normalizeBaseUrl(config.baseUrl);
+  const isOllama = /localhost:11434|127\.0\.0\.1:11434/.test(baseUrl);
+  const apiUrl = isOllama ? `${baseUrl}/api/chat` : `${baseUrl}/chat/completions`;
 
   const headers = { 'Content-Type': 'application/json' };
   if (config.apiKey) headers['Authorization'] = `Bearer ${config.apiKey}`;
@@ -939,6 +980,10 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
           ? new Error('AI API 请求已取消')
           : e;
       }
+      // 余额不足 / Key 错误 / 模型名或地址错这类配置问题，重试不会自愈，
+      // 只会让用户多等（1s + 2s）并把真正原因埋在重试日志里 —— 直接抛出可读原因。
+      const configError = describeConfigError(e.message);
+      if (configError) throw new Error(configError);
       if (attempt < retries) {
         const delay = Math.pow(2, attempt) * 1000;
         console.warn(`AI API 请求异常（${e.message}），第 ${attempt + 1} 次重试，等待 ${delay}ms`);
@@ -1249,4 +1294,6 @@ module.exports = {
   extractProviderMaxTokens,
   humanizeRewrite,
   getFriendlyErrorMessage,  // 友好错误提示
+  normalizeBaseUrl,         // 接口地址容错（剥掉用户误填的 /chat/completions）
+  describeConfigError,      // 配置/额度类错误的可读提示（命中则不重试）
 };

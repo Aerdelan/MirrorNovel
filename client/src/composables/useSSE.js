@@ -1,12 +1,34 @@
 import { useI18n } from './useI18n'
 
-// 统一的 SSE 流式请求封装：消除各页面重复的 XHR + onprogress + 缓冲解析逻辑。
-// 只负责"把 data: {...} 事件解析出来分发给回调"，业务逻辑仍由调用方在各回调里处理。
-// 复杂场景（如编辑引擎的阶段状态机）可直接用 onEvent 自行 switch 整个事件对象。
-
+/**
+ * 统一的 SSE 流式请求封装：消除各页面重复的 XHR + onprogress + 缓冲解析逻辑。
+ * 只负责"把 data: {...} 事件解析出来分发给回调"，业务逻辑仍由调用方在各回调里处理。
+ * 复杂场景（如编辑引擎的阶段状态机）可直接用 onEvent 自行 switch 整个事件对象。
+ *
+ * 两类"静默失败"必须在这里兜住，否则用户看到的就是"生成莫名其妙停了、也不知道报没报错"：
+ *  1) 后端返回的不是 SSE（4xx/5xx 的 JSON、或代理层的错误体）—— 以前整段被当没发生；
+ *  2) 连接开着但长时间没有任何事件 —— 以前会永久卡在"正在生成…"。
+ */
 export function useSSE() {
   const { $t } = useI18n()
   let xhr = null
+
+  // 无事件超时：服务端在思考阶段会定时下发心跳（thinking），正常不会有这么长的空档。
+  // 超时判失败而不是无限等待，避免界面永久卡住；用户仍可手动重试。
+  const IDLE_TIMEOUT_MS = 120000
+
+  /** 从非 SSE 的响应体里尽力取出可读原因 */
+  function extractErrorDetail(text) {
+    const raw = String(text || '').trim()
+    if (!raw) return ''
+    try {
+      const parsed = JSON.parse(raw)
+      const message = parsed?.message || parsed?.error?.message || parsed?.detail || parsed?.error
+      if (typeof message === 'string' && message.trim()) return message.trim()
+    } catch {}
+    // 不是 JSON（例如网关的 HTML 错误页）：截一小段，避免把整页糊到界面上
+    return raw.slice(0, 200)
+  }
 
   function openSSE(url, body, handlers = {}) {
     // 关闭可能残留的上一次连接
@@ -19,6 +41,21 @@ export function useSSE() {
 
     let lastIndex = 0
     let sseBuffer = ''
+    let receivedEvent = false
+    let settled = false
+    let abortedByUs = false
+
+    const fail = (message) => {
+      if (settled) return
+      settled = true
+      if (handlers.onError) handlers.onError(message || $t('common.requestFailed'))
+    }
+
+    let idleTimer = setTimeout(() => fail($t('common.requestTimeout')), IDLE_TIMEOUT_MS)
+    const keepAlive = () => {
+      clearTimeout(idleTimer)
+      idleTimer = setTimeout(() => fail($t('common.requestTimeout')), IDLE_TIMEOUT_MS)
+    }
 
     req.onprogress = () => {
       sseBuffer += req.responseText.substring(lastIndex)
@@ -29,6 +66,8 @@ export function useSSE() {
         if (!line.startsWith('data: ')) continue
         try {
           const event = JSON.parse(line.slice(6))
+          receivedEvent = true
+          keepAlive()
           if (handlers.onEvent) handlers.onEvent(event)
           if (event.type === 'reasoning' && handlers.onReasoning) handlers.onReasoning(event.content, event)
           else if (event.type === 'content' && handlers.onContent) handlers.onContent(event.content, event)
@@ -42,11 +81,29 @@ export function useSSE() {
       }
     }
 
-    req.onloadend = () => { if (handlers.onLoadend) handlers.onLoadend() }
-    req.onerror = () => { if (handlers.onError) handlers.onError($t('common.requestFailed')) }
+    req.onloadend = () => {
+      clearTimeout(idleTimer)
+      // 关键兜底：一个事件都没收到（或 HTTP 状态异常）时必须报错。
+      // 过去的实现会把 4xx/5xx 的 JSON 体直接丢掉，界面上就成了"什么都没发生就停了"。
+      if (!settled && !abortedByUs) {
+        if (req.status >= 400) fail(extractErrorDetail(req.responseText) || `HTTP ${req.status}`)
+        else if (!receivedEvent) fail(extractErrorDetail(req.responseText) || $t('common.requestFailed'))
+      }
+      settled = true
+      if (handlers.onLoadend) handlers.onLoadend()
+    }
+    req.onerror = () => fail($t('common.requestFailed'))
     req.send(JSON.stringify(body || {}))
 
-    return { abort }
+    return {
+      abort: () => {
+        abortedByUs = true
+        settled = true
+        clearTimeout(idleTimer)
+        if (req) { try { req.abort() } catch {} }
+        xhr = null
+      },
+    }
   }
 
   function abort() {

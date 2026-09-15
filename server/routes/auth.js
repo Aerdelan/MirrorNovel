@@ -12,7 +12,7 @@ const {
   toPublicModelConfig,
 } = require('../config/modelCatalog');
 const { seal, open } = require('../services/secretBox');
-const { getFriendlyErrorMessage } = require('../services/aiService');
+const { getFriendlyErrorMessage, normalizeBaseUrl } = require('../services/aiService');
 
 // 是否启用邮箱发送——如果连接不上就退化为控制台打印
 let emailEnabled = true;
@@ -424,7 +424,8 @@ router.put('/model-config', auth, async (req, res) => {
  * 不必先跑一次真实生成才发现填错。服务端代发请求也顺便绕开了浏览器 CORS 限制。
  */
 router.post('/model-config/verify', auth, async (req, res) => {
-  const baseUrl = String(req.body?.baseUrl || '').trim().replace(/\/+$/, '');
+  // normalizeBaseUrl：用户把完整地址（含 /chat/completions）粘进来也不会拼成双层路径
+  const baseUrl = normalizeBaseUrl(req.body?.baseUrl);
   const apiKey = String(req.body?.apiKey || '').trim();
   const model = String(req.body?.model || '').trim();
   if (!baseUrl || !model) return res.status(400).json({ message: '请先填写接口地址与模型名称' });
@@ -449,10 +450,15 @@ router.post('/model-config/verify', auth, async (req, res) => {
       signal: controller.signal,
     });
     const latencyMs = Date.now() - startedAt;
+    const text = await response.text().catch(() => '');
     if (!response.ok) {
-      const text = await response.text().catch(() => '');
       const friendly = getFriendlyErrorMessage(response.status, text);
       return res.json({ ok: false, status: response.status, latencyMs, message: friendly });
+    }
+    // 少数网关用 200 返回错误体（例如账户余额不足）：只看状态码会误报"连接成功、模型可用"，
+    // 用户接着去生成才会失败，非常难排查。
+    if (!/"choices"/.test(text) && /"error"|insufficient|余额|额度/i.test(text)) {
+      return res.json({ ok: false, status: response.status, latencyMs, message: getFriendlyErrorMessage(response.status, text) });
     }
     res.json({ ok: true, status: response.status, latencyMs, message: '连接成功，模型可用' });
   } catch (error) {

@@ -386,6 +386,7 @@
  <div class="outline-modal-card">
  <h3 class="outline-modal-title">{{ $t('generate.outlinePreview') }}</h3>
  <p class="outline-modal-desc">{{ outlineStreaming ? $t('generate.outlineStreamingDesc') : $t('generate.outlineDesc') }}</p>
+ <div v-if="outlineError" class="blueprint-setup-error">{{ outlineError }}</div>
  <div v-if="outlineStreaming && outlineReasoningText && !outlineModalText" ref="outlineReasoningRef" class="stream-reasoning-box">{{ outlineReasoningText }}</div>
  <div v-if="outlineStreaming && !outlineModalText" class="thinking-hint">
   {{ outlineThinkingChars > 0
@@ -447,6 +448,9 @@ const initialBlueprintJson = ref('')
 const initialBlueprintConfirmed = ref(false)
 const blueprintGenerating = ref(false)
 const blueprintSetupError = ref('')
+// 大纲弹窗内的常驻错误：失败原因必须留在界面上，否则错误一闪而过，
+// 用户看到的就是"生成莫名其妙停了、也不知道报没报错"。
+const outlineError = ref('')
 const blueprintWarning = ref('')
 
 // ---- 写作人格 persona ----
@@ -698,6 +702,7 @@ function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, per
  outlineModalText.value = ''
  outlineTokenUsage.value = null
  outlineReasoningText.value = ''
+ outlineError.value = ''
  outlineUserEdited.value = false
  outlineStreaming.value = true
  outlineThinkingChars.value = 0
@@ -741,13 +746,16 @@ function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, per
   },
   onError: (message) => {
    outlineStreaming.value = false
-   genStatus.value = message || $t('generate.errOutline')
+   outlineError.value = message || $t('generate.errOutline')
+   genStatus.value = outlineError.value
    notifyModelError(message)
   },
   onLoadend: () => {
    outlineStreaming.value = false
    outlineXhr = null
    stopThinkingTicker()
+   // 失败时保留弹窗：让用户看到原因并能直接重试
+   if (outlineError.value) return
    if (!outlineModalText.value.trim()) {
     outlineModal.value = false
     genStatus.value = ''
