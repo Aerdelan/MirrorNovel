@@ -1,4 +1,5 @@
 import { useI18n } from './useI18n'
+import { buildModelOverrideHeader, HEADER_NAME } from '../utils/modelOverride'
 
 /**
  * 统一的 SSE 流式请求封装：消除各页面重复的 XHR + onprogress + 缓冲解析逻辑。
@@ -38,6 +39,11 @@ export function useSSE() {
     req.open('POST', url)
     req.setRequestHeader('Content-Type', 'application/json')
     if (handlers.token) req.setRequestHeader('Authorization', `Bearer ${handlers.token}`)
+    // 与 axios 拦截器保持一致：把本机线路配置带给服务端。
+    // 此前 SSE 生成请求漏带这个头，导致「模型线路」页配置的本机线路对
+    // 大纲/蓝图/整本生成完全不生效（生成永远用账号配置）—— 严重坑。
+    const overrideHeader = buildModelOverrideHeader()
+    if (overrideHeader) req.setRequestHeader(HEADER_NAME, overrideHeader)
 
     let lastIndex = 0
     let sseBuffer = ''
