@@ -308,8 +308,17 @@ function saveLocal() {
     // 落盘后以归一化结果回填，避免界面显示与存储不一致（如被裁剪的线路/悬空的任务分配）
     loadFromConfig()
     dirty.value = false
+    // 关键：生成真正使用的是【账号】里的线路（服务端按账号配置发起请求），
+    // 只保存到本机不同步的话，用户会以为"保存了就生效" —— 本次排查的总根源。
+    const synced = await syncDefaultToAccount({ quiet: true })
     message.value = $t('desktop.models.savedLocal', { n: saved.routes.length })
     messageIsError.value = false
+    if (synced) {
+      message.value += $t('desktop.models.syncedSuffix')
+    } else {
+      message.value += $t('desktop.models.errSyncSuffix')
+      messageIsError.value = true
+    }
   } finally {
     saving.value = false
   }
@@ -344,7 +353,7 @@ async function testRoute(route) {
 }
 
 /** 把默认线路同步到账号（服务端账号线路目前只支持一条，其余线路保持本机） */
-async function syncDefaultToAccount() {
+async function syncDefaultToAccount({ quiet = false } = {}) {
   message.value = ''
   const route = routes.value.find((item) => item.id === propsForm.defaultRouteId) || routes.value[0]
   if (!route) return
@@ -365,11 +374,17 @@ async function syncDefaultToAccount() {
       cloudReasoningModel: route.models.reasoning,
       cloudPolishModel: route.models.polish,
     })
-    message.value = $t('desktop.models.syncedAccount', { name: routeName(route) })
-    messageIsError.value = false
+    if (!quiet) {
+      message.value = $t('desktop.models.syncedAccount', { name: routeName(route) })
+      messageIsError.value = false
+    }
+    return true
   } catch (error) {
-    message.value = error.response?.data?.message || error.message
-    messageIsError.value = true
+    if (!quiet) {
+      message.value = error.response?.data?.message || error.message
+      messageIsError.value = true
+    }
+    return false
   } finally {
     syncing.value = false
   }

@@ -113,7 +113,7 @@ export default {
     statusDraft: '草稿',
   },
 
-  models: {
+  models: { syncedSuffix: "；默认线路已同步到账号", errSyncSuffix: "；⚠ 同步到账号失败：生成仍会使用账号里的旧线路",
     title: '模型线路',
     desc1: '这里可以为桌面端配置',
     descBold1: '多条线路',

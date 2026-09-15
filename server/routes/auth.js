@@ -432,7 +432,8 @@ router.post('/model-config/verify', auth, async (req, res) => {
   if (!/^https?:\/\//i.test(baseUrl)) return res.status(400).json({ message: '接口地址需以 http:// 或 https:// 开头' });
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 20000);
+  // 免费模型负载高时，非流式的单次探测也可能超过 20 秒（曾实测 8.2s，20s 会被误判为配置错误）
+  const timer = setTimeout(() => controller.abort(), 60000);
   const startedAt = Date.now();
   try {
     const response = await fetch(`${baseUrl}/chat/completions`, {
@@ -466,7 +467,7 @@ router.post('/model-config/verify', auth, async (req, res) => {
     res.json({
       ok: false,
       latencyMs: Date.now() - startedAt,
-      message: aborted ? '连接超时（20 秒），请检查地址与网络' : `连接失败：${error.message}`,
+      message: aborted ? '连接超时（60 秒）：免费模型负载高时响应较慢，可稍后再试或换负载更低的模型' : `连接失败：${error.message}`,
     });
   } finally {
     clearTimeout(timer);

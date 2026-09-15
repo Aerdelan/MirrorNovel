@@ -110,7 +110,7 @@ export default {
     statusDraft: 'Draft',
   },
 
-  models: {
+  models: { syncedSuffix: "; default route synced to your account", errSyncSuffix: "; ⚠ Failed to sync to your account — generation still uses the old one",
     title: 'Model Routes',
     desc1: 'Configure multiple routes for the desktop app. Each route is a name plus one base URL / API key and the model name per task. Then set the ',
     descBold1: 'default route',

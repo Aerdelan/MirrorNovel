@@ -100,6 +100,14 @@ function getFriendlyErrorMessage(statusCode, errorBody) {
 
   // 400 请求错误
   if (statusCode === 400) {
+    // 模型名不在目录里（如 AMD 网关对未知模型返回 "Requested model xxx not supported"）
+    if (/not supported|not found|does not exist/i.test(apiMessage)) {
+      return `该模型不在可用目录里（400）：请核对「模型名」是否与提供方控制台完全一致${apiMessage ? `（上游原文：${apiMessage}）` : ''}`;
+    }
+    // 思考参数不被支持（如 AMD 免费端点只认 reasoning_effort，不认 thinking）
+    if (/reasoning_effort|thinking|reasoning\.enabled/i.test(apiMessage)) {
+      return '该线路不支持当前思考参数（400）：系统已自动降级为不带思考重试；若反复出现，请为该线路关闭深度思考';
+    }
     if (apiMessage.includes('context length') || apiMessage.includes('token limit') || apiMessage.includes('maximum')) {
       return '文本过长，超出 AI 模型处理限制，请缩短内容后重试';
     }
@@ -1008,9 +1016,13 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
       }
       // ② Key 错误 / 模型名或地址错这类配置问题，重试不会自愈，直接抛出可读原因；
       //    额度类错误若已降级试过仍被拒，也在这里给出结论。
+      // 错误里带上"当前线路"，一眼看出是哪个端点在报错（避免"以为在用 A、其实连的是 B"）
+      let routeHost = config.baseUrl;
+      try { routeHost = new URL(config.baseUrl).host } catch {}
       const configError = describeConfigError(e.message);
+      const shrinkNote = quotaRejected && quotaShrinkTried ? '（已尝试更小的输出预算仍被拒）' : '';
       if (configError) {
-        throw new Error(quotaRejected && quotaShrinkTried ? `${configError}（已尝试更小的输出预算仍被拒）` : configError);
+        throw new Error(`${configError} —— 当前线路：${config.model} @ ${routeHost}${shrinkNote}`);
       }
       if (attempt < retries) {
         const delay = Math.pow(2, attempt) * 1000;
