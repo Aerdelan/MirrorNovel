@@ -13,6 +13,12 @@ jobs:
   windows:
     runs-on: windows-latest
 
+    # 兜底：仓库 .npmrc 里若写了本机专属路径（例如 cache=E:/npm-cache），CI 也强制用 runner 自己的目录，
+    # 否则 npm 会因为盘符不存在直接 ENOENT 失败（首次运行 v1.0.0 就是这么挂的）。
+    env:
+      NPM_CONFIG_CACHE: ${{ runner.temp }}\npm-cache
+      ELECTRON_CACHE: ${{ runner.temp }}\electron-cache
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,9 +30,17 @@ jobs:
           cache: 'npm'
           cache-dependency-path: desktop/package-lock.json
 
+      - name: Show environment
+        working-directory: desktop
+        run: |
+          node -v
+          npm -v
+          npm config get cache
+          npm config get registry
+
       - name: Install dependencies
         working-directory: desktop
-        run: npm install
+        run: npm install --no-audit --no-fund
 
       - name: Build installer (NSIS)
         working-directory: desktop
