@@ -38,3 +38,5 @@ tmp_mongo_data/
 desktop/dist/
 desktop/release/
 desktop/node_modules/
+# vite 异常退出留下的临时配置
+desktop/*.timestamp-*.mjs
