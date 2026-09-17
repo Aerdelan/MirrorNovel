@@ -49,6 +49,26 @@ function describeConfigError(message) {
 }
 
 /**
+ * 上游是否"拒绝思考/推理参数"。
+ * 各家措辞差异极大：英文 unknown/unsupported/not support、中文"当前模型不支持该能力：reasoning"，
+ * 甚至只报参数名不给动词。统一在这里判定 =「同时命中参数名 + 拒绝语义」，
+ * 避免把无关的 400（如 max_tokens 参数非法）也误判成思考问题。
+ */
+const THINKING_FIELD_HINT = /thinking|reasoning|budget_tokens|enable_thinking|思考|推理/i;
+const THINKING_REJECT_HINT = /unknown|unsupported|not\s+support|does\s+not\s+support|unrecognized|invalid|不支持|无效|无法识别|能力/i;
+
+function isThinkingParamRejected(errorText) {
+  const text = String(errorText || '');
+  return THINKING_FIELD_HINT.test(text) && THINKING_REJECT_HINT.test(text);
+}
+
+/** 已探明"该线路 + 模型不接受思考字段"的缓存（key = baseUrl|model），后续请求直接不带 */
+const thinkingRejectedCache = new Set();
+function thinkingRejectedKey(config) {
+  return `${config?.baseUrl || ''}|${config?.model || ''}`.toLowerCase();
+}
+
+/**
  * 将 AI API 错误转换为对用户友好的提示
  */
 function getFriendlyErrorMessage(statusCode, errorBody) {
@@ -100,13 +120,14 @@ function getFriendlyErrorMessage(statusCode, errorBody) {
 
   // 400 请求错误
   if (statusCode === 400) {
-    // 模型名不在目录里（如 AMD 网关对未知模型返回 "Requested model xxx not supported"）
-    if (/not supported|not found|does not exist/i.test(apiMessage)) {
-      return `该模型不在可用目录里（400）：请核对「模型名」是否与提供方控制台完全一致${apiMessage ? `（上游原文：${apiMessage}）` : ''}`;
-    }
-    // 思考参数不被支持（如 AMD 免费端点只认 reasoning_effort，不认 thinking）
-    if (/reasoning_effort|thinking|reasoning\.enabled/i.test(apiMessage)) {
+    // 优先判"思考/推理参数被拒"：这类消息里也常带 not supported，
+    // 必须先于下面"模型不在目录"判定，否则会被误归类。
+    if (isThinkingParamRejected(apiMessage)) {
       return '该线路不支持当前思考参数（400）：系统已自动降级为不带思考重试；若反复出现，请为该线路关闭深度思考';
+    }
+    // 模型名不在目录里（如 AMD 网关对未知模型返回 "Requested model xxx not supported"）
+    if (/requested model|model[^,;]{0,40}(not found|not supported|does not exist|unsupported)|unknown model|模型[^,;]{0,20}(不存在|不支持)/i.test(apiMessage)) {
+      return `该模型不在可用目录里（400）：请核对「模型名」是否与提供方控制台完全一致${apiMessage ? `（上游原文：${apiMessage}）` : ''}`;
     }
     if (apiMessage.includes('context length') || apiMessage.includes('token limit') || apiMessage.includes('maximum')) {
       return '文本过长，超出 AI 模型处理限制，请缩短内容后重试';
@@ -669,13 +690,17 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
   });
   // 思考字段候选：被服务商拒绝时逐级降级（最后一档不带思考字段）。
   // 线路明确要求"必须开启思考"时，候选顺序改为显式开启字段优先。
+  // 已经探明该线路+模型不吃思考字段时，直接只留"不带思考字段"这一档（省掉必然失败的往返）。
   let preferExplicitThinking = false;
+  const buildCandidates = (policy) => (thinkingRejectedCache.has(thinkingRejectedKey(config))
+    ? thinkingFieldCandidates(policy, { omitAll: true })
+    : thinkingFieldCandidates(policy, { preferExplicitEnable: preferExplicitThinking }));
   const rebuildCandidates = (preferExplicit) => {
     if (preferExplicit !== undefined) preferExplicitThinking = preferExplicit;
-    fieldCandidates = thinkingFieldCandidates(thinkingPolicy, { preferExplicitEnable: preferExplicitThinking });
+    fieldCandidates = buildCandidates(thinkingPolicy);
     candidateIndex = 0;
   };
-  let fieldCandidates = thinkingFieldCandidates(thinkingPolicy);
+  let fieldCandidates = buildCandidates(thinkingPolicy);
   let candidateIndex = 0;
   let thinkingDowngrades = 0;
   let watchdogHits = 0;
@@ -756,14 +781,18 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
             continue;
           }
         }
-        // 2) 思考字段不被识别（thinking / enable_thinking / reasoning_effort）：
-        //    逐级降级到下一组候选，最后一档会完全不带思考字段。
-        if (/thinking|reasoning_effort|enable_thinking|budget_tokens/i.test(errorText)
-            && /(unknown|unsupported|invalid|not\s+support|不支持|无效|无法识别|参数)/i.test(errorText)
-            && candidateIndex < fieldCandidates.length - 1) {
+        // 2) 思考字段不被识别/不受支持：thinking / enable_thinking / reasoning_effort /
+        //    reasoning（DeepSeek 会报"当前模型不支持该能力：reasoning"）。
+        //    逐级降级到下一组候选，最后一档完全不带思考字段；判定统一走 isThinkingParamRejected。
+        if (isThinkingParamRejected(errorText) && candidateIndex < fieldCandidates.length - 1) {
           const rejected = currentCandidate().label;
           candidateIndex += 1;
           thinkingDowngrades += 1;
+          // 已降到"完全不带思考字段"这一档：说明该线路+模型整体不吃这类参数，记住它
+          if (candidateIndex >= fieldCandidates.length - 1) {
+            thinkingRejectedCache.add(thinkingRejectedKey(config));
+            console.warn(`AI 线路不接受思考参数（${rejected}），后续请求不再下发思考字段：${config.model}`);
+          }
           console.warn(`AI API 拒绝思考参数（${rejected}），降级为 ${currentCandidate().label} 后重试`);
           attempt -= 1;
           continue;
@@ -1009,7 +1038,7 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
           contentLimitTokens: contentLimitRequested,
           forceDisabled: true,
         });
-        fieldCandidates = thinkingFieldCandidates(thinkingPolicy, { preferExplicitEnable: false });
+        fieldCandidates = buildCandidates(thinkingPolicy);
         candidateIndex = 0;
         console.warn(`[额度] 上游按预留额度拒绝请求（原 max_tokens≈${previousBudget}），改用更小预算重试：max_tokens≈${thinkingPolicy.maxTokens}，已关闭思考`);
         continue;

@@ -132,6 +132,9 @@ function resolveThinkingPolicy({ role = 'writing', baseUrl = '', contentLimitTok
  */
 function thinkingFieldCandidates(policy, options = {}) {
   const { family, enabled, effort, thinkingBudget } = policy;
+  // 已探明该线路/模型不接受思考字段：只给一档"完全不带思考字段"，
+  // 不再逐级尝试 thinking / enable_thinking / reasoning_effort（省掉必然失败的往返）。
+  if (options.omitAll) return [{ label: 'omit', fields: {} }];
   if (!enabled) {
     return [
       { label: 'thinking:disabled', fields: { thinking: { type: 'disabled' } } },

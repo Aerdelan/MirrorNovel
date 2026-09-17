@@ -1,7 +1,22 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { streamGenerate, resolveApiConfig, MAX_GENERATION_TOKENS, extractProviderMaxTokens, getOutlineRequirements, buildOutlinePrompt, buildChapterPlan, getChapterPlanOutputTokens, buildGenreStyleContract, buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, normalizeChapterWordTarget } = require('../services/aiService');
+const { streamGenerate, resolveApiConfig, MAX_GENERATION_TOKENS, extractProviderMaxTokens, getOutlineRequirements, buildOutlinePrompt, buildChapterPlan, getChapterPlanOutputTokens, buildGenreStyleContract, buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, normalizeChapterWordTarget, getFriendlyErrorMessage } = require('../services/aiService');
+
+test('思考/推理参数被上游拒绝时给出可读提示（覆盖各家措辞），且不误判无关 400', () => {
+  for (const message of [
+    '当前模型不支持该能力：reasoning', // DeepSeek 实际措辞
+    'unknown parameter: thinking',
+    'reasoning_effort is not supported',
+    '不支持该能力：思考',
+  ]) {
+    const hint = getFriendlyErrorMessage(400, JSON.stringify({ error: { message } }));
+    assert.match(hint, /不支持当前思考参数/);
+  }
+  // max_tokens 参数非法属于另一类问题，不能被当成"思考参数被拒"
+  const other = getFriendlyErrorMessage(400, '{"message":"max_tokens参数非法：限制数值范围[1,8000]"}');
+  assert.match(other, /AI 请求参数有误/);
+});
 
 test('generation output budget allows the configured 700k token ceiling', () => {
   assert.equal(MAX_GENERATION_TOKENS, 700000);
