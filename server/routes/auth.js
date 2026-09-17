@@ -384,6 +384,24 @@ router.put('/model-config', auth, async (req, res) => {
         }
         config.roleRoutes[role] = roleRoute.id;
       }
+      // 无损切换：切回系统线路时保留已填的自定义模型字段，用户重新勾选
+      // 「使用自定义模型」时不必重填。密钥保持密文原样转存，绝不回显明文。
+      const previousConfig = req.user.modelConfig || {};
+      if (previousConfig.cloudBaseUrl) {
+        config.cloudBaseUrl = previousConfig.cloudBaseUrl;
+        config.cloudApiKey = previousConfig.cloudApiKey;
+        config.cloudOutlineModel = previousConfig.cloudOutlineModel || '';
+        config.cloudWritingModel = previousConfig.cloudWritingModel || '';
+        config.cloudPolishModel = previousConfig.cloudPolishModel || '';
+        config.cloudReasoningModel = previousConfig.cloudReasoningModel || '';
+      }
+      if (previousConfig.ollamaBaseUrl) {
+        config.ollamaBaseUrl = previousConfig.ollamaBaseUrl;
+        config.ollamaOutlineModel = previousConfig.ollamaOutlineModel || '';
+        config.ollamaWritingModel = previousConfig.ollamaWritingModel || '';
+        config.ollamaPolishModel = previousConfig.ollamaPolishModel || '';
+        config.ollamaReasoningModel = previousConfig.ollamaReasoningModel || '';
+      }
     } else if (provider === 'ollama') {
       config.ollamaBaseUrl = ollamaBaseUrl || 'http://localhost:11434';
       config.ollamaOutlineModel = ollamaOutlineModel || '';
@@ -409,6 +427,9 @@ router.put('/model-config', auth, async (req, res) => {
       config.cloudReasoningModel = cloudReasoningModel || '';
       if (!config.cloudBaseUrl) return res.status(400).json({ message: '请填写模型接口地址' });
       if (!config.cloudWritingModel) return res.status(400).json({ message: '请至少填写写作模型名称' });
+      // 同理保留系统线路选择：之后切回「系统模型」时，原来的线路/任务分配还在
+      config.routeId = req.user.modelConfig?.routeId || 'normal_1';
+      config.roleRoutes = { ...(req.user.modelConfig?.roleRoutes || {}) };
     }
 
     req.user.modelConfig = config;
@@ -426,8 +447,14 @@ router.put('/model-config', auth, async (req, res) => {
 router.post('/model-config/verify', auth, async (req, res) => {
   // normalizeBaseUrl：用户把完整地址（含 /chat/completions）粘进来也不会拼成双层路径
   const baseUrl = normalizeBaseUrl(req.body?.baseUrl);
-  const apiKey = String(req.body?.apiKey || '').trim();
+  let apiKey = String(req.body?.apiKey || '').trim();
   const model = String(req.body?.model || '').trim();
+  // 未传密钥且账号里已保存过：用保存的密钥测试（前端只回显尾部提示，拿不到明文，
+  // 所以「改了地址/模型但没重填密钥」的场景也能直接测）。
+  if (!apiKey) {
+    const sealedKey = req.user.modelConfig?.cloudApiKey || '';
+    if (sealedKey) apiKey = open(sealedKey);
+  }
   if (!baseUrl || !model) return res.status(400).json({ message: '请先填写接口地址与模型名称' });
   if (!/^https?:\/\//i.test(baseUrl)) return res.status(400).json({ message: '接口地址需以 http:// 或 https:// 开头' });
 

@@ -103,6 +103,40 @@
  <div v-if="!isDesktop" class="card model-config-card">
  <div class="section-title">{{ $t('profile.aiConfig') }}</div>
  <div class="config-desc">{{ $t('profile.aiConfigDesc') }}</div>
+
+ <label class="custom-model-toggle">
+ <input type="checkbox" v-model="useCustomModel" :disabled="savingConfig" />
+ <span>{{ $t('profile.useCustomModel') }}</span>
+ </label>
+ <div class="config-desc">{{ $t('profile.useCustomModelDesc') }}</div>
+
+ <template v-if="useCustomModel">
+ <div class="form-group">
+ <label for="custom-base-url">{{ $t('profile.customBaseUrl') }}</label>
+ <input id="custom-base-url" v-model="customModel.baseUrl" class="input" :placeholder="$t('profile.customBaseUrlHint')" :disabled="savingConfig" autocomplete="off" spellcheck="false" />
+ </div>
+ <div class="form-group">
+ <label for="custom-api-key">{{ $t('profile.customApiKey') }}</label>
+ <input id="custom-api-key" v-model="customModel.apiKey" class="input" type="password" :placeholder="apiKeyConfigured ? $t('profile.customApiKeyKeep', { hint: apiKeyHint }) : $t('profile.customApiKeyHint')" :disabled="savingConfig" autocomplete="new-password" />
+ </div>
+ <div class="form-group">
+ <label for="custom-writing-model">{{ $t('profile.customWritingModel') }}</label>
+ <input id="custom-writing-model" v-model="customModel.writing" class="input" :disabled="savingConfig" spellcheck="false" />
+ </div>
+ <details class="role-routes-details">
+ <summary>{{ $t('profile.customMoreModels') }}</summary>
+ <div class="config-desc role-routes-desc">{{ $t('profile.customMoreModelsDesc') }}</div>
+ <div v-for="role in customModelRoles" :key="role.key" class="form-group role-route-row">
+ <label :for="`custom-${role.key}-model`">{{ $t(`profile.${role.labelKey}`) }}</label>
+ <input :id="`custom-${role.key}-model`" v-model="customModel[role.key]" class="input" :disabled="savingConfig" spellcheck="false" />
+ </div>
+ </details>
+ <button class="btn btn-outline btn-block" style="margin-top:14px;" :disabled="testing || !customModel.baseUrl || !customModel.writing" :aria-busy="testing" @click="testCustomModel">
+ {{ testing ? $t('common.loading') : $t('profile.testModel') }}
+ </button>
+ </template>
+
+ <template v-else>
  <div class="form-group route-selector">
  <label for="generation-route">{{ $t('profile.routeSelect') }}</label>
  <select id="generation-route" v-model="modelConfig.routeId" class="input select-input" :disabled="savingConfig">
@@ -129,8 +163,9 @@
  </select>
  </div>
  </details>
+  </template>
 
- <button class="btn btn-primary btn-block" style="margin-top:14px;" :disabled="savingConfig || !publicRoutes.length" :aria-busy="savingConfig" @click="saveConfig">
+ <button class="btn btn-primary btn-block" style="margin-top:14px;" :disabled="savingConfig || (!useCustomModel && !publicRoutes.length) || (useCustomModel && (!customModel.baseUrl || !customModel.writing))" :aria-busy="savingConfig" @click="saveConfig">
  {{ savingConfig ? $t('common.loading') : $t('profile.saveConfig') }}
  </button>
  <div v-if="configMsg" class="config-msg" :class="{ ok: configMsgOk }">{{ configMsg }}</div>
@@ -180,6 +215,18 @@ const savingNickname = ref(false)
 const copyingInvite = ref(false)
 const configMsg = ref('')
 const configMsgOk = ref(false)
+
+// ===== Web 端自定义模型：存账号（密钥服务端加密），勾选=走自己的模型，取消=走系统线路 =====
+const useCustomModel = ref(false)
+const customModel = ref({ baseUrl: '', apiKey: '', writing: '', outline: '', reasoning: '', polish: '' })
+const apiKeyConfigured = ref(false)
+const apiKeyHint = ref('')
+const testing = ref(false)
+const customModelRoles = [
+ { key: 'outline', labelKey: 'modelOutline' },
+ { key: 'reasoning', labelKey: 'modelReasoning' },
+ { key: 'polish', labelKey: 'modelPolish' },
+]
 
 // ===== 桌面端：线路完全由用户自己配置（本机），这里只负责"任务 → 线路"的分配 =====
 const isDesktop = typeof window !== 'undefined' && Boolean(window.mnDesktop?.isDesktop)
@@ -353,23 +400,53 @@ async function loadModelConfig() {
   roleRoutes[key] = publicRoutes.value.some(route => route.id === value) ? value : ''
  })
  modelConfig.value = { routeId: routeId || 'normal_1', routeAlias: routeLabel(routeId), roleRoutes }
- } catch (e) { console.error('Failed to load route config:', e) }
+ // 自定义模型状态：provider=cloud 表示当前勾选；配置内容无论勾选与否都会回传，方便随时切回
+ useCustomModel.value = config.provider === 'cloud'
+ apiKeyConfigured.value = Boolean(config.apiKeyConfigured)
+ apiKeyHint.value = config.apiKeyHint || ''
+ customModel.value = {
+  baseUrl: config.baseUrl || '',
+  apiKey: '',
+  writing: config.models?.writing || '',
+  outline: config.models?.outline || '',
+  reasoning: config.models?.reasoning || '',
+  polish: config.models?.polish || '',
+ }
+} catch (e) { console.error('Failed to load route config:', e) }
 }
 
 async function saveConfig() {
  savingConfig.value = true; configMsg.value = ''
  try {
- const response = await authStore.saveModelConfig({
-  routeId: modelConfig.value.routeId,
-  roleRoutes: { ...modelConfig.value.roleRoutes },
- })
+ const payload = useCustomModel.value
+  ? {
+   provider: 'cloud',
+   cloudBaseUrl: customModel.value.baseUrl,
+   cloudApiKey: customModel.value.apiKey, // 留空 = 保持已保存的密钥不变
+   cloudWritingModel: customModel.value.writing,
+   cloudOutlineModel: customModel.value.outline,
+   cloudReasoningModel: customModel.value.reasoning,
+   cloudPolishModel: customModel.value.polish,
+  }
+  : {
+   provider: 'system',
+   routeId: modelConfig.value.routeId,
+   roleRoutes: { ...modelConfig.value.roleRoutes },
+  }
+ const response = await authStore.saveModelConfig(payload)
  const savedConfig = response?.modelConfig || response || {}
- if (savedConfig.routeId) modelConfig.value.routeId = savedConfig.routeId
- modelRoles.forEach(({ key }) => {
-  modelConfig.value.roleRoutes[key] = publicRoutes.value.some(route => route.id === savedConfig.roleRoutes?.[key])
-   ? savedConfig.roleRoutes[key] : ''
- })
- modelConfig.value.routeAlias = routeLabel(modelConfig.value.routeId)
+ if (useCustomModel.value) {
+  apiKeyConfigured.value = Boolean(savedConfig.apiKeyConfigured)
+  apiKeyHint.value = savedConfig.apiKeyHint || ''
+  customModel.value.apiKey = ''
+ } else {
+  if (savedConfig.routeId) modelConfig.value.routeId = savedConfig.routeId
+  modelRoles.forEach(({ key }) => {
+   modelConfig.value.roleRoutes[key] = publicRoutes.value.some(route => route.id === savedConfig.roleRoutes?.[key])
+    ? savedConfig.roleRoutes[key] : ''
+  })
+  modelConfig.value.routeAlias = routeLabel(modelConfig.value.routeId)
+ }
  configMsg.value = ' ' + t('profile.saved')
  configMsgOk.value = true
  } catch (e) {
@@ -377,6 +454,26 @@ async function saveConfig() {
  configMsgOk.value = false
  }
  savingConfig.value = false
+}
+
+async function testCustomModel() {
+ if (testing.value) return
+ testing.value = true; configMsg.value = ''
+ try {
+  const res = await authStore.testModelConfig({
+   baseUrl: customModel.value.baseUrl,
+   apiKey: customModel.value.apiKey, // 留空时服务端自动用已保存的密钥
+   model: customModel.value.writing,
+  })
+  configMsg.value = res?.ok
+   ? ' ' + $t('profile.testModelOk', { message: res.message || '', latency: `${((res.latencyMs || 0) / 1000).toFixed(1)}s` })
+   : ' ' + (res?.message || $t('profile.testModelFail'))
+  configMsgOk.value = Boolean(res?.ok)
+ } catch (e) {
+  configMsg.value = ' ' + (e.response?.data?.message || e.message)
+  configMsgOk.value = false
+ }
+ testing.value = false
 }
 
 function goToLogin() { router.push('/login') }
@@ -434,6 +531,8 @@ async function handleLogout() {
 .toggle-btn { flex: 1; padding: 10px; border: 2px solid var(--border-color); border-radius: 10px; font-size: 14px; font-weight: 600; background: #f8f8f8; cursor: pointer; font-family: inherit; transition: all 0.2s; }
 .toggle-btn.active { border-color: var(--primary-color); background: var(--primary-light); }
 .model-config-card { border: 1px solid var(--warning-border); }
+.custom-model-toggle { display: flex; align-items: center; gap: 8px; margin: 12px 0 4px; font-weight: 600; cursor: pointer; }
+.custom-model-toggle input { width: 16px; height: 16px; accent-color: var(--primary, #6366f1); }
 .route-selector { margin-top: 14px; }
 .role-routes-details { margin-top: 14px; border-top: 1px solid var(--border-color); padding-top: 12px; }
 .role-routes-details summary { cursor: pointer; color: var(--primary-hover); font-size: 13px; font-weight: 600; }

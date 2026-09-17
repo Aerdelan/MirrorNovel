@@ -89,9 +89,15 @@ export const useAuthStore = defineStore('auth', () => {
  async function saveModelConfig(config) {
  const res = await api.put('/auth/model-config', config)
  if (user.value) {
- user.value.modelConfig = res.data.modelConfig
- localStorage.setItem('user', JSON.stringify(user.value))
+  user.value.modelConfig = res.data.modelConfig
+  localStorage.setItem('user', JSON.stringify(user.value))
  }
+ return res.data
+ }
+
+ // 连通性测试：apiKey 留空时服务端会用已保存的密钥测（前端拿不到明文）
+ async function testModelConfig(payload) {
+ const res = await api.post('/auth/model-config/verify', payload)
  return res.data
  }
 
@@ -138,6 +144,7 @@ export const useAuthStore = defineStore('auth', () => {
  updateProfile,
  getModelConfig,
  saveModelConfig,
+ testModelConfig,
  getUserStats,
  getInviteInfo,
  checkAnnouncement,
