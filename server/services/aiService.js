@@ -892,7 +892,12 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
 
         // 看门狗判定：思考已经超出预算且正文仍未开始输出，继续等下去只会烧时间与 token。
         // 阈值由 thinkingPolicy 给出（按思考预算换算为字数）。
+        // 但"掐断"只能试两次：有些线路（如必须开启深度思考的线路）既关不掉思考、
+        // 又习惯先思考数千字再动笔，反复掐断会让每次尝试都停在思考阶段、正文永远为空
+        // （表现为"大纲生成失败/生成过程中出现错误"）。掐到上限后就放它跑完，
+        // 由 timeoutMs 兜底，而不是把请求掐死。
         if (!watchdogTripped
+            && watchdogHits < MAX_WATCHDOG_HITS
             && thinkingPolicy.maxReasoningChars > 0
             && reasoningChars > thinkingPolicy.maxReasoningChars
             && fullContent.trim().length < 200) {

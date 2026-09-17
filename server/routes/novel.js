@@ -814,7 +814,15 @@ router.post('/generate-outline', auth, async (req, res) => {
 
       const outline = result.content || '';
       if (!outline) {
-        send({ type: 'error', message: '大纲生成失败' });
+        // 空内容绝大多数是"思考型模型思考过载"：把可操作的原因说清楚，
+        // 而不是丢一句无信息量的"大纲生成失败"让用户反复重试。
+        const reason = result?.reasoningChars
+          ? `模型只输出了思考过程（约 ${result.reasoningChars} 字）却没写正文`
+          : '模型返回了空内容';
+        send({
+          type: 'error',
+          message: `大纲生成失败：${reason}。可尝试：直接重试、换一条线路/模型（思考型模型在大纲这类长输出任务上容易思考过载），或改用非思考模型`,
+        });
         return res.end();
       }
 
