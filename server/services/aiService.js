@@ -1051,7 +1051,13 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
       const configError = describeConfigError(e.message);
       const shrinkNote = quotaRejected && quotaShrinkTried ? '（已尝试更小的输出预算仍被拒）' : '';
       if (configError) {
-        throw new Error(`${configError} —— 当前线路：${config.model} @ ${routeHost}${shrinkNote}`);
+        const configErr = new Error(`${configError} —— 当前线路：${config.model} @ ${routeHost}${shrinkNote}`);
+        // 必须带上 isApiError / statusCode：SSE 路由层靠 isApiError 决定是否把真实原因透给用户
+        // （见 routes/novel.js 的 catch），漏了它用户只会看到"生成过程中出现错误，请稍后重试"
+        // 这种无从下手的兜底文案 —— 额度不足、Key 错误等都会被这一句吃掉。
+        configErr.isApiError = true;
+        configErr.statusCode = e?.statusCode || 0;
+        throw configErr;
       }
       if (attempt < retries) {
         const delay = Math.pow(2, attempt) * 1000;
