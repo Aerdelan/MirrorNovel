@@ -564,6 +564,9 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
   };
 
   if (!userModelConfig || userModelConfig.provider === 'default' || userModelConfig.provider === 'system') {
+    // 诊断：用户明明配了自定义模型，却看到"上游额度不足 @ 服务器默认线路"时，
+    // 这一行会直接说清是"调用方漏传配置且请求上下文也没取到"，还是"账号本身就是系统线路"。
+    console.warn(`[线路] role=${modelType} 落到服务器默认线路（provider=${userModelConfig?.provider || '空配置'}，上下文=${getRequestModelConfig() ? '有' : '无'}）`);
     return defaults;
   }
 
@@ -671,7 +674,9 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
   // 线路诊断：每次 AI 调用打一行"实际连的域名/模型"，只含域名与模型名，绝不含密钥。
   // 用于排查"以为在用 A 线路、其实连的是 B 线路"（例如某条链路漏传了账号/本机配置）。
   try {
-    console.log(`[线路] ${config.role || 'writing'} → ${new URL(config.baseUrl).host}/${config.model}`);
+    // routeId 含义：'local'=桌面端本机线路；'normal_1'/'vip' 等=服务器默认线路（危险信号：
+    // 用户配了自定义模型却出现在这里，说明这条调用链没拿到用户配置）；未标注=账号自备模型。
+    console.log(`[线路] ${config.role || 'writing'} → ${new URL(config.baseUrl).host}/${config.model}（来源=${config.routeId || '账号自备'}）`);
   } catch {}
   if (!config.baseUrl || !config.model) {
     const error = new Error('AI 服务线路尚未配置，请联系管理员填写该线路的服务地址和模型名称');
