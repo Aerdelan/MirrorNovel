@@ -27,9 +27,11 @@ const MIN_CONTENT_TOKENS = 256;
 // 各角色的默认思考策略：正文允许少量规划但严格限篇幅（速度优先），
 // 大纲/审稿这类"想清楚再写"的任务给更大预算，润色属确定性改写，不需要思考。
 const ROLE_THINKING_DEFAULTS = {
-  outline: { enabled: true, budgetTokens: 4096, effort: 'medium' },
+  // 大纲/审稿任务本身就需要长推演（实测 glm-5.3-flash 规划 475 章时思考 6k+ 字），
+  // 阈值给足（8192×1.6 ≈ 13107 字），避免"正当思考"被看门狗误杀后整轮重来。
+  outline: { enabled: true, budgetTokens: 8192, effort: 'medium' },
   writing: { enabled: true, budgetTokens: 2048, effort: 'low' },
-  reasoning: { enabled: true, budgetTokens: 4096, effort: 'medium' },
+  reasoning: { enabled: true, budgetTokens: 8192, effort: 'medium' },
   polish: { enabled: false, budgetTokens: 0, effort: 'low' },
 };
 const DEFAULT_ROLE_POLICY = { enabled: true, budgetTokens: 3072, effort: 'low' };

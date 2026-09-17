@@ -716,7 +716,10 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
   // 追加"简明思考"要求：线路不支持数字限制思考篇幅时，从第一次请求就主动约束，
   // 避免模型把数万字思考写满才输出正文（这是"首字响应慢"的主因之一）。
   let briefThinkingNote = thinkingPolicy.enabled && !thinkingPolicy.budgetEnforced;
-  const MAX_WATCHDOG_HITS = 2;
+  // 看门狗最多掐断 1 次：被掐断恰恰说明模型需要比阈值更长的思考，
+  // 继续逐级"收紧重试"只会让下一轮更早被掐死（表现为长时间生成不完）。
+  // 掐一次拿到"这不是失控"的证据后就放行，让本次尝试跑完，由 timeoutMs 兜底。
+  const MAX_WATCHDOG_HITS = 1;
   // 输入 token 估算（无服务商用量时回退使用）。system+user 在重试间不变，
   // 只需计算一次。
   const estimatedInputTokens = countTokens(systemPrompt) + countTokens(userPrompt);
