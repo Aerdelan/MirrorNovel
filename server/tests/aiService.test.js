@@ -408,3 +408,17 @@ test('请求上下文兜底：内部调用漏传用户配置时，自动使用�
   const fallback = resolveApiConfig(null, 'writing');
   assert.ok(fallback && typeof fallback === 'object');
 });
+
+test('provider 字段丢失时的容错：只要自备地址还在，就按自定义模型走，不落到系统线路', () => {
+  // 历史保存方式可能没带上 provider，但地址/密钥/模型都在
+  const noProvider = { cloudBaseUrl: 'https://own.example.com/v1', cloudApiKey: 'sk-own', cloudWritingModel: 'own-model' };
+  const cfg = resolveApiConfig(noProvider, 'writing');
+  assert.equal(cfg.baseUrl, 'https://own.example.com/v1');
+  assert.equal(cfg.model, 'own-model');
+  assert.equal(cfg.apiKey, 'sk-own');
+
+  // 只有 ollama 字段时同样能推导
+  const ollama = resolveApiConfig({ ollamaWritingModel: 'qwen2.5', ollamaBaseUrl: 'http://localhost:11434' }, 'writing');
+  assert.equal(ollama.baseUrl, 'http://localhost:11434');
+  assert.equal(ollama.model, 'qwen2.5');
+});

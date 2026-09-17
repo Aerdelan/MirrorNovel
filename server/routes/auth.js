@@ -432,6 +432,9 @@ router.put('/model-config', auth, async (req, res) => {
       config.roleRoutes = { ...(req.user.modelConfig?.roleRoutes || {}) };
     }
 
+    // 诊断：记录"谁把配置改成了什么线路来源"，便于排查"配了自定义模型却又走系统线路"
+    // （只打 provider 与是否有自备地址，不含密钥）
+    console.log(`[配置] ${req.user.email || req.user._id} 模型配置：${req.user.modelConfig?.provider || '空'} -> ${config.provider}${config.cloudBaseUrl ? ' (' + config.cloudBaseUrl + ')' : ''}`);
     req.user.modelConfig = config;
     await req.user.save();
     res.json({ message: '模型配置已保存', modelConfig: toPublicModelConfig(config) });

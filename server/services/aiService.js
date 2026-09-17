@@ -549,6 +549,15 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
   if (!userModelConfig || !Object.keys(userModelConfig).length) {
     userModelConfig = getRequestModelConfig() || userModelConfig;
   }
+  // provider 容错推导：历史保存方式/异常路径可能让 provider 丢字段，但地址与模型还在。
+  // 只按字段判断，避免"用户明明配了自定义模型，却因为 provider 丢失而静默走系统线路"。
+  if (userModelConfig && !userModelConfig.provider) {
+    if (userModelConfig.cloudBaseUrl) {
+      userModelConfig = { ...userModelConfig, provider: 'cloud' };
+    } else if (userModelConfig.ollamaBaseUrl && userModelConfig.ollamaWritingModel) {
+      userModelConfig = { ...userModelConfig, provider: 'ollama' };
+    }
+  }
   const roleRouteId = userModelConfig?.roleRoutes?.[modelType] || userModelConfig?.routeId;
   const managedRoute = getServerRoute(roleRouteId);
   const defaults = {
@@ -568,7 +577,7 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
     // 任何一环都不允许悄悄落到服务器默认线路上——用户既然配了自己的接口，
     // 就不该在章节计划/正文/去AI化等某一环莫名其妙花掉服务器线路的额度。
     const contextConfig = getRequestModelConfig();
-    if (contextConfig && contextConfig.provider === 'cloud' && contextConfig.cloudBaseUrl) {
+    if (contextConfig && (contextConfig.cloudBaseUrl || contextConfig.provider === 'cloud')) {
       console.warn(`[线路] role=${modelType} 调用方未提供可用配置，已改用请求上下文中的自备模型（${contextConfig.cloudBaseUrl}）`);
       return resolveApiConfig(contextConfig, modelType);
     }
