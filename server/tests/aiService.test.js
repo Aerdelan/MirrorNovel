@@ -396,6 +396,13 @@ test('请求上下文兜底：内部调用漏传用户配置时，自动使用�
     resolveApiConfig({ provider: 'cloud', cloudBaseUrl: 'https://other.example.com/v1', cloudApiKey: 'k2', cloudWritingModel: 'm2' }, 'writing'));
   assert.equal(explicit.baseUrl, 'https://other.example.com/v1');
 
+  // 调用方显式传了"系统线路"（provider=system）时，只要上下文里有用户自备模型，
+  // 也优先用自备模型——绝不在某一环悄悄落到服务器默认线路
+  const overrideSystem = runWithRequestContext({ userModelConfig: cloudConfig }, () =>
+    resolveApiConfig({ provider: 'system', routeId: 'normal_1' }, 'writing'));
+  assert.equal(overrideSystem.baseUrl, 'https://own.example.com/v1');
+  assert.equal(overrideSystem.model, 'own-model');
+
   // 不在请求上下文内时保持原行为：不抛错、返回配置对象（具体 baseUrl 取决于
   // 环境里是否配置了默认线路，不做环境相关断言）
   const fallback = resolveApiConfig(null, 'writing');

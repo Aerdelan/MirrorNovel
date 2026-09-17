@@ -564,9 +564,17 @@ function resolveApiConfig(userModelConfig, modelType = 'writing') {
   };
 
   if (!userModelConfig || userModelConfig.provider === 'default' || userModelConfig.provider === 'system') {
-    // 诊断：用户明明配了自定义模型，却看到"上游额度不足 @ 服务器默认线路"时，
-    // 这一行会直接说清是"调用方漏传配置且请求上下文也没取到"，还是"账号本身就是系统线路"。
-    console.warn(`[线路] role=${modelType} 落到服务器默认线路（provider=${userModelConfig?.provider || '空配置'}，上下文=${getRequestModelConfig() ? '有' : '无'}）`);
+    // 兜底②：本次请求的上下文里存在"用户自备模型"（账号里配的或桌面端本机线路）时，
+    // 任何一环都不允许悄悄落到服务器默认线路上——用户既然配了自己的接口，
+    // 就不该在章节计划/正文/去AI化等某一环莫名其妙花掉服务器线路的额度。
+    const contextConfig = getRequestModelConfig();
+    if (contextConfig && contextConfig.provider === 'cloud' && contextConfig.cloudBaseUrl) {
+      console.warn(`[线路] role=${modelType} 调用方未提供可用配置，已改用请求上下文中的自备模型（${contextConfig.cloudBaseUrl}）`);
+      return resolveApiConfig(contextConfig, modelType);
+    }
+    // 诊断：用户配了自定义模型却看到"上游额度不足 @ 服务器默认线路"时，这一行会
+    // 直接说清是"调用方漏传且上下文也没有"，还是"账号本身就是系统线路"。
+    console.warn(`[线路] role=${modelType} 落到服务器默认线路（provider=${userModelConfig?.provider || '空配置'}，上下文=${contextConfig ? '有' : '无'}）`);
     return defaults;
   }
 
