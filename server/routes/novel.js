@@ -182,7 +182,7 @@ function notifyBlueprintProposal(user, novel, proposal) {
   });
 }
 
-async function createStoryBlueprintProposal({ user, novel, persona, signal, onUsage }) {
+async function createStoryBlueprintProposal({ user, modelConfig, novel, persona, signal, onUsage }) {
   if ((novel.storyBlueprintProposals || []).some((proposal) => proposal.status === 'pending')) return null;
   const chapterNumber = getHighestChapterNumber(novel);
   const totalChapters = getTotalPlannedChapters(parseChapterPlan(novel.chapterPlanData || novel.chapterPlan || ''), novel.targetWordCount, chapterNumber);
@@ -226,7 +226,7 @@ ${(novel.plotThreads || []).map((thread) => `${thread.title || thread.id}：${th
     prompt,
     null,
     signal || new AbortController().signal,
-    resolveApiConfig(user?.modelConfig, 'reasoning'),
+    resolveApiConfig(modelConfig || user?.modelConfig, 'reasoning'),
     1,
     0.3,
     8000,
@@ -510,7 +510,7 @@ function applyChapterRevision(novel, chapterNumber, content, { source = 'manual'
   return { chapter, continuity, originalLength: originalContent.length, finalLength: finalContent.length };
 }
 
-async function runExpertReview({ user, content, contract, signal, onStatus, persona, onUsage }) {
+async function runExpertReview({ user, modelConfig, content, contract, signal, onStatus, persona, onUsage }) {
   const original = String(content || '').trim();
   if (original.length < 500) return { content: original, review: null };
 
@@ -546,7 +546,7 @@ ${reviewSource}`;
       reviewPrompt,
       null,
       signal,
-      resolveApiConfig(user?.modelConfig, 'reasoning'),
+      resolveApiConfig(modelConfig || user?.modelConfig, 'reasoning'),
       0,
       0.25,
       8000,
@@ -585,7 +585,7 @@ ${original}
       revisePrompt,
       null,
       signal,
-      resolveApiConfig(user?.modelConfig, 'polish'),
+      resolveApiConfig(modelConfig || user?.modelConfig, 'polish'),
       1,
       0.55,
       getChapterOutputTokenLimit(Math.ceil(original.length * 0.9)),
@@ -660,7 +660,7 @@ function finalizeGeneratedChapter({ novel, chapterNumber, rawContent, contract, 
  * 用语义理解修正启发式判定的漏回收（措辞改写、隐式回收），并补录计划外伏笔、更新角色状态。
  * 任何失败（超时/解析失败/异常）都静默返回 null——本章保留启发式判定结果，绝不阻塞主流程。
  */
-async function auditChapterHooks({ user, novel, chapterNumber, content, contract, signal, onUsage }) {
+async function auditChapterHooks({ user, modelConfig, novel, chapterNumber, content, contract, signal, onUsage }) {
   try {
     const text = String(content || '').trim();
     if (text.length < 200) return null;
@@ -692,7 +692,7 @@ ${openHooks || '（无）'}
       prompt,
       null,
       signal || null,
-      resolveApiConfig(user?.modelConfig, 'reasoning'),
+      resolveApiConfig(modelConfig || user?.modelConfig, 'reasoning'),
       0,
       0.2,
       2500,
@@ -1220,7 +1220,7 @@ ${tmpl.dynamicPrompt}
         } else {
           console.log(`[Expert] 第${chNum}章进入 AI 审稿（${gate.reason}）`);
           const expertResult = await runExpertReview({
-            user: req.user, novel, content: buffer, contract, signal: abortController.signal,
+            user: req.user, modelConfig: req.userModelConfig, novel, content: buffer, contract, signal: abortController.signal,
             persona,
             onStatus: (message) => { try { res.write(`data: ${JSON.stringify({ type: 'status', message })}\n\n`); } catch {} },
             onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats, chapterTokenStats),
@@ -1259,7 +1259,7 @@ ${tmpl.dynamicPrompt}
       const auditGate = shouldAuditChapterHooks({ novel, contract, content: chapterResult.content });
       if (auditGate.audit) {
         await auditChapterHooks({
-          user: req.user, novel, chapterNumber: chNum, content: chapterResult.content,
+          user: req.user, modelConfig: req.userModelConfig, novel, chapterNumber: chNum, content: chapterResult.content,
           contract, signal: abortController.signal,
           onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats, chapterTokenStats),
         });
@@ -1332,7 +1332,7 @@ ${buildChapterTail({
           currentChapterNum = ch + 1;
           if (novel.storyBlueprint?.autoReviewEnabled && ch % 6 === 0) {
             try {
-              const proposal = await createStoryBlueprintProposal({ user: req.user, novel, persona, signal: abortController.signal, onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats) });
+              const proposal = await createStoryBlueprintProposal({ user: req.user, modelConfig: req.userModelConfig, novel, persona, signal: abortController.signal, onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats) });
               if (proposal) {
                 await saveNovelDoc(novel);
                 notifyBlueprintProposal(req.user, novel, proposal);
@@ -1534,7 +1534,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
         } else {
           console.log(`[Expert] 第${chNum}章进入 AI 审稿（${gate.reason}）`);
           const expertResult = await runExpertReview({
-            user: req.user, novel, content: buffer, contract, signal: abortController.signal,
+            user: req.user, modelConfig: req.userModelConfig, novel, content: buffer, contract, signal: abortController.signal,
             persona,
             onStatus: (message) => { try { res.write(`data: ${JSON.stringify({ type: 'status', message })}\n\n`); } catch {} },
             onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats, chapterTokenStats),
@@ -1572,7 +1572,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       const auditGate = shouldAuditChapterHooks({ novel, contract, content: chapterResult.content });
       if (auditGate.audit) {
         await auditChapterHooks({
-          user: req.user, novel, chapterNumber: chNum, content: chapterResult.content,
+          user: req.user, modelConfig: req.userModelConfig, novel, chapterNumber: chNum, content: chapterResult.content,
           contract, signal: abortController.signal,
           onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats, chapterTokenStats),
         });
@@ -1679,7 +1679,7 @@ ${buildChapterTail({
           await generateOneChapter(ch, chPrompt, contract);
           if (novel.storyBlueprint?.autoReviewEnabled && ch % 6 === 0) {
             try {
-              const proposal = await createStoryBlueprintProposal({ user: req.user, novel, persona, signal: abortController.signal, onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats) });
+              const proposal = await createStoryBlueprintProposal({ user: req.user, modelConfig: req.userModelConfig, novel, persona, signal: abortController.signal, onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats) });
               if (proposal) {
                 await saveNovelDoc(novel);
                 notifyBlueprintProposal(req.user, novel, proposal);
@@ -2077,7 +2077,7 @@ router.post('/:novelId/blueprint/review', auth, async (req, res) => {
     const pending = (novel.storyBlueprintProposals || []).find((proposal) => proposal.status === 'pending');
     if (pending) return res.json({ proposal: pending, message: '已有待确认的剧情蓝图提案' });
     const persona = await resolveNovelPersona(req.userId, novel);
-    const proposal = await createStoryBlueprintProposal({ user: req.user, novel, persona });
+    const proposal = await createStoryBlueprintProposal({ user: req.user, modelConfig: req.userModelConfig, novel, persona });
     novel.markModified('storyBlueprint');
     novel.markModified('storyBlueprintProposals');
     await saveNovelDoc(novel);

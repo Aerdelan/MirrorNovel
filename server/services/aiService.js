@@ -661,6 +661,11 @@ function countOverlapSuffix(existing, head) {
 
 async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConfig, retries = 2, temperature = 0.85, maxTokens = 16384, timeoutMs = 90000, onReasoning, options = {}) {
   const config = apiConfig || resolveApiConfig(null);
+  // 线路诊断：每次 AI 调用打一行"实际连的域名/模型"，只含域名与模型名，绝不含密钥。
+  // 用于排查"以为在用 A 线路、其实连的是 B 线路"（例如某条链路漏传了账号/本机配置）。
+  try {
+    console.log(`[线路] ${config.role || 'writing'} → ${new URL(config.baseUrl).host}/${config.model}`);
+  } catch {}
   if (!config.baseUrl || !config.model) {
     const error = new Error('AI 服务线路尚未配置，请联系管理员填写该线路的服务地址和模型名称');
     error.isApiError = true;
