@@ -1,6 +1,7 @@
 const novelTypes = require('../config/novelTypes');
 const deslop = require('../config/deslop');
 const { getServerRoute } = require('../config/modelCatalog');
+const { getRequestModelConfig } = require('./requestContext');
 const {
   resolveThinkingPolicy,
   thinkingFieldCandidates,
@@ -542,6 +543,12 @@ ${targetHint}
  * 根据用户配置和模型类型获取 API 请求参数
  */
 function resolveApiConfig(userModelConfig, modelType = 'writing') {
+  // 兜底：调用方没传用户配置（历史遗留：写作 agent / 编辑引擎 / 去AI化 /
+  // 后台任务等多处漏传）时，从请求上下文取本次请求生效的配置——
+  // 否则会静默落到服务器默认线路，用户配好的接口对那几步完全不生效。
+  if (!userModelConfig || !Object.keys(userModelConfig).length) {
+    userModelConfig = getRequestModelConfig() || userModelConfig;
+  }
   const roleRouteId = userModelConfig?.roleRoutes?.[modelType] || userModelConfig?.routeId;
   const managedRoute = getServerRoute(roleRouteId);
   const defaults = {

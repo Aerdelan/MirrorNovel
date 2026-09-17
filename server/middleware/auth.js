@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { HEADER_NAME, parseOverrideHeader, mergeModelConfig } = require('../services/localModelConfig');
+const { runWithRequestContext } = require('../services/requestContext');
 const { open } = require('../services/secretBox');
 
 /**
@@ -48,7 +49,10 @@ const auth = async (req, res, next) => {
       req.modelConfigFromLocal = true;
     }
 
-    next();
+    // 把"本次请求实际生效的模型配置"放进请求上下文：内部调用链（写作 agent、
+    // 编辑引擎、去AI化、后台任务）没把配置一路传下来时，resolveApiConfig 会
+    // 回退到这里，而不是静默落到服务器默认线路。
+    return runWithRequestContext({ userModelConfig: req.userModelConfig }, () => next());
   } catch (error) {
     if (error.name === 'TokenExpiredError') {
       return res.status(401).json({ message: '登录已过期，请重新登录' });

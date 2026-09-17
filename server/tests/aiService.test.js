@@ -376,3 +376,27 @@ test('各角色默认交给思考策略决定，且携带角色信息用于差�
   assert.equal(reasoning.role, 'reasoning');
   assert.equal(outline.role, 'outline');
 });
+
+test('请求上下文兜底：内部调用漏传用户配置时，自动使用本次请求生效的配置', () => {
+  const { runWithRequestContext } = require('../services/requestContext');
+  const cloudConfig = {
+    provider: 'cloud',
+    cloudBaseUrl: 'https://own.example.com/v1',
+    cloudApiKey: 'sk-own',
+    cloudWritingModel: 'own-model',
+  };
+
+  // 漏传配置的内部调用（去AI化/编辑引擎/写作 agent 等）从上下文取到用户配置
+  const inContext = runWithRequestContext({ userModelConfig: cloudConfig }, () => resolveApiConfig(null, 'writing'));
+  assert.equal(inContext.baseUrl, 'https://own.example.com/v1');
+  assert.equal(inContext.model, 'own-model');
+
+  // 显式传入的配置优先于上下文
+  const explicit = runWithRequestContext({ userModelConfig: cloudConfig }, () =>
+    resolveApiConfig({ provider: 'cloud', cloudBaseUrl: 'https://other.example.com/v1', cloudApiKey: 'k2', cloudWritingModel: 'm2' }, 'writing'));
+  assert.equal(explicit.baseUrl, 'https://other.example.com/v1');
+
+  // 不在请求上下文内时保持原行为：返回服务器默认线路，不抛错
+  const fallback = resolveApiConfig(null, 'writing');
+  assert.ok(fallback && fallback.baseUrl);
+});
