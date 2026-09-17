@@ -52,6 +52,15 @@ const auth = async (req, res, next) => {
     // 把"本次请求实际生效的模型配置"放进请求上下文：内部调用链（写作 agent、
     // 编辑引擎、去AI化、后台任务）没把配置一路传下来时，resolveApiConfig 会
     // 回退到这里，而不是静默落到服务器默认线路。
+    // 诊断：一行说清"这次请求是谁发的、用哪条线路"，便于与 [线路] 行对照定位
+    // （只在域名/线路层面，不含任何密钥）。
+    try {
+      const who = user.email || String(user._id);
+      const src = req.modelConfigFromLocal
+        ? '本机覆盖'
+        : `${req.userModelConfig?.provider || '空配置'}${req.userModelConfig?.cloudBaseUrl ? ':' + req.userModelConfig.cloudBaseUrl : ''}`;
+      console.log(`[请求] ${who} | ${req.method} ${req.originalUrl?.split('?')[0] || req.url} | 线路来源=${src}`);
+    } catch { }
     return runWithRequestContext({ userModelConfig: req.userModelConfig }, () => next());
   } catch (error) {
     if (error.name === 'TokenExpiredError') {
