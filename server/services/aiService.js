@@ -254,6 +254,8 @@ function buildSystemPrompt(novelTypeId, gender, persona, resolvedType) {
   const genreStyleContract = buildGenreStyleContract(novelTypeId, type);
   // 风格档案：以题材/子类型默认 axes 为底，人格 axes 逐轴覆盖（mergeAxes 靠后优先）。
   const styleProfile = buildStyleProfileBlock(mergeAxes(type && type.axes, persona && persona.axes));
+  // 风格基调契约（番茄式多选 tones 升格为硬承诺）：紧跟风格档案置顶，防止基调被世界观/剧情默认气氛稀释。
+  const toneContractBlock = (type && type.toneContract) ? `${type.toneContract}\n\n` : '';
 
   // ===== persona 注入分支 =====
   if (persona && (persona.voice || persona.tone || persona.rules)) {
@@ -280,7 +282,7 @@ function buildSystemPrompt(novelTypeId, gender, persona, resolvedType) {
 
     return `你是一位成熟的小说作者。请严格遵循下方给定的风格档案与写作人格进行创作，在全篇保持声线一致。
 
-${styleProfile ? `${styleProfile}\n\n` : ''}${personaBlock}
+${styleProfile ? `${styleProfile}\n\n` : ''}${toneContractBlock}${personaBlock}
 
 ${typeMeta}
 
@@ -300,7 +302,7 @@ ${styleProfile ? `${styleProfile}\n\n` : ''}${deslop.systemDeslopPrompt}`;
   if (novelTypeId && novelTypeId.startsWith('lightnovel_')) {
     return `你是一位成熟的轻小说作者。你会从题材、人物关系和既有文本中提炼稳定的作者声线，并在全篇保持一致。
 
-${styleProfile ? `${styleProfile}\n\n` : ''}题材：${type.name}（日式ACGN风格）
+${styleProfile ? `${styleProfile}\n\n` : ''}${toneContractBlock}题材：${type.name}（日式ACGN风格）
 题材关键词：${type.keywords}
 题材语汇参考（只在具体语境成立时使用，禁止堆砌）：${type.aiWordBank}
 大纲参考：${type.outline}
@@ -336,7 +338,7 @@ ${genreStyleContract}
 9. 【战斗/冲突描写】动作场面要有画面感和层次感，避免干巴巴的叙述`;
 
   return `你是一位成熟的网文作者。你会从题材、人物关系和既有文本中提炼稳定的作者声线，并在全篇保持一致。
-${styleProfile ? `\n${styleProfile}\n` : ''}写作类型：${type.name}
+${styleProfile ? `\n${styleProfile}\n` : ''}${toneContractBlock ? `\n${toneContractBlock}` : ''}写作类型：${type.name}
 写作关键词：${type.keywords}
 大纲参考：${type.outline}
 题材语汇参考（只在具体语境成立时使用，禁止堆砌）：${type.aiWordBank}

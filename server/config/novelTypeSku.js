@@ -474,15 +474,16 @@ function resolveTypeSku(sku) {
   if (theme) keywordParts.push(theme.keywords);
 
   // 3) 多选标签并集
+  const toneObjs = (s.tones || []).map((tId) => TONES[tId]).filter(Boolean);
   for (const eId of (s.elements || [])) { const e = ELEMENTS[eId]; if (e) { keywordParts.push(e[1]); if (e[2]) wordParts.push(e[2]); } }
   for (const pId of (s.personas || [])) { const p = CHARACTERS[pId]; if (p) keywordParts.push(p[1]); }
-  for (const tId of (s.tones || [])) { const t = TONES[tId]; if (t) keywordParts.push(t.keywords); }
+  for (const t of toneObjs) { keywordParts.push(t.keywords); }
 
   // 4) axes 合成：题材默认 < 大类基底 < tones（按选择顺序，后者覆盖已定义轴）
   const axesSources = [];
   if (cat) axesSources.push(axesFromSeed(cat.axes));
   if (theme) axesSources.push(axesFromSeed(theme.axes));
-  for (const tId of (s.tones || [])) { const t = TONES[tId]; if (t && t.axes) axesSources.push(axesFromSeed(t.axes)); }
+  for (const t of toneObjs) { if (t.axes) axesSources.push(axesFromSeed(t.axes)); }
   const axes = mergeAxesLoose(axesSources);
 
   const name = theme ? `${cat ? cat.name : ''}·${theme.name}` : (cat ? cat.name : (s.theme || '未分类'));
@@ -497,7 +498,23 @@ function resolveTypeSku(sku) {
     aiWordBank: dedupeJoin(wordParts),
     outlineSeed,
     axes,
+    tones: toneObjs.map((t) => t.name),
+    toneContract: buildToneContract(toneObjs),
   };
+}
+
+/**
+ * 风格基调硬契约：把用户多选的风格基调(tones)升格为与读者的类型约定，
+ * 要求全篇稳定体现，防止基调被世界观/剧情默认气氛稀释（“tag 不符”）。
+ * 只约束“怎么写”（语气/节奏/幽默与情绪浓度），不改写事件与因果。
+ */
+function buildToneContract(toneObjs) {
+  if (!toneObjs || !toneObjs.length) return '';
+  const list = toneObjs.map((t) => `「${t.name}」（${t.keywords}）`).join('、');
+  return `【风格基调契约 — 与读者的类型约定，必须在全篇稳定兑现】
+本书锁定的风格基调：${list}。
+这些基调是硬性类型承诺，优先级高于世界观的默认气氛：即便设定/剧情偏沉重，也必须通过叙述腔调、人物互动、对白节奏与措辞稳定体现上述基调（如「搞笑/无厘头」要求叙述与对白保持谐趣与反差、把荒诞处境写出喜剧张力；「甜宠」要求关系互动持续发糖；「热血」要求情绪上扬有燃点；「暗黑/致郁」要求冷峻压抑贯穿……依此类推），不得把成稿写成与所选基调相反的、统一的克制严肃腔。
+基调只约束“怎么写”（语气、节奏、幽默与情绪浓度），不改写已确定的事件、因果、人物选择与世界观事实。`;
 }
 
 // 本地 loose merge（避免与 aiService 循环依赖）：后者逐轴覆盖

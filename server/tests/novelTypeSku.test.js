@@ -69,3 +69,16 @@ test('axes 优先级：tones 逐轴覆盖题材默认（mergeAxesLoose 后者胜
   assert.equal(withTone.axes.narrator, TONES.gaoxiao.axes[2]); // tone 覆盖为 5
   assert.equal(withTone.axes.narrator, 5);
 });
+
+test('resolveTypeSku：风格基调(tones)升格为硬契约 toneContract，未选基调时为空', () => {
+  const r = resolveTypeSku({ channel: 'male', category: 'urban', theme: 'urban_naodong', tones: ['gaoxiao', 'richang'] });
+  assert.deepEqual(r.tones, ['搞笑/无厘头', '轻松日常']);
+  assert.match(r.toneContract, /风格基调契约/);
+  assert.match(r.toneContract, /搞笑\/无厘头/);
+  assert.match(r.toneContract, /轻松日常/);
+  assert.match(r.toneContract, /必须在全篇稳定兑现/); // 防基调被世界观稀释的硬承诺
+  // 未选 tones → 无契约（向后兼容旧数据）
+  const noTone = resolveTypeSku({ category: 'urban', theme: 'urban_naodong' });
+  assert.equal(noTone.toneContract, '');
+  assert.deepEqual(noTone.tones, []);
+});

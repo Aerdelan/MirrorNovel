@@ -50,6 +50,7 @@ function resolveTypeContext(body) {
         name: r.name, icon: '📄',
         keywords: r.keywords, outline: r.outlineSeed || '',
         aiWordBank: r.aiWordBank, axes: r.axes,
+        toneContract: r.toneContract || '',
       },
       skuAxes: r.axes,
       resolvedName: r.name,

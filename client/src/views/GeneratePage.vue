@@ -51,7 +51,7 @@
  <div class="sku-layer">
  <div class="sku-layer-label">{{ $t('generate.skuCp') }}</div>
  <div class="sku-chips">
- <button v-for="c in SKU_CP_OPTIONS" :key="c.id" type="button" class="sku-chip" :class="{ selected: skuCp === c.id, locked: generationBusy }" @click="!generationBusy && (skuCp = (skuCp === c.id ? '' : c.id))">{{ $tt(c.name) }}</button>
+ <button v-for="c in SKU_CP_OPTIONS" :key="c.id" type="button" class="sku-chip" :class="{ selected: skuCp === c.id, locked: generationBusy }" @click="!generationBusy && pickCp(c.id)">{{ $tt(c.name) }}</button>
  </div>
  </div>
  </template>
@@ -516,9 +516,15 @@ function pickSkuTheme(t) {
   skuTheme.value = skuTheme.value === t.id ? '' : t.id
   syncSelectedTypeName()
 }
+// 注意：模板里传入的是已被 Vue 自动解包的数组本身（skuTones 等在模板中即 .value），
+// 故这里直接对数组增删，不能再写 arr.value（否则取到 undefined 会报错、导致点不动）。
 function toggleSkuArr(arr, id) {
-  const i = arr.value.indexOf(id)
-  if (i >= 0) arr.value.splice(i, 1); else arr.value.push(id)
+  const i = arr.indexOf(id)
+  if (i >= 0) arr.splice(i, 1); else arr.push(id)
+}
+// 关系向（单选，再点取消）：用显式函数访问 ref，避免模板内联赋值的解包歧义。
+function pickCp(id) {
+  skuCp.value = skuCp.value === id ? '' : id
 }
 function syncSelectedTypeName() {
   const cat = skuCurCat.value

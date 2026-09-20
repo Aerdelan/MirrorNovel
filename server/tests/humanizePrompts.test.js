@@ -78,6 +78,17 @@ test('active writing prompts prioritize voice, causality and scene-driven rhythm
   assert.match(deslop.humanizeRewritePrompt, /80%-120%/);
 });
 
+test('去AI味底线含“结构复沓”硬约束（抑制 不是A是B/连续明喻/单句成段 刷屏）', () => {
+  // 新的 AI 腔不是旧词表，而是同构修辞刷屏；底线必须约束其密度
+  assert.match(deslop.styleFloorPrompt, /同构句式/);
+  assert.match(deslop.styleFloorPrompt, /复沓刷屏/);
+  assert.match(deslop.styleFloorPrompt, /不是A，是B/);
+  assert.match(deslop.styleFloorPrompt, /明喻/);
+  assert.match(deslop.styleFloorPrompt, /单句独立成段/);
+  // 经 systemDeslopPrompt 拼接，对所有正文生成路径恒用
+  assert.match(deslop.systemDeslopPrompt, /复沓刷屏/);
+});
+
 test('genre system prompts keep the shared narrative contract', () => {
   const fallback = buildSystemPrompt('missing-type');
   const webNovel = buildSystemPrompt('urban', 'male');

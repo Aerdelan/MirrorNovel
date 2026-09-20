@@ -463,3 +463,22 @@ test('向后兼容：人格与类型都无 axes 时不注入风格档案块', ()
   const prompt = buildSystemPrompt('no_such_type_zzz', 'male', { voice: 'x', tone: 'y', rules: 'z' });
   assert.doesNotMatch(prompt, /【本书风格档案/);
 });
+
+test('风格基调契约：resolvedType 携带 toneContract 时作为硬承诺置顶注入（无 persona 与有 persona 两条路径）', () => {
+  const resolvedType = {
+    name: '都市·都市脑洞', keywords: '系统, 吐槽', outline: '', aiWordBank: '',
+    axes: { humor: 5, narrator: 5 },
+    toneContract: '【风格基调契约 — 与读者的类型约定，必须在全篇稳定兑现】\n本书锁定的风格基调：「搞笑/无厘头」。',
+  };
+  const plain = buildSystemPrompt('urban', 'male', null, resolvedType);
+  assert.match(plain, /【风格基调契约/);
+  assert.match(plain, /搞笑\/无厘头/);
+  // 契约应出现在正文写作要求之前（置顶）
+  assert.ok(plain.indexOf('风格基调契约') < plain.indexOf('核心写作要求'), '基调契约需置顶');
+  // persona 分支同样注入
+  const withPersona = buildSystemPrompt('urban', 'male', { voice: 'x', rules: 'y' }, resolvedType);
+  assert.match(withPersona, /【风格基调契约/);
+  // 旧路径（无 toneContract）不注入，向后兼容
+  const legacy = buildSystemPrompt('urban', 'male', null, { name: '都市', keywords: '', outline: '', aiWordBank: '' });
+  assert.doesNotMatch(legacy, /【风格基调契约/);
+});
