@@ -802,6 +802,10 @@ router.post('/generate-outline', auth, async (req, res) => {
       try { res.write(`data: ${JSON.stringify(event)}\n\n`); } catch {}
     };
 
+    // 心跳保活：思考型模型在首次返回元前可能超过 2 分饰不下发任何分片，
+    // 这里和正文生成保持相同机制，定时向前端推送 thinking 事件防止计步器超时。
+    const thinkingEmitter = createThinkingEmitter(res);
+
     try {
       const result = await streamGenerate(
         systemPrompt, outlinePrompt,
@@ -809,7 +813,7 @@ router.post('/generate-outline', auth, async (req, res) => {
         abortController.signal,
         resolveApiConfig(req.userModelConfig, 'outline'),
         2, 0.82, outlineRequirements.outputTokens, TIMEOUT.OUTLINE,
-        (reasoning) => send({ type: 'reasoning', content: reasoning })
+        (reasoning) => { thinkingEmitter(reasoning); send({ type: 'reasoning', content: reasoning }); }
       );
 
       const outline = result.content || '';
@@ -888,6 +892,9 @@ ${String(outline).slice(0, 12000)}
       try { res.write(`data: ${JSON.stringify(event)}\n\n`); } catch {}
     };
 
+    // 心跳保活：蓝图由推理模型生成，首字延迟远超正文，同样需要定时推送 thinking 事件。
+    const thinkingEmitter = createThinkingEmitter(res);
+
     try {
       const result = await streamGenerate(
         `你是一位重视因果、人物弧线和伏笔回收的长篇小说架构师。${buildPersonaPrompt(persona, { includeDeslop: false })}`,
@@ -899,7 +906,7 @@ ${String(outline).slice(0, 12000)}
         0.35,
         Math.max(2600, Math.min(12000, blueprintRequirements.phaseCount * 900)),
         TIMEOUT.BLUEPRINT,
-        (reasoning) => send({ type: 'reasoning', content: reasoning })
+        (reasoning) => { thinkingEmitter(reasoning); send({ type: 'reasoning', content: reasoning }); }
       );
       const rawContent = String(result.content || '').trim();
       if (!rawContent) {

@@ -1,6 +1,18 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import api from '../api'
+import { buildModelOverrideHeader, HEADER_NAME } from '../utils/modelOverride'
+
+// 桌面端「模型线路」页配置的本机线路通过 x-mn-model-config 头下发。
+// axios 实例与 useSSE 都已带上，但本文件里 /generate、/continue、/continue-import、
+// /polish 走的是裸 XMLHttpRequest，历史上漏带这个头——导致「大纲/蓝图正常、
+// 整本生成报‘AI 服务线路尚未配置’」（生成回落到了账号配置）。统一在此补上。
+function applyModelOverrideHeader(xhr) {
+ try {
+  const headerValue = buildModelOverrideHeader()
+  if (headerValue) xhr.setRequestHeader(HEADER_NAME, headerValue)
+ } catch { /* 本机配置损坏时忽略，退化为账号配置 */ }
+}
 
 export const useNovelStore = defineStore('novel', () => {
  const novelTypes = ref([])
@@ -64,6 +76,7 @@ async function fetchFullTypes() {
  xhr.open('POST', '/api/novel/generate')
  xhr.setRequestHeader('Authorization', `Bearer ${token}`)
  xhr.setRequestHeader('Content-Type', 'application/json')
+ applyModelOverrideHeader(xhr)
  xhr._aborted = false
  let lastIndex = 0
  let humanizedReceived = false
@@ -113,6 +126,7 @@ async function fetchFullTypes() {
  xhr.open('POST', `/api/novel/continue/${novelId}`)
  xhr.setRequestHeader('Authorization', `Bearer ${token}`)
  xhr.setRequestHeader('Content-Type', 'application/json')
+ applyModelOverrideHeader(xhr)
  xhr._aborted = false
  xhr._receivedTerminal = false
  let lastIndex = 0
@@ -162,6 +176,7 @@ async function fetchFullTypes() {
  xhr.open('POST', '/api/novel/continue-import')
  xhr.setRequestHeader('Authorization', `Bearer ${token}`)
  xhr.setRequestHeader('Content-Type', 'application/json')
+ applyModelOverrideHeader(xhr)
  xhr._aborted = false
  xhr._receivedTerminal = false
  let lastIndex = 0
@@ -210,6 +225,7 @@ async function fetchFullTypes() {
  xhr.open('POST', '/api/novel/polish')
  xhr.setRequestHeader('Authorization', `Bearer ${token}`)
  xhr.setRequestHeader('Content-Type', 'application/json')
+ applyModelOverrideHeader(xhr)
  xhr._aborted = false
  let lastIndex = 0
  xhr.onprogress = () => {

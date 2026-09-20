@@ -16,7 +16,8 @@ export function useSSE() {
 
   // 无事件超时：服务端在思考阶段会定时下发心跳（thinking），正常不会有这么长的空档。
   // 超时判失败而不是无限等待，避免界面永久卡住；用户仍可手动重试。
-  const IDLE_TIMEOUT_MS = 120000
+  // 180s：思考型模型（GLM-4.7 等）首字节延迟可超 2 分钟，留出更宽裕的缓冲。
+  const IDLE_TIMEOUT_MS = 180000
 
   /** 从非 SSE 的响应体里尽力取出可读原因 */
   function extractErrorDetail(text) {
