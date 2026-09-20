@@ -152,7 +152,7 @@ router.post('/ai-generate', auth, async (req, res) => {
 小说类型：${novelType}
 额外要求：${hint || '无'}
 
-输出结构如下（所有字段都是字符串，不要省略）：
+输出结构如下（除 overrideDeslop 为布尔、axes 为对象外，其余都是字符串，不要省略）：
 {
   "name": "模板名称（不超过10字）",
   "description": "一句话描述这套风格（不超过30字）",
@@ -160,14 +160,31 @@ router.post('/ai-generate', auth, async (req, res) => {
   "tone": "语气与节奏：用词密度、句法节奏、轻重平衡、段落习惯（80-150字）",
   "rules": "题材约束与人物声音规则，用编号列表，每条一行（300-500字）",
   "vocab": "推荐词与禁用词，用换行分隔（50-100字）",
+  "axes": {
+    "temperature": 1到5,
+    "diction": 1到5,
+    "narrator": 1到5,
+    "pacing": 1到5,
+    "humor": 1到5,
+    "emotion": 1到5
+  },
   "overrideDeslop": false
 }
 
+axes 六轴含义（均为 1-5 整数）：
+- temperature 叙述温度：1=冷峻克制↔5=温热外放
+- diction 语言密度：1=素白简劲↔5=浓丽铺陈
+- narrator 叙述者姿态：1=隐形不介入↔5=介入张扬、可吐槽议论
+- pacing 叙事节奏：1=短促紧绷↔5=舒缓绵长
+- humor 幽默许可：1=正剧无谐↔5=高频谐趣
+- emotion 情绪表达：1=内敛潜台词↔5=直抒浓烈
+
 要求：
 1. 风格要鲜明，与该题材契合，不要写成通用模板
-2. rules 要具体可执行，覆盖视角、节奏、人物声音、对话、描写、情绪处理
-3. vocab 要给出该题材的推荐词和需要避免的 AI 化套词
-4. overrideDeslop 默认 false，除非该题材需要完全自定义去AI化策略`
+2. axes 必须把风格推到光谱的某一端、拉开差异，不得因为“安全”而默认把所有轴放在 3 或收敛到冷静克制；搞笑/轻小说/爽文类要把 humor/narrator/temperature 拉高，冷硬/悬疑/正剧类才拉低
+3. rules 要具体可执行，覆盖视角、节奏、人物声音、对话、描写、情绪处理，且与 axes 一致
+4. vocab 要给出该题材的推荐词和需要避免的 AI 化套词
+5. overrideDeslop 默认 false；若该题材风格强烈依赖独特的叙述者声音/幽默（如毒舌、无厘头），可置 true`
 
     const result = await streamGenerate(systemPrompt, userPrompt, null, null, apiConfig, 2, 0.8, 4096, 120000)
     let parsed
@@ -180,6 +197,7 @@ router.post('/ai-generate', auth, async (req, res) => {
     }
 
     // 落库为 ai-generated
+    const { normalizeAxes } = require('../services/aiService')
     const doc = await WritingPersona.create({
       userId: req.user.id,
       name: (parsed.name || 'AI生成模板').slice(0, 40),
@@ -188,6 +206,7 @@ router.post('/ai-generate', auth, async (req, res) => {
       tone: parsed.tone || '',
       rules: parsed.rules || '',
       vocab: parsed.vocab || '',
+      axes: normalizeAxes(parsed.axes),
       overrideDeslop: !!parsed.overrideDeslop,
       applicableTypes: [],
       source: 'ai-generated',

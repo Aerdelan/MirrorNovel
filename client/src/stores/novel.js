@@ -21,6 +21,7 @@ export const useNovelStore = defineStore('novel', () => {
  const generatedOutline = ref('')
  const prefillContinue = ref(null)
  const activeGenerationRequest = ref(null)
+ const skuCatalog = ref(null)
 
 async function fetchTypes() {
  const res = await api.get('/novel/types')
@@ -44,6 +45,15 @@ async function fetchTypes() {
 async function fetchFullTypes() {
  const res = await api.get('/novel/types/full')
  return res.data
+ }
+
+ // 番茄式多选类型 SKU 目录（频道→大类→题材 + 情节/人设/风格基调标签库）。
+ // 结构与大类基本稳定，缓存一次即可；失败时返回 null 由调用方兜底。
+ async function fetchSkuCatalog(force) {
+ if (skuCatalog.value && !force) return skuCatalog.value
+ const res = await api.get('/novel/types/sku')
+ skuCatalog.value = res.data || null
+ return skuCatalog.value
  }
 
  async function pauseNovel(novelId) {
@@ -246,8 +256,8 @@ async function fetchFullTypes() {
  }
 
  return {
- novelTypes, bookshelf, streamingText, generatedOutline, prefillContinue,
- fetchTypes, fetchNovelTypes, fetchBookshelf, fetchNovelDetail, fetchFullTypes,
+ novelTypes, bookshelf, streamingText, generatedOutline, prefillContinue, skuCatalog,
+ fetchTypes, fetchNovelTypes, fetchBookshelf, fetchNovelDetail, fetchFullTypes, fetchSkuCatalog,
  pauseNovel, deleteNovel,
  setPrefillContinue, clearPrefillContinue,
  startGeneration, continueGeneration, startImportContinue, stopGeneration,

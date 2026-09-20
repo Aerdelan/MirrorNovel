@@ -47,6 +47,8 @@ function createSseResponse(content) {
 
 test('active writing prompts prioritize voice, causality and scene-driven rhythm', () => {
   const prompts = [
+    deslop.styleFloorPrompt,
+    deslop.craftGuidePrompt,
     deslop.systemDeslopPrompt,
     deslop.deslopSystemPrompt,
     deslop.humanizeRewritePrompt,
@@ -54,11 +56,20 @@ test('active writing prompts prioritize voice, causality and scene-driven rhythm
 
   for (const prompt of prompts) assertNoLegacyNoise(prompt);
 
-  assert.match(deslop.systemDeslopPrompt, /叙事人称、视角人物、叙事距离/);
-  assert.match(deslop.systemDeslopPrompt, /背景、教育、目标、情绪及双方关系/);
-  assert.match(deslop.systemDeslopPrompt, /句长、段落长度和留白服从信息量与情绪压力/);
-  assert.match(deslop.systemDeslopPrompt, /推进关系、信息或伏笔/);
-  assert.match(deslop.systemDeslopPrompt, /禁止随机走神/);
+  // 去AI味底线：只放真正的 AI 特征，不掺杂风格强制
+  assert.match(deslop.styleFloorPrompt, /去AI味底线/);
+  assert.match(deslop.styleFloorPrompt, /升华句与事后总结/);
+
+  // 工艺指南：从属风格档案，叙述者与幽默改为条件式，不得再有一刀切禁令
+  assert.match(deslop.craftGuidePrompt, /叙事工艺指南/);
+  assert.match(deslop.craftGuidePrompt, /风格档案/);
+  assert.doesNotMatch(deslop.craftGuidePrompt, /禁止随机走神、无关观察、强行吐槽/);
+  assert.doesNotMatch(deslop.craftGuidePrompt, /叙述者插科打诨/);
+
+  // systemDeslopPrompt（getter）= 从属声明 + 工艺指南 + 去AI味底线
+  assert.match(deslop.systemDeslopPrompt, /从属于本书的风格档案/);
+  assert.match(deslop.systemDeslopPrompt, /叙事工艺指南/);
+  assert.match(deslop.systemDeslopPrompt, /去AI味底线/);
 
   assert.match(deslop.deslopSystemPrompt, /不可改动的基准/);
   assert.match(deslop.deslopSystemPrompt, /不要以规避检测器为目标制造文本噪声/);
@@ -79,9 +90,28 @@ test('genre system prompts keep the shared narrative contract', () => {
   }
 
   assert.match(webNovel, /不要求每段都安排爽点/);
-  assert.match(webNovel, /段落和句长由场景决定/);
+  assert.match(webNovel, /段落和句长由场景与风格档案决定/);
   assert.match(lightNovel, /笑点必须从人物处境和关系摩擦中自然产生/);
   assert.match(lightNovel, /轻松片段必须同时推进关系、信息或伏笔/);
+});
+
+test('style profile renders from persona axes and outranks the craft guide', () => {
+  const persona = {
+    name: '无厘头逗比',
+    voice: '贫嘴、爱抖机灵',
+    axes: { temperature: 5, humor: 5, narrator: 5, emotion: 5, diction: 2, pacing: 5 },
+  };
+  const withPersona = buildSystemPrompt('urban', 'male', persona);
+  // 风格档案块被渲染，且位于通用工艺指南之前（风格权威高于工艺指南）
+  assert.match(withPersona, /【本书风格档案/);
+  assert.ok(withPersona.indexOf('本书风格档案') < withPersona.indexOf('叙事工艺指南'));
+  // 高幽默/介入叙述者被授权，不再被旧的绝对禁令压制
+  assert.doesNotMatch(withPersona, /禁止随机走神、无关观察、强行吐槽/);
+
+  // 无 axes（旧人格且类型不带 axes）时不注入档案块，向后兼容
+  // 注：'urban' 等新类型已自带默认 axes，会用类型默认渲染档案；故用无轴类型验证“双无”分支。
+  const plain = buildSystemPrompt('no_axes_type_zzz', 'male', null);
+  assert.doesNotMatch(plain, /【本书风格档案 — 最高风格权威】/);
 });
 
 test('humanizeRewrite uses a conservative fidelity pass followed by an original-backed review', async (t) => {

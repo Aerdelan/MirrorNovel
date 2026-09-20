@@ -27,6 +27,11 @@ const novelSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
+  // 番茄式多选类型 SKU（{channel,category,theme,elements,personas,tones,cp}）；旧数据为 null。
+  typeSku: {
+    type: mongoose.Schema.Types.Mixed,
+    default: null,
+  },
   protagonistName: {
     type: String,
     default: '',

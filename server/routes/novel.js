@@ -6,6 +6,7 @@ const Novel = require('../models/Novel');
 const User = require('../models/User');
 const WritingPersona = require('../models/WritingPersona');
 const novelTypes = require('../config/novelTypes');
+const { resolveTypeSku, buildSkuCatalog } = require('../config/novelTypeSku');
 const { TIMEOUT } = require('../config/timeouts');
 const novelTemplates = require('../config/novelTemplates');
 const { typeTemplates, buildTemplatePrompt } = novelTemplates;
@@ -13,6 +14,7 @@ const {
   buildSystemPrompt, buildPersonaPrompt: importedBuildPersonaPrompt, buildInitialPrompt, buildContinuePrompt,
   buildImportContinuePrompt, buildOutlinePrompt, getOutlineRequirements, buildOutlineSpec, getChapterPlanOutputTokens,
   buildChapterPlan, buildStoryStateSummary, buildGenreStyleContract, normalizeChapterWordTarget,
+  mergeAxes,
   buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, extractChapterSummary,
   streamGenerate, resolveApiConfig, countTokens, humanizeRewrite, getFriendlyErrorMessage,
 } = require('../services/aiService');
@@ -31,6 +33,48 @@ async function resolveNovelPersona(userId, novel, personaId) {
   if (!id) return null;
   const persona = await WritingPersona.findOne({ _id: id, userId }).lean();
   return persona || null;
+}
+
+// ===== 类型上下文解析（支持番茄式多选 typeSku，兼容旧 novelTypeId） =====
+// 返回 { type, skuAxes, resolvedName }：
+//   type   — 可直接喂给 buildSystemPrompt/buildOutlinePrompt 的预解析类型对象（含 axes/keywords/aiWordBank）
+//   skuAxes — 解析出的风格六轴（供无 persona 时合成默认档案）
+function resolveTypeContext(body) {
+  const { novelTypeId, typeSku } = body || {};
+  // 1) SKU 优先：前端多选
+  if (typeSku && typeof typeSku === 'object' && (typeSku.theme || typeSku.category)) {
+    const r = resolveTypeSku(typeSku);
+    return {
+      type: {
+        id: novelTypeId || r.theme || r.category || 'custom',
+        name: r.name, icon: '📄',
+        keywords: r.keywords, outline: r.outlineSeed || '',
+        aiWordBank: r.aiWordBank, axes: r.axes,
+      },
+      skuAxes: r.axes,
+      resolvedName: r.name,
+    };
+  }
+  // 2) 兼容旧路径：novelTypes 多级匹配（id 或 name），miss 时回落 novelTypeData 大类
+  let type = novelTypes.find(t => t.id === novelTypeId || t.name === novelTypeId);
+  if (!type) {
+    try {
+      const typeData = require('../config/novelTypeData');
+      const allCats = [...(typeData.male || []), ...(typeData.female || [])];
+      const found = allCats.find(c => c.name === novelTypeId);
+      if (found) type = { id: novelTypeId, name: found.name, icon: found.icon, keywords: '', outline: '' };
+      else type = { id: novelTypeId, name: novelTypeId, icon: '📄', keywords: '', outline: '' };
+    } catch { type = { id: novelTypeId, name: novelTypeId, icon: '📄', keywords: '', outline: '' }; }
+  }
+  return { type, skuAxes: (type && type.axes) || null, resolvedName: type.name };
+}
+
+// 把 SKU/题材默认 axes 作为底层合进人格 axes（人格优先），供 buildPersonaPrompt 渲染风格档案。
+function withSkuAxes(persona, skuAxes) {
+  if (!skuAxes) return persona;
+  const axes = mergeAxes(skuAxes, persona && persona.axes);
+  if (persona) return { ...persona, axes };
+  return { name: '题材默认风格', axes };
 }
 
 // 思考型模型（如 GLM-4.7）正文前会长时间输出思考内容，向前端节流推送思考进度，避免界面假死在“已生成 0 字”。
@@ -753,28 +797,25 @@ router.get('/types/full', (req, res) => {
   res.json(require('../config/novelTypeData'));
 });
 
+// 番茄式多选类型 SKU 目录（频道→大类→题材 + 情节/人设/风格基调标签库）
+router.get('/types/sku', (req, res) => {
+  res.json(buildSkuCatalog());
+});
+
 // 单独生成大纲（同步返回，供前端弹窗确认使用）
 router.post('/generate-outline', auth, async (req, res) => {
   try {
-    const { novelTypeId, protagonistName, worldSetting, targetWordCount, personaId, chapterWordTarget } = req.body;
-    if (!novelTypeId) return res.status(400).json({ message: '请选择小说类型' });
+    const { novelTypeId, protagonistName, worldSetting, targetWordCount, personaId, chapterWordTarget, typeSku } = req.body;
+    if (!novelTypeId && !typeSku) return res.status(400).json({ message: '请选择小说类型' });
 
-    let type = novelTypes.find(t => t.id === novelTypeId || t.name === novelTypeId);
-    if (!type) {
-      try {
-        const typeData = require('../config/novelTypeData');
-        const allCats = [...(typeData.male || []), ...(typeData.female || [])];
-        const found = allCats.find(c => c.name === novelTypeId);
-        if (found) type = { id: novelTypeId, name: found.name, icon: found.icon, keywords: '', outline: '' };
-        else type = { id: novelTypeId, name: novelTypeId, icon: '📄', keywords: '', outline: '' };
-      } catch { type = { id: novelTypeId, name: novelTypeId, icon: '📄', keywords: '', outline: '' }; }
-    }
+    const { type, skuAxes } = resolveTypeContext(req.body);
 
     let outlinePrompt;
-    const persona = personaId ? await resolveNovelPersona(req.user.id, null, personaId) : null;
+    const rawPersona = personaId ? await resolveNovelPersona(req.user.id, null, personaId) : null;
+    const persona = withSkuAxes(rawPersona, skuAxes);
     // 大纲按每章字数估算章数并给出对应的大章节奏指导。
     const chapterWords = normalizeChapterWordTarget(chapterWordTarget);
-    outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona, chapterWords);
+    outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona, chapterWords, type);
 
     const systemPrompt = `你是一位专业的小说大纲策划师。${buildPersonaPrompt(persona, { includeDeslop: false })}`;
 
@@ -855,14 +896,15 @@ router.post('/generate-outline', auth, async (req, res) => {
 // 生成页使用的初始故事蓝图：在创建小说前确认，不写入数据库，不会静默改变剧情。
 router.post('/generate-blueprint', auth, async (req, res) => {
   try {
-    const { novelTypeId, protagonistName, worldSetting, targetWordCount, outline, personaId, chapterWordTarget } = req.body || {};
-    if (!novelTypeId || !String(outline || '').trim()) return res.status(400).json({ message: '请先提供小说类型和大纲' });
+    const { novelTypeId, protagonistName, worldSetting, targetWordCount, outline, personaId, chapterWordTarget, typeSku } = req.body || {};
+    if ((!novelTypeId && !typeSku) || !String(outline || '').trim()) return res.status(400).json({ message: '请先提供小说类型和大纲' });
+    const { type: resolvedType, skuAxes } = resolveTypeContext(req.body);
     const target = Number(targetWordCount) || 50000;
     const chapterWords = normalizeChapterWordTarget(chapterWordTarget);
-    const persona = await resolveNovelPersona(req.userId, null, personaId);
+    const persona = withSkuAxes(await resolveNovelPersona(req.userId, null, personaId), skuAxes);
     const totalChapters = Math.max(1, Math.ceil(target / chapterWords));
     const blueprintRequirements = getOutlineRequirements(target, chapterWords);
-    const prompt = `请为一部${novelTypeId}长篇小说制定“初始故事蓝图”，用于用户确认后再开始正文。蓝图必须补足大纲中没有展开的主要人物支线、主线侧枝、阶段目标、阶段阻力和可选反转，但不得违背大纲、世界观或已经确定的结局。不要把具体正文写进蓝图，也不要把每一章写成流水账。
+    const prompt = `请为一部${resolvedType.name}长篇小说制定“初始故事蓝图”，用于用户确认后再开始正文。蓝图必须补足大纲中没有展开的主要人物支线、主线侧枝、阶段目标、阶段阻力和可选反转，但不得违背大纲、世界观或已经确定的结局。不要把具体正文写进蓝图，也不要把每一章写成流水账。
 
 【主角】${protagonistName || '未设定'}
 【世界观】${worldSetting || '由大纲决定'}
@@ -965,26 +1007,16 @@ ${String(outline).slice(0, 12000)}
 router.post('/generate', auth, async (req, res) => {
   try {
 
-    let { novelTypeId, protagonistName, worldSetting, targetWordCount, personaId, storyBlueprint } = req.body;
-    if (!novelTypeId) return res.status(400).json({ message: '请选择小说类型' });
+    let { novelTypeId, protagonistName, worldSetting, targetWordCount, personaId, storyBlueprint, typeSku } = req.body;
+    if (!novelTypeId && !typeSku) return res.status(400).json({ message: '请选择小说类型' });
     targetWordCount = Number(targetWordCount) || 50000;
     // 每章字数是整本模式可选参数：影响大纲规模、章节计划、输出 token 预算
     // 和兜底计划。未传时维持 3000 字/章的旧口径。
     const chapterWordTarget = isFiniteChapterWordTarget(req.body.chapterWordTarget)
       ? normalizeChapterWordTarget(req.body.chapterWordTarget)
       : 3000;
-    // 支持新旧两种类型系统：先用旧 ID 查找，失败则用名称匹配
-    let type = novelTypes.find(t => t.id === novelTypeId || t.name === novelTypeId);
-    if (!type) {
-      // 从 full type data 中获取名称作为 fallback
-      try {
-        const typeData = require('../config/novelTypeData');
-        const allCats = [...(typeData.male || []), ...(typeData.female || [])];
-        const found = allCats.find(c => c.name === novelTypeId);
-        if (found) type = { id: novelTypeId, name: found.name, icon: found.icon, keywords: '', outline: '' };
-        else type = { id: novelTypeId, name: novelTypeId, icon: '📄', keywords: '', outline: '' };
-      } catch { type = { id: novelTypeId, name: novelTypeId, icon: '📄', keywords: '', outline: '' }; }
-    }
+    // 类型上下文解析：优先番茄式多选 typeSku，兼容旧 novelTypeId（内部已含多级匹配与回落）
+    const { type, skuAxes } = resolveTypeContext(req.body);
 
     const mode = req.body.mode || 'book';
     const isBook = mode === 'book';
@@ -994,7 +1026,8 @@ router.post('/generate', auth, async (req, res) => {
     const novel = new Novel({
       userId: req.userId,
       title: `${type.name}：${protagonistName || '未命名'}的传奇`,
-      novelTypeId, novelTypeName: type.name,
+      novelTypeId: novelTypeId || type.id, novelTypeName: type.name,
+      typeSku: typeSku && typeof typeSku === 'object' ? typeSku : undefined,
       protagonistName: protagonistName || '', worldSetting: worldSetting || '',
       targetWordCount,
       chapterWordTarget,
@@ -1022,7 +1055,7 @@ router.post('/generate', auth, async (req, res) => {
         console.error('加载写作人格失败:', e.message);
       }
     }
-    let systemPrompt = buildSystemPrompt(novelTypeId, undefined, persona);
+    let systemPrompt = buildSystemPrompt(novelTypeId, undefined, withSkuAxes(persona, skuAxes), type);
 
 
     // 类型模板匹配 — 先推断 gender 重建系统提示，再注入动态模板
@@ -1031,7 +1064,7 @@ router.post('/generate', auth, async (req, res) => {
       if (matchedTmpls.length > 0) {
         const tmpl = matchedTmpls[0];
         // 根据匹配到的 gender 重新构建系统提示（男女频写作指导不同）
-        const baseSys = buildSystemPrompt(novelTypeId, tmpl.gender || 'male', persona);
+        const baseSys = buildSystemPrompt(novelTypeId, tmpl.gender || 'male', withSkuAxes(persona, skuAxes), type);
 
         const genderTag = tmpl.gender === 'female' ? '女频' : tmpl.gender === 'unisex' ? '通用' : '男频';
 
@@ -1490,7 +1523,11 @@ router.post('/continue/:novelId', auth, async (req, res) => {
     // Older novels may have a cached system prompt created before genre
     // contracts were introduced. Append the current contract so continuation
     // and regeneration do not silently fall back to the shared AI voice.
-    const cachedSystemPrompt = novel.generationContext || buildSystemPrompt(novel.novelTypeId, undefined, novel.writingPersonaSnapshot);
+    // 从 novel 重算类型上下文与风格轴（新作品携带 typeSku，旧作品回落 novelTypeId）
+    const { type: contType, skuAxes: contAxes } = resolveTypeContext(
+      novel.typeSku ? { typeSku: novel.typeSku, novelTypeId: novel.novelTypeId } : { novelTypeId: novel.novelTypeId }
+    );
+    const cachedSystemPrompt = novel.generationContext || buildSystemPrompt(novel.novelTypeId, undefined, withSkuAxes(persona || novel.writingPersonaSnapshot, contAxes), contType);
     const systemPrompt = `${cachedSystemPrompt}\n\n${buildGenreContract(novel.novelTypeId || novel.novelTypeName, null)}`;
     const typeName = novel.novelTypeName || '未知';
     const protagonistName = novel.protagonistName || '';
@@ -2250,20 +2287,24 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
     const chNum = Number(req.params.chapterNumber);
     const { wordCount, notes } = req.body;
     const persona = await resolveNovelPersona(req.userId, novel);
+    const { type: ccType, skuAxes: ccAxes } = resolveTypeContext(
+      novel.typeSku ? { typeSku: novel.typeSku, novelTypeId: novel.novelTypeId } : { novelTypeId: novel.novelTypeId }
+    );
+    const personaStyle = withSkuAxes(persona, ccAxes);
 
     let chapter = novel.chapters.find(c => c.chapterNumber === chNum);
     let systemPrompt, userPrompt;
 
     if (chapter) {
       const existing = (chapter.content || '').slice(-2000);
-      systemPrompt = `${buildSystemPrompt(novel.novelTypeId, undefined, persona)}\n\n你是一位专业的小说续写专家，请接着用户已有的章节内容继续往下写，保持风格一致。`;
+      systemPrompt = `${buildSystemPrompt(novel.novelTypeId, undefined, personaStyle, ccType)}\n\n你是一位专业的小说续写专家，请接着用户已有的章节内容继续往下写，保持风格一致。`;
       userPrompt = `以下是该章节已有的结尾部分：\n\n${existing}\n\n请接着上面的内容继续往下写。\n${notes ? '写作方向/备注：' + notes : '保持原有风格继续推进剧情。'}\n目标字数：约${wordCount || 2000}字。\n请直接输出续写内容，不要重复已有内容。`;
     } else {
       const lastCh = novel.chapters[novel.chapters.length - 1];
       const lastContent = lastCh ? (lastCh.content || '').slice(-1500) : '（故事开始）';
       chapter = { chapterNumber: chNum, title: formatChapterTitle(chNum, deriveLocalChapterTitle({ notes })), content: '', wordCount: 0 };
       novel.chapters.push(chapter);
-      systemPrompt = `${buildSystemPrompt(novel.novelTypeId, undefined, persona)}\n\n你是一位专业的小说家，请接着用户已有的小说内容创作下一章，保持风格一致。`;
+      systemPrompt = `${buildSystemPrompt(novel.novelTypeId, undefined, personaStyle, ccType)}\n\n你是一位专业的小说家，请接着用户已有的小说内容创作下一章，保持风格一致。`;
       userPrompt = `以下是上一章的结尾部分：\n\n${lastContent}\n\n请接着上面的内容创作第${chNum}章。\n${notes ? '写作方向/备注：' + notes : '保持原有风格继续推进剧情。'}\n目标字数：约${wordCount || 2000}字。\n请直接输出章节内容。`;
     }
 

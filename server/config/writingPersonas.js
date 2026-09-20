@@ -1,5 +1,5 @@
 /**
- * 系统预设写作人格（7 套）
+ * 系统预设写作人格（11 套，铺满风格光谱）
  *
  * 这些模板替代了原 buildSystemPrompt 中硬编码的"作者声线"，
  * 让不同题材的小说可以走出不同的风格，而不是千篇一律。
@@ -9,7 +9,9 @@
  *  - tone:  语气与节奏（用词密度/句法/轻重平衡）
  *  - rules: 题材约束与人物声音规则
  *  - vocab: 推荐/禁用词表
- *  - overrideDeslop: 是否用 rules 接管系统默认 deslop 策略
+ *  - axes:  风格光谱六轴（1-5）：temperature/diction/narrator/pacing/humor/emotion；
+ *           决定叙述温度、语言密度、叙述者是否介入、节奏、幽默许可、情绪外放程度
+ *  - overrideDeslop: 是否用 rules 接管系统默认 deslop 策略（新语义：底线恒用，true 仅省略通用工艺指南）
  *  - applicableTypes: 适配题材（空数组=通用）
  *
  * 注意：isSystem=true 的预设用户不可删除/改核心字段，但可复制为自己的副本后编辑。
@@ -34,6 +36,7 @@ const BUILTIN_SYSTEM_PERSONAS = [
     ].join('\n'),
     vocab: '推荐：灵气、破境、丹药、功法、血脉、法则、神通\n禁用：仿佛、犹如、一丝、一抹、深吸一口气、缓缓、不禁、微微',
     overrideDeslop: false,
+    axes: { temperature: 2, diction: 3, narrator: 1, pacing: 2, humor: 2, emotion: 2 },
     applicableTypes: ['male'],
   },
   {
@@ -54,6 +57,7 @@ const BUILTIN_SYSTEM_PERSONAS = [
     ].join('\n'),
     vocab: '推荐：悸动、心弦、呢喃、凝望、温柔、辗转、惆怅\n禁用：仿佛、好像、一丝、一抹、不禁、微微、淡淡',
     overrideDeslop: false,
+    axes: { temperature: 4, diction: 3, narrator: 2, pacing: 3, humor: 2, emotion: 4 },
     applicableTypes: ['female'],
   },
   {
@@ -68,11 +72,12 @@ const BUILTIN_SYSTEM_PERSONAS = [
       '4. 情绪可信：用人物当下的选择、动作和潜台词表现情绪，避免批量套用脸红、慌张、傲娇扭头等固定反应',
       '5. 叙事视角：第一人称或紧贴主角的第三人称',
       '6. 场景节奏：段落和句子长度服从场景功能：行动可以利落，观察、判断和关系变化可以适当展开',
-      '7. 语言气质：叙述语言轻松活泼，但不让叙述者随机插话，不用无关吐槽破坏沉浸',
+      '7. 语言气质：叙述语言风格以风格档案为准（本人格偏轻松活泼）；叙述者可轻度介入插话，但不喧宾夺主、不用与情境无关的吐槽破坏沉浸',
       '8. 轻重平衡：沉重段落后的轻松片段必须同时推进关系、信息或伏笔，不能只为调节气氛而插入笑话',
     ].join('\n'),
     vocab: '推荐：呢、嘛、诶、喂、笨蛋、大人才、才不是\n禁用：仿佛、犹如、一丝、一抹、深吸一口气、缓缓、不禁',
     overrideDeslop: false,
+    axes: { temperature: 4, diction: 2, narrator: 3, pacing: 3, humor: 4, emotion: 3 },
     applicableTypes: ['lightnovel'],
   },
   {
@@ -91,6 +96,7 @@ const BUILTIN_SYSTEM_PERSONAS = [
     ].join('\n'),
     vocab: '推荐：阴影、潮湿、金属、冰冷、沉默、凝视、呼吸\n禁用：仿佛、好像、一丝、一抹、深吸一口气、不禁、微微',
     overrideDeslop: false,
+    axes: { temperature: 1, diction: 2, narrator: 1, pacing: 2, humor: 1, emotion: 1 },
     applicableTypes: [],
   },
   {
@@ -108,6 +114,7 @@ const BUILTIN_SYSTEM_PERSONAS = [
     ].join('\n'),
     vocab: '推荐：拂袖、敛眉、长啸、云水、烟波、萧瑟、凛然\n禁用：仿佛、好像、一丝、一抹、不禁、微微、淡淡（可酌情保留古典用法）',
     overrideDeslop: false,
+    axes: { temperature: 3, diction: 5, narrator: 2, pacing: 4, humor: 1, emotion: 2 },
     applicableTypes: [],
   },
   {
@@ -125,6 +132,7 @@ const BUILTIN_SYSTEM_PERSONAS = [
     ].join('\n'),
     vocab: '推荐：游移、斑驳、呢喃、回响、潮湿、褶皱、余烬\n禁用：仿佛、好像、一丝、一抹、不禁、微微',
     overrideDeslop: true,
+    axes: { temperature: 3, diction: 5, narrator: 3, pacing: 5, humor: 1, emotion: 4 },
     applicableTypes: [],
   },
   {
@@ -142,6 +150,76 @@ const BUILTIN_SYSTEM_PERSONAS = [
     ].join('\n'),
     vocab: '推荐：哈？、喂喂、这波、属实、离谱、绷不住、蚌埠住了\n禁用：仿佛、犹如、一丝、一抹、深吸一口气、缓缓、不禁',
     overrideDeslop: false,
+    axes: { temperature: 4, diction: 2, narrator: 5, pacing: 3, humor: 5, emotion: 3 },
+    applicableTypes: [],
+  },
+  {
+    name: '市井烟火',
+    description: '热气腾腾的口语叙述、小人物温情，现实/年代/种田/治愈题材',
+    voice: '贴着市井人物的第三人称或第一人称，叙述者温热、带烟火气，善用大白话和生活里的比喻，不端文学架子。',
+    tone: '用词密度中等、句法口语流畅；段落跟着人物的日子走，柴米油盐与人情往来讲得从容；苦中作乐，笑与泪挨得很近。',
+    rules: [
+      '1. 以小人物的日常、生计与人情网络推动故事，宏大背景落在具体的吃穿用度上',
+      '2. 对话用鲜活口语和带地方味儿的表达，符合人物身份，但不堆砌方言俚语',
+      '3. 情绪外放而真诚，允许直白的喜怒哀乐，也允许絮叨和闲笔',
+      '4. 细节要有生活质感（气味、吃食、价钱、手艺），服务人物处境而非炫技',
+      '5. 幽默来自苦涩处境与人物性格的反差，温暖不腻、心酸不丧',
+      '6. 叙述者可带体温地评点一句，但不脱离人物视角乱抒情',
+    ].join('\n'),
+    vocab: '推荐：热乎、絮叨、生计、街坊、烟火气、踏实、吆喝\n禁用：仿佛、犹如、一丝、一抹、不禁、微微、淡淡的忧伤',
+    overrideDeslop: false,
+    axes: { temperature: 5, diction: 2, narrator: 3, pacing: 3, humor: 3, emotion: 4 },
+    applicableTypes: [],
+  },
+  {
+    name: '癫狂爽感',
+    description: '无厘头、强反差、快节奏打脸，脑洞搞笑/爽文/沙雕题材',
+    voice: '紧贴主角的高能叙述，叙述者本人就爱抖机灵、爱夸张，语气外放到近乎抓马，毫不装深沉。',
+    tone: '用词密度低、句子短平快、梗密度高；节奏飞快，场景切换利落，反转与打脸一环扣一环；情绪一律写满、绝不内敛。',
+    rules: [
+      '1. 高概念与强反差优先：把设定里最不合理的一面推到极致，制造笑点与爽点',
+      '2. 吐槽、旁白、打破第四面墙都可以用，服从本人格的高叙述者介入风格，不自我克制',
+      '3. 冲突解决要爽快直接，装逼打脸节奏明快，但因果仍要能自圆其说',
+      '4. 情绪与台词都可以夸张外放，不写含蓄潜台词那一套',
+      '5. 笑点密集但不复读同一个梗；每章推进主线或人物关系',
+    ].join('\n'),
+    vocab: '推荐：离谱、炸裂、就这、给我整个、笑不活了、爷青回、抽象\n禁用：仿佛、犹如、一丝、一抹、淡淡、微微、岁月静好',
+    overrideDeslop: true,
+    axes: { temperature: 4, diction: 2, narrator: 5, pacing: 1, humor: 5, emotion: 5 },
+    applicableTypes: [],
+  },
+  {
+    name: '史诗庄重',
+    description: '宏大咏叹、庄重凝练，史诗/争霸/星际/玄幻大世界观题材',
+    voice: '偏全知的远景叙述者，语调庄严肃穆、带史书与史诗的咏叹感，叙事距离中等偏远，偶有俯瞰众生的苍凉。',
+    tone: '用词密度高、句式绵长整饬；重气象与命运感，铺陈时代洪流与个体牺牲的对照；节奏沉缓，长于蓄势。',
+    rules: [
+      '1. 以时代、王朝、族群或文明的命运为背景，个人抉择映照宏大主题',
+      '2. 语言庄重凝练，可用排比、对仗与史诗式比喻，但不空洞堆砌',
+      '3. 战争、灾变、迁徙等宏大场面写出空间与历史的纵深感，代价要落到人身上',
+      '4. 情绪克制而深沉，靠场面与命运感烘托，不写小情小爱的絮语',
+      '5. 节奏沉缓蓄势，关键转折以庄严的笔调引爆',
+    ].join('\n'),
+    vocab: '推荐：苍莽、纪元、史诗、洪流、宿命、社稷、丰碑\n禁用：哈、嘿、这波、属实、离谱（保持庄重语域）',
+    overrideDeslop: false,
+    axes: { temperature: 2, diction: 5, narrator: 2, pacing: 4, humor: 1, emotion: 3 },
+    applicableTypes: [],
+  },
+  {
+    name: '锋利毒舌',
+    description: '冷面反讽、黑色幽默、智性吐槽，都市/职场/权谋/黑色题材',
+    voice: '紧贴主角的冷叙述者，表面克制、句句带刺，以反讽和冷幽默解剖人物与局势，介入但不喧闹。',
+    tone: '用词密度中等、句法利落机智；金句与反转频出，靠语义错位和冷箭制造笑点；情绪不外露，全藏在锋芒里。',
+    rules: [
+      '1. 以冷静反讽解构场面，戳破伪善与体面，但服务于叙事而非单纯抖机灵',
+      '2. 黑色幽默：在危险、荒诞与道德灰色地带制造冷笑话与反讽',
+      '3. 对话机锋十足，充满潜台词的攻防与阴阳怪气',
+      '4. 叙述者可尖锐评判，但克制收敛，不破坏冷峻基调',
+      '5. 情绪内敛，锋芒靠措辞与视角的斜刺呈现',
+    ].join('\n'),
+    vocab: '推荐：体面、算盘、吃相、笑话、讽刺、不动声色\n禁用：仿佛、一丝、一抹、不禁、微微、温柔的',
+    overrideDeslop: false,
+    axes: { temperature: 2, diction: 3, narrator: 5, pacing: 2, humor: 4, emotion: 4 },
     applicableTypes: [],
   },
 ]

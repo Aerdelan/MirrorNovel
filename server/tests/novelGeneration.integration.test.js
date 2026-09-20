@@ -171,6 +171,8 @@ const aiServiceMock = {
   buildOptimizeAnalysisPrompt: () => '',
   buildOptimizeChapterPrompt: () => '',
   normalizeChapterWordTarget: realAiService.normalizeChapterWordTarget,
+  // 路由内 withSkuAxes 需要真实的六轴合并函数（纯逻辑、无 IO），沿用真实实现。
+  mergeAxes: realAiService.mergeAxes,
   extractChapterSummary: (content) => String(content || '').slice(-120),
   resolveApiConfig: () => ({ provider: 'isolated-test' }),
   countTokens: (content) => String(content || '').length,

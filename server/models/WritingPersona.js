@@ -26,6 +26,10 @@ const writingPersonaSchema = new mongoose.Schema({
   // 是否覆盖默认 deslop（false=保留系统去AI化策略；true=用本模板的 rules 接管）
   overrideDeslop: { type: Boolean, default: false },
 
+  // 风格光谱六轴（1-5）：temperature/diction/narrator/pacing/humor/emotion。
+  // 旧数据可为 null，回落为不注入风格档案（向后兼容）。
+  axes: { type: mongoose.Schema.Types.Mixed, default: null },
+
   // 来源：system 系统预设 / user 手动 / ai-generated AI生成
   source: { type: String, enum: ['system', 'user', 'ai-generated'], default: 'user' },
 

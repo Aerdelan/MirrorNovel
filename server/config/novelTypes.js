@@ -5,6 +5,7 @@
 const novelTypes = [
   {
     id: 'xianxia',
+    axes: { temperature: 3, diction: 4, narrator: 2, pacing: 2, humor: 2, emotion: 3 },
     name: '玄幻修仙',
     icon: '🔮',
     keywords: '穿越, 重生, 修仙, 渡劫, 飞升, 法宝, 丹药, 灵脉, 宗门, 秘境, 天材地宝, 灵兽, 功法, 元婴, 化神',
@@ -16,6 +17,7 @@ const novelTypes = [
   },
   {
     id: 'urban',
+    axes: { temperature: 3, diction: 2, narrator: 2, pacing: 2, humor: 3, emotion: 3 },
     name: '都市异能',
     icon: '🏙️',
     keywords: '都市, 异能, 隐藏身份, 商战, 超能力, 科技, 豪门, 保镖, 医生, 学生, 回归, 兵王',
@@ -27,6 +29,7 @@ const novelTypes = [
   },
   {
     id: 'scifi',
+    axes: { temperature: 2, diction: 3, narrator: 1, pacing: 2, humor: 2, emotion: 3 },
     name: '科幻未来',
     icon: '🚀',
     keywords: '星际, 机甲, 未来, 人工智能, 外星, 时间旅行, 末世, 基因改造, 虚拟现实, 飞船, 外星文明',
@@ -38,6 +41,7 @@ const novelTypes = [
   },
   {
     id: 'wuxia',
+    axes: { temperature: 3, diction: 4, narrator: 2, pacing: 2, humor: 2, emotion: 3 },
     name: '武侠江湖',
     icon: '⚔️',
     keywords: '江湖, 武林, 剑客, 恩怨, 秘籍, 门派, 侠客, 忠义, 情仇, 武功, 内力, 轻功',
@@ -49,6 +53,7 @@ const novelTypes = [
   },
   {
     id: 'mystery',
+    axes: { temperature: 1, diction: 3, narrator: 1, pacing: 2, humor: 1, emotion: 2 },
     name: '悬疑推理',
     icon: '🔍',
     keywords: '悬疑, 推理, 犯罪, 侦探, 密室, 连环案, 心理, 灵异, 反转, 诡计, 线索, 真相',
@@ -60,6 +65,7 @@ const novelTypes = [
   },
   {
     id: 'romance',
+    axes: { temperature: 4, diction: 3, narrator: 2, pacing: 3, humor: 3, emotion: 4 },
     name: '言情恋爱',
     icon: '💕',
     keywords: '恋爱, 甜宠, 虐恋, 总裁, 校园, 青梅竹马, 破镜重圆, 暗恋, 闪婚, 契约, 禁忌, 姐弟恋',
@@ -71,6 +77,7 @@ const novelTypes = [
   },
   {
     id: 'historical',
+    axes: { temperature: 2, diction: 4, narrator: 1, pacing: 3, humor: 1, emotion: 3 },
     name: '历史穿越',
     icon: '🏛️',
     keywords: '历史, 穿越, 帝王, 将相, 权谋, 宫斗, 争霸, 改革, 战争, 谋略, 篡位, 明君',
@@ -83,6 +90,7 @@ const novelTypes = [
   // ====== 轻小说（ACGN 日式风格） ======
   {
     id: 'lightnovel_isekai',
+    axes: { temperature: 4, diction: 2, narrator: 3, pacing: 2, humor: 4, emotion: 3 },
     name: '异世界转生',
     icon: '🌍',
     keywords: '异世界, 转生, 穿越异世界, 魔法, 剑与魔法, 冒险者公会, 勇者, 魔王, 技能, 等级, 职业, 精灵, 兽人, 龙族, 转生者, 外挂, 女神祝福',
@@ -94,6 +102,7 @@ const novelTypes = [
   },
   {
     id: 'lightnovel_school',
+    axes: { temperature: 4, diction: 2, narrator: 2, pacing: 3, humor: 4, emotion: 4 },
     name: '校园恋爱',
     icon: '🏫',
     keywords: '学园, 恋爱, 青梅竹马, 转校生, 学生会, 社团, 学园祭, 告白, 三角关系, 暧昧, 校服, 教室, 放学后',
@@ -105,6 +114,7 @@ const novelTypes = [
   },
   {
     id: 'lightnovel_fantasy',
+    axes: { temperature: 3, diction: 3, narrator: 2, pacing: 3, humor: 3, emotion: 4 },
     name: '奇幻冒险',
     icon: '⚔️',
     keywords: '奇幻, 冒险, 魔法, 迷宫, 遗迹, 传说, 神器, 龙, 英雄, 伙伴, 旅程, 王国, 骑士, 魔法使',
@@ -116,6 +126,7 @@ const novelTypes = [
   },
   {
     id: 'lightnovel_slice',
+    axes: { temperature: 5, diction: 2, narrator: 2, pacing: 4, humor: 4, emotion: 4 },
     name: '日常系',
     icon: '☕',
     keywords: '日常, 治愈, 温馨, 慢生活, 美食, 小镇, 青春, 成长, 友情, 咖啡厅, 书店, 慢节奏',
@@ -127,6 +138,7 @@ const novelTypes = [
   },
   {
     id: 'lightnovel_battle',
+    axes: { temperature: 3, diction: 2, narrator: 2, pacing: 1, humor: 2, emotion: 5 },
     name: '战斗异能',
     icon: '💥',
     keywords: '战斗, 异能, 超能力, 觉醒, 格斗, 对决, 学园战斗, 排名, 进化, 组织, 秘密, 能力者',
@@ -138,6 +150,7 @@ const novelTypes = [
   },
   {
     id: 'lightnovel_scifi',
+    axes: { temperature: 2, diction: 3, narrator: 2, pacing: 2, humor: 3, emotion: 3 },
     name: '科幻未来',
     icon: '🤖',
     keywords: '未来, 科幻, AI, 机器人, 虚拟现实, 宇宙, 机甲, 赛博朋克, 反乌托邦, 改造人, 黑客',

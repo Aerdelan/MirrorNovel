@@ -14,12 +14,47 @@
  <button :class="{ active: gender === 'male' }" :disabled="generationBusy" @click="gender='male'">{{ $t('generate.maleFreq') }}</button>
  <button :class="{ active: gender === 'female' }" :disabled="generationBusy" @click="gender='female'">{{ $t('generate.femaleFreq') }}</button>
  </div>
- <div class="type-grid">
- <div v-for="cat in currentCats" :key="cat.name" class="type-card" :class="{ selected: selectedType === cat.name, locked: generationBusy }" @click="!generationBusy && (selectedType = cat.name)">
- <span class="type-icon">{{ cat.icon }}</span>
- <span class="type-name">{{ $tn(cat.name) }}</span>
+ <div v-if="!skuCatalog" class="sku-loading">{{ $t('common.loading') }}</div>
+ <template v-else>
+ <div class="sku-layer">
+ <div class="sku-layer-label">{{ $t('generate.skuCategory') }}</div>
+ <div class="sku-chips">
+ <button v-for="cat in skuCats" :key="cat.id" type="button" class="sku-chip" :class="{ selected: skuCategory === cat.id, locked: generationBusy }" @click="pickSkuCategory(cat)">
+ <span class="sku-chip-icon">{{ cat.icon }}</span>{{ $tn(cat.name) }}
+ </button>
  </div>
  </div>
+ <div v-if="skuThemes.length" class="sku-layer">
+ <div class="sku-layer-label">{{ $t('generate.skuTheme') }}</div>
+ <div class="sku-chips">
+ <button v-for="t in skuThemes" :key="t.id" type="button" class="sku-chip" :class="{ selected: skuTheme === t.id, locked: generationBusy }" @click="pickSkuTheme(t)">{{ $tn(t.name) }}</button>
+ </div>
+ </div>
+ <div v-if="skuCatalog.tones && skuCatalog.tones.length" class="sku-layer">
+ <div class="sku-layer-label">{{ $t('generate.skuTones') }} <span class="sku-multi-hint">{{ $t('generate.skuMultiHint') }}</span></div>
+ <div class="sku-chips">
+ <button v-for="t in skuCatalog.tones" :key="t.id" type="button" class="sku-chip tone" :class="{ selected: skuTones.includes(t.id), locked: generationBusy }" @click="!generationBusy && toggleSkuArr(skuTones, t.id)">{{ $tt(t.name) }}</button>
+ </div>
+ </div>
+ <div v-if="skuCatalog.elements && skuCatalog.elements.length" class="sku-layer">
+ <div class="sku-layer-label">{{ $t('generate.skuElements') }} <span class="sku-multi-hint">{{ $t('generate.skuMultiHint') }}</span></div>
+ <div class="sku-chips sku-chips-scroll">
+ <button v-for="e in skuCatalog.elements" :key="e.id" type="button" class="sku-chip" :class="{ selected: skuElements.includes(e.id), locked: generationBusy }" @click="!generationBusy && toggleSkuArr(skuElements, e.id)">{{ $tt(e.name) }}</button>
+ </div>
+ </div>
+ <div v-if="skuCatalog.personas && skuCatalog.personas.length" class="sku-layer">
+ <div class="sku-layer-label">{{ $t('generate.skuPersonas') }} <span class="sku-multi-hint">{{ $t('generate.skuMultiHint') }}</span></div>
+ <div class="sku-chips sku-chips-scroll">
+ <button v-for="p in skuCatalog.personas" :key="p.id" type="button" class="sku-chip" :class="{ selected: skuCharTags.includes(p.id), locked: generationBusy }" @click="!generationBusy && toggleSkuArr(skuCharTags, p.id)">{{ $tt(p.name) }}</button>
+ </div>
+ </div>
+ <div class="sku-layer">
+ <div class="sku-layer-label">{{ $t('generate.skuCp') }}</div>
+ <div class="sku-chips">
+ <button v-for="c in SKU_CP_OPTIONS" :key="c.id" type="button" class="sku-chip" :class="{ selected: skuCp === c.id, locked: generationBusy }" @click="!generationBusy && (skuCp = (skuCp === c.id ? '' : c.id))">{{ $tt(c.name) }}</button>
+ </div>
+ </div>
+ </template>
  <div v-if="selectedType" class="type-info">{{ $t('generate.selectedType', { name: $tn(selectedType) }) }}</div>
 </div>
 
@@ -366,6 +401,22 @@
      <textarea v-model="personaForm.rules" class="textarea" rows="6" :disabled="editingPersona.isSystem" :placeholder="$t('generate.personaFormRulesPh')"></textarea>
      <div class="label-sm">{{ $t('generate.personaFormVocab') }}</div>
      <textarea v-model="personaForm.vocab" class="textarea" rows="3" :disabled="editingPersona.isSystem" :placeholder="$t('generate.personaFormVocabPh')"></textarea>
+     <label class="checkbox-row" style="margin-top:10px;">
+       <input type="checkbox" v-model="axesEnabled" :disabled="editingPersona.isSystem" />
+       <span>{{ $t('generate.personaAxesTitle') }}</span>
+     </label>
+     <div v-if="axesEnabled" class="axes-grid">
+       <div class="axes-hint">{{ $t('generate.personaAxesHint') }}</div>
+       <div v-for="ax in AXIS_DEFS" :key="ax.key" class="axis-row">
+         <div class="axis-name">{{ $t('generate.axis.' + ax.key + '.name') }}</div>
+         <div class="axis-scale">
+           <span class="axis-end low">{{ $t('generate.axis.' + ax.key + '.low') }}</span>
+           <input type="range" min="1" max="5" step="1" v-model.number="personaForm.axes[ax.key]" :disabled="editingPersona.isSystem" />
+           <span class="axis-end high">{{ $t('generate.axis.' + ax.key + '.high') }}</span>
+         </div>
+         <div class="axis-val">{{ personaForm.axes[ax.key] }}</div>
+       </div>
+     </div>
      <label class="checkbox-row" style="margin-top:8px;">
        <input type="checkbox" v-model="personaForm.overrideDeslop" :disabled="editingPersona.isSystem" />
        <span>{{ $t('generate.personaOverrideDeslop') }}</span>
@@ -435,6 +486,64 @@ const selectedType = ref('')
 const fullTypes = ref({ male: [], female: [] })
 const currentCats = computed(() => fullTypes.value[gender.value] || [])
 
+// ---- 番茄式「多选类型 SKU」（频道→大类→题材 单选逐级 + 情节元素/人设/风格基调 多选 + 关系向）----
+const skuCatalog = ref(null)
+const skuCategory = ref('')   // 大类 id
+const skuTheme = ref('')      // 题材 id
+const skuElements = ref([])   // 情节元素 id[]
+const skuCharTags = ref([])   // 人设标签 id[]
+const skuTones = ref([])      // 风格基调 id[]
+const skuCp = ref('')         // 关系向 id
+const SKU_CP_OPTIONS = [
+  { id: 'none', name: '无CP' },
+  { id: 'single', name: '单女主/单男主' },
+  { id: 'multi', name: '多女主/后宫' },
+  { id: 'danmei', name: '双男主' },
+  { id: 'yuri', name: '双女主' },
+]
+const skuCats = computed(() => skuCatalog.value?.tree?.[gender.value] || [])
+const skuCurCat = computed(() => skuCats.value.find(c => c.id === skuCategory.value) || null)
+const skuThemes = computed(() => skuCurCat.value?.themes || [])
+
+function pickSkuCategory(cat) {
+  if (generationBusy.value) return
+  skuCategory.value = cat.id
+  skuTheme.value = ''
+  syncSelectedTypeName()
+}
+function pickSkuTheme(t) {
+  if (generationBusy.value) return
+  skuTheme.value = skuTheme.value === t.id ? '' : t.id
+  syncSelectedTypeName()
+}
+function toggleSkuArr(arr, id) {
+  const i = arr.value.indexOf(id)
+  if (i >= 0) arr.value.splice(i, 1); else arr.value.push(id)
+}
+function syncSelectedTypeName() {
+  const cat = skuCurCat.value
+  const theme = skuThemes.value.find(t => t.id === skuTheme.value)
+  selectedType.value = theme ? `${cat?.name || ''}·${theme.name}` : (cat?.name || '')
+}
+// 组装 typeSku：未选大类时不下发（后端回落 novelTypeId 兼容旧逻辑）。
+function buildTypeSku() {
+  if (!skuCategory.value) return undefined
+  return {
+    channel: gender.value,
+    category: skuCategory.value,
+    theme: skuTheme.value || undefined,
+    elements: skuElements.value.slice(),
+    personas: skuCharTags.value.slice(),
+    tones: skuTones.value.slice(),
+    cp: skuCp.value || undefined,
+  }
+}
+watch(gender, () => {
+  skuCategory.value = ''; skuTheme.value = ''
+  skuElements.value = []; skuCharTags.value = []; skuTones.value = []; skuCp.value = ''
+  selectedType.value = ''
+})
+
 const protagonistName = ref('')
 const worldSetting = ref('')
 const outline = ref('')
@@ -460,7 +569,14 @@ const selectedPersona = computed(() => personas.value.find(p => p._id === select
 const showPersonaModal = ref(false)
 // persona 编辑表单
 const editingPersona = ref(null)
-const personaForm = ref({ name: '', description: '', voice: '', tone: '', rules: '', vocab: '', overrideDeslop: false, applicableTypes: [] })
+// 风格光谱六轴（与后端 STYLE_AXES 同 key）；axesEnabled=false 时不随人格下发 axes（从题材/大类继承）。
+const AXIS_DEFS = [
+  { key: 'temperature' }, { key: 'diction' }, { key: 'narrator' },
+  { key: 'pacing' }, { key: 'humor' }, { key: 'emotion' },
+]
+function blankAxes() { return { temperature: 3, diction: 3, narrator: 3, pacing: 3, humor: 3, emotion: 3 } }
+const axesEnabled = ref(false)
+const personaForm = ref({ name: '', description: '', voice: '', tone: '', rules: '', vocab: '', overrideDeslop: false, applicableTypes: [], axes: blankAxes() })
 // AI 生成 / 从参考生成 的输入
 const aiGenInput = ref({ novelType: '', hint: '' })
 const personaBusy = ref(false)
@@ -486,14 +602,18 @@ function selectPersona(p) {
 
 function openEditPersona(p) {
  editingPersona.value = p ? { ...p } : null
+ const axes = p && p.axes ? { ...blankAxes(), ...p.axes } : blankAxes()
+ axesEnabled.value = !!(p && p.axes)
  personaForm.value = p
-   ? { name: p.name, description: p.description, voice: p.voice, tone: p.tone, rules: p.rules, vocab: p.vocab, overrideDeslop: p.overrideDeslop, applicableTypes: p.applicableTypes || [] }
-   : { name: '', description: '', voice: '', tone: '', rules: '', vocab: '', overrideDeslop: false, applicableTypes: [] }
+   ? { name: p.name, description: p.description, voice: p.voice, tone: p.tone, rules: p.rules, vocab: p.vocab, overrideDeslop: p.overrideDeslop, applicableTypes: p.applicableTypes || [], axes }
+   : { name: '', description: '', voice: '', tone: '', rules: '', vocab: '', overrideDeslop: false, applicableTypes: [], axes }
 }
 
 async function savePersona() {
- const f = personaForm.value
+ const f = { ...personaForm.value }
  if (!f.name.trim()) return alert($t('generate.personaErrName'))
+ // 未开启风格轴则不下发 axes（null），让人格从题材/大类默认继承，避免强制中值抹平类型风格。
+ f.axes = axesEnabled.value ? { ...f.axes } : null
  personaBusy.value = true
  try {
    if (editingPersona.value?._id) {
@@ -713,6 +833,7 @@ function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, per
 
  const payload = {
  novelTypeId: selectedTypeId,
+ typeSku: buildTypeSku(),
  protagonistName: charName,
  worldSetting: worldSetting,
  targetWordCount: wordCount,
@@ -803,6 +924,7 @@ function generateInitialBlueprint() {
  blueprintXhr = sse
  sse.openSSE('/api/novel/generate-blueprint', {
   novelTypeId: selectedType.value,
+  typeSku: buildTypeSku(),
   protagonistName: protagonistName.value,
   worldSetting: worldSetting.value,
   targetWordCount: targetWordCount.value,
@@ -938,6 +1060,7 @@ async function startGen() {
 
  const params = {
  novelTypeId: selectedType.value,
+ typeSku: buildTypeSku(),
  protagonistName: protagonistName.value,
  worldSetting: worldSetting.value,
  targetWordCount: targetWordCount.value,
@@ -1295,6 +1418,9 @@ onMounted(async () => {
    const data = await novelStore.fetchFullTypes()
    fullTypes.value = data
  } catch {}
+ try {
+   skuCatalog.value = await novelStore.fetchSkuCatalog()
+ } catch {}
  // 加载写作人格
  try {
    const list = await personaStore.fetchList()
@@ -1415,6 +1541,73 @@ onMounted(async () => {
  font-weight: 500;
  text-align: center;
 }
+/* --- 番茄式多选类型 SKU --- */
+.sku-loading { font-size: 13px; color: var(--text-secondary); text-align: center; padding: 12px 0; }
+.sku-layer { margin-top: 12px; }
+.sku-layer-label {
+ font-size: 12px;
+ font-weight: 600;
+ color: var(--text-secondary);
+ margin-bottom: 6px;
+}
+.sku-multi-hint {
+ font-weight: 400;
+ font-size: 11px;
+ color: var(--text-muted, #9aa);
+ margin-left: 4px;
+}
+.sku-chips {
+ display: flex;
+ flex-wrap: wrap;
+ gap: 6px;
+}
+.sku-chips-scroll {
+ max-height: 132px;
+ overflow-y: auto;
+ padding-right: 4px;
+}
+.sku-chip {
+ display: inline-flex;
+ align-items: center;
+ gap: 4px;
+ padding: 5px 10px;
+ font-size: 12px;
+ line-height: 1.2;
+ border: 1px solid var(--card-border);
+ border-radius: 999px;
+ background: var(--card);
+ color: var(--text-secondary);
+ cursor: pointer;
+ transition: all var(--transition);
+}
+.sku-chip:hover { border-color: var(--primary); }
+.sku-chip.selected {
+ border-color: var(--primary);
+ background: var(--primary-light);
+ color: var(--primary);
+ font-weight: 600;
+}
+.sku-chip.tone.selected { background: rgba(217, 138, 60, 0.14); }
+.sku-chip-icon { font-size: 14px; line-height: 1; }
+/* --- 人格风格六轴 --- */
+.axes-grid {
+ margin-top: 8px;
+ padding: 10px;
+ border: 1px dashed var(--card-border);
+ border-radius: var(--radius);
+ display: flex;
+ flex-direction: column;
+ gap: 10px;
+}
+.axes-hint { font-size: 11px; color: var(--text-secondary); }
+.axis-row { display: flex; flex-direction: column; gap: 2px; }
+.axis-name { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+.axis-scale { display: flex; align-items: center; gap: 8px; }
+.axis-scale input[type="range"] { flex: 1; }
+.axis-end { font-size: 10px; color: var(--text-muted, #9aa); white-space: nowrap; min-width: 52px; }
+.axis-end.low { text-align: left; }
+.axis-end.high { text-align: right; }
+.axis-val { font-size: 11px; color: var(--primary); font-weight: 600; text-align: right; }
 
 /* --- Mode Radios --- */
 .mode-radio-group {

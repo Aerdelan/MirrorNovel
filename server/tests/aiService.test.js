@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { streamGenerate, resolveApiConfig, MAX_GENERATION_TOKENS, extractProviderMaxTokens, getOutlineRequirements, buildOutlinePrompt, buildChapterPlan, getChapterPlanOutputTokens, buildGenreStyleContract, buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, normalizeChapterWordTarget, getFriendlyErrorMessage } = require('../services/aiService');
+const { streamGenerate, resolveApiConfig, MAX_GENERATION_TOKENS, extractProviderMaxTokens, getOutlineRequirements, buildOutlinePrompt, buildChapterPlan, getChapterPlanOutputTokens, buildGenreStyleContract, buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, normalizeChapterWordTarget, getFriendlyErrorMessage, buildSystemPrompt, mergeAxes, normalizeAxes, buildStyleProfileBlock } = require('../services/aiService');
 
 test('思考/推理参数被上游拒绝时给出可读提示（覆盖各家措辞），且不误判无关 400', () => {
   for (const message of [
@@ -421,4 +421,45 @@ test('provider 字段丢失时的容错：只要自备地址还在，就按自�
   const ollama = resolveApiConfig({ ollamaWritingModel: 'qwen2.5', ollamaBaseUrl: 'http://localhost:11434' }, 'writing');
   assert.equal(ollama.baseUrl, 'http://localhost:11434');
   assert.equal(ollama.model, 'qwen2.5');
+});
+
+// ===== 风格光谱六轴 / 风格档案系统 =====
+test('normalizeAxes 规范化为 1-5 整数、无有效值返回 null', () => {
+  assert.equal(normalizeAxes(null), null);
+  assert.equal(normalizeAxes({}), null);
+  assert.equal(normalizeAxes({ temperature: 'x' }), null);
+  const n = normalizeAxes({ temperature: 6, humor: 0.4, diction: 3 });
+  assert.equal(n.temperature, 5);   // 上限夹到 5
+  assert.equal(n.diction, 3);
+  assert.equal(n.humor, 1);         // 下限夹到 1
+});
+
+test('mergeAxes 靠后来源逐轴覆盖', () => {
+  const merged = mergeAxes({ temperature: 2, humor: 2 }, { humor: 5 });
+  assert.equal(merged.temperature, 2); // 前者保留
+  assert.equal(merged.humor, 5);       // 后者覆盖
+});
+
+test('风格档案：高幽默+介入叙述者时授权发力，且不含冷调强制', () => {
+  const persona = {
+    voice: '紧贴主角', rules: '1. 放飞',
+    axes: { humor: 5, narrator: 5, temperature: 4 },
+  };
+  const prompt = buildSystemPrompt('urban', 'male', persona);
+  // 档案块作为最高风格权威置顶
+  assert.match(prompt, /【本书风格档案 — 最高风格权威】/);
+  assert.ok(prompt.indexOf('【本书风格档案') < prompt.indexOf('【写作规则】') || prompt.indexOf('【本书风格档案') < prompt.indexOf('核心写作要求'),
+    '风格档案应优先于工艺/写作指南出现');
+  // 高幽默 / 介入叙述者被明确授权（取右端描述，偏高 5/5）
+  assert.match(prompt, /高频谐趣、梗与反差常见（偏高，5\/5）/);
+  assert.match(prompt, /介入张扬、可议论\/吐槽\/与读者互动（偏高，5\/5）/);
+  // 不再把文本拉回统一克制冷静腔
+  assert.doesNotMatch(prompt, /禁止随机走神、无关观察、强行吐槽/);
+  assert.match(prompt, /拉回与本档案相反/);
+});
+
+test('向后兼容：人格与类型都无 axes 时不注入风格档案块', () => {
+  // 用一个不存在的类型 id（无法带 axes）+ 无 axes 人格 → 无档案块
+  const prompt = buildSystemPrompt('no_such_type_zzz', 'male', { voice: 'x', tone: 'y', rules: 'z' });
+  assert.doesNotMatch(prompt, /【本书风格档案/);
 });

@@ -18,6 +18,70 @@ const MIN_CONTENT_TOKENS = 256;
 // 此时在系统提示里追加"简明思考"要求，是唯一能真正缩短思考的杠杆。
 const BRIEF_THINKING_NOTE = '\n\n【思考要求】如需思考，请保持简洁：先给结论再列必要依据，不要反复自我论证或复述题目；思考结束请立即开始输出正文。';
 
+// ===== 风格光谱六轴（style axes） =====
+// 每轴 1-5。数值只描述"风格落在光谱哪一端"，不直接等同质量好坏。
+// 优先级：人格 axes > 风格基调标签(tones) > 题材/子类型默认 axes，由 mergeAxes 依传入顺序合并。
+const STYLE_AXES = {
+  temperature: { label: '叙述温度', low: '冷峻克制、留白多、少抒情', high: '温热外放、情感直给' },
+  diction: { label: '语言密度', low: '素白简劲、动词优先、少形容', high: '浓丽铺陈、意象密集、修饰丰富' },
+  narrator: { label: '叙述者姿态', low: '隐形在场、不介入、不评论', high: '介入张扬、可议论/吐槽/与读者互动' },
+  pacing: { label: '叙事节奏', low: '短促紧绷、场景切碎、推进快', high: '舒缓绵长、从容铺展、细描慢写' },
+  humor: { label: '幽默许可', low: '正剧无谐、极少玩笑', high: '高频谐趣、梗与反差常见' },
+  emotion: { label: '情绪表达', low: '内敛、靠潜台词与动作', high: '直抒浓烈、允许情绪外溢' },
+};
+const STYLE_AXIS_KEYS = Object.keys(STYLE_AXES);
+
+/** 把任意来源的 axes 规范化为 { 轴: 1-5 整数 }；无有效值返回 null。 */
+function normalizeAxes(axes) {
+  if (!axes || typeof axes !== 'object') return null;
+  const out = {};
+  let any = false;
+  for (const key of STYLE_AXIS_KEYS) {
+    const v = Number(axes[key]);
+    if (Number.isFinite(v)) {
+      out[key] = Math.max(1, Math.min(5, Math.round(v)));
+      any = true;
+    }
+  }
+  return any ? out : null;
+}
+
+/** 合并多份 axes：按传入顺序，靠后的来源逐轴覆盖靠前（用于 人格>tones>题材 优先级）。 */
+function mergeAxes(...sources) {
+  const merged = {};
+  for (const src of sources) {
+    const n = normalizeAxes(src);
+    if (!n) continue;
+    Object.assign(merged, n);
+  }
+  return Object.keys(merged).length ? merged : null;
+}
+
+/** 单轴取值的文字描述。 */
+function describeStyleAxis(key, value) {
+  const def = STYLE_AXES[key];
+  if (!def || !Number.isFinite(value)) return '';
+  if (value <= 2) return `${def.low}（偏低，${value}/5）`;
+  if (value >= 4) return `${def.high}（偏高，${value}/5）`;
+  return `居中略偏${value < 3 ? def.low : def.high}（${value}/5）`;
+}
+
+/**
+ * 渲染"本书风格档案"块。无有效轴时返回空串（向后兼容：旧人格/旧类型不带 axes 时不注入档案）。
+ * 该块声明为最高风格权威，工艺指南与去AI味底线只能在档案许可范围内适用。
+ */
+function buildStyleProfileBlock(axes) {
+  const n = normalizeAxes(axes);
+  if (!n) return '';
+  const lines = STYLE_AXIS_KEYS.map(k => describeStyleAxis(k, n[k])).filter(Boolean);
+  if (!lines.length) return '';
+  return `【本书风格档案 — 最高风格权威】
+本书文风以下列六轴为准，全篇保持一致：
+${lines.map(l => `◇ ${l}`).join('\n')}
+下方通用叙事工艺指南与去AI味底线，只在上述档案许可的范围内适用；绝不可借"去AI味"或"写作规范"之名，把本书拉回与本档案相反的统一克制腔。`;
+}
+
+
 /**
  * 接口地址归一化：允许用户把完整的请求地址粘进"接口地址"。
  * 生成时会自动在末尾补 /chat/completions，若用户已经带上，就会拼成
@@ -185,9 +249,11 @@ function countTokens(text) {
  *   - overrideDeslop=true 时，不再追加 deslop.systemDeslopPrompt，由 persona.rules 全权接管
  *   - persona 为空时，行为与旧版完全一致（向后兼容）
  */
-function buildSystemPrompt(novelTypeId, gender, persona) {
-  const type = novelTypes.find(t => t.id === novelTypeId || t.name === novelTypeId);
+function buildSystemPrompt(novelTypeId, gender, persona, resolvedType) {
+  const type = resolvedType || novelTypes.find(t => t.id === novelTypeId || t.name === novelTypeId);
   const genreStyleContract = buildGenreStyleContract(novelTypeId, type);
+  // 风格档案：以题材/子类型默认 axes 为底，人格 axes 逐轴覆盖（mergeAxes 靠后优先）。
+  const styleProfile = buildStyleProfileBlock(mergeAxes(type && type.axes, persona && persona.axes));
 
   // ===== persona 注入分支 =====
   if (persona && (persona.voice || persona.tone || persona.rules)) {
@@ -206,34 +272,35 @@ function buildSystemPrompt(novelTypeId, gender, persona) {
       type.aiWordBank ? `题材语汇参考（只在具体语境成立时使用，禁止堆砌）：${type.aiWordBank}` : '',
     ].filter(Boolean).join('\n') : '';
 
-    // deslop 策略：默认保留系统去AI化；overrideDeslop=true 时由 persona.rules 接管
-    const deslopTail = persona.overrideDeslop
-      ? `\n\n（已启用自定义去AI化策略，遵循上方【写作规则】）`
-      : `\n\n${deslop.systemDeslopPrompt}`;
+    // 去AI化策略：底线（styleFloorPrompt）恒用；工艺指南从属于风格档案。
+    // overrideDeslop=true 时省略【通用叙事工艺指南】，只保留去AI味底线，由 persona.rules + 风格档案接管风格。
+    const guideTail = persona.overrideDeslop
+      ? `\n\n${deslop.styleFloorPrompt}\n（已启用自定义写作规则：遵循上方【写作规则】与本书风格档案，不套用通用叙事工艺指南。）`
+      : `\n\n${deslop.craftGuidePrompt}\n${deslop.styleFloorPrompt}`;
 
-    return `你是一位成熟的小说作者。请严格遵循下方给定的写作人格进行创作，在全篇保持声线一致。
+    return `你是一位成熟的小说作者。请严格遵循下方给定的风格档案与写作人格进行创作，在全篇保持声线一致。
 
-${personaBlock}
+${styleProfile ? `${styleProfile}\n\n` : ''}${personaBlock}
 
 ${typeMeta}
 
 ${genreStyleContract}
 
-请直接开始创作，从既有文本提炼叙事视角并保持一致。${deslopTail}`;
+请直接开始创作，从既有文本提炼叙事视角并保持一致。${guideTail}`;
   }
 
   // ===== 以下为旧版逻辑（无 persona 时保持兼容） =====
   if (!type) {
     return `你是一位专业的小说作者。先确认既有文本的叙事视角、叙事距离和语言气质，再沿用同一套作者声线继续创作。
 
-${deslop.systemDeslopPrompt}`;
+${styleProfile ? `${styleProfile}\n\n` : ''}${deslop.systemDeslopPrompt}`;
   }
 
   // 轻小说使用日式ACGN专属提示
   if (novelTypeId && novelTypeId.startsWith('lightnovel_')) {
     return `你是一位成熟的轻小说作者。你会从题材、人物关系和既有文本中提炼稳定的作者声线，并在全篇保持一致。
 
-题材：${type.name}（日式ACGN风格）
+${styleProfile ? `${styleProfile}\n\n` : ''}题材：${type.name}（日式ACGN风格）
 题材关键词：${type.keywords}
 题材语汇参考（只在具体语境成立时使用，禁止堆砌）：${type.aiWordBank}
 大纲参考：${type.outline}
@@ -245,7 +312,7 @@ ${deslop.systemDeslopPrompt}`;
 4. 【情绪可信】用人物当下的选择、动作和潜台词表现情绪，避免批量套用脸红、慌张、傲娇扭头等固定反应
 5. 【叙事视角】第一人称或紧贴主角的第三人称
 6. 【场景节奏】段落和句子长度服从场景功能：行动可以利落，观察、判断和关系变化可以适当展开
-7. 【语言气质】叙述语言轻松活泼，但不让叙述者随机插话，不用无关吐槽破坏沉浸
+7. 【语言气质】叙述语言风格以风格档案为准，档案未声明时保持轻松活泼；是否让叙述者介入插话服从档案的"叙述者姿态"轴
 8. 【轻重平衡】沉重段落后的轻松片段必须同时推进关系、信息或伏笔，不能只为调节气氛而插入笑话
 
 ${deslop.systemDeslopPrompt}
@@ -269,7 +336,7 @@ ${genreStyleContract}
 9. 【战斗/冲突描写】动作场面要有画面感和层次感，避免干巴巴的叙述`;
 
   return `你是一位成熟的网文作者。你会从题材、人物关系和既有文本中提炼稳定的作者声线，并在全篇保持一致。
-写作类型：${type.name}
+${styleProfile ? `\n${styleProfile}\n` : ''}写作类型：${type.name}
 写作关键词：${type.keywords}
 大纲参考：${type.outline}
 题材语汇参考（只在具体语境成立时使用，禁止堆砌）：${type.aiWordBank}
@@ -278,7 +345,7 @@ ${genreStyleContract}
 1. 按照${type.name}的题材规律创作，并遵循当前章节任务给出的目标篇幅
 2. 从既有文本提炼叙事视角、叙事距离、用词密度和句法节奏，后续章节不要随机更换作者声线
 3. 用人物的具体观察、选择、动作和潜台词承载情绪，让每个场景都产生可追踪的因果变化
-4. 段落和句长由场景决定，不设置机械比例，不为显得随意而故意走神、吐槽、硬切或制造语病
+4. 段落和句长由场景与风格档案决定，不设置机械比例
 ${genderGuide}
 
 ${genreStyleContract}
@@ -291,17 +358,20 @@ ${deslop.systemDeslopPrompt}`;
  */
 function buildPersonaPrompt(persona, options = {}) {
   if (!persona) return '';
+  const styleProfile = buildStyleProfileBlock(persona.axes);
   const blocks = [
     persona.voice ? `【作者声线】\n${persona.voice}` : '',
     persona.tone ? `【语气与节奏】\n${persona.tone}` : '',
     persona.rules ? `【写作规则】\n${persona.rules}` : '',
     persona.vocab ? `【用词表】\n${persona.vocab}` : '',
   ].filter(Boolean);
-  if (!blocks.length) return '';
-  const deslopNote = options.includeDeslop === false ? '' : persona.overrideDeslop
-    ? '\n【去AI化策略】仅遵循上方写作规则，不套用系统统一去AI化文风。'
-    : `\n${deslop.systemDeslopPrompt}`;
-  return `\n\n【用户选择的写作人格：${persona.name || '自定义模板'}】\n${blocks.join('\n\n')}${deslopNote}`;
+  const leading = [styleProfile, ...blocks].filter(Boolean);
+  if (!leading.length) return '';
+  // includeDeslop===false：策划类提示（大纲/蓝图）只需人格声线，不注入正文文风指南。
+  const guide = options.includeDeslop === false ? '' : persona.overrideDeslop
+    ? `\n${deslop.styleFloorPrompt}\n【去AI化策略】仅遵循上方写作规则与风格档案，不套用通用叙事工艺指南。`
+    : `\n${deslop.craftGuidePrompt}\n${deslop.styleFloorPrompt}`;
+  return `\n\n【本书风格与写作人格：${persona.name || '自定义模板'}】\n${leading.join('\n\n')}${guide}`;
 }
 
 function buildGenreStyleContract(novelTypeId, type) {
@@ -321,7 +391,7 @@ function buildGenreStyleContract(novelTypeId, type) {
   if (/lightnovel|isekai|school|轻小说|异世界/.test(id)) return `【题材叙事契约：轻小说/ACGN】
 以角色关系、具体处境和轻重反差形成节奏，不依赖统一吐槽、口头禅或模板化萌反应。冒险、校园、社团和共同生活都必须推进关系、信息或规则理解；重大情绪前允许轻松段落积累记忆，避免每章都用相同的笑点和收尾方式。`;
   return `【题材叙事契约】
-请从当前题材、世界规则、人物关系和大纲中提炼本书独有的叙事节奏。不要套用统一的网文腔、固定转折句、固定情绪词或相同的章节收尾。先确定本书的叙事距离、信息释放速度、感官重点、对白密度和低压场景形态，并在全文保持这一组特征。`;
+从当前题材、世界规则、人物关系和大纲中提炼本书独有的叙事特征（叙事距离、信息释放速度、感官重点、对白密度、低压场景形态），并在全文保持这一组特征。具体调到冷峻还是温热、克制还是外放、素白还是浓丽，一律以上方本书风格档案为准，本契约不把本书预设成某一种统一文风。`;
 }
 
 /** 规范化每章目标字数：允许福尔摩斯式大章（1万+字），默认维持旧口径 3000。 */
@@ -375,8 +445,8 @@ ${chapterPacing}
 直接输出大纲正文，不要解释生成过程。`;
 }
 
-function buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona, chapterWordTarget) {
-  const type = novelTypes.find(t => t.id === novelTypeId);
+function buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona, chapterWordTarget, resolvedType) {
+  const type = resolvedType || novelTypes.find(t => t.id === novelTypeId);
   const requirements = getOutlineRequirements(targetWordCount, chapterWordTarget);
   return `你是一位专业的小说大纲策划师。请为一部${type ? type.name : ''}小说创作一份完整、可执行、可供分章规划使用的创作大纲。${buildPersonaPrompt(persona, { includeDeslop: false })}
 
@@ -1370,7 +1440,7 @@ async function humanizeRewrite(text, apiConfig, onChunk) {
 4. 人物声音来自其背景、目标、情绪和彼此关系，不统一添加口头禅、填充词、粗口或碎片句。
 5. 句长和段落长度服从场景：动作需要清楚，犹豫需要停顿，关系变化需要留白。不要按比例拆段或机械追求长短交替。
 6. 沉重题材中的轻松只能来自人物关系或处境，并且要推进关系、信息或伏笔；不要在创伤、危险或哀痛中随机插入笑话。
-7. 禁止为了显得像真人而加入无关走神、叙述者吐槽、括号旁白、固定口头禅、故意语病、错误标点或突兀硬切。
+7. 只清除与本书既定声线无关、为“显得像真人”而硬塞的噪声（无关走神、括号旁白、固定口头禅、故意语病、错误标点、突兀硬切）。若原文本就采用介入型/吐槽型叙述者，这是本书的风格特征而非噪声，必须保留，不得把有意的叙述者声音改写成中立隐形旁白。
 
 若候选稿已经符合要求，保留原句。直接输出完整终稿，不要解释、标题或修改说明。
 
@@ -1403,6 +1473,8 @@ module.exports = {
   buildSystemPrompt, buildPersonaPrompt, buildInitialPrompt, buildContinuePrompt,
   buildImportContinuePrompt, buildOutlinePrompt,
   getOutlineRequirements, buildOutlineSpec, getChapterPlanOutputTokens, buildGenreStyleContract,
+  // 风格光谱六轴与档案工具（供 routes/novel.js 做 人格>tones>题材 的 axes 合并与渲染）
+  STYLE_AXES, STYLE_AXIS_KEYS, normalizeAxes, mergeAxes, buildStyleProfileBlock,
   normalizeChapterWordTarget,
   buildChapterPlan, buildStoryStateSummary,
   buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, extractChapterSummary,
