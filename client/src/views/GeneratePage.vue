@@ -183,6 +183,14 @@
  <input type="checkbox" v-model="expertMode" :disabled="generationBusy" />
  <span><strong>{{ $t('generate.expertMode') }}</strong><small>{{ $t('generate.expertModeDesc') }}</small></span>
  </label>
+ <label class="expert-mode-toggle">
+ <input type="checkbox" v-model="enableResearch" :disabled="generationBusy" />
+ <span><strong>{{ $t('generate.researchToggle') }}</strong><small>{{ $t('generate.researchToggleDesc') }}</small></span>
+ </label>
+ <div v-if="enableResearch" class="research-links-box">
+ <div class="label-sm">{{ $t('generate.researchLinksLabel') }}</div>
+ <textarea v-model="researchLinksText" class="textarea" :disabled="generationBusy" rows="3" :placeholder="$t('generate.researchLinksPlaceholder')"></textarea>
+ </div>
  </div>
 
  <button class="btn btn-primary btn-block btn-lg" :disabled="generationBusy || blueprintGenerating || !selectedType" :aria-busy="generationBusy" @click="startGen">
@@ -208,6 +216,8 @@
  <button class="gen-modal-close" @click="showGenModal = false">&times;</button>
  </div>
  <div class="gen-modal-body">
+ <!-- 联网取材状态提示 -->
+ <div v-if="researchHint" class="research-hint">{{ researchHint }}</div>
  <!-- 原始生成文本 -->
  <div class="gen-text-section" :class="{ grayed: deslopRunning || deslopDone || editorialRunning || editorialDone }">
  <div class="gen-text-label">{{ genMode === 'chapter' ? $t('generate.modeChapter') : $t('generate.modeBook') }}</div>
@@ -438,6 +448,7 @@
  <h3 class="outline-modal-title">{{ $t('generate.outlinePreview') }}</h3>
  <p class="outline-modal-desc">{{ outlineStreaming ? $t('generate.outlineStreamingDesc') : $t('generate.outlineDesc') }}</p>
  <div v-if="outlineError" class="blueprint-setup-error">{{ outlineError }}</div>
+ <div v-if="outlineWarn" class="blueprint-setup-hint">{{ outlineWarn }}</div>
  <div v-if="outlineStreaming && outlineReasoningText && !outlineModalText" ref="outlineReasoningRef" class="stream-reasoning-box">{{ outlineReasoningText }}</div>
  <div v-if="outlineStreaming && !outlineModalText" class="thinking-hint">
   {{ outlineThinkingChars > 0
@@ -558,6 +569,10 @@ const targetWordCount = ref(50000)
 // 每章字数（整本模式）：影响大纲规模、章节计划与每章输出预算。
 const chapterWordTarget = ref(3000)
 const expertMode = ref(false)
+// 联网取材：默认开启；实际是否联网取决于服务端是否配了搜索密钥（用户链接始终抓取）。
+const enableResearch = ref(true)
+const researchLinksText = ref('')
+const researchHint = ref('')
 const initialBlueprint = ref(null)
 const initialBlueprintJson = ref('')
 const initialBlueprintConfirmed = ref(false)
@@ -566,6 +581,8 @@ const blueprintSetupError = ref('')
 // 大纲弹窗内的常驻错误：失败原因必须留在界面上，否则错误一闪而过，
 // 用户看到的就是"生成莫名其妙停了、也不知道报没报错"。
 const outlineError = ref('')
+// 大纲弹窗内的非致命警告（如"输出达长度上限、中后段可能被截断"），服务端 status 事件透传。
+const outlineWarn = ref('')
 const blueprintWarning = ref('')
 
 // ---- 写作人格 persona ----
@@ -829,6 +846,7 @@ function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, per
  outlineTokenUsage.value = null
  outlineReasoningText.value = ''
  outlineError.value = ''
+ outlineWarn.value = ''
  outlineUserEdited.value = false
  outlineStreaming.value = true
  outlineThinkingChars.value = 0
@@ -870,6 +888,11 @@ function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, per
    outlineTokenUsage.value = event.tokenUsage || null
    outlineStreaming.value = false
    scrollOutlineToBottom()
+  },
+  onStatus: (message) => {
+   // 服务端的非致命提示（如截断警告）：在弹窗内常驻展示，不能静默丢弃，
+   // 否则用户只会觉得"生成莫名其妙就完了"。
+   if (message) outlineWarn.value = message
   },
   onError: (message) => {
    outlineStreaming.value = false
@@ -1052,6 +1075,7 @@ async function startGen() {
 
  preparingGeneration.value = false
  generating.value = true; genStatus.value = ''; genOk.value = false
+ researchHint.value = ''
  genThinkingChars.value = 0; genThinkingElapsed.value = 0
  startThinkingTicker()
  streamingText.value = ''; outlineStreamingText.value = ''
@@ -1076,6 +1100,8 @@ async function startGen() {
  outline: outline.value,
  personaId: selectedPersonaId.value || undefined,
  storyBlueprint: genMode.value === 'book' ? initialBlueprint.value : undefined,
+ enableResearch: enableResearch.value,
+ researchLinks: researchLinksText.value.split('\n').map(s => s.trim()).filter(Boolean),
  }
 
  novelStore.startGeneration(params,
@@ -1124,6 +1150,14 @@ async function startGen() {
  genStatus.value = $t('generate.statusStopped'); generating.value = false
  } else if (event.type === 'plan_needs_extension') {
  genStatus.value = event.message || $t('generate.statusPlanExtend'); generating.value = false
+} else if (event.type === 'research_status') {
+ if (event.state === 'start') researchHint.value = $t('generate.researchStatus.start')
+ else if (event.state === 'done') {
+ const n = Array.isArray(event.sources) ? event.sources.length : 0
+ researchHint.value = $t('generate.researchStatus.done', { n })
+ } else {
+ researchHint.value = $t('generate.researchStatus.skipped')
+ }
 } else if (event.type === 'error') {
  genStatus.value = ' ' + (event.message || $t('generate.errGen')); generating.value = false
  notifyModelError(event.message)
@@ -1659,6 +1693,9 @@ onMounted(async () => {
 .expert-mode-toggle span { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .expert-mode-toggle strong { color: var(--text-primary); font-size: 13px; }
 .expert-mode-toggle small { color: var(--text-light); font-size: 11px; line-height: 1.45; }
+.research-links-box { margin-top: 10px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-secondary, rgba(0,0,0,0.02)); }
+.research-links-box .label-sm { margin-bottom: 6px; color: var(--text-secondary); font-size: 12px; }
+.research-hint { margin: 0 0 12px; padding: 8px 12px; border-radius: 8px; background: var(--primary-light); color: var(--text-primary); font-size: 13px; }
 .unit {
  font-size: 14px;
  color: var(--text-tertiary);

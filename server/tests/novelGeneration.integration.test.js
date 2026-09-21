@@ -177,6 +177,8 @@ const aiServiceMock = {
   resolveApiConfig: () => ({ provider: 'isolated-test' }),
   countTokens: (content) => String(content || '').length,
   humanizeRewrite: (content) => content,
+  // 联网取材浓缩用的非流式封装：隔离测试下直接回空，不触网。
+  completeOnce: async () => '',
   getFriendlyErrorMessage: (error) => error?.message || 'mock error',
   streamGenerate: async (systemPrompt, userPrompt, onChunk, signal, apiConfig, retries, temperature, maxTokens, timeoutMs) => {
     const call = { systemPrompt, userPrompt, onChunk, signal, apiConfig, retries, temperature, maxTokens, timeoutMs };
@@ -194,6 +196,16 @@ mockModule('middleware/auth.js', (req, _res, next) => {
 mockModule('models/Novel.js', InMemoryNovel);
 mockModule('models/User.js', { findById: async () => testUser });
 mockModule('services/aiService.js', aiServiceMock);
+// 联网取材服务：隔离测试不触网，统一返回空资料块（gatherResearch 走降级路径）。
+mockModule('services/webSearchService.js', {
+  gatherResearch: async () => ({ block: '', sources: [], skipped: true, note: 'isolated-test' }),
+  searchWeb: async () => [],
+  fetchUrlContent: async () => ({ url: '', title: '', text: '' }),
+  deriveQueries: () => [],
+  normalizeLinks: (l) => (Array.isArray(l) ? l : []),
+  extractReadableText: (h) => String(h || ''),
+  _clearCache: () => {},
+});
 mockModule('services/chapterToolchain.js', {
   processChapter: (text) => ({ text, report: { isolated: true } }),
 });

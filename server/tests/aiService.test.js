@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { streamGenerate, resolveApiConfig, MAX_GENERATION_TOKENS, extractProviderMaxTokens, getOutlineRequirements, buildOutlinePrompt, buildChapterPlan, getChapterPlanOutputTokens, buildGenreStyleContract, buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, normalizeChapterWordTarget, getFriendlyErrorMessage, buildSystemPrompt, mergeAxes, normalizeAxes, buildStyleProfileBlock } = require('../services/aiService');
+const { streamGenerate, resolveApiConfig, MAX_GENERATION_TOKENS, extractProviderMaxTokens, getOutlineRequirements, buildOutlinePrompt, buildChapterPlan, getChapterPlanOutputTokens, buildGenreStyleContract, buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, normalizeChapterWordTarget, getFriendlyErrorMessage, buildSystemPrompt, mergeAxes, normalizeAxes, buildStyleProfileBlock, completeOnce } = require('../services/aiService');
 
 test('思考/推理参数被上游拒绝时给出可读提示（覆盖各家措辞），且不误判无关 400', () => {
   for (const message of [
@@ -238,8 +238,8 @@ test('outline requirements scale stages, cast, branches, nodes and output budget
   assert.ok(long.subplotCount > short.subplotCount);
   assert.ok(long.outlineChars > short.outlineChars);
   assert.ok(long.outputTokens > short.outputTokens);
-  // 输出预算收紧后，最大目标也不允许回到旧版 12 万 token 的量级。
-  assert.ok(long.outputTokens <= 16000);
+  // 预算放宽到 2.1 万 token（配合截断自动续写兜底），但仍远低于旧版 12 万的量级。
+  assert.ok(long.outputTokens <= 21000);
   assert.match(buildOutlinePrompt('urban', '林舟', '旧城', 1000000), /严格写12个阶段/);
   assert.match(buildOutlinePrompt('urban', '林舟', '旧城', 1000000), /至少24条支线/);
 });
@@ -481,4 +481,42 @@ test('风格基调契约：resolvedType 携带 toneContract 时作为硬承诺�
   // 旧路径（无 toneContract）不注入，向后兼容
   const legacy = buildSystemPrompt('urban', 'male', null, { name: '都市', keywords: '', outline: '', aiWordBank: '' });
   assert.doesNotMatch(legacy, /【风格基调契约/);
+});
+
+test('大纲提示词：传入 researchBlock 时把联网取材事实并入；不传时保持原样（向后兼容）', () => {
+  const research = '【联网取材参考】\n- 唐代长安城采用里坊制（来源1）';
+  const withResearch = buildOutlinePrompt('historical', '林舟', '盛唐', 500000, null, 5000, null, research);
+  assert.match(withResearch, /联网取材得到的事实参考资料/);
+  assert.match(withResearch, /里坊制/);
+  // 资料段应位于大纲结构要求之前，确保大纲能用上事实
+  assert.ok(withResearch.indexOf('联网取材') < withResearch.indexOf('请按以下格式输出大纲'), '取材需先于输出格式要求');
+  // 未取材时不注入资料段
+  const plain = buildOutlinePrompt('historical', '林舟', '盛唐', 500000, null, 5000);
+  assert.doesNotMatch(plain, /联网取材得到的事实参考资料/);
+});
+
+test('completeOnce：非流式封装复用 streamGenerate，返回完整 content', async () => {
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = async (_url, options) => {
+      const body = JSON.parse(options.body);
+      assert.equal(body.stream, true, '底层仍走 SSE 通道');
+      const chunks = [
+        `data: ${JSON.stringify({ choices: [{ delta: { content: '第一段' } }] })}\n\n`,
+        `data: ${JSON.stringify({ choices: [{ delta: { content: '第二段' } }] })}\n\n`,
+        'data: [DONE]\n\n',
+      ];
+      let reads = 0;
+      return { ok: true, body: { getReader: () => ({
+        read: async () => (reads < chunks.length
+          ? { done: false, value: new TextEncoder().encode(chunks[reads++]) }
+          : { done: true, value: undefined }),
+      }) } };
+    };
+    const config = { baseUrl: 'https://example.test/v1', model: 'glm-4.7', disableThinking: true };
+    const text = await completeOnce('系统', '用户', config, { temperature: 0.3, maxTokens: 1024, timeoutMs: 30000 });
+    assert.equal(text, '第一段第二段');
+  } finally {
+    global.fetch = originalFetch;
+  }
 });

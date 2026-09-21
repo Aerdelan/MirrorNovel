@@ -18,6 +18,7 @@ const {
   buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, extractChapterSummary,
   streamGenerate, resolveApiConfig, countTokens, humanizeRewrite, getFriendlyErrorMessage,
 } = require('../services/aiService');
+const { gatherResearch } = require('../services/webSearchService');
 
 // 兼容旧部署/测试桩：人格功能缺失时保持原有提示词行为。
 const buildPersonaPrompt = typeof importedBuildPersonaPrompt === 'function'
@@ -855,7 +856,10 @@ router.post('/generate-outline', auth, async (req, res) => {
         abortController.signal,
         resolveApiConfig(req.userModelConfig, 'outline'),
         2, 0.82, outlineRequirements.outputTokens, TIMEOUT.OUTLINE,
-        (reasoning) => { thinkingEmitter(reasoning); send({ type: 'reasoning', content: reasoning }); }
+        (reasoning) => { thinkingEmitter(reasoning); send({ type: 'reasoning', content: reasoning }); },
+        // 截断自动续写：超长篇大纲容易被单次输出上限切成半截，
+        // 从中断处接着写（最多 2 轮），续写分片照常流式推给前端。
+        { stitchOnTruncation: true, maxStitchRounds: 2 }
       );
 
       const outline = result.content || '';
@@ -1022,6 +1026,13 @@ router.post('/generate', auth, async (req, res) => {
     const mode = req.body.mode || 'book';
     const isBook = mode === 'book';
     const expertMode = req.body.expertMode === true || req.body.expertMode === 'true' || req.body.expertMode === 1;
+    // 联网取材：默认开启；用户粘贴的链接始终优先抓取（即使未配搜索密钥）。
+    const enableResearch = req.body.enableResearch === undefined
+      ? true
+      : (req.body.enableResearch === true || req.body.enableResearch === 'true' || req.body.enableResearch === 1);
+    const researchLinks = Array.isArray(req.body.researchLinks)
+      ? req.body.researchLinks
+      : String(req.body.researchLinks || '').split(/[\n,，]/);
 
     // 创建小说记录
     const novel = new Novel({
@@ -1109,12 +1120,43 @@ ${tmpl.dynamicPrompt}
       }
     });
 
+    // ====== 联网取材（整本创建时一次，结果写入 generationContext 供全程复用）======
+    let researchBlock = '';
+    if (enableResearch || researchLinks.filter(Boolean).length) {
+      res.write(`data: ${JSON.stringify({ type: 'research_status', state: 'start' })}\n\n`);
+      let researchHb = null;
+      try {
+        researchHb = setInterval(() => { try { res.write(': research-heartbeat\n\n'); } catch { clearInterval(researchHb); } }, 2000);
+        const research = await gatherResearch({
+          type: type.name,
+          protagonistName,
+          worldSetting,
+          links: researchLinks,
+          apiConfig: resolveApiConfig(req.userModelConfig, 'polish'),
+        });
+        if (researchHb) { clearInterval(researchHb); researchHb = null; }
+        if (research && research.block) {
+          researchBlock = research.block;
+          systemPrompt = `${systemPrompt}\n\n${researchBlock}`;
+          novel.generationContext = systemPrompt;
+          await saveNovelDoc(novel);
+          res.write(`data: ${JSON.stringify({ type: 'research_status', state: 'done', sources: (research.sources || []).slice(0, 12) })}\n\n`);
+        } else {
+          res.write(`data: ${JSON.stringify({ type: 'research_status', state: 'skipped', note: (research && research.note) || '' })}\n\n`);
+        }
+      } catch (e) {
+        if (researchHb) clearInterval(researchHb);
+        console.error('联网取材失败（已跳过）:', e.message);
+        res.write(`data: ${JSON.stringify({ type: 'research_status', state: 'skipped', note: '取材失败，已跳过' })}\n\n`);
+      }
+    }
+
     // ====== 自动生成大纲（整本模式且用户未填写，300秒超时） ======
     let outline = req.body.outline || '';
     let outlineHb = null;
     if (isBook && !outline) {
       res.write(`data: ${JSON.stringify({ type: 'status', message: '正在根据您的设定生成创作大纲（大部头作品可能需要10分钟以上）...' })}\n\n`);
-      const outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona, chapterWordTarget);
+      const outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona, chapterWordTarget, type, researchBlock);
       try {
         outlineHb = setInterval(() => {
           try { res.write(': outline-heartbeat\n\n'); } catch { clearInterval(outlineHb); }
@@ -1128,7 +1170,10 @@ ${tmpl.dynamicPrompt}
           2,
           0.82,
           getOutlineRequirements(targetWordCount, chapterWordTarget).outputTokens,
-          870000
+          870000,
+          null,
+          // 整本链路的大纲同样开启截断自动续写，避免超长篇大纲半截收场。
+          { stitchOnTruncation: true, maxStitchRounds: 2 }
         );
         emitTokenUsage(res, novel, 'outline', outlineResult);
         clearTimeout(t); clearInterval(outlineHb); outlineHb = null;

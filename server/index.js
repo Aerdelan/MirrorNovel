@@ -27,6 +27,16 @@ const startApp = async () => {
     console.warn('[Model] 无法加载数据库模型配置，暂用环境变量配置:', error.message);
   }
 
+  // 联网取材配置（provider/密钥/上限）：管理端写入 SysConfig('web_search') 时优先于环境变量。
+  try {
+    const SysConfig = require('./models/SysConfig');
+    const { setWebSearchOverrides } = require('./config/webSearch');
+    const webSearchConfig = await SysConfig.findOne({ key: 'web_search' });
+    if (webSearchConfig?.value) setWebSearchOverrides(webSearchConfig.value);
+  } catch (error) {
+    console.warn('[WebSearch] 无法加载数据库联网取材配置，暂用环境变量配置:', error.message);
+  }
+
   // 启动时创建管理员账号
   try {
     const adminEmail = process.env.ADMIN_EMAIL || 'admin@xiaoshuo.com';

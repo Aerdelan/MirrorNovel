@@ -411,11 +411,11 @@ function getOutlineRequirements(targetWordCount, chapterWordTarget) {
   const nodeCount = Math.max(12, Math.min(80, Math.round(14 + scale * 56)));
   const characterCount = Math.max(8, Math.min(40, Math.round(10 + scale * 30)));
   const subplotCount = Math.max(4, Math.min(24, Math.round(5 + scale * 19)));
-  // 大纲上限收紧到 2 万字：长大纲的中段是"数字升级"式模板重复，而下游
-  // （章节计划/蓝图/分层渲染）只需要结构化信息。outputTokens 与
-  // outlineChars 耦合，输出预算自动从旧版 12 万 token 降到约 1.4 万。
-  const outlineChars = Math.max(7000, Math.min(20000, Math.round(7000 + scale * 13000)));
-  const outputTokens = Math.max(9000, Math.min(16000, Math.ceil(outlineChars / 1.45)));
+  // 大纲预算：曾收紧到 2 万字，但百万字级作品要求 12 阶段/24 支线/80 节点，
+  // 1.6 万 token 实测会在支线中段截断。放宽到 3 万字/2.1 万 token，
+  // 并配合截断自动续写（stitchOnTruncation）兜底；旧版 12 万 token 依然不回。
+  const outlineChars = Math.max(7000, Math.min(30000, Math.round(7000 + scale * 23000)));
+  const outputTokens = Math.max(9000, Math.min(21000, Math.ceil(outlineChars / 1.45)));
   const chapterWords = normalizeChapterWordTarget(chapterWordTarget);
   const estChapters = Math.max(1, Math.ceil(target / chapterWords));
   return { target, phaseCount, nodeCount, characterCount, subplotCount, outlineChars, outputTokens, chapterWords, estChapters };
@@ -447,9 +447,12 @@ ${chapterPacing}
 直接输出大纲正文，不要解释生成过程。`;
 }
 
-function buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona, chapterWordTarget, resolvedType) {
+function buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona, chapterWordTarget, resolvedType, researchBlock) {
   const type = resolvedType || novelTypes.find(t => t.id === novelTypeId);
   const requirements = getOutlineRequirements(targetWordCount, chapterWordTarget);
+  const researchSection = researchBlock
+    ? `\n以下是联网取材得到的事实参考资料，请在不违背主角设定与世界观的前提下，将其融入大纲的时代背景、专业细节与情节节点（与本书设定冲突时以本书为准，不得照搬原文）：\n${researchBlock}\n`
+    : '';
   return `你是一位专业的小说大纲策划师。请为一部${type ? type.name : ''}小说创作一份完整、可执行、可供分章规划使用的创作大纲。${buildPersonaPrompt(persona, { includeDeslop: false })}
 
 ${buildGenreStyleContract(novelTypeId, type)}
@@ -457,7 +460,7 @@ ${buildGenreStyleContract(novelTypeId, type)}
 主角名字：${protagonistName || '未设定'}
 世界观设定：${worldSetting || '由你自由发挥'}
 目标总字数：约${requirements.target}字（预计${requirements.estChapters}章，每章约${requirements.chapterWords}字）
-
+${researchSection}
 ${buildOutlineSpec(targetWordCount, chapterWordTarget)}
 
 请按以下格式输出大纲：
@@ -1471,6 +1474,17 @@ ${pass1}`;
   }
 }
 
+/**
+ * 单轮非流式补全：内部复用 streamGenerate（丢弃增量），返回完整文本。
+ * 供联网取材等资料浓缩使用，默认走 polish 线路（不思考、省 token）。
+ */
+async function completeOnce(systemPrompt, userPrompt, apiConfig, options = {}) {
+  const { temperature = 0.4, maxTokens = 2048, timeoutMs = 60000, retries = 1 } = options;
+  const config = apiConfig || resolveApiConfig(null, 'polish');
+  const result = await streamGenerate(systemPrompt, userPrompt, null, null, config, retries, temperature, maxTokens, timeoutMs);
+  return (result && result.content) || '';
+}
+
 module.exports = {
   buildSystemPrompt, buildPersonaPrompt, buildInitialPrompt, buildContinuePrompt,
   buildImportContinuePrompt, buildOutlinePrompt,
@@ -1481,6 +1495,7 @@ module.exports = {
   buildChapterPlan, buildStoryStateSummary,
   buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, extractChapterSummary,
   streamGenerate, resolveApiConfig, countTokens,
+  completeOnce,
   MAX_GENERATION_TOKENS,
   extractProviderMaxTokens,
   humanizeRewrite,

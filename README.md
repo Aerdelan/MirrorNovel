@@ -28,7 +28,6 @@
 
 ### 👉 [前往 GitHub Releases 下载最新版](https://github.com/Aerdelan/MirrorNovel/releases/latest)
 
-安装包由 GitHub Actions 在打 tag 时自动构建，并作为附件托管在 GitHub Release（单文件约 79 MB，GitHub 单附件上限 2 GB，够用）。
 
 | 下载方式 | 文件 | 说明 |
 |---|---|---|
