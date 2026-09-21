@@ -65,6 +65,36 @@ test('provider max_tokens validation is parsed and retried within the hard limit
   }
 });
 
+test('截断自动续写：轮数不被夹在 2，且续写轮预算与首轮同级', async () => {
+  const originalFetch = global.fetch;
+  const budgets = [];
+  try {
+    global.fetch = async (_url, options) => {
+      const body = JSON.parse(options.body);
+      budgets.push(body.max_tokens);
+      // 每一轮都回“仍被截断”：模拟服务商单轮输出上限低于大纲总预算的常见情形。
+      const text = `第${budgets.length}段大纲内容，包含阶段与支线。`.repeat(16);
+      let reads = 0;
+      return { ok: true, body: { getReader: () => ({
+        read: async () => {
+          reads += 1;
+          return reads === 1
+            ? { done: false, value: new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: text }, finish_reason: 'length' }] })}\n\n`) }
+            : { done: true, value: undefined };
+        },
+      }) } };
+    };
+    const config = { baseUrl: 'https://stitch-cache.test/v1', model: 'glm-4.7', disableThinking: true };
+    const result = await streamGenerate('系统', '用户', null, null, config, 0, 0.5, 20000, 60000, null, { stitchOnTruncation: true, maxStitchRounds: 6 });
+    assert.equal(result.stitchedRounds, 6, `应续写满 6 轮，实际 ${result.stitchedRounds}`);
+    assert.equal(budgets.length, 7); // 首轮 + 6 轮续写
+    // 续写轮不得再被打折：以前只给首轮一半预算，续写自己先截断，轮数就成了摆设。
+    assert.ok(budgets.slice(1).every((v) => v >= budgets[0]), `续写轮预算应不低于首轮：${budgets.join(',')}`);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('线路要求必须开启深度思考时自动开启思考并继续生成（不再直接报错）', async () => {
   const originalFetch = global.fetch;
   const bodies = [];
@@ -238,8 +268,9 @@ test('outline requirements scale stages, cast, branches, nodes and output budget
   assert.ok(long.subplotCount > short.subplotCount);
   assert.ok(long.outlineChars > short.outlineChars);
   assert.ok(long.outputTokens > short.outputTokens);
-  // 预算放宽到 2.1 万 token（配合截断自动续写兜底），但仍远低于旧版 12 万的量级。
-  assert.ok(long.outputTokens <= 21000);
+  // 预算放开到 4.8 万 token：要求 12 阶段/24 支线却只给写不完的预算，
+  // 那不是省 token 而是废大纲；单轮超出线路上限时由服务商报错自动收缩预算。
+  assert.ok(long.outputTokens <= 48000);
   assert.match(buildOutlinePrompt('urban', '林舟', '旧城', 1000000), /严格写12个阶段/);
   assert.match(buildOutlinePrompt('urban', '林舟', '旧城', 1000000), /至少24条支线/);
 });

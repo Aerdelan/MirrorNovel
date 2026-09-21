@@ -857,9 +857,9 @@ router.post('/generate-outline', auth, async (req, res) => {
         resolveApiConfig(req.userModelConfig, 'outline'),
         2, 0.82, outlineRequirements.outputTokens, TIMEOUT.OUTLINE,
         (reasoning) => { thinkingEmitter(reasoning); send({ type: 'reasoning', content: reasoning }); },
-        // 截断自动续写：超长篇大纲容易被单次输出上限切成半截，
-        // 从中断处接着写（最多 2 轮），续写分片照常流式推给前端。
-        { stitchOnTruncation: true, maxStitchRounds: 2 }
+        // 截断自动续写：单轮预算受服务商输出上限约束，超长篇大纲靠多轮接续累加，
+        // 最多 6 轮；续写分片照常流式推给前端。
+        { stitchOnTruncation: true, maxStitchRounds: 6 }
       );
 
       const outline = result.content || '';
@@ -878,7 +878,10 @@ router.post('/generate-outline', auth, async (req, res) => {
 
       // 大纲是独立调用（尚无小说文档可记账），把单次用量随完成事件返回供前端展示。
       if (result.finishReason === 'length') {
-        send({ type: 'status', message: '模型输出达到长度上限，大纲中后段可能被截断，建议重新生成或改用输出上限更大的线路' });
+        // 走到这里意味着多轮续写后仍被截断：把已补写的轮数说清楚，
+        // 否则用户只看到一个没头没尾的大纲，无法判断是线路上限还是余额问题。
+        const rounds = Number(result.stitchedRounds) || 0;
+        send({ type: 'status', message: `已自动续写 ${rounds} 轮后仍达到模型输出长度上限，大纲末尾可能被截断；建议换一条输出上限更大的大纲线路` });
       }
       send({ type: 'completed', outline, tokenUsage: callUsageStats(result) });
       res.end();
@@ -1162,7 +1165,10 @@ ${tmpl.dynamicPrompt}
           try { res.write(': outline-heartbeat\n\n'); } catch { clearInterval(outlineHb); }
         }, 10000);
         const ac = new AbortController();
-        const t = setTimeout(() => { try { ac.abort(); } catch {}; console.log('大纲生成超时(900s)'); }, 900000);
+        // 外层阶段死线必须是“轮数 × 单轮超时”的量级：以前写死 900 秒，
+        // 多轮续写刚跑到第二三轮就被外层中断，表现为大纲“莫名其妙就完了”。
+        const outlineStageDeadline = TIMEOUT.OUTLINE * 3;
+        const t = setTimeout(() => { try { ac.abort(); } catch {}; console.log(`大纲生成超过阶段死线(${outlineStageDeadline / 60000}分钟)`); }, outlineStageDeadline);
         const outlineResult = await streamGenerate(
           `你是一位专业的小说大纲策划师。${buildPersonaPrompt(persona, { includeDeslop: false })}`,
           outlinePrompt, null, ac.signal,
@@ -1170,10 +1176,10 @@ ${tmpl.dynamicPrompt}
           2,
           0.82,
           getOutlineRequirements(targetWordCount, chapterWordTarget).outputTokens,
-          870000,
+          TIMEOUT.OUTLINE,
           null,
-          // 整本链路的大纲同样开启截断自动续写，避免超长篇大纲半截收场。
-          { stitchOnTruncation: true, maxStitchRounds: 2 }
+          // 整本链路的大纲同样开启截断自动续写，与单大纲生成保持相同轮数。
+          { stitchOnTruncation: true, maxStitchRounds: 6 }
         );
         emitTokenUsage(res, novel, 'outline', outlineResult);
         clearTimeout(t); clearInterval(outlineHb); outlineHb = null;

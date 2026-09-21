@@ -411,11 +411,12 @@ function getOutlineRequirements(targetWordCount, chapterWordTarget) {
   const nodeCount = Math.max(12, Math.min(80, Math.round(14 + scale * 56)));
   const characterCount = Math.max(8, Math.min(40, Math.round(10 + scale * 30)));
   const subplotCount = Math.max(4, Math.min(24, Math.round(5 + scale * 19)));
-  // 大纲预算：曾收紧到 2 万字，但百万字级作品要求 12 阶段/24 支线/80 节点，
-  // 1.6 万 token 实测会在支线中段截断。放宽到 3 万字/2.1 万 token，
-  // 并配合截断自动续写（stitchOnTruncation）兜底；旧版 12 万 token 依然不回。
-  const outlineChars = Math.max(7000, Math.min(30000, Math.round(7000 + scale * 23000)));
-  const outputTokens = Math.max(9000, Math.min(21000, Math.ceil(outlineChars / 1.45)));
+  // 大纲预算：提示词本身要求 8-12 阶段/40 人物/24 支线/60-80 节点，
+  // 之前的 2 万/3 万字预算写不完这套结构，必然在支线中段截断。现在直接
+  // 放开到 6 万字/4.8 万 token：单次请求由服务商上限兜底（超限会自动探明
+  // 并按更小预算重试），总量由截断自动续写按轮补足，不再由我们主动收紧。
+  const outlineChars = Math.max(7000, Math.min(60000, Math.round(7000 + scale * 53000)));
+  const outputTokens = Math.max(9000, Math.min(48000, Math.ceil(outlineChars / 1.45)));
   const chapterWords = normalizeChapterWordTarget(chapterWordTarget);
   const estChapters = Math.max(1, Math.ceil(target / chapterWords));
   return { target, phaseCount, nodeCount, characterCount, subplotCount, outlineChars, outputTokens, chapterWords, estChapters };
@@ -1054,11 +1055,12 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
       }
 
       // 截断续写：finish=length 说明正文被输出预算截断，此时结果本身是可用正文，
-      // 与其把半截章节丢弃，不如补一次"从中断处继续"。仅调用方显式开启时生效，
-      // 且最多补 maxStitchRounds 轮，避免无限续写放大成本。
+      // 与其把半截大纲丢弃，不如补一次“从中断处继续”。仅调用方显式开启时生效。
+      // 轮数上限从 2 提到 8：单轮受服务商硬上限约束（常见 8K/16K），要稳定写完
+      // 长篇大纲只能靠多轮累加，这里夹住的是“失控成本”而不是合理长度。
       let stitchedRounds = 0;
       const maxStitchRounds = options.stitchOnTruncation === true
-        ? Math.max(0, Math.min(2, Number(options.maxStitchRounds ?? 1)))
+        ? Math.max(0, Math.min(8, Number(options.maxStitchRounds ?? 1)))
         : 0;
       while (finishReason === 'length'
              && fullContent.trim().length >= 200
@@ -1087,7 +1089,7 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         try {
           const continued = await streamGenerate(
             systemPrompt, continuationPrompt, forward, signal, apiConfig,
-            0, temperature, Math.max(1024, Math.floor(thinkingPolicy.contentBudget * 0.5)),
+            0, temperature, Math.max(2048, thinkingPolicy.contentBudget),
             timeoutMs, onReasoning, { stitchOnTruncation: false }
           );
           // 流已结束但缓冲未满 300 字：此时才能判定重复前缀并补发。
