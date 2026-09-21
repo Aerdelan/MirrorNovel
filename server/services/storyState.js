@@ -515,6 +515,36 @@ function compressPreviousChapter(content) {
   ].filter(Boolean).join('\n');
 }
 
+// ===== 章末收尾形式库（源头防同构）=====
+// 每章收尾指令如果逐字恒定，模型在几百章尺度上会收敛到同一种收尾模板；
+// 把收尾形式按章轮换，并把近几章实际收尾作为负面清单注入，才是触及根源的改法。
+const ENDING_STYLES = [
+  { key: 'action-cut', label: '动作中断', hint: '在动作或危机推进到一半处收束，不写出这个动作的后果' },
+  { key: 'reveal', label: '信息揭示', hint: '抛出一个改变局面认知的具体事实或线索，不解释它的全部含义' },
+  { key: 'relation-shift', label: '关系反转', hint: '落在一次立场、态度或关系的变化上，用人物言行而非叙述总结呈现' },
+  { key: 'object-closeup', label: '物件特写', hint: '收在一个具体物件、痕迹或感官细节上，让它携带本章的未解之处' },
+  { key: 'dialogue', label: '对话收束', hint: '以一句有分量的人物台词收尾，话里带着未说尽的意图' },
+  { key: 'emotion-after', label: '情绪余波', hint: '不写新事件，让本章后果落在某个具体人物的情绪反应上' },
+];
+const BREATH_ENDING_KEYS = ['object-closeup', 'emotion-after', 'relation-shift', 'dialogue'];
+
+// 确定性轮换：章号为主轴、张力做偏移；喘息章限定温和形式。不引入随机，保证同章号重试时提示稳定（利前缀缓存）。
+function pickEndingStyle(chapterNumber, tension, isBreath) {
+  const pool = isBreath ? ENDING_STYLES.filter((style) => BREATH_ENDING_KEYS.includes(style.key)) : ENDING_STYLES;
+  const index = (Number(chapterNumber || 1) + Math.round(Number(tension) || 0)) % pool.length;
+  return pool[index] || pool[0];
+}
+
+function collectRecentEndings(novel, count = 3) {
+  const chapters = Array.isArray(novel.chapters) ? novel.chapters : [];
+  return chapters.slice(-count)
+    .map((chapter) => ({
+      chapterNumber: Number(chapter.chapterNumber) || 0,
+      ending: String(chapter.content || '').replace(/\s+/g, ' ').trim().slice(-70),
+    }))
+    .filter((item) => item.ending.length >= 20);
+}
+
 function buildChapterContract(options) {
   options = options || {};
   const novel = initializeCreativeState(options.novel || {});
@@ -533,6 +563,11 @@ function buildChapterContract(options) {
   const mustNot = ['不要复述上一章已经完成的核心事件', '不要在一章内同时解决所有主线和伏笔'];
   novel.recentEventSignatures.slice(-5).forEach((event) => mustNot.push('不要重复事件：' + String(event).slice(0, 80)));
   if (emotion.isBreath) mustNot.push('不要用突兀搞笑抵消题材基调，也不要写成没有信息增量的纯日常');
+  // 章末防同构（源头修复）：把近几章的实际收尾作为负面清单注入，
+  // 否则模型在恒定的收尾指令下会收敛到同一种收尾模板。
+  const recentEndings = collectRecentEndings(novel, 3);
+  recentEndings.forEach((item) => mustNot.push(`第${item.chapterNumber}章已用「…${item.ending}」收尾，本章不得复用该句式或同构套路`));
+  const endingStyle = pickEndingStyle(chapterNumber, emotion.tension, emotion.isBreath);
   const wordTarget = Number(options.wordTarget) || getAdaptiveChapterWordTarget({
     planData: plan,
     chapterNumber,
@@ -557,6 +592,8 @@ function buildChapterContract(options) {
     mustAdvance,
     previousEnd: previous ? compressPreviousChapter(previous.content) : '故事开场，建立人物的当下处境。',
     mustNot,
+    endingStyle,
+    recentEndings,
     emotion,
     progress: String(options.currentWords || 0) + '/' + String(options.targetWords || novel.targetWordCount || 50000),
   };
@@ -586,8 +623,19 @@ function renderChapterContract(contract) {
     '本章目标字数：约' + contract.wordTarget + '字；全书进度：' + contract.progress,
     contract.emotion.isBreath
       ? '喘息章规则：让读者缓一口气，但必须通过对话、物件、关系变化或新信息推进故事。'
-      : '节奏规则：保留情绪落差，结尾留下具体的下一步，而不是抽象总结。',
+      : '节奏规则：保留情绪落差，收尾执行下方收尾要求，不用抽象总结。',
+    renderEndingRequirement(contract),
   ].join('\n');
+}
+
+function renderEndingRequirement(contract) {
+  const style = contract.endingStyle || { label: '信息揭示', hint: '抛出一个改变局面认知的具体事实' };
+  const history = (contract.recentEndings || [])
+    .map((item) => `第${item.chapterNumber}章「…${item.ending}」`)
+    .join('；');
+  return '收尾要求：本章以【' + style.label + '】收尾——' + style.hint
+    + '。开头可衔接上一章末尾，但收尾不得与之一致。'
+    + (history ? '已用过的收尾（禁止同构）：' + history : '');
 }
 
 function extractEventSignature(content) {

@@ -7,6 +7,7 @@ const {
   buildFallbackChapterPlan,
   buildEmotionPlan,
   buildChapterContract,
+  renderChapterContract,
   checkChapterContinuity,
   updateCreativeState,
   seedPlannedHooks,
@@ -435,4 +436,30 @@ test('applyHookAudit patches missed resolutions, adds unplanned hooks and update
   const again = applyHookAudit(novel, 2, audit);
   assert.equal(again.resolved, 0);
   assert.equal(again.added, 0);
+});
+
+test('章末防同构：收尾形式逐章轮换，近期实际收尾进入负面清单', () => {
+  const novelWithChapters = {
+    chapters: [1, 2, 3].map((n) => ({
+      chapterNumber: n,
+      content: `第${n}章推进了主线并留下新的问题，人物关系出现变化。`.repeat(3) + '林舟望着夜色，握紧了手中的铜钥匙。',
+    })),
+  };
+  const contract4 = buildChapterContract({ novel: novelWithChapters, chapterNumber: 4, totalChapters: 12, wordTarget: 2000 });
+  assert.ok(contract4.endingStyle && contract4.endingStyle.label, '契约必须指定本章收尾形式');
+  assert.equal(contract4.recentEndings.length, 3);
+  assert.ok(contract4.mustNot.some((rule) => rule.includes('不得复用该句式或同构套路')));
+  const rendered = renderChapterContract(contract4);
+  assert.match(rendered, /收尾要求：本章以【.+】收尾/);
+  assert.match(rendered, /已用过的收尾（禁止同构）/);
+  // 第 1 章无历史：不出现负面清单，也不产生相关 mustNot
+  const contract1 = buildChapterContract({ novel: { chapters: [] }, chapterNumber: 1, totalChapters: 12, wordTarget: 2000 });
+  assert.equal(contract1.recentEndings.length, 0);
+  assert.ok(!renderChapterContract(contract1).includes('已用过的收尾'));
+  // 确定性轮换：连续 8 章应覆盖多种收尾形式
+  const styles = new Set();
+  for (let ch = 1; ch <= 8; ch++) {
+    styles.add(buildChapterContract({ novel: novelWithChapters, chapterNumber: ch, totalChapters: 20, wordTarget: 2000 }).endingStyle.key);
+  }
+  assert.ok(styles.size >= 3, `连续 8 章应覆盖至少 3 种收尾形式，实际 ${styles.size}`);
 });
