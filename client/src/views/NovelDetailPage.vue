@@ -5,7 +5,11 @@
  <h2 class="detail-title">{{ novel?.title || $t('novelDetail.defaultTitle') }}</h2>
  </div>
  <div class="detail-content">
- <div class="card summary-card">
+ <div v-if="loading" class="detail-loading">
+ <div class="loading-spinner"></div>
+ <div class="detail-loading-text">{{ $t('common.loading') }}</div>
+ </div>
+ <div v-if="novel" class="card summary-card">
  <div class="summary-row"><span class="summary-label">{{ $t('novelDetail.type') }}</span><span>{{ novel?.novelTypeName }}</span></div>
  <div class="summary-row"><span class="summary-label">{{ $t('generate.stepChar') }}</span><span>{{ novel?.protagonistName|| $t('novelDetail.unknown') }}</span></div>
  <div class="summary-row"><span class="summary-label">{{ $t('novelDetail.wordCount') }}</span><span>{{ $t('novelDetail.outOf', { current: novel?.currentWordCount, target: novel?.targetWordCount }) }}</span></div>
@@ -138,7 +142,7 @@
  <button class="btn btn-outline btn-sm" style="margin-top:8px;" @click="stopChapterGen">{{ $t('bookshelf.pause') }}</button>
  </div>
 
- <div class="card">
+ <div v-if="novel" class="card">
  <div class="section-title"> {{ $t('novelDetail.chapterListTitle') }}</div>
  <div v-if="!novel?.chapters?.length" class="empty-chapters">{{ $t('novelDetail.chapterListEmpty') }}</div>
  <div v-for="(chapter, index) in novel?.chapters" :key="chapter.chapterNumber" class="chapter-item">
@@ -171,7 +175,7 @@
  <button class="btn btn-primary btn-block" @click="openGenSettings(nextChapterNum)"> {{ $t('novelDetail.generateChapter', { n: nextChapterNum }) }}</button>
  </div>
 
- <div class="card" style="margin-top:8px;">
+ <div v-if="novel" class="card" style="margin-top:8px;">
  <button class="btn btn-outline btn-block" :disabled="deslopAllBusy" @click="deslopAllChapters">
  {{ deslopAllBusy ? $t('novelDetail.deslopAllRunning') : $t('novelDetail.deslopAll') }}
  </button>
@@ -180,7 +184,7 @@
  </div>
  </div>
 
- <div class="card" style="margin-top:8px;">
+ <div v-if="novel" class="card" style="margin-top:8px;">
  <button class="btn btn-warning btn-block" :disabled="optimizeBusy" @click="optimizeNovel">
  {{ optimizeBusy ? $t('novelDetail.optimizeAllRunning') : $t('novelDetail.optimizeAll') }}
  </button>
@@ -194,7 +198,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, onActivated, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useNovelStore } from '../stores/novel'
 import { useI18n } from '../composables/useI18n'
@@ -207,6 +211,11 @@ const novelStore = useNovelStore()
 const { $t } = useI18n()
 
 const novel = ref(null)
+const loading = ref(true)
+// keep-alive 缓存下的加载防护：loadRunId 丢弃过期响应，inflightId 合并同一次的 watch+activated 重复触发
+let loadRunId = 0
+let inflightId = null
+let firstActivated = false
 const expandedChapter = ref(null)
 const isContinuing = ref(false)
 const continuingChapter = ref(0)
@@ -304,13 +313,33 @@ const isLastChapterUnfinished = computed(() => { if (!novel.value || novel.value
 const allChaptersComplete = computed(() => { if (!novel.value) return false; return novel.value.status === 'completed' || novel.value.status === 'paused' })
 function isLastUnfinished(index) { if (!novel.value || novel.value.status !== 'paused') return false; return index === novel.value.chapters.length - 1 }
 
-onMounted(async () => {
+async function loadNovel() {
+ const id = route.params.id
+ if (!id) return
+ if (inflightId === id) return
+ const run = ++loadRunId
+ inflightId = id
+ loading.value = true
+ // 切换书籍时清空上一本的残留视图状态，避免内容/流式/蓝图串台
+ novel.value = null
+ blueprint.value = null
+ blueprintProposals.value = []
+ blueprintError.value = ''
+ expandedChapter.value = null
+ isContinuing.value = false
+ stopChapterThinkingTicker()
+ chapterStreamingText.value = ''
+ stopPollingOptimize()
+ optimizeBusy.value = false
+ optimizeProgress.value = ''
  try {
- novel.value = await novelStore.fetchNovelDetail(route.params.id)
+ const data = await novelStore.fetchNovelDetail(id)
+ if (run !== loadRunId) return
+ novel.value = data
  await loadBlueprint()
  // 检查是否有正在运行或刚完成的后台调优任务
- if (novel.value?.optimizeTask) {
- const task = novel.value.optimizeTask
+ if (data?.optimizeTask) {
+ const task = data.optimizeTask
  if (task.status === 'analyzing' || task.status === 'optimizing') {
  optimizeBusy.value = true
  optimizeProgress.value = task.progress || $t('novelDetail.optimizeBackground')
@@ -324,7 +353,20 @@ onMounted(async () => {
  }
  }
  }
- catch { alert($t('error.unknown')); router.push('/bookshelf') }
+ catch { if (run === loadRunId) { alert($t('error.unknown')); router.push('/bookshelf') } }
+ finally { if (inflightId === id) inflightId = null; if (run === loadRunId) loading.value = false }
+}
+
+// keep-alive 会缓存本组件实例：路由 id 变化（watch）与从缓存返回（onActivated）都必须重新拉取，
+// 否则会出现“永远显示第一次进入的那本书”、章节数停留在旧快照的问题。
+watch(() => route.params.id, (id, oldId) => { if (id && id !== oldId) loadNovel() })
+
+onMounted(() => { loadNovel() })
+
+onActivated(() => {
+ // 首次挂载后紧跟的 activated 与 onMounted 重复，跳过一次；此后从缓存返回时强制刷新，避免旧数据
+ if (!firstActivated) { firstActivated = true; return }
+ loadNovel()
 })
 
 onUnmounted(() => {
@@ -578,6 +620,9 @@ function goBack() { router.push('/bookshelf') }
 .back-btn { background:none; border:none; font-size:16px; color:var(--primary-color); cursor:pointer; padding:4px 8px; }
 .detail-title { font-size:16px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .detail-content { flex:1; overflow-y:auto; }
+.detail-loading { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; padding:80px 0; color:var(--text-light); font-size:14px; }
+.detail-loading .loading-spinner { width:32px; height:32px; border:3px solid var(--border-color); border-top-color:var(--primary-color); border-radius:50%; animation:detailSpin 0.8s linear infinite; }
+@keyframes detailSpin { to { transform:rotate(360deg) } }
 .summary-card { display:flex; flex-direction:column; gap:8px; }
 .summary-row { display:flex; justify-content:space-between; align-items:center; }
 .summary-label { font-size:13px; color:var(--text-light); }
