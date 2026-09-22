@@ -1,10 +1,14 @@
 /**
  * 预置小说类型配置
- * 每个类型包含：类型名称、关键字、大纲模板、去AI词库
+ * 每个类型包含：类型名称、关键字、大纲模板、去AI词库、叙事契约 key
+ *
+ * contract 指向 config/genreContracts.js 里的契约 key，决定这个类型在成稿时
+ * 按哪种叙事方式组织（悬疑/言情/武侠/…）。必须逐条显式登记，不要靠名字正则推断。
  */
 const novelTypes = [
   {
     id: 'xianxia',
+    contract: 'xuanhuan',
     axes: { temperature: 3, diction: 4, narrator: 2, pacing: 2, humor: 2, emotion: 3 },
     name: '玄幻修仙',
     icon: '🔮',
@@ -17,6 +21,7 @@ const novelTypes = [
   },
   {
     id: 'urban',
+    contract: 'urban',
     axes: { temperature: 3, diction: 2, narrator: 2, pacing: 2, humor: 3, emotion: 3 },
     name: '都市异能',
     icon: '🏙️',
@@ -29,6 +34,7 @@ const novelTypes = [
   },
   {
     id: 'scifi',
+    contract: 'scifi',
     axes: { temperature: 2, diction: 3, narrator: 1, pacing: 2, humor: 2, emotion: 3 },
     name: '科幻未来',
     icon: '🚀',
@@ -41,6 +47,7 @@ const novelTypes = [
   },
   {
     id: 'wuxia',
+    contract: 'wuxia',
     axes: { temperature: 3, diction: 4, narrator: 2, pacing: 2, humor: 2, emotion: 3 },
     name: '武侠江湖',
     icon: '⚔️',
@@ -53,6 +60,7 @@ const novelTypes = [
   },
   {
     id: 'mystery',
+    contract: 'mystery',
     axes: { temperature: 1, diction: 3, narrator: 1, pacing: 2, humor: 1, emotion: 2 },
     name: '悬疑推理',
     icon: '🔍',
@@ -65,6 +73,7 @@ const novelTypes = [
   },
   {
     id: 'romance',
+    contract: 'romance',
     axes: { temperature: 4, diction: 3, narrator: 2, pacing: 3, humor: 3, emotion: 4 },
     name: '言情恋爱',
     icon: '💕',
@@ -77,6 +86,7 @@ const novelTypes = [
   },
   {
     id: 'historical',
+    contract: 'history',
     axes: { temperature: 2, diction: 4, narrator: 1, pacing: 3, humor: 1, emotion: 3 },
     name: '历史穿越',
     icon: '🏛️',
@@ -90,6 +100,7 @@ const novelTypes = [
   // ====== 轻小说（ACGN 日式风格） ======
   {
     id: 'lightnovel_isekai',
+    contract: 'acgn',
     axes: { temperature: 4, diction: 2, narrator: 3, pacing: 2, humor: 4, emotion: 3 },
     name: '异世界转生',
     icon: '🌍',
@@ -102,6 +113,7 @@ const novelTypes = [
   },
   {
     id: 'lightnovel_school',
+    contract: 'acgn',
     axes: { temperature: 4, diction: 2, narrator: 2, pacing: 3, humor: 4, emotion: 4 },
     name: '校园恋爱',
     icon: '🏫',
@@ -114,6 +126,7 @@ const novelTypes = [
   },
   {
     id: 'lightnovel_fantasy',
+    contract: 'acgn',
     axes: { temperature: 3, diction: 3, narrator: 2, pacing: 3, humor: 3, emotion: 4 },
     name: '奇幻冒险',
     icon: '⚔️',
@@ -126,6 +139,7 @@ const novelTypes = [
   },
   {
     id: 'lightnovel_slice',
+    contract: 'acgn',
     axes: { temperature: 5, diction: 2, narrator: 2, pacing: 4, humor: 4, emotion: 4 },
     name: '日常系',
     icon: '☕',
@@ -138,6 +152,7 @@ const novelTypes = [
   },
   {
     id: 'lightnovel_battle',
+    contract: 'acgn',
     axes: { temperature: 3, diction: 2, narrator: 2, pacing: 1, humor: 2, emotion: 5 },
     name: '战斗异能',
     icon: '💥',
@@ -150,6 +165,7 @@ const novelTypes = [
   },
   {
     id: 'lightnovel_scifi',
+    contract: 'acgn',
     axes: { temperature: 2, diction: 3, narrator: 2, pacing: 2, humor: 3, emotion: 3 },
     name: '科幻未来',
     icon: '🤖',

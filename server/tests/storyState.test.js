@@ -463,3 +463,28 @@ test('章末防同构：收尾形式逐章轮换，近期实际收尾进入负�
   }
   assert.ok(styles.size >= 3, `连续 8 章应覆盖至少 3 种收尾形式，实际 ${styles.size}`);
 });
+
+test('SKU 风格基调参与情绪权重：暗黑→克制基调，搞笑/治愈→轻松基调', () => {
+  // 同一个题材名，只有 typeSku 里的基调标签不同，情绪规划就应给出不同的基调要求
+  const base = {
+    novelTypeName: '二次元·日系校园',
+    outline: '社团与学园祭的日常。',
+    worldSetting: '樱丘高中',
+    targetWordCount: 24000,
+    currentChapterIndex: 4,
+  };
+  const dark = buildEmotionPlan(
+    makeNovel({ ...base, typeSku: { channel: 'male', category: 'acg', theme: 'acg_school', tones: ['anhei'] } }),
+    5, 10, { chapterRole: '主线推进', tension: 5 },
+  );
+  const light = buildEmotionPlan(
+    makeNovel({ ...base, typeSku: { channel: 'male', category: 'acg', theme: 'acg_school', tones: ['gaoxiao'] } }),
+    5, 10, { chapterRole: '主线推进', tension: 5 },
+  );
+  assert.match(dark.tone, /克制具体/);
+  assert.match(light.tone, /随场景自然变化/);
+
+  // 没有 typeSku 的旧作品仍按类型名/大纲文本判定（回归：不受新逻辑影响）
+  const legacyHeavy = buildEmotionPlan(makeNovel({ ...base, novelTypeName: '沉重悬疑', outline: '一场复仇与凶案。' }), 5, 10, { chapterRole: '主线推进', tension: 5 });
+  assert.match(legacyHeavy.tone, /克制具体/);
+});

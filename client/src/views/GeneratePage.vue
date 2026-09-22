@@ -748,7 +748,9 @@ async function matchTemplates() {
  if (!ws || ws.length < 5) { matchedTemplates.value = []; return }
  tmplMatching.value = true
  try {
- const res = await api.post('/novel/match-templates', { worldSetting: ws, novelTypeId: st })
+ // 带上 typeSku：SKU 书不使用旧的类型模板池，服务端会返回空列表，
+ // 预览与真正注入的内容必须一致（否则界面会显示一个不生效的匹配）。
+ const res = await api.post('/novel/match-templates', { worldSetting: ws, novelTypeId: st, typeSku: buildTypeSku() })
  matchedTemplates.value = res.data.matched || []
  } catch {
  matchedTemplates.value = []

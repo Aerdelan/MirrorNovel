@@ -7,6 +7,7 @@ const User = require('../models/User');
 const WritingPersona = require('../models/WritingPersona');
 const novelTypes = require('../config/novelTypes');
 const { resolveTypeSku, buildSkuCatalog } = require('../config/novelTypeSku');
+const { resolveTaxonomyContractKey } = require('../config/genreContracts');
 const { TIMEOUT } = require('../config/timeouts');
 const novelTemplates = require('../config/novelTemplates');
 const { typeTemplates, buildTemplatePrompt } = novelTemplates;
@@ -38,7 +39,8 @@ async function resolveNovelPersona(userId, novel, personaId) {
 
 // ===== 类型上下文解析（支持番茄式多选 typeSku，兼容旧 novelTypeId） =====
 // 返回 { type, skuAxes, resolvedName }：
-//   type   — 可直接喂给 buildSystemPrompt/buildOutlinePrompt 的预解析类型对象（含 axes/keywords/aiWordBank）
+//   type   — 可直接喂给 buildSystemPrompt/buildOutlinePrompt 的预解析类型对象
+//            （含 axes/keywords/aiWordBank/contract/toneContract）
 //   skuAxes — 解析出的风格六轴（供无 persona 时合成默认档案）
 function resolveTypeContext(body) {
   const { novelTypeId, typeSku } = body || {};
@@ -51,7 +53,9 @@ function resolveTypeContext(body) {
         name: r.name, icon: '📄',
         keywords: r.keywords, outline: r.outlineSeed || '',
         aiWordBank: r.aiWordBank, axes: r.axes,
+        contract: r.contract || '',
         toneContract: r.toneContract || '',
+        toneNames: r.tones || [],
       },
       skuAxes: r.axes,
       resolvedName: r.name,
@@ -64,11 +68,25 @@ function resolveTypeContext(body) {
       const typeData = require('../config/novelTypeData');
       const allCats = [...(typeData.male || []), ...(typeData.female || [])];
       const found = allCats.find(c => c.name === novelTypeId);
-      if (found) type = { id: novelTypeId, name: found.name, icon: found.icon, keywords: '', outline: '' };
-      else type = { id: novelTypeId, name: novelTypeId, icon: '📄', keywords: '', outline: '' };
-    } catch { type = { id: novelTypeId, name: novelTypeId, icon: '📄', keywords: '', outline: '' }; }
+      const name = found ? found.name : novelTypeId;
+      // 大类兜底没有 keywords/axes，但契约必须按名字显式取（不要留给下游正则猜）
+      type = {
+        id: novelTypeId, name, icon: (found && found.icon) || '📄', keywords: '', outline: '',
+        contract: resolveTaxonomyContractKey(name) || '',
+      };
+    } catch {
+      type = { id: novelTypeId, name: novelTypeId, icon: '📄', keywords: '', outline: '' };
+    }
   }
   return { type, skuAxes: (type && type.axes) || null, resolvedName: type.name };
+}
+
+/** 从已落库的作品还原类型上下文（新作品带 typeSku，旧作品回落 novelTypeId）。 */
+function resolveTypeContextFromNovel(novel) {
+  if (!novel) return { type: null, skuAxes: null, resolvedName: '' };
+  return resolveTypeContext(novel.typeSku
+    ? { typeSku: novel.typeSku, novelTypeId: novel.novelTypeId }
+    : { novelTypeId: novel.novelTypeId || novel.novelTypeName });
 }
 
 // 把 SKU/题材默认 axes 作为底层合进人格 axes（人格优先），供 buildPersonaPrompt 渲染风格档案。
@@ -1073,17 +1091,24 @@ router.post('/generate', auth, async (req, res) => {
     let systemPrompt = buildSystemPrompt(novelTypeId, undefined, withSkuAxes(persona, skuAxes), type);
 
 
-    // 类型模板匹配 — 先推断 gender 重建系统提示，再注入动态模板
-    try {
-      const matchedTmpls = matchTemplates(worldSetting || '', novelTypeId);
-      if (matchedTmpls.length > 0) {
-        const tmpl = matchedTmpls[0];
-        // 根据匹配到的 gender 重新构建系统提示（男女频写作指导不同）
-        const baseSys = buildSystemPrompt(novelTypeId, tmpl.gender || 'male', withSkuAxes(persona, skuAxes), type);
+    // 类型模板匹配注入（仅旧路径）。
+    // 旧的 novelTemplates 池是"按类型名 + 世界观文本"匹配的男/女频通用爽文池
+    // （建议看点：无敌流/争霸天下/后宫收集…，开场方式：穿越/重生…）。SKU 书的类型
+    // 由用户逐级选择，模板池一旦注入就会在系统提示末尾把 SKU 的题材与基调压回去
+    // （典型症状：选二次元/日系校园/搞笑，成稿仍是男频爽文）。因此 SKU 书一律不注入，
+    // 题材信息改由 SKU 的 keywords/axes/基调契约与大纲、章节计划承载。
+    const useLegacyTemplates = novelTemplates.shouldInjectTemplates(req.body.typeSku);
+    if (useLegacyTemplates) {
+      try {
+        const matchedTmpls = matchTemplates(worldSetting || '', novelTypeId);
+        if (matchedTmpls.length > 0) {
+          const tmpl = matchedTmpls[0];
+          // 根据匹配到的 gender 重新构建系统提示（男女频写作指导不同）
+          const baseSys = buildSystemPrompt(novelTypeId, tmpl.gender || 'male', withSkuAxes(persona, skuAxes), type);
 
-        const genderTag = tmpl.gender === 'female' ? '女频' : tmpl.gender === 'unisex' ? '通用' : '男频';
+          const genderTag = tmpl.gender === 'female' ? '女频' : tmpl.gender === 'unisex' ? '通用' : '男频';
 
-        systemPrompt = baseSys + `\n\n【类型模板参考（${genderTag} · ${tmpl.name} · 匹配度 ${tmpl.score}%）】
+          systemPrompt = baseSys + `\n\n【类型模板参考（${genderTag} · ${tmpl.name} · 匹配度 ${tmpl.score}%）】
 以下是系统根据「${tmpl.name}」类型和你的世界观设定自动生成的创作参考。
 ⚠️ 重要提示：你的原始设定始终占主导地位，以下内容仅为辅助参考，每次生成时随机组合不同变体以保证多样性。
 
@@ -1091,9 +1116,10 @@ ${tmpl.dynamicPrompt}
 
 注意：以上为动态生成的参考组合，每次生成会随机选择不同的写作变体、节奏和看点，请根据你的故事主线灵活运用。`;
 
+        }
+      } catch (e) {
+        console.error('模板匹配注入失败:', e.message);
       }
-    } catch (e) {
-      console.error('模板匹配注入失败:', e.message);
     }
 
     if (persona) {
@@ -1218,7 +1244,7 @@ ${tmpl.dynamicPrompt}
     if (isBook && outline) {
       try {
         res.write(`data: ${JSON.stringify({ type: 'status', message: '正在制定章节计划表...' })}\n\n`);
-        const planPrompt = buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, persona, novel.storyBlueprint, chapterWordTarget);
+        const planPrompt = buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, persona, novel.storyBlueprint, chapterWordTarget, type);
 
         // 用 AbortController 施加超时 + 心跳保证连接不断。
         // 思考型线路（reasoning 路由）思考阶段可能远超旧 45s/150s 预算，
@@ -1491,7 +1517,7 @@ ${buildChapterTail({
         });
         // 单章模式同样走分层大纲：大纲中段已由章节契约与剧情脉络承载，不必逐字重发。
         const singleChapterOutline = renderOutlineForContext(outline, 1, getTotalPlannedChapters(planData, targetWordCount));
-        const userPrompt = `${buildInitialPrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, mode, singleChapterOutline, persona)}\n\n${renderChapterContract(contract)}\n\n请只输出正文，用具体事件和人物选择完成这章，不输出标题、提纲或“【未完待续】”标签。`;
+        const userPrompt = `${buildInitialPrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, mode, singleChapterOutline, persona, type)}\n\n${renderChapterContract(contract)}\n\n请只输出正文，用具体事件和人物选择完成这章，不输出标题、提纲或“【未完待续】”标签。`;
         await generateOneChapter(1, userPrompt, contract);
 
         generationDone = true;
@@ -1576,11 +1602,9 @@ router.post('/continue/:novelId', auth, async (req, res) => {
     // contracts were introduced. Append the current contract so continuation
     // and regeneration do not silently fall back to the shared AI voice.
     // 从 novel 重算类型上下文与风格轴（新作品携带 typeSku，旧作品回落 novelTypeId）
-    const { type: contType, skuAxes: contAxes } = resolveTypeContext(
-      novel.typeSku ? { typeSku: novel.typeSku, novelTypeId: novel.novelTypeId } : { novelTypeId: novel.novelTypeId }
-    );
+    const { type: contType, skuAxes: contAxes } = resolveTypeContextFromNovel(novel);
     const cachedSystemPrompt = novel.generationContext || buildSystemPrompt(novel.novelTypeId, undefined, withSkuAxes(persona || novel.writingPersonaSnapshot, contAxes), contType);
-    const systemPrompt = `${cachedSystemPrompt}\n\n${buildGenreContract(novel.novelTypeId || novel.novelTypeName, null)}`;
+    const systemPrompt = `${cachedSystemPrompt}\n\n${buildGenreContract(novel.novelTypeId || novel.novelTypeName, contType)}`;
     const typeName = novel.novelTypeName || '未知';
     const protagonistName = novel.protagonistName || '';
     const worldSetting = novel.worldSetting || '';
@@ -1956,7 +1980,9 @@ router.post('/continue-import', auth, async (req, res) => {
       novel.writingPersonaId = persona._id;
       novel.writingPersonaSnapshot = persona;
     }
-    const systemPrompt = `你是一位专业的小说续写专家，擅长模仿各种文风进行创作。${buildGenreContract(typeName, null)}${buildPersonaPrompt(persona)}`;
+    // 契约：追加到已有作品时按该作品的 typeSku 解析；全新导入按传入的类型名走登记表/兜底
+    const { type: importType } = resolveTypeContextFromNovel(isAppend ? novel : null);
+    const systemPrompt = `你是一位专业的小说续写专家，擅长模仿各种文风进行创作。${buildGenreContract(typeName, importType || null)}${buildPersonaPrompt(persona)}`;
     const mode = req.body.mode || 'book';
     const userPrompt = buildImportContinuePrompt(importedText, continuationRequest, typeName, req.body.targetWordCount || 50000, mode, persona);
 
@@ -2339,9 +2365,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
     const chNum = Number(req.params.chapterNumber);
     const { wordCount, notes } = req.body;
     const persona = await resolveNovelPersona(req.userId, novel);
-    const { type: ccType, skuAxes: ccAxes } = resolveTypeContext(
-      novel.typeSku ? { typeSku: novel.typeSku, novelTypeId: novel.novelTypeId } : { novelTypeId: novel.novelTypeId }
-    );
+    const { type: ccType, skuAxes: ccAxes } = resolveTypeContextFromNovel(novel);
     const personaStyle = withSkuAxes(persona, ccAxes);
 
     let chapter = novel.chapters.find(c => c.chapterNumber === chNum);
@@ -2523,6 +2547,11 @@ router.post('/match-templates', auth, async (req, res) => {
     if (!worldSetting || !worldSetting.trim()) {
       return res.json({ matched: [] });
     }
+    // SKU 书不注入旧模板池（见 /generate 中的说明），预览也必须保持一致，
+    // 否则界面会显示一个实际不会生效的"类型模板匹配"。
+    if (!novelTemplates.shouldInjectTemplates(req.body.typeSku)) {
+      return res.json({ matched: [], skuBased: true });
+    }
     const matched = matchTemplates(worldSetting, novelTypeId);
     res.json({ matched });
   } catch (error) {
@@ -2542,7 +2571,9 @@ router.post('/deslop', auth, async (req, res) => {
 
     const styleNovel = novelId ? await Novel.findOne({ _id: novelId, userId: req.userId }) : null;
     const persona = await resolveNovelPersona(req.userId, styleNovel, personaId);
-    const genreContract = buildGenreContract(styleNovel?.novelTypeId || styleNovel?.novelTypeName, null);
+    // 契约按作品的 typeSku 解析（旧作品回落 novelTypeId），不再只靠类型名字符串猜题材
+    const { type: deslopType } = resolveTypeContextFromNovel(styleNovel);
+    const genreContract = buildGenreContract(styleNovel?.novelTypeId || styleNovel?.novelTypeName, deslopType);
     const systemPrompt = persona?.overrideDeslop
       ? `你是一位资深小说文字编辑。请严格遵循用户指定的人格规则完成去AI化。${genreContract}${buildPersonaPrompt(persona, { includeDeslop: false })}`
       : `${deslop.deslopSystemPrompt}${genreContract}${buildPersonaPrompt(persona, { includeDeslop: false })}`;
@@ -2581,7 +2612,9 @@ router.post('/deslop-stream', auth, async (req, res) => {
     const deslop = require('../config/deslop');
     const styleNovel = novelId ? await Novel.findOne({ _id: novelId, userId: req.userId }) : null;
     const persona = await resolveNovelPersona(req.userId, styleNovel, personaId);
-    const genreContract = buildGenreContract(styleNovel?.novelTypeId || styleNovel?.novelTypeName, null);
+    // 契约按作品的 typeSku 解析（旧作品回落 novelTypeId）
+    const { type: deslopType } = resolveTypeContextFromNovel(styleNovel);
+    const genreContract = buildGenreContract(styleNovel?.novelTypeId || styleNovel?.novelTypeName, deslopType);
     const personaPrompt = persona?.overrideDeslop
       ? `你是一位专业小说编辑。${genreContract}${buildPersonaPrompt(persona, { includeDeslop: false })}`
       : `${deslop.deslopSystemPrompt}${genreContract}${buildPersonaPrompt(persona, { includeDeslop: false })}`;
@@ -2687,7 +2720,9 @@ router.post('/polish', auth, async (req, res) => {
     const persona = await resolveNovelPersona(req.userId, styleNovel, personaId);
     const genreName = genre || styleNovel?.novelTypeId || styleNovel?.novelTypeName;
     const genreHint = genreName ? `\n【文风参考】这是一篇"${genreName}"类型的小说，请保留该类型常见的叙事节奏和用词习惯。` : '';
-    const genreContract = buildGenreContract(genreName, null);
+    // 有作品时按 typeSku 解析契约；只传了自由文本 genre 时才走登记表/正则兜底
+    const { type: polishType } = resolveTypeContextFromNovel(styleNovel);
+    const genreContract = buildGenreContract(genreName, polishType);
 
     const defaultPolishPrompt = `你是一位资深小说润色专家。你的任务是在**不改变剧情、视角、人物关系和事实**的前提下，让文本更像一位成熟作者的成稿，而不是AI产物。
 

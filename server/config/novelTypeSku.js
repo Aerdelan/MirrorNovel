@@ -4,12 +4,17 @@
  * 一本小说的类型 = 频道 + 大类 + 题材（单选逐级）
  *                + 情节元素(多选) + 人设(多选) + 风格基调tones(多选) + 关系向cp(单选)
  *
- * resolveTypeSku(sku) 解析出 { name, keywords, aiWordBank, outlineSeed, axes }，
+ * resolveTypeSku(sku) 解析出 { name, keywords, aiWordBank, outlineSeed, axes, contract }，
  * 供 aiService 的风格档案系统与大纲/正文生成使用。
  *
  * 六轴顺序恒为 [temperature, diction, narrator, pacing, humor, emotion]（1-5）。
  * 题材给基底 axes，tones 逐轴覆盖；人格 axes 在路由里再叠加（人格 > tones > 题材默认）。
+ *
+ * contract（叙事契约 key）不在这里定义，统一登记在 config/genreContracts.js：
+ * 每个大类/题材都必须能独立映射到一份契约，未登记会被覆盖完整性用例拦下。
  */
+
+const { resolveSkuContractKey } = require('./genreContracts');
 
 const AXIS_KEYS = ['temperature', 'diction', 'narrator', 'pacing', 'humor', 'emotion'];
 
@@ -488,6 +493,8 @@ function resolveTypeSku(sku) {
 
   const name = theme ? `${cat ? cat.name : ''}·${theme.name}` : (cat ? cat.name : (s.theme || '未分类'));
   const outlineSeed = theme ? '' : '';
+  // 叙事契约：由「题材 > 大类」在 genreContracts 里显式登记（不再让下游按类型名正则猜）
+  const contract = resolveSkuContractKey(cat ? cat.id : s.category, theme ? theme.id : null);
 
   return {
     name,
@@ -498,6 +505,7 @@ function resolveTypeSku(sku) {
     aiWordBank: dedupeJoin(wordParts),
     outlineSeed,
     axes,
+    contract,
     tones: toneObjs.map((t) => t.name),
     toneContract: buildToneContract(toneObjs),
   };

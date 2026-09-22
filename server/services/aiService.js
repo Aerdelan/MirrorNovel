@@ -1,5 +1,6 @@
 const novelTypes = require('../config/novelTypes');
 const deslop = require('../config/deslop');
+const { resolveGenreContract } = require('../config/genreContracts');
 const { getServerRoute } = require('../config/modelCatalog');
 const { getRequestModelConfig } = require('./requestContext');
 const {
@@ -267,12 +268,7 @@ function buildSystemPrompt(novelTypeId, gender, persona, resolvedType) {
     ].filter(Boolean).join('\n\n');
 
     // 题材元数据（非人格，始终保留）
-    const typeMeta = type ? [
-      `写作类型：${type.name}`,
-      `写作关键词：${type.keywords || ''}`,
-      type.outline ? `大纲参考：${type.outline}` : '',
-      type.aiWordBank ? `题材语汇参考（只在具体语境成立时使用，禁止堆砌）：${type.aiWordBank}` : '',
-    ].filter(Boolean).join('\n') : '';
+    const typeMeta = renderTypeMetaBlock(type);
 
     // 去AI化策略：底线（styleFloorPrompt）恒用；工艺指南从属于风格档案。
     // overrideDeslop=true 时省略【通用叙事工艺指南】，只保留去AI味底线，由 persona.rules + 风格档案接管风格。
@@ -376,24 +372,44 @@ function buildPersonaPrompt(persona, options = {}) {
   return `\n\n【本书风格与写作人格：${persona.name || '自定义模板'}】\n${leading.join('\n\n')}${guide}`;
 }
 
+/**
+ * 题材元数据块：写作类型 / 关键词 / 大纲参考 / 题材语汇。
+ * 系统提示、大纲、章节计划、单章提示共用同一份渲染，避免各条链路对类型信息的处理不一致
+ * （此前大纲与章节计划都拿不到关键词与语汇，SKU 选的 tag 到不了策划阶段）。
+ */
+function renderTypeMetaBlock(type) {
+  if (!type || !type.name) return '';
+  return [
+    `写作类型：${type.name}`,
+    `写作关键词：${type.keywords || ''}`,
+    type.outline ? `大纲参考：${type.outline}` : '',
+    type.aiWordBank ? `题材语汇参考（只在具体语境成立时使用，禁止堆砌）：${type.aiWordBank}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+/**
+ * 策划阶段（大纲/章节计划）用的基调提示：基调决定"怎么写"，但阶段与节点的安排
+ * 必须为它留出空间（喜剧节奏、关系升温、压抑段落），否则基调会在源头被稀释。
+ */
+function renderTonePlanHint(type) {
+  const tones = Array.isArray(type && type.toneNames) ? type.toneNames.filter(Boolean) : [];
+  if (!tones.length) return '';
+  return `本书锁定的风格基调：${tones.join('、')}。规划阶段与节点时，要为这些基调留出落地空间（场景类型、情绪走向、关系推进的节奏），但不要用基调替代事件因果。`;
+}
+
+/**
+ * 题材叙事契约：按类型体系里显式登记的 contract 取正文。
+ *
+ * 旧实现是对类型名做正则猜（"校园"会把「二次元·日系校园」判成言情、游戏/军事/纯爱
+ * 一律落通用契约），导致用户选的 tag 与成稿的叙事组织方式脱节。现在所有映射都在
+ * config/genreContracts.js 里逐条登记，正则只作为自由文本类型名的最后兜底。
+ */
 function buildGenreStyleContract(novelTypeId, type) {
-  const id = String(novelTypeId || '').toLowerCase();
-  if (/mystery|detective|suspense|horror|thriller|悬疑|推理/.test(id)) return `【题材叙事契约：悬疑/惊悚】
-以受限信息和可验证线索组织阅读体验：先给可观察事实，再给解释冲突，重要真相要通过行为、证据和视角偏差逐层释放。场景优先写声音、光线、物证、空间死角和人物反应；对白允许回避、试探和不完整回答。不要用全知旁白提前解释谜底，不要每段都用夸张形容词制造恐怖。`;
-  if (/romance|love|言情|恋爱|校园/.test(id)) return `【题材叙事契约：言情/关系】
-以关系变化而非事件清单组织章节：每次相处都要改变信任、边界、误解或选择。把情绪放进动作、距离、礼物、沉默和未说出口的判断里；对白保留双方目标差异，不用旁白反复宣布“心动/虐/甜”。日常段落可以完整展开，但必须留下关系或记忆的不可逆变化。`;
-  if (/wuxia|martial|jianghu|武侠/.test(id)) return `【题材叙事契约：武侠/江湖】
-以选择、恩义、规矩和代价塑造人物，不把江湖写成连续升级表。动作场面交代地形、兵器、节奏和判断，决斗结果必须由先前立场与代价积累而来。留出赶路、饮酒、疗伤、守约等低压段，让人物的江湖关系和失去的东西沉淀下来。`;
-  if (/xianxia|fantasy|修仙|玄幻/.test(id)) return `【题材叙事契约：玄幻/修仙】
-让力量体系服务于人物选择、世界规则和代价，不用境界名词替代戏剧。场景重点是感知变化、资源限制、仪式和人与天地/宗门的关系；突破必须改变责任或风险。阶段之间保留修行、行旅、同伴相处和规则观察，使世界有生活纹理而非只剩任务与战斗。`;
-  if (/scifi|science|future|科幻|未来/.test(id)) return `【题材叙事契约：科幻/未来】
-以技术后果、制度约束和陌生环境改变人物选择，不用术语堆砌未来感。优先写界面、设备、身体感受、空间尺度和信息不对称；解释世界观时让人物通过工作、故障、交易或日常使用发现规则。关键段落之间允许安静的观察和共同生活，让宏大设定落到人的损失与愿望。`;
-  if (/historical|history|古代|历史|宫斗|权谋/.test(id)) return `【题材叙事契约：历史/权谋】
-以身份、制度、利益和礼法塑造冲突，避免现代口吻直接替代时代人物。信息通过奏报、账册、宴席、军令、流言和沉默的站位流动；每次谋略都要有资源与政治代价。安排具有时代生活质感的间歇场景，让人物关系和权力变化在低声交谈、劳作或仪式中沉淀。`;
-  if (/lightnovel|isekai|school|轻小说|异世界/.test(id)) return `【题材叙事契约：轻小说/ACGN】
-以角色关系、具体处境和轻重反差形成节奏，不依赖统一吐槽、口头禅或模板化萌反应。冒险、校园、社团和共同生活都必须推进关系、信息或规则理解；重大情绪前允许轻松段落积累记忆，避免每章都用相同的笑点和收尾方式。`;
-  return `【题材叙事契约】
-从当前题材、世界规则、人物关系和大纲中提炼本书独有的叙事特征（叙事距离、信息释放速度、感官重点、对白密度、低压场景形态），并在全文保持这一组特征。具体调到冷峻还是温热、克制还是外放、素白还是浓丽，一律以上方本书风格档案为准，本契约不把本书预设成某一种统一文风。`;
+  return resolveGenreContract({
+    explicit: type && type.contract,
+    ids: [type && type.id, novelTypeId],
+    names: [type && type.name],
+  });
 }
 
 /** 规范化每章目标字数：允许福尔摩斯式大章（1万+字），默认维持旧口径 3000。 */
@@ -454,10 +470,13 @@ function buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWo
   const researchSection = researchBlock
     ? `\n以下是联网取材得到的事实参考资料，请在不违背主角设定与世界观的前提下，将其融入大纲的时代背景、专业细节与情节节点（与本书设定冲突时以本书为准，不得照搬原文）：\n${researchBlock}\n`
     : '';
+  const typeMeta = renderTypeMetaBlock(type);
+  const toneHint = renderTonePlanHint(type);
   return `你是一位专业的小说大纲策划师。请为一部${type ? type.name : ''}小说创作一份完整、可执行、可供分章规划使用的创作大纲。${buildPersonaPrompt(persona, { includeDeslop: false })}
 
 ${buildGenreStyleContract(novelTypeId, type)}
 
+${typeMeta ? `${typeMeta}\n` : ''}${toneHint ? `${toneHint}\n` : ''}
 主角名字：${protagonistName || '未设定'}
 世界观设定：${worldSetting || '由你自由发挥'}
 目标总字数：约${requirements.target}字（预计${requirements.estChapters}章，每章约${requirements.chapterWords}字）
@@ -525,8 +544,10 @@ function buildChapterContext(chapters) {
   return `【前期章节概要】\n${earlySummary}\n\n【最近章节详情】\n${recentDetail}`.slice(0, 10000);
 }
 
-function buildInitialPrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, mode, outline, persona) {
-  const type = novelTypes.find(t => t.id === novelTypeId);
+function buildInitialPrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, mode, outline, persona, resolvedType) {
+  // 单章/整本首章提示：优先用路由解析好的类型（SKU 书的 novelTypeId 是「二次元·日系校园」
+  // 这类展示名，旧的 id 查找会取不到，导致提示词里题材名直接空缺）。
+  const type = resolvedType || novelTypes.find(t => t.id === novelTypeId);
   const isChapter = mode === 'chapter';
   const outlineText = outline ? `\n【创作大纲】\n${outline}\n` : '';
   const continuityNote = isChapter
@@ -538,9 +559,10 @@ function buildInitialPrompt(novelTypeId, protagonistName, worldSetting, targetWo
       + '4. 开篇要吸引人，中间要有冲突和转折，结局要圆满\n'
       + '5. 这不是独立的章节拼接，而是一部浑然一体的作品\n'
       + '6. 每章结束时可以留悬念，但不要中断主线剧情';
+  const typeMeta = renderTypeMetaBlock(type);
 
   return `请创作一部${type ? type.name : ''}小说。${buildPersonaPrompt(persona)}
-
+${typeMeta ? `\n${typeMeta}\n` : ''}
 主角名字：${protagonistName || '未设定'}
 世界观设定：${worldSetting || '由你自由发挥'}
 目标字数：约${targetWordCount}字${outlineText}
@@ -1201,15 +1223,16 @@ function getChapterPlanOutputTokens(targetWordCount, chapterWordTarget) {
   return Math.max(16384, Math.min(120000, Math.ceil(chapters * 135)));
 }
 
-function buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, persona, storyBlueprint, chapterWordTarget) {
+function buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, persona, storyBlueprint, chapterWordTarget, resolvedType) {
   // 兼容两种历史调用形态：旧形态第 5 位是一个已废弃的上下文参数
   // (outline, target, proto, world, unusedContext, persona, blueprint)，
-  // 新形态是 (outline, target, proto, world, persona, blueprint, chapterWordTarget)。
-  // 第 7 位是数字即新形态，否则按旧形态重排。
+  // 新形态是 (outline, target, proto, world, persona, blueprint, chapterWordTarget, resolvedType)。
+  // 第 7 位是数字即新形态，否则按旧形态重排（此时第 8 位只可能是类型对象）。
   if (arguments.length >= 7 && typeof arguments[6] !== 'number') {
     storyBlueprint = arguments[6];
     persona = arguments[5];
     chapterWordTarget = undefined;
+    resolvedType = (arguments.length >= 8 && arguments[7] && typeof arguments[7] === 'object') ? arguments[7] : undefined;
   }
   const chapterWords = normalizeChapterWordTarget(chapterWordTarget);
   const estChapters = Math.max(10, Math.ceil(targetWordCount / chapterWords));
@@ -1237,6 +1260,10 @@ function buildChapterPlan(outline, targetWordCount, protagonistName, worldSettin
 
 【故事蓝图】当前没有用户确认的细化蓝图。请根据大纲和人物关系自行形成阶段、支线和伏笔安排，但不要凭空改变大纲已确定的事实。`;
 
+  // 类型元数据与基调提示：章节计划决定每章写什么，缺了它们 SKU/类型选的 tag
+  // 只能在正文阶段补救（此前计划提示里完全没有类型信息，是"选什么都一样"的来源之一）。
+  const planTypeMeta = renderTypeMetaBlock(resolvedType);
+  const planToneHint = renderTonePlanHint(resolvedType);
   let planPrompt = `你是一位专业的小说章节规划师。请根据以下素材制定一份详细的章节计划表。${buildPersonaPrompt(persona, { includeDeslop: false })}
 
 目标：约${targetWordCount}字，预计${estChapters}章（每章约${chapterWords}字）
@@ -1244,7 +1271,7 @@ function buildChapterPlan(outline, targetWordCount, protagonistName, worldSettin
 素材：
 主角：${protagonistName || '未设定'}
 世界观：${worldSetting || '自由发挥'}
-大纲：
+${planTypeMeta ? `${planTypeMeta}\n` : ''}${planToneHint ? `${planToneHint}\n` : ''}大纲：
 ${outline || '无大纲，请自行规划故事'}`;
 
   planPrompt += blueprintBrief;

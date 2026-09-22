@@ -8,10 +8,11 @@
 | 文件 | 职责 |
 | --- | --- |
 | `server/config/novelTypeSku.js` | SKU 数据（ tones / elements / personas / CATEGORY_TREE ）与解析函数 `resolveTypeSku` / 目录构建 `buildSkuCatalog` |
-| `server/config/novelTypes.js` | 旧的单层 13 类型（仍带 `axes`，向后兼容 `generate` 与轻小说等入口） |
+| `server/config/genreContracts.js` | **题材叙事契约**：契约正文 + 所有 tag 的显式映射（SKU 大类/题材、旧类型 id、老分类名）与统一解析入口 |
+| `server/config/novelTypes.js` | 旧的单层 13 类型（带 `axes` 与 `contract`，向后兼容 `generate` 与轻小说等入口） |
 | `server/config/novelTypeData.js` | 更早期的大类/子分类浏览数据（`/types/full`），仅作大类名兜底 |
-| `server/routes/novel.js` | `resolveTypeContext` / `withSkuAxes` 辅助、`/types/sku` 端点、三路由接入 |
-| `server/services/aiService.js` | `STYLE_AXES` 六轴定义、`normalizeAxes` / `mergeAxes` / `buildStyleProfileBlock` |
+| `server/routes/novel.js` | `resolveTypeContext` / `resolveTypeContextFromNovel` / `withSkuAxes` 辅助、`/types/sku` 端点、三路由接入 |
+| `server/services/aiService.js` | `STYLE_AXES` 六轴定义、`normalizeAxes` / `mergeAxes` / `buildStyleProfileBlock`、`renderTypeMetaBlock` |
 | `server/models/Novel.js` | `typeSku` 字段（存本书类型 SKU，续写时重算保持跨章一致） |
 
 ---
@@ -54,6 +55,16 @@
 
 > 轴数据在 SKU 里用**稀疏数组** `[temperature, diction, narrator, pacing, humor, emotion]`
 > 书写，`null` 位表示"不改动该轴"，由 `axesFromSeed` 转成对象。
+
+### 2.1 风格基调契约（toneContract）
+
+六轴管"文风浓淡"，基调标签（tones）还额外升格为一份**硬承诺**：`resolveTypeSku` 把选中的
+基调渲染成 `【风格基调契约】`（`buildToneContract`），紧随风格档案置顶注入系统提示，
+要求全篇稳定兑现，防止基调被世界观/剧情默认气氛稀释。
+
+除正文外，基调还会影响两处：`renderTonePlanHint` 把基调写进大纲与章节计划的提示（让阶段
+与节点的安排为它留出空间），`storyState.inferStoryWeight` 把基调名并入情绪权重判定
+（搞笑/治愈/日常 → light，暗黑/致郁/虐 → heavy），从而改变喘息章与张力基线。
 
 ---
 
@@ -111,7 +122,7 @@ CATEGORY_TREE = {
 输入 SKU（也接受字符串 id 或仅 `{ category }`，兼容旧 `novelTypeId`），输出：
 
 ```js
-{ name, channel, category, theme, keywords, aiWordBank, outlineSeed, axes }
+{ name, channel, category, theme, keywords, aiWordBank, outlineSeed, axes, contract, tones, toneContract }
 ```
 
 解析步骤：
@@ -122,7 +133,9 @@ CATEGORY_TREE = {
    `elements` 的 `aiWordBank` 并入 `aiWordBank`（`dedupeJoin` 去重合并）。
 4. **axes 合成**（`mergeAxesLoose`，后者逐轴覆盖）：
    `大类基底 < 题材 < tones（按选择顺序）`。
-5. `name` 为 `大类·题材`（无题材时仅大类名）。
+5. **contract**：按 `题材 > 大类` 从 `genreContracts.js` 取叙事契约 key（见 8.1）。
+6. `tones` / `toneContract`：多选基调的名字与硬契约文本（见 2.1）。
+7. `name` 为 `大类·题材`（无题材时仅大类名）。
 
 ### 4.1 axes 最终优先级
 
@@ -140,17 +153,23 @@ CATEGORY_TREE = {
 
 - **`resolveTypeContext(body)`**：读 `body.typeSku` / `body.novelTypeId`，返回
   `{ type, skuAxes, resolvedName }`。`type` 是可直接喂给 `buildSystemPrompt` /
-  `buildOutlinePrompt` 的预解析类型对象（含 `axes` / `keywords` / `aiWordBank`）。
+  `buildOutlinePrompt` / `buildChapterPlan` 的预解析类型对象
+  （含 `axes` / `keywords` / `aiWordBank` / `contract` / `toneContract` / `toneNames`）。
   - 有 `typeSku`：走 `resolveTypeSku`。
   - 否则兼容旧路径：`novelTypes.find(id || name)`，miss 时回落 `novelTypeData` 大类名
-    （修复历史上大类名失配直接掉通用模板的问题）。
+    （按名字取 `contract`，不再留给下游正则猜）。
+- **`resolveTypeContextFromNovel(novel)`**：续写/去 AI 味/润色等已落库场景用它还原类型上下文
+  （新作品按 `typeSku`，旧作品回落 `novelTypeId`），这些链路此前一律传 `null` 契约，
+  等于用类型名字符串重新猜一次题材。
 - **`/types/sku`**（GET）：返回 `buildSkuCatalog()`，即前端选择器所需的全量目录：
   `{ axisKeys, tones:[{id,name}], elements:[{id,name}], personas:[{id,name}], channels, tree:{male,female:[{id,name,icon,themes:[{id,name}]}]} }`
 - **三路由** `generate` / `generate-outline` / `generate-blueprint` 以及两处续写
   （章节流水线、`continue-chapter`）均：
   1. `const { type, skuAxes } = resolveTypeContext(...)`
   2. `persona = withSkuAxes(persona, skuAxes)`
-  3. 把 `type` 传入 `buildSystemPrompt` / `buildOutlinePrompt`。
+  3. 把 `type` 传入 `buildSystemPrompt` / `buildOutlinePrompt` / `buildChapterPlan` /
+     `buildInitialPrompt`（`renderTypeMetaBlock` 与基调提示由这些函数统一渲染，
+     策划阶段与正文阶段看到的是同一份类型信息）。
 - **`Novel.typeSku`**：创建作品时持久化；续写时用 `{ typeSku: novel.typeSku, novelTypeId }`
   重算，保证同一本书跨章风格一致（旧作品 `typeSku` 为 null，回落 `novelTypeId`）。
 
@@ -194,6 +213,7 @@ CATEGORY_TREE = {
 ## 8. 扩充指引（如何新增大类 / 题材 / 标签）
 
 全部改动集中在 `server/config/novelTypeSku.js`，改完前端选择器与 `/types/sku` 自动生效。
+**另外必须同步登记叙事契约**（见 8.1），否则该 tag 在成稿里不会生效。
 
 **新增风格基调（tone）** — 会直接影响 axes：
 
@@ -231,3 +251,34 @@ CHARACTERS.mychar = ['我的人设', '关键词, 关键词'];
   补对应 key；不补也能中文兜底显示。
 - 改完建议校验：`node -e "require('./config/novelTypeSku').buildSkuCatalog()"`（在 `server/` 下）
   确认无语法/结构错误；`/types/sku` 能正常返回即前端可见。
+
+### 8.1 叙事契约：每个 tag 必须独立登记（否则 tag 不生效）
+
+每个大类/题材除了风格轴，还要决定**成稿按哪种叙事方式组织**（悬疑按线索、言情按关系、
+军事按任务与代价……），这份文本叫「题材叙事契约」，统一登记在
+`server/config/genreContracts.js`：
+
+| 登记表 | 用途 |
+| --- | --- |
+| `SKU_CATEGORY_CONTRACTS` | SKU 大类 id → 契约 key（每个大类都必须有一条） |
+| `SKU_THEME_CONTRACTS` | SKU 题材 id → 契约 key（只在题材叙事核心不属于本大类时登记） |
+| `LEGACY_TYPE_CONTRACTS` | 旧单层类型 id（`novelTypes.js` 的 13 条）→ 契约 key |
+| `TAXONOMY_NAME_CONTRACTS` | 老分类名（`novelTypeData.js` 的大类名）→ 契约 key |
+| `CONTRACTS` | 契约 key → 正文（可扩充新契约，如 urban / game / military 就是新增的） |
+
+可用 key：`mystery` / `romance` / `wuxia` / `xuanhuan` / `scifi` / `history` / `acgn` /
+`urban` / `game` / `military` / `generic`。解析优先级为
+`显式 contract → 旧类型 id 表 → 老分类名表 → 正则兜底 → generic`。
+
+**硬性要求**：新增大类或题材后，必须在对应登记表里加一行。`tests/genreContracts.test.js`
+会遍历 `CATEGORY_TREE` / `novelTypes` / `novelTypeData` 校验覆盖完整性——漏登记、或指向
+不存在的 key，测试会直接失败。这条闸门的存在，是因为历史上一度靠"对类型名做正则猜题材"，
+结果「二次元·日系校园」被"校园"二字判成言情契约、游戏/军事/纯爱全部落到通用契约，
+用户选了 tag 成稿却不由它决定。
+
+### 8.2 旧类型模板池与 SKU 的边界
+
+`server/config/novelTemplates.js` 的模板池（建议看点/开场方式/节奏建议，按"类型名 +
+世界观文本"匹配，男/女频通用爽文池）**只服务旧路径**。判断入口是
+`novelTemplates.shouldInjectTemplates(typeSku)`：带 `typeSku`（选了频道/大类/题材）的作品
+一律不注入，`/match-templates` 预览同步返回空列表，避免界面显示一个不生效的匹配。

@@ -3,6 +3,8 @@
  * They deliberately tolerate legacy novels that do not yet have these fields.
  */
 
+const { TONES, ELEMENTS, CHARACTERS, CATEGORY_TREE } = require('../config/novelTypeSku');
+
 function toArray(value) {
   return Array.isArray(value) ? value : [];
 }
@@ -353,11 +355,40 @@ function renderStoryBlueprintForContext(novel, chapterNumber, totalChapters) {
   ].filter(Boolean).join('\n');
 }
 
+/**
+ * 全书情绪权重（heavy/light/balanced）：决定喘息章与张力基线。
+ *
+ * 除了类型名/大纲/世界观文本，还要读用户在多选 SKU 里真正勾选的标签——
+ * 风格基调（搞笑/甜宠/治愈/暗黑…）与题材名。此前只扫 novelTypeName 字符串，
+ * 于是"选了搞笑/治愈"这类基调进不了情绪规划（tag 在节奏层面失效）。
+ */
 function inferStoryWeight(novel) {
-  const text = [novel.novelTypeName, novel.outline, novel.worldSetting].filter(Boolean).join(' ');
-  if (/悲剧|虐|黑暗|悬疑|惊悚|末日|战争|犯罪|沉重|复仇/.test(text)) return 'heavy';
-  if (/轻松|喜剧|搞笑|甜|治愈|校园日常/.test(text)) return 'light';
+  const skuText = skuSignalText(novel);
+  const text = [novel.novelTypeName, novel.outline, novel.worldSetting, skuText].filter(Boolean).join(' ');
+  if (/悲剧|虐|黑暗|悬疑|惊悚|末日|战争|犯罪|沉重|复仇|暗黑|致郁|压抑/.test(text)) return 'heavy';
+  if (/轻松|喜剧|搞笑|甜|治愈|温情|日常|沙雕|谐趣|小确幸/.test(text)) return 'light';
   return 'balanced';
+}
+
+/** 把 novel.typeSku 里的标签翻成可判定的中文文本（基调名 + 大类/题材名 + 情节/人设标签名）。 */
+function skuSignalText(novel) {
+  const sku = novel && novel.typeSku;
+  if (!sku || typeof sku !== 'object') return '';
+  try {
+    const parts = [];
+    const cat = (CATEGORY_TREE[sku.channel] || []).find((c) => c.id === sku.category);
+    if (cat) {
+      parts.push(cat.name);
+      const theme = (cat.themes || []).find((t) => t.id === sku.theme);
+      if (theme) parts.push(theme.name);
+    }
+    for (const id of sku.tones || []) if (TONES[id]) parts.push(TONES[id].name);
+    for (const id of sku.elements || []) if (ELEMENTS[id]) parts.push(ELEMENTS[id][0]);
+    for (const id of sku.personas || []) if (CHARACTERS[id]) parts.push(CHARACTERS[id][0]);
+    return parts.join(' ');
+  } catch {
+    return '';
+  }
 }
 
 /**

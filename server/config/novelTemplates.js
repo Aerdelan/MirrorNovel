@@ -339,4 +339,19 @@ module.exports = {
 
     return parts.join('\n\n')
   },
+
+  /**
+   * 本次请求是否该注入上面的类型模板池。
+   *
+   * 用了番茄式多选 SKU 的作品一律不注入：模板池是按"类型名 + 世界观文本"匹配的
+   * 男/女频通用爽文池（建议看点：无敌流/争霸天下/后宫收集，开场方式：穿越/重生），
+   * 注入后会在系统提示末尾把用户在 SKU 里选的题材与风格基调压回去——典型症状是
+   * 选「二次元 / 日系校园 / 搞笑」却写出男频爽文。SKU 的题材信息由 keywords、
+   * 风格六轴、基调契约以及大纲/章节计划承载，不需要这层通用池。
+   */
+  shouldInjectTemplates(typeSku) {
+    const sku = typeSku && typeof typeSku === 'object' ? typeSku : null
+    if (!sku) return true
+    return !(sku.theme || sku.category)
+  },
 }

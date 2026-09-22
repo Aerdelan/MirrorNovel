@@ -14,6 +14,7 @@ const state = {
   outlineContent: '隔离测试大纲',
   aiHandler: null,
   aiCalls: [],
+  lastSystemPromptArgs: null,
 };
 
 function clone(value) {
@@ -29,6 +30,7 @@ function resetState() {
   state.outlineContent = '隔离测试大纲';
   state.aiHandler = null;
   state.aiCalls = [];
+  state.lastSystemPromptArgs = null;
 }
 
 class InMemoryNovel {
@@ -159,7 +161,12 @@ async function defaultAiHandler(call) {
 
 const realAiService = require(path.join(serverRoot, 'services/aiService.js'));
 const aiServiceMock = {
-  buildSystemPrompt: (type) => `SYSTEM:${type}`,
+  // 捕获系统提示参数：SKU 解析结果（keywords/axes/contract/toneContract）是否真的
+  // 传到了提示词构建，只有端到端跑一遍才看得出来。
+  buildSystemPrompt: (typeId, gender, persona, resolvedType) => {
+    state.lastSystemPromptArgs = { typeId, gender, persona, resolvedType };
+    return `SYSTEM:${typeId}`;
+  },
   buildInitialPrompt: () => 'INITIAL_PROMPT',
   buildContinuePrompt: () => 'CONTINUE_PROMPT',
   buildImportContinuePrompt: () => 'IMPORT_CONTINUE_PROMPT',
@@ -214,8 +221,10 @@ mockModule('services/editorialEngine.js', {
   STAGES: [],
 });
 mockModule('config/novelTemplates.js', {
-  typeTemplates: [],
-  buildTemplatePrompt: () => '',
+  // 只放一条模板用于验证"旧路径仍会注入"；注入策略用真实实现，避免把被测逻辑复制到 mock 里。
+  typeTemplates: [{ name: '二次元', gender: 'male', keywords: ['二次元', '日系', '校园', '日常'], variants: [] }],
+  buildTemplatePrompt: () => 'TEMPLATE_POOL',
+  shouldInjectTemplates: require(path.join(serverRoot, 'config/novelTemplates.js')).shouldInjectTemplates,
 });
 
 const novelRouter = require('../routes/novel');
@@ -919,4 +928,80 @@ test('续写单章：新章节同样落库 token 标注', async () => {
   assert.ok(tokens, '续写章节缺少 qualityReport.tokens');
   assert.equal(tokens.inputTokens, second.length * 2 + 100);
   assert.equal(tokens.byRole.writing.calls, 1);
+});
+
+// ===== SKU（番茄式多选类型）与旧类型模板池的边界 =====
+
+test('SKU 书：类型解析结果（关键词/契约/基调）进入提示词，且不注入旧的男频模板池', async () => {
+  const content = makeChapter('苍太在文艺部室门口撞见抱着纸箱的部长', 'SKU回归');
+  state.chapterQueue = [content];
+
+  const { response, events } = await postSse('/generate', {
+    novelTypeId: '二次元·日系校园',
+    typeSku: { channel: 'male', category: 'acg', theme: 'acg_school', tones: ['gaoxiao'] },
+    protagonistName: '苍太',
+    worldSetting: '日系校园，文艺部与学园祭',
+    targetWordCount: 3000,
+    mode: 'chapter',
+  });
+
+  assert.equal(response.status, 200);
+  assert.ok(eventIndex(events, 'completed') > -1);
+
+  // 1) 解析后的类型（含 contract / toneContract / keywords）确实传给了提示词构建
+  const args = state.lastSystemPromptArgs;
+  assert.ok(args && args.resolvedType, '系统提示未收到解析后的类型');
+  assert.equal(args.resolvedType.name, '二次元·日系校园');
+  assert.equal(args.resolvedType.contract, 'acgn');
+  assert.match(args.resolvedType.keywords, /日系校园/);
+  assert.match(args.resolvedType.toneContract, /搞笑\/无厘头/);
+
+  // 2) SKU 书不得再注入旧的类型模板池（它就是"选二次元却写出男频爽文"的来源）
+  const allPrompts = state.aiCalls.map((call) => call.systemPrompt).join('\n');
+  assert.doesNotMatch(allPrompts, /【类型模板参考/);
+  assert.doesNotMatch(allPrompts, /TEMPLATE_POOL/);
+
+  // 3) typeSku 落库，续写时能还原同一套类型上下文
+  const novel = getCreatedNovel(events);
+  assert.deepEqual(novel.typeSku, { channel: 'male', category: 'acg', theme: 'acg_school', tones: ['gaoxiao'] });
+});
+
+test('旧路径（无 typeSku）：类型模板池照旧注入，行为不回归', async () => {
+  const content = makeChapter('林舟在旧城邮局找到被替换的值班表', '旧路径');
+  state.chapterQueue = [content];
+
+  const { response } = await postSse('/generate', {
+    novelTypeId: '二次元',
+    protagonistName: '林舟',
+    worldSetting: '日系校园，社团活动',
+    targetWordCount: 3000,
+    mode: 'chapter',
+  });
+
+  assert.equal(response.status, 200);
+  const allPrompts = state.aiCalls.map((call) => call.systemPrompt).join('\n');
+  assert.match(allPrompts, /【类型模板参考（男频 · 二次元/);
+});
+
+test('match-templates 预览与注入保持一致：SKU 书返回空列表', async () => {
+  const skuPreview = await fetch(`${baseUrl}/match-templates`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer isolated' },
+    body: JSON.stringify({
+      worldSetting: '日系校园，社团活动',
+      novelTypeId: '二次元·日系校园',
+      typeSku: { channel: 'male', category: 'acg', theme: 'acg_school' },
+    }),
+  });
+  const skuBody = await skuPreview.json();
+  assert.deepEqual(skuBody.matched, []);
+  assert.equal(skuBody.skuBased, true);
+
+  const legacyPreview = await fetch(`${baseUrl}/match-templates`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer isolated' },
+    body: JSON.stringify({ worldSetting: '日系校园，社团活动', novelTypeId: '二次元' }),
+  });
+  const legacyBody = await legacyPreview.json();
+  assert.ok(legacyBody.matched.length > 0, '旧路径仍应给出模板预览');
 });
