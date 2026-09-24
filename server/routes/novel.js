@@ -18,6 +18,7 @@ const {
   mergeAxes,
   buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, extractChapterSummary,
   streamGenerate, resolveApiConfig, countTokens, humanizeRewrite, getFriendlyErrorMessage,
+  MAX_GENERATION_TOKENS = 700000,
 } = require('../services/aiService');
 const { gatherResearch } = require('../services/webSearchService');
 
@@ -1064,9 +1065,13 @@ ${String(outline).slice(0, 60000)}
         resolveApiConfig(req.userModelConfig, 'reasoning'),
         1,
         0.35,
-        24000,
+        // 三级蓝图的结构量随全书章数增长，不能再用固定 24k 输出预算截断。
+        // 直接使用生成服务允许的最高预算；若具体线路上限更低，aiService 会根据
+        // 线路返回的硬上限自动适配，并在 finish=length 时从断点继续。
+        MAX_GENERATION_TOKENS,
         TIMEOUT.BLUEPRINT,
-        (reasoning) => { thinkingEmitter(reasoning); send({ type: 'reasoning', content: reasoning }); }
+        (reasoning) => { thinkingEmitter(reasoning); send({ type: 'reasoning', content: reasoning }); },
+        { stitchOnTruncation: true, maxStitchRounds: 8 }
       );
       const rawContent = String(result.content || '').trim();
       if (!rawContent) {
