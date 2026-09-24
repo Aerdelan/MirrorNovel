@@ -133,22 +133,30 @@
 </Teleport>
 
 <Teleport to="body">
- <div v-if="isContinuing" class="continue-progress-overlay">
+ <div v-if="isBookContinuing && continueProgressVisible" class="continue-progress-overlay" @click.self="hideContinueProgress">
  <div class="continue-progress-card">
+ <button class="continue-progress-close" type="button" :aria-label="$t('bookshelf.hideProgress')" :title="$t('bookshelf.hideProgress')" @click="hideContinueProgress">×</button>
  <div class="progress-title">{{ $t('bookshelf.aiWriting') }}</div>
  <div v-if="currentContinueChapter" class="progress-chapter">{{ $t('bookshelf.currentChapter', { num: currentContinueChapter }) }}</div>
  <div v-if="continueWordCount === 0 && continueThinkingCount > 0" class="progress-word">{{ $t('bookshelf.thinking', { words: continueThinkingCount }) }}</div>
  <div v-else class="progress-word">{{ $t('bookshelf.generated', { words: continueWordCount }) }}</div>
  <div class="progress-indicator"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+ <div class="continue-background-hint">{{ $t('bookshelf.backgroundHint') }}</div>
  </div>
  </div>
  </Teleport>
+ <button v-if="isBookContinuing && !continueProgressVisible" class="continue-background-task" type="button" @click="showContinueProgress">
+ <span class="continue-background-task-dot"></span>
+ <span>{{ $t('bookshelf.backgroundWriting') }}</span>
+ <span v-if="currentContinueChapter">· {{ $t('bookshelf.currentChapter', { num: currentContinueChapter }) }}</span>
+ <span>· {{ $t('bookshelf.generated', { words: continueWordCount }) }}</span>
+ </button>
  <div style="height: 20px;"></div>
  </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onActivated, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, onActivated, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useNovelStore } from '../stores/novel'
 import { useAuthStore } from '../stores/auth'
@@ -172,6 +180,8 @@ const outlineText = ref('')
 const outlineSaving = ref(false)
 const continueDialogNovel = ref(null)
 const isContinuing = ref(false)
+const isBookContinuing = ref(false)
+const continueProgressVisible = ref(false)
 const currentContinueChapter = ref(0)
 const continueWordCount = ref(0)
 const continueThinkingCount = ref(0)
@@ -203,6 +213,14 @@ onMounted(async () => {
  try { await novelStore.fetchBookshelf() } catch (e) { console.error('Failed to fetch bookshelf:', e) }
  loading.value = false
 })
+
+function hideContinueProgress() { continueProgressVisible.value = false }
+function showContinueProgress() { if (isBookContinuing.value) continueProgressVisible.value = true }
+function handleContinueProgressKeydown(event) {
+ if (event.key === 'Escape' && continueProgressVisible.value) hideContinueProgress()
+}
+onMounted(() => window.addEventListener('keydown', handleContinueProgressKeydown))
+onUnmounted(() => window.removeEventListener('keydown', handleContinueProgressKeydown))
 
 // 从 keep-alive 缓存重新激活时刷新书架数据（切换 tab 回来时）
 onActivated(async () => {
@@ -239,18 +257,21 @@ function isTokenExhaustedError(message) {
 }
 
 async function startBookContinue(novel) {
- continueDialogNovel.value = null; isContinuing.value = true
+ continueDialogNovel.value = null; isContinuing.value = true; isBookContinuing.value = true; continueProgressVisible.value = true
  currentContinueChapter.value = 0; continueWordCount.value = 0; continueThinkingCount.value = 0
  try {
  await novelStore.continueGeneration(novel._id, (chunk, fullText) => { continueWordCount.value = fullText.length }, (status) => {
- if (status.type === 'chapter_start') { currentContinueChapter.value = status.chapterNumber || 0; continueThinkingCount.value = 0 }
+ if (status.type === 'chapter_start') { currentContinueChapter.value = status.chapterNumber || 0; continueThinkingCount.value = 0; novelStore.fetchBookshelf().catch(() => {}) }
+ if (status.type === 'chapter_end') novelStore.fetchBookshelf().catch(() => {})
  if (status.type === 'thinking') { continueThinkingCount.value = status.length || 0 }
- if (status.type === 'token_exhausted') { isContinuing.value = false; novelStore.fetchBookshelf() }
- else if (status.type === 'plan_needs_extension') { isContinuing.value = false; alert(status.message || $t('bookshelf.alertPlanMissing')); novelStore.fetchBookshelf() }
- else if (status.type === 'completed' || status.type === 'paused' || status.type === 'error') { isContinuing.value = false; novelStore.fetchBookshelf() }
+ if (status.type === 'token_exhausted') { isContinuing.value = false; isBookContinuing.value = false; continueProgressVisible.value = false; novelStore.fetchBookshelf() }
+ else if (status.type === 'plan_needs_extension') { isContinuing.value = false; isBookContinuing.value = false; continueProgressVisible.value = false; alert(status.message || $t('bookshelf.alertPlanMissing')); novelStore.fetchBookshelf() }
+ else if (status.type === 'completed' || status.type === 'paused' || status.type === 'error') { isContinuing.value = false; isBookContinuing.value = false; continueProgressVisible.value = false; novelStore.fetchBookshelf() }
  }, 'book')
  } catch (e) {
  isContinuing.value = false
+ isBookContinuing.value = false
+ continueProgressVisible.value = false
  if (isTokenExhaustedError(e.message)) alert($t('bookshelf.alertStopped'))
  else if (e.message !== 'paused') alert($t('bookshelf.alertContinueFailed', { message: e.message }))
  novelStore.fetchBookshelf()
@@ -452,7 +473,13 @@ async function saveOutline() {
 .continue-option .option-text { font-size: 15px; font-weight: 600; color: var(--text-primary); }
 .continue-option .option-desc { font-size: 12px; color: var(--text-light); }
 .continue-progress-overlay { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center; }
-.continue-progress-card { background: var(--card-bg); border-radius: 16px; padding: 32px; text-align: center; min-width: 260px; }
+.continue-progress-card { position: relative; background: var(--card-bg); border-radius: 16px; padding: 32px; text-align: center; min-width: 260px; }
+.continue-progress-close { position: absolute; top: 10px; right: 12px; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text-light); font: 24px/30px inherit; cursor: pointer; transition: background 0.2s, color 0.2s; }
+.continue-progress-close:hover { background: var(--primary-light); color: var(--text-primary); }
+.continue-background-hint { margin-top: 14px; font-size: 12px; color: var(--text-light); }
+.continue-background-task { position: fixed; right: 24px; bottom: 24px; z-index: 990; display: flex; align-items: center; gap: 5px; max-width: min(520px, calc(100vw - 48px)); padding: 10px 14px; border: 1px solid var(--primary-color); border-radius: 999px; background: var(--card-bg); color: var(--text-secondary); box-shadow: 0 6px 24px rgba(0,0,0,0.14); font: inherit; font-size: 13px; cursor: pointer; }
+.continue-background-task:hover { background: var(--primary-light); }
+.continue-background-task-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--primary-color); animation: dotPulse 1.2s infinite ease-in-out; flex-shrink: 0; }
 .progress-title { font-size: 16px; font-weight: 600; color: var(--text-primary); margin-bottom: 12px; }
 .progress-chapter { font-size: 15px; color: var(--primary-color); font-weight: 600; margin-bottom: 6px; }
 .progress-word { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }

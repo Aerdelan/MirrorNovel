@@ -512,6 +512,7 @@ export default {
  continueBook: 'Continue Full Novel', continueBookDesc: 'Auto-write to target word count ({count} chars)',
  continueChapter: 'Write One Chapter', continueChapterDesc: 'Go to continue page, customize direction',
  aiWriting: ' AI is writing...', currentChapter: 'Chapter {num}', generated: '{words} chars generated',
+ hideProgress: 'Hide progress', backgroundHint: 'Generation will continue in the background after closing', backgroundWriting: 'AI is writing in the background. Click for progress',
  thinking: 'Deep thinking in progress ({words} chars reasoned · {seconds}s)… prose starts after reasoning, which is not counted toward the chapter length',
  thinkingWaiting: 'Deep thinking in progress ({seconds}s)… the model is reasoning and will start writing automatically',
  statusGenerating: 'Generating', statusPaused: 'Paused', statusCompleted: 'Completed', statusError: 'Error',

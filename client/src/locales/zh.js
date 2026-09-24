@@ -456,6 +456,7 @@ export default {
  continueBook: '继续生成整本', continueBookDesc: '自动续写到目标字数（{count}字）',
  continueChapter: '续写一章', continueChapterDesc: '跳转到续写页面，可自定义续写方向',
  aiWriting: ' AI 正在续写中...', currentChapter: '当前：第{num}章', generated: '已生成 {words} 字',
+ hideProgress: '隐藏进度', backgroundHint: '关闭后仍会在后台继续生成', backgroundWriting: 'AI 正在后台续写，点击查看进度',
  thinking: '深度思考进行中（已思考 {words} 字 · 已用 {seconds} 秒）…思考结束后才会输出正文，不计入正文字数',
  thinkingWaiting: '深度思考进行中（已用 {seconds} 秒）…模型正在推理，稍候会自动开始输出正文',
  statusGenerating: '生成中', statusPaused: '已暂停', statusCompleted: '已完成', statusError: '出错了',
