@@ -764,7 +764,15 @@ const MAX_GENERATION_TOKENS = 700000;
 function extractProviderMaxTokens(errorText) {
   const text = String(errorText || '');
   if (!/max[\s_-]*tokens/i.test(text)) return null;
-  const match = text.match(/max[\s_-]*tokens[\s\S]{0,160}?[\[\(（【]\s*1\s*[,，]\s*(\d{3,})/i);
+  const patterns = [
+    // 中文/部分兼容网关：max_tokens 参数非法：限制数值范围[1,131072]
+    /max[\s_-]*tokens[\s\S]{0,160}?[\[\(（【]\s*1\s*[,，]\s*(\d{3,})/i,
+    // OpenAI 兼容网关：This model supports at most 131072 completion tokens
+    /supports?\s+at\s+most\s+(\d{3,})\s+(?:completion\s+)?tokens?/i,
+    // 其他常见英文形式：maximum allowed/supported ... 131072
+    /(?:maximum|max)\s+(?:allowed|supported)?[\s_-]*(?:completion\s+)?tokens?[\s\S]{0,80}?(\d{3,})/i,
+  ];
+  const match = patterns.map((pattern) => text.match(pattern)).find(Boolean);
   const limit = match ? Number(match[1]) : 0;
   return Number.isFinite(limit) && limit >= 256 ? Math.floor(limit) : null;
 }

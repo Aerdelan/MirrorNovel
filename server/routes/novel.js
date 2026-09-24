@@ -18,9 +18,13 @@ const {
   mergeAxes,
   buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, extractChapterSummary,
   streamGenerate, resolveApiConfig, countTokens, humanizeRewrite, getFriendlyErrorMessage,
-  MAX_GENERATION_TOKENS = 700000,
 } = require('../services/aiService');
 const { gatherResearch } = require('../services/webSearchService');
+
+// 当前正式线路明确声明单次 completion 硬上限为 131072。推理任务默认还会在
+// 正文预算之外预留 8192 个思考 token，因此正文设为 120000，实际 max_tokens
+// 约 128192，贴近但不越过线路上限；超出单轮的部分交给截断续写。
+const BLUEPRINT_OUTPUT_TOKEN_LIMIT = 120000;
 
 // 兼容旧部署/测试桩：人格功能缺失时保持原有提示词行为。
 const buildPersonaPrompt = typeof importedBuildPersonaPrompt === 'function'
@@ -1065,10 +1069,8 @@ ${String(outline).slice(0, 60000)}
         resolveApiConfig(req.userModelConfig, 'reasoning'),
         1,
         0.35,
-        // 三级蓝图的结构量随全书章数增长，不能再用固定 24k 输出预算截断。
-        // 直接使用生成服务允许的最高预算；若具体线路上限更低，aiService 会根据
-        // 线路返回的硬上限自动适配，并在 finish=length 时从断点继续。
-        MAX_GENERATION_TOKENS,
+        // 三级蓝图不再受固定 24k 预算限制，直接使用当前线路的单轮硬上限。
+        BLUEPRINT_OUTPUT_TOKEN_LIMIT,
         TIMEOUT.BLUEPRINT,
         (reasoning) => { thinkingEmitter(reasoning); send({ type: 'reasoning', content: reasoning }); },
         { stitchOnTruncation: true, maxStitchRounds: 8 }

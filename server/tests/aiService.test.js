@@ -89,6 +89,7 @@ test('线路 max_tokens 上限被记住：后续调用不再重复付一次超�
 
 test('provider max_tokens validation is parsed and retried within the hard limit', async () => {
   assert.equal(extractProviderMaxTokens('{"message":"max_tokens参数非法：限制数值范围[1,131072]"}'), 131072);
+  assert.equal(extractProviderMaxTokens('{"error":{"message":"max_tokens is too large: 700000. This model supports at most 131072 completion tokens"}}'), 131072);
   const originalFetch = global.fetch;
   const requested = [];
   try {
@@ -96,7 +97,7 @@ test('provider max_tokens validation is parsed and retried within the hard limit
       const body = JSON.parse(options.body);
       requested.push(body.max_tokens);
       if (requested.length === 1) {
-        return { ok: false, status: 400, text: async () => '{"message":"max_tokens参数非法：限制数值范围[1,131072]"}' };
+        return { ok: false, status: 400, text: async () => '{"error":{"message":"max_tokens is too large: 700000. This model supports at most 131072 completion tokens"}}' };
       }
       return { ok: true, body: { getReader: () => ({ read: async () => ({ done: true, value: undefined }) }) } };
     };
