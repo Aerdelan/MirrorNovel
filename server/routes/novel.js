@@ -860,16 +860,63 @@ function prepareCreativeState(novel) {  initializeCreativeState(novel);
 
 function ensureExecutableChapterPlan(novel, targetWordCount) {
   let plan = prepareCreativeState(novel);
-  if (plan.chapters.length || !String(novel.outline || '').trim()) return plan;
-
-  plan = buildFallbackChapterPlan(novel, { targetWords: targetWordCount, chapterWordTarget: novel.chapterWordTarget });
-  novel.chapterPlanData = plan;
-  if (!String(novel.chapterPlan || '').trim()) {
-    novel.chapterPlan = JSON.stringify(plan);
+  if (!plan.chapters.length) {
+    if (!String(novel.outline || '').trim()) return plan;
+    plan = buildFallbackChapterPlan(novel, { targetWords: targetWordCount, chapterWordTarget: novel.chapterWordTarget });
   }
+
+  // 长篇模型可能只返回前一批章节计划（例如 150 万字作品只拿到 20 章）。
+  // 恢复生成时不能把“计划暂时到头”误判成必须人工扩展：根据已写章节的
+  // 实际平均字数估算剩余章数，用保守执行卡自动补齐；具体剧情仍由大纲、
+  // 三级蓝图与 buildChapterContract 的当前阶段约束决定。
+  const completedChapters = Array.isArray(novel.chapters) ? novel.chapters.length : 0;
+  const highestCompleted = getHighestChapterNumber(novel);
+  const currentWords = getCompletedWordCount(novel);
+  const targetWords = Math.max(currentWords, Number(targetWordCount) || 50000);
+  const remainingWords = Math.max(0, targetWords - currentWords);
+  const planEnd = plan.chapters.reduce((max, chapter) => Math.max(max, Number(chapter.chapterNumber || 0)), 0);
+  const plannedTargets = plan.chapters.map((chapter) => Number(chapter.wordTarget || 0)).filter((value) => value > 0);
+  const plannedAverage = plannedTargets.length
+    ? Math.round(plannedTargets.reduce((sum, value) => sum + value, 0) / plannedTargets.length)
+    : 0;
+  const configuredChapterWords = Math.max(1200, Math.min(20000,
+    Number(novel.chapterWordTarget) || plannedAverage || 3000
+  ));
+  const observedAverage = completedChapters > 0 ? Math.round(currentWords / completedChapters) : 0;
+  // 已生成章节若普遍短于设置值，以真实产出为准，避免再次刚写到计划末尾仍不够字数。
+  const effectiveChapterWords = Math.max(500,
+    observedAverage > 0 ? Math.min(configuredChapterWords, observedAverage) : configuredChapterWords
+  );
+  const remainingChapterCount = remainingWords > 0 ? Math.ceil(remainingWords / effectiveChapterWords) : 0;
+  const desiredPlanEnd = Math.max(planEnd, highestCompleted + remainingChapterCount);
+
+  if (remainingWords > 0 && desiredPlanEnd > planEnd) {
+    const extensionStart = Math.max(planEnd, highestCompleted) + 1;
+    const extension = buildFallbackChapterPlan(novel, {
+      // buildFallbackChapterPlan 由目标字数反推末章号；这里用“期望末章 × 每章字数”
+      // 精确得到需要补到的章节号，而不是从第1章重建并覆盖原计划。
+      targetWords: desiredPlanEnd * configuredChapterWords,
+      chapterWordTarget: configuredChapterWords,
+      startChapter: extensionStart,
+    });
+    const existingNumbers = new Set(plan.chapters.map((chapter) => Number(chapter.chapterNumber)));
+    const added = extension.chapters.filter((chapter) => !existingNumbers.has(Number(chapter.chapterNumber)));
+    plan = {
+      ...plan,
+      version: Math.max(1, Number(plan.version || 1)),
+      phases: Array.from(new Set([...(plan.phases || []), ...(extension.phases || [])])),
+      chapters: [...plan.chapters, ...added].sort((a, b) => Number(a.chapterNumber) - Number(b.chapterNumber)),
+      autoExtended: true,
+      autoExtendedFromChapter: extensionStart,
+    };
+  }
+
+  novel.chapterPlanData = plan;
+  novel.chapterPlan = JSON.stringify(plan);
   initializeCreativeState(novel);
   seedPlannedHooks(novel, plan);
   novel.markModified('chapterPlanData');
+  novel.markModified('chapterPlan');
   return plan;
 }
 
@@ -1740,7 +1787,18 @@ router.post('/continue/:novelId', auth, async (req, res) => {
     const worldSetting = novel.worldSetting || '';
     const outline = novel.outline || '';
     const targetWordCount = Number(novel.targetWordCount) || 50000;
+    const storedPlanBeforeResume = parseChapterPlan(
+      novel.chapterPlanData && Array.isArray(novel.chapterPlanData.chapters)
+        ? novel.chapterPlanData
+        : (novel.chapterPlan || '')
+    );
+    const previousPlanEnd = storedPlanBeforeResume.chapters.reduce(
+      (max, chapter) => Math.max(max, Number(chapter.chapterNumber || 0)), 0
+    );
     const planData = ensureExecutableChapterPlan(novel, targetWordCount);
+    const resumedPlanEnd = planData.chapters.reduce(
+      (max, chapter) => Math.max(max, Number(chapter.chapterNumber || 0)), 0
+    );
 
     // 更新状态，并将旧作品的计划/事件签名补入结构化状态。
     novel.status = 'generating';
@@ -1755,6 +1813,12 @@ router.post('/continue/:novelId', auth, async (req, res) => {
     });
 
     res.write(`data: ${JSON.stringify({ type: 'continue_start', novelId: novel._id })}\n\n`);
+    if (resumedPlanEnd > previousPlanEnd && previousPlanEnd > 0) {
+      res.write(`data: ${JSON.stringify({
+        type: 'status',
+        message: `原章节计划已执行到第${previousPlanEnd}章，系统已根据剩余目标字数自动扩展至第${resumedPlanEnd}章并继续生成`,
+      })}\n\n`);
+    }
 
     let generationDone = false;
 

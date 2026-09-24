@@ -14,7 +14,7 @@
             <span class="brand-name">MirrorNovel</span>
           </div>
 
-          <button class="rail-toggle" :title="railPinned ? $t('desktop.shell.collapseRailTip') : $t('desktop.shell.expandRailTip')" @click="toggleRail">
+          <button class="rail-toggle" :title="railPinned ? $t('desktop.shell.collapseRailTip') : $t('desktop.shell.expandRailTip')" @click="handleRailToggle">
             <span class="chev">{{ railPinned ? '«' : '»' }}</span>
             <span class="lbl">{{ railPinned ? $t('desktop.shell.collapseRail') : $t('desktop.shell.expandRail') }}</span>
           </button>
@@ -141,6 +141,15 @@ function labelOf(item) {
   return item.fallback || item.key
 }
 
+function handleRailToggle() {
+  const collapsing = railPinned.value
+  toggleRail()
+  // 点击收起时指针仍位于侧栏内部。如果保留 hovered=true，收起状态会在同一帧
+  // 立刻变成 hover-open，表现为按钮已写“展开侧栏”，菜单却仍占着完整宽度。
+  // 清掉本次悬停后，用户必须先移出再重新移入，悬浮展开才会再次生效。
+  if (collapsing) railHovered.value = false
+}
+
 /**
  * 菜单高亮判定。
  *
@@ -194,7 +203,7 @@ async function go(item) {
 function handleKeydown(event) {
   if (!(event.ctrlKey || event.metaKey)) return
   const key = event.key.toLowerCase()
-  if (key === 'b') { event.preventDefault(); toggleRail() }
+  if (key === 'b') { event.preventDefault(); handleRailToggle() }
   if (key === '\\') { event.preventDefault(); toggleChapters() }
 }
 

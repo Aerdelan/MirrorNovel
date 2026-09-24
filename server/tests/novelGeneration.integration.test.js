@@ -610,7 +610,7 @@ test('续写整本：从最高章节号继续，按剩余计划完成全书', as
   assert.ok(eventIndex(events, 'chapter_end', (event) => event.chapterNumber === 3) < eventIndex(events, 'completed'));
 });
 
-test('续写整本：缺少计划或计划已耗尽时均暂停并请求扩展', async (t) => {
+test('续写整本：缺少计划时暂停，计划耗尽但未达字数时自动扩展', async (t) => {
   await t.test('缺少计划', async () => {
     const first = makeChapter('林舟决定保存现有证据', '缺少计划');
     const novel = await seedNovel({
@@ -642,13 +642,24 @@ test('续写整本：缺少计划或计划已耗尽时均暂停并请求扩展',
       chapterPlan: JSON.stringify(planData),
       chapterPlanData: planData,
     });
+    state.chapterQueue = [
+      makeChapter('林舟核对证据来源并找到第二名目击者', '自动扩展2'),
+      makeChapter('目击者交出被隐藏的值班记录', '自动扩展3'),
+      makeChapter('林舟沿值班记录追到旧仓库', '自动扩展4'),
+      makeChapter('林舟在旧仓库完成当前主线收束', '自动扩展5'),
+    ];
 
     const { response, events } = await postSse(`/continue/${novel._id}`, { mode: 'book' });
     assert.equal(response.status, 200);
-    assert.equal(events.at(-1).type, 'plan_needs_extension');
-    assert.equal(novel.status, 'paused');
-    assert.equal(novel.chapters.length, 1);
-    assert.equal(state.aiCalls.length, 0);
+    assert.equal(events.at(-1).type, 'completed');
+    assert.equal(eventIndex(events, 'plan_needs_extension'), -1);
+    assert.ok(eventIndex(events, 'status', (event) => event.message.includes('自动扩展至第5章')) > -1);
+    assert.equal(novel.status, 'completed');
+    assert.deepEqual(novel.chapters.map((chapter) => chapter.chapterNumber), [1, 2, 3, 4, 5]);
+    assert.ok(novel.currentWordCount >= novel.targetWordCount);
+    assert.equal(novel.chapterPlanData.autoExtended, true);
+    assert.ok(novel.chapterPlanData.chapters.some((chapter) => chapter.chapterNumber === 5));
+    assert.equal(state.aiCalls.filter((call) => call.kind === 'chapter').length, 4);
   });
 });
 
