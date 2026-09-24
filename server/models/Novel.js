@@ -140,9 +140,11 @@ const novelSchema = new mongoose.Schema({
   // 可滚动细化的故事蓝图。outline 是用户确认的故事骨架；蓝图承载
   // 后续章节可执行的阶段、支线和节奏安排，不能被 AI 静默改写。
   storyBlueprint: {
+    blueprintLevel: { type: Number, default: 3 },
     version: { type: Number, default: 1 },
     mainArc: { type: String, default: '' },
     lockedFacts: { type: [String], default: [] },
+    tagChecklist: { type: [String], default: [] },
     phases: [{
       title: { type: String, default: '' },
       startChapter: { type: Number, default: 1 },
@@ -151,7 +153,18 @@ const novelSchema = new mongoose.Schema({
       obstacle: { type: String, default: '' },
       reversal: { type: String, default: '' },
       threads: { type: [String], default: [] },
+      tagCommitments: { type: [String], default: [] },
+      characterBeats: { type: [mongoose.Schema.Types.Mixed], default: [] },
+      requiredScenes: { type: [String], default: [] },
+      forbiddenDrift: { type: [String], default: [] },
+      entryCondition: { type: String, default: '' },
+      exitCondition: { type: String, default: '' },
+      foreshadowing: { type: [mongoose.Schema.Types.Mixed], default: [] },
+      unresolvedQuestions: { type: [String], default: [] },
+      subphases: { type: [mongoose.Schema.Types.Mixed], default: [] },
     }],
+    // 未来 10-20 章的逐章执行卡；到窗口或篇章边界后重新校准，但仍需用户确认提案。
+    rollingPlan: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
     autoReviewEnabled: { type: Boolean, default: false },
     emailReminderEnabled: { type: Boolean, default: true },
     lastReviewedChapter: { type: Number, default: 0 },

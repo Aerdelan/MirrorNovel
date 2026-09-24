@@ -18,10 +18,10 @@ const { URL } = require('node:url')
 
 const DIST_DIR = path.join(__dirname, '..', 'dist')
 const DEV_SERVER = process.env.MN_DEV_SERVER || ''
-// 默认后端：指向正式服务器（该站点的 nginx 同源提供 /api）。
-// 注意 www.blockstory.top 是内测版，不要作为默认值。
+// 默认后端：项目当前正式环境使用 IP 部署；域名属于另一套产品。
 // 可用 MN_API_TARGET 环境变量改成自建服务器地址。
 const API_TARGET = process.env.MN_API_TARGET || 'http://43.159.149.223:5173'
+const ADMIN_URL = process.env.MN_ADMIN_URL || 'http://43.159.149.223:5173/admin'
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -126,10 +126,18 @@ function startLocalServer() {
     const server = http.createServer((req, res) => {
       if (req.url.startsWith('/api')) return proxyApi(req, res)
 
-      const urlPath = decodeURIComponent(req.url.split('?')[0])
+      let urlPath
+      try {
+        urlPath = decodeURIComponent(req.url.split('?')[0])
+      } catch {
+        res.writeHead(400, { 'content-type': 'text/plain; charset=utf-8' })
+        res.end('bad url')
+        return
+      }
       let filePath = path.join(DIST_DIR, urlPath === '/' ? 'index.html' : urlPath)
       // 防目录穿越
-      if (!filePath.startsWith(DIST_DIR)) filePath = path.join(DIST_DIR, 'index.html')
+      const relativePath = path.relative(DIST_DIR, filePath)
+      if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) filePath = path.join(DIST_DIR, 'index.html')
       if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
         // 资源类请求（带扩展名）缺失时如实返回 404：
         // 如果一律回退 index.html，浏览器会拿到 text/html 的"脚本"并静默白屏，极难排查。
@@ -282,7 +290,22 @@ function registerIpc() {
     fs.writeFileSync(result.filePath, String(content ?? ''), 'utf8')
     return { saved: true, filePath: result.filePath }
   })
+  ipcMain.handle('file:save', async (_event, { defaultName, data, filters }) => {
+    const result = await dialog.showSaveDialog(mainWindow, {
+      defaultPath: defaultName || 'export.bin',
+      filters: Array.isArray(filters) && filters.length
+        ? filters
+        : [{ name: '全部文件', extensions: ['*'] }],
+    })
+    if (result.canceled || !result.filePath) return { saved: false }
+    const bytes = data instanceof Uint8Array
+      ? Buffer.from(data)
+      : Buffer.from(data || [])
+    fs.writeFileSync(result.filePath, bytes)
+    return { saved: true, filePath: result.filePath }
+  })
   ipcMain.handle('api:target', () => API_TARGET)
+  ipcMain.handle('app:admin-url', () => ADMIN_URL)
 }
 
 function createTray() {

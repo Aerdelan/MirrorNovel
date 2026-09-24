@@ -63,6 +63,17 @@
 <div class="persona-desc">{{ $t('generate.personaDesc') }}</div>
 <div class="persona-grid">
  <div
+   class="persona-card"
+   :class="{ selected: !selectedPersonaId }"
+   @click="!generationBusy && (selectedPersonaId = '')"
+ >
+   <div class="persona-card-head">
+     <span class="persona-name">{{ $t('generate.personaAuto') }}</span>
+     <span class="persona-tag sys">{{ $t('generate.personaRecommended') }}</span>
+   </div>
+   <div class="persona-card-desc">{{ $t('generate.personaAutoDesc') }}</div>
+ </div>
+ <div
    v-for="p in personas"
    :key="p._id"
    class="persona-card"
@@ -135,9 +146,9 @@
       : $t('generate.thinkingStatus', { seconds: blueprintThinkingElapsed }) }}
    <span class="thinking-tip">{{ $t('generate.thinkingHint') }}</span>
   </div>
-  <div v-if="blueprintGenerating && blueprintReasoningText && !initialBlueprintJson" ref="blueprintReasoningRef" class="stream-reasoning-box">{{ blueprintReasoningText }}</div>
-  <textarea v-if="initialBlueprintJson" ref="blueprintJsonTextarea" v-model="initialBlueprintJson" :disabled="generating || blueprintGenerating" class="textarea blueprint-json-editor" rows="10" :placeholder="$t('generate.blueprintJsonPlaceholder')"></textarea>
-  <div v-if="initialBlueprintJson && !initialBlueprintConfirmed" class="blueprint-setup-actions">
+  <div v-if="blueprintGenerating && blueprintReasoningText && !initialBlueprintText" ref="blueprintReasoningRef" class="stream-reasoning-box">{{ blueprintReasoningText }}</div>
+  <textarea v-if="initialBlueprintText" ref="blueprintTextTextarea" v-model="initialBlueprintText" :disabled="generating || blueprintGenerating" class="textarea blueprint-text-editor" rows="14" :placeholder="$t('generate.blueprintTextPlaceholder')" @input="onBlueprintTextInput"></textarea>
+  <div v-if="initialBlueprintText && !initialBlueprintConfirmed" class="blueprint-setup-actions">
    <button class="btn btn-primary btn-sm" :disabled="generating || blueprintGenerating" @click="confirmInitialBlueprint">{{ $t('generate.blueprintConfirm') }}</button>
    <span class="blueprint-setup-hint">{{ $t('generate.blueprintEditHint') }}</span>
   </div>
@@ -477,6 +488,7 @@ import { usePersonaStore } from '../stores/persona'
 import { notifyModelError } from '../utils/notify'
 import { useSSE } from '../composables/useSSE'
 import { useI18n } from '../composables/useI18n'
+import { formatBlueprintText, parseBlueprintText } from '../utils/blueprintText'
 import api from '../api'
 
 const router = useRouter()
@@ -574,7 +586,7 @@ const enableResearch = ref(true)
 const researchLinksText = ref('')
 const researchHint = ref('')
 const initialBlueprint = ref(null)
-const initialBlueprintJson = ref('')
+const initialBlueprintText = ref('')
 const initialBlueprintConfirmed = ref(false)
 const blueprintGenerating = ref(false)
 const blueprintSetupError = ref('')
@@ -611,7 +623,7 @@ function personaApplicable(p) {
  const t = selectedType.value
  const g = gender.value
  // 简单匹配：applicableTypes 里的值若为 male/female/lightnovel 则按频段，否则按类型名
- return p.applicableTypes.some(at => at === g || at === t || (at === 'lightnovel' && t?.startsWith('lightnovel_')))
+ return p.applicableTypes.some(at => at === g || at === t || (at === 'lightnovel' && (t?.startsWith('lightnovel_') || skuCategory.value === 'acg')))
 }
 
 function selectPersona(p) {
@@ -804,7 +816,7 @@ function stopThinkingTicker() {
   if (thinkingTicker) { clearInterval(thinkingTicker); thinkingTicker = null }
 }
 const outlineModalTextarea = ref(null)
-const blueprintJsonTextarea = ref(null)
+const blueprintTextTextarea = ref(null)
 const outlineReasoningRef = ref(null)
 const blueprintReasoningRef = ref(null)
 let outlineXhr = null
@@ -817,8 +829,9 @@ function scrollOutlineToBottom() {
  nextTick(() => { const el = outlineModalTextarea.value; if (el) el.scrollTop = el.scrollHeight })
 }
 function scrollBlueprintToBottom() {
- nextTick(() => { const el = blueprintJsonTextarea.value; if (el) el.scrollTop = el.scrollHeight })
+ nextTick(() => { const el = blueprintTextTextarea.value; if (el) el.scrollTop = el.scrollHeight })
 }
+function onBlueprintTextInput() { initialBlueprintConfirmed.value = false }
 function scrollReasoningBox(elRef) {
  nextTick(() => { const el = elRef.value; if (el) el.scrollTop = el.scrollHeight })
 }
@@ -879,6 +892,13 @@ function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, per
   onReasoning: (content) => {
    appendReasoning(outlineReasoningText, content)
    scrollReasoningBox(outlineReasoningRef)
+  },
+  onStreamReset: (event) => {
+   // 已显示的前缀属于失败的模型尝试；保留后再追加重试结果会造成重复大纲。
+   outlineModalText.value = ''
+   outlineReasoningText.value = ''
+   outlineUserEdited.value = false
+   outlineWarn.value = event.message || ''
   },
   onContent: (content) => {
    outlineModalText.value += content
@@ -944,7 +964,7 @@ function generateInitialBlueprint() {
  blueprintWarning.value = ''
  blueprintReasoningText.value = ''
  initialBlueprintConfirmed.value = false
- initialBlueprintJson.value = ''
+ initialBlueprintText.value = ''
  initialBlueprint.value = null
  blueprintThinkingChars.value = 0
  blueprintThinkingElapsed.value = 0
@@ -972,13 +992,19 @@ function generateInitialBlueprint() {
    appendReasoning(blueprintReasoningText, content)
    scrollReasoningBox(blueprintReasoningRef)
   },
+  onStreamReset: (event) => {
+   blueprintReasoningText.value = ''
+   initialBlueprintText.value = ''
+   initialBlueprint.value = null
+   blueprintWarning.value = event.message || ''
+  },
   onContent: (content) => {
-   initialBlueprintJson.value += content
-   scrollBlueprintToBottom()
+   // 服务端仍以 JSON 约束模型输出，但原始 JSON 不直接暴露给用户。
+   // 等 completed 事件拿到结构化蓝图后，再转换为可读、可编辑的蓝图文本。
   },
   onCompleted: (event) => {
    initialBlueprint.value = event.blueprint || null
-   initialBlueprintJson.value = JSON.stringify(initialBlueprint.value, null, 2)
+   initialBlueprintText.value = formatBlueprintText(initialBlueprint.value, $t)
    blueprintWarning.value = event.warning || ''
    blueprintTokenUsage.value = event.tokenUsage || null
    blueprintGenerating.value = false
@@ -1005,8 +1031,7 @@ function cancelBlueprint() {
 
 function confirmInitialBlueprint() {
  try {
-  const parsed = JSON.parse(initialBlueprintJson.value)
-  if (!parsed || !Array.isArray(parsed.phases) || !parsed.phases.length) throw new Error($t('generate.errBlueprintPhases'))
+  const parsed = parseBlueprintText(initialBlueprintText.value, initialBlueprint.value || {}, $t)
   initialBlueprint.value = parsed
   initialBlueprintConfirmed.value = true
   blueprintSetupError.value = ''
@@ -1069,7 +1094,7 @@ async function startGen() {
  }
 
  if (genMode.value === 'book' && !initialBlueprintConfirmed.value) {
-  if (!initialBlueprintJson.value) await generateInitialBlueprint()
+  if (!initialBlueprintText.value) await generateInitialBlueprint()
   genStatus.value = blueprintSetupError.value || $t('generate.errNeedBlueprint')
   preparingGeneration.value = false
   return
@@ -1467,10 +1492,8 @@ onMounted(async () => {
  try {
    const list = await personaStore.fetchList()
    personas.value = list
-   // 默认选中第一个系统预设
-   if (list.length > 0 && !selectedPersonaId.value) {
-     selectedPersonaId.value = list[0]._id
-   }
+   // 默认不静默套用“经典网文风”；让精确题材与 Tag 决定声线。
+   // 用户主动选择人格时，它才作为额外的作者声线覆盖层生效。
  } catch {}
 })
 </script>
@@ -1786,7 +1809,7 @@ onMounted(async () => {
 .blueprint-setup-card { border-color: #c7d7fe; background: #fbfcff; }
 .blueprint-setup-desc { color: var(--text-secondary); font-size: 12px; line-height: 1.7; margin-bottom: 10px; }
 .blueprint-setup-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
-.blueprint-json-editor { margin-top: 10px; min-height: 190px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.55; }
+.blueprint-text-editor { margin-top: 10px; min-height: 280px; font-family: inherit; font-size: 13px; line-height: 1.75; white-space: pre-wrap; }
 .blueprint-confirmed { color: var(--success); font-size: 12px; }
 .blueprint-setup-hint { color: var(--text-light); font-size: 12px; }
 .blueprint-setup-error { margin-top: 8px; color: #cf1322; background: #fff1f0; border-radius: 6px; padding: 7px 9px; font-size: 12px; }

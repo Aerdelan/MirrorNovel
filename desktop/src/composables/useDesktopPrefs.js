@@ -32,12 +32,22 @@ function write(key, value) {
   try { localStorage.setItem(key, value) } catch { /* 忽略隐私模式下的写入失败 */ }
 }
 
+// 偏好必须是模块级单例。DesktopShell 与 WorkbenchLayout 会同时调用本 composable；
+// 若每次创建独立 ref，顶栏快捷键只会改到自己的副本，工作台章节栏不会即时响应。
+const railPref = ref(read(KEY_RAIL, 'auto'))
+const viewportWidth = ref(typeof window === 'undefined' ? RAIL_BREAKPOINT_EXPAND : window.innerWidth)
+const railHovered = ref(false)
+const chaptersCollapsed = ref(read(KEY_CHAPTERS, '0') === '1')
+const chaptersWidth = ref(Number(read(KEY_CHAPTERS_WIDTH, '236')) || 236)
+const inspectorTab = ref(read(KEY_INSP, 'context'))
+let resizeSubscribers = 0
+
+function handleResize() {
+  viewportWidth.value = window.innerWidth
+}
+
 export function useDesktopPrefs() {
   // 侧栏：auto（按窗口判断）| expanded | collapsed
-  const railPref = ref(read(KEY_RAIL, 'auto'))
-  const viewportWidth = ref(typeof window === 'undefined' ? RAIL_BREAKPOINT_EXPAND : window.innerWidth)
-  const railHovered = ref(false)
-
   const autoExpanded = computed(() => {
     if (viewportWidth.value < RAIL_BREAKPOINT_MIN) return false
     return viewportWidth.value >= RAIL_BREAKPOINT_EXPAND
@@ -69,8 +79,6 @@ export function useDesktopPrefs() {
   }
 
   // 章节栏：纯手动
-  const chaptersCollapsed = ref(read(KEY_CHAPTERS, '0') === '1')
-  const chaptersWidth = ref(Number(read(KEY_CHAPTERS_WIDTH, '236')) || 236)
   function toggleChapters() {
     chaptersCollapsed.value = !chaptersCollapsed.value
     write(KEY_CHAPTERS, chaptersCollapsed.value ? '1' : '0')
@@ -82,17 +90,19 @@ export function useDesktopPrefs() {
   }
 
   // 检查器页签记忆
-  const inspectorTab = ref(read(KEY_INSP, 'context'))
   function setInspectorTab(tab) {
     inspectorTab.value = tab
     write(KEY_INSP, tab)
   }
 
-  function handleResize() {
-    viewportWidth.value = window.innerWidth
-  }
-  onMounted(() => window.addEventListener('resize', handleResize))
-  onUnmounted(() => window.removeEventListener('resize', handleResize))
+  onMounted(() => {
+    resizeSubscribers += 1
+    if (resizeSubscribers === 1) window.addEventListener('resize', handleResize)
+  })
+  onUnmounted(() => {
+    resizeSubscribers = Math.max(0, resizeSubscribers - 1)
+    if (resizeSubscribers === 0) window.removeEventListener('resize', handleResize)
+  })
 
   return {
     // 侧栏

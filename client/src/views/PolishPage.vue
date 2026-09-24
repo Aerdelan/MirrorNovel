@@ -136,6 +136,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useNovelStore } from '../stores/novel'
 import { useAuthStore } from '../stores/auth'
 import { useI18n } from '../composables/useI18n'
+import { saveBlob } from '../utils/download'
 import { notifyModelError } from '../utils/notify'
 import api from '../api'
 
@@ -267,10 +268,8 @@ async function exportPolish() {
  let suggested = `${exportTitle.value || 'polish'}.${exportFormat.value}`
  const m = disposition.match(/filename\*=UTF-8''([^;\s]+)/i) || disposition.match(/filename="?([^";\s]+)"?/i)
  if (m && m[1]) suggested = decodeURIComponent(m[1])
- const url = URL.createObjectURL(blob)
- const a = document.createElement('a')
- a.href = url; a.download = suggested; a.click()
- setTimeout(() => URL.revokeObjectURL(url), 1000)
+ const extension = String(exportFormat.value || 'txt').replace(/[^a-z0-9]/gi, '') || 'txt'
+ await saveBlob(blob, suggested, [{ name: extension.toUpperCase(), extensions: [extension] }])
  } catch (e) {
  alert(`${$t('polish.exportFailed')}：${e.message}`)
  } finally {

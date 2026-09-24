@@ -153,6 +153,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useNovelStore } from '../stores/novel'
 import { useAuthStore } from '../stores/auth'
 import { useI18n } from '../composables/useI18n'
+import { saveBlob } from '../utils/download'
 import api from '../api'
 
 const route = useRoute()
@@ -301,12 +302,24 @@ watch(() => route.query.action, (action) => {
 function toggleSelect(id) { const idx = selectedIds.value.indexOf(id); idx > -1 ? selectedIds.value.splice(idx, 1) : selectedIds.value.push(id) }
 function toggleSelectAll() { selectedIds.value = allSelected.value ? [] : novelStore.bookshelf.map(n => n._id) }
 
-function downloadZip(novelIds, filename) {
+async function downloadZip(novelIds, filename) {
  if (exporting.value) return
  exporting.value = true
- const token = localStorage.getItem('token')
- window.open(`/api/novel/export?token=${encodeURIComponent(token)}&ids=${novelIds.join(',')}`, '_blank')
- window.setTimeout(() => { exporting.value = false }, 700)
+ try {
+  const token = localStorage.getItem('token')
+  const response = await fetch(`/api/novel/export?ids=${encodeURIComponent(novelIds.join(','))}`, {
+   headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (!response.ok) {
+   const payload = await response.json().catch(() => ({}))
+   throw new Error(payload.message || `HTTP ${response.status}`)
+  }
+  await saveBlob(await response.blob(), filename, [{ name: 'ZIP 压缩包', extensions: ['zip'] }])
+ } catch (error) {
+  alert(error.message || $t('error.unknown'))
+ } finally {
+  exporting.value = false
+ }
 }
 
 function exportSingle(novel) { downloadZip([novel._id], `${(novel.title || $t('bookshelf.defaultTitle')).replace(/[<>:"/\\|?*]/g, '_').substring(0, 30)}.zip`) }

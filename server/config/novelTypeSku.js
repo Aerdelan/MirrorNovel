@@ -45,6 +45,39 @@ const TONES = {
   dushe:    { name: '毒舌/黑色幽默', keywords: '反讽, 阴阳怪气, 冷幽默, 一针见血, 黑色', axes: [2, 3, 5, 2, 4, 4] },
 };
 
+// 风格标签不能只贡献几个关键词。这里给每种基调一条可在场景中验收的执行规则，
+// 后续统一汇入 tagContract，贯穿大纲、蓝图、章节计划与正文。
+const TONE_RULES = {
+  shuang: '回报必须由前置选择与代价换来；受压—反击—后果要落在具体场景，不靠旁白宣布“打脸成功”。',
+  gaoxiao: '每个主要场景至少建立一种来自人物性格、误解、身份错位或关系摩擦的喜剧张力；允许冲动、跑题、嘴硬和失败反应，禁止所有人都冷静分析、正确沟通。',
+  tianchong: '用偏心的行动、边界变化和共同记忆持续兑现亲密感；甜来自双方选择，不来自单方面控制、财富碾压或强制占有。',
+  nven: '伤害与错过必须来自可理解的选择和信息差，并留下长期后果；禁止靠反复失忆、偷听半句或拒绝沟通硬拖。',
+  zhiyu: '让修复发生在陪伴、劳动、照料和具体小事中；保留伤口与反复，不用一句鸡汤完成和解。',
+  resurgence: '燃点来自共同目标、训练积累、失败后的再选择与并肩行动；禁止无铺垫爆种和口号代替过程。',
+  anhei: '危险、损失与道德灰度持续有效，人物的选择要付代价；不靠堆血腥形容词假装沉重。',
+  zhengju: '事实、制度和人物动机经得起追问；角色可以感性、偏见和犯错，但后果必须符合世界规则。',
+  shaonao: '信息分配、误导与反转均可回溯到可见线索；不同角色掌握的信息不同，禁止全员同一套上帝视角。',
+  richang: '让吃饭、通勤、社团、家务等日常改变关系、信息或习惯；允许闲聊和小失败，不把日常写成任务汇报。',
+  epic: '个人选择要与时代、族群或文明代价互相映照；宏大感落到具体的人、地理和损失，不空喊命运。',
+  dushe: '笑点来自语义错位、反讽和人物观察；不同角色的锋利程度与攻击对象不同，禁止全员同一种阴阳怪气。',
+};
+
+const CP_RELATIONS = {
+  none: { name: '无CP', rule: '不建立强制恋爱主线；核心亲密关系可以是友情、家人、师生或社团伙伴，禁止临时塞入霸总式追求者。' },
+  single: { name: '单女主/单男主', rule: '只保留一条核心恋爱关系，靠共同经历、边界变化与双向选择推进，禁止后宫式暧昧收集。' },
+  multi: { name: '多女主/后宫', rule: '每条关系必须有不同的共同经历、利益与边界，角色拥有主角之外的目标，禁止换皮争宠工具人。' },
+  danmei: { name: '双男主', rule: '两位男性核心角色都拥有独立目标、能力和选择权；关系变化由共同事件推动，不套异性恋霸总/娇妻分工。' },
+  yuri: { name: '双女主', rule: '两位女性核心角色都拥有独立目标、能力和选择权；关系变化由共同事件推动，不套霸总/娇妻或雌竞模板。' },
+};
+
+const THEME_RULES = {
+  acg_school: `日系校园必须落到可见的校园生活结构：班级与座位、通学路线、部活分工、值日、午休、考试、学园祭或季节活动。冲突尺度以学生身份、同伴关系、社团资源和青春期误解为主。
+禁止偷渡总裁、豪门继承、商业并购、契约婚姻、保镖管家式权力结构；除非用户另外明确选择了对应标签。角色不能人人少年老成、冷静缜密，必须有人冲动、迟钝、嘴硬、爱面子、怕尴尬或容易跑偏。`,
+  acg_moe: '萌系日常以共同生活、兴趣和小目标建立记忆点；萌来自行动与关系反差，不靠全员幼态化或重复语气词。',
+  acg_doujin: '尊重原作人物的能力边界、关系史与说话方式；新增情节必须解释偏离原作的触发条件，禁止只借名字写原创换皮。',
+  acg_zongman: '不同作品的规则、力量与人物认知不能自动兼容；跨世界相遇必须产生规则碰撞，而不是角色排队加入主角队伍。',
+};
+
 // ===== 情节元素库（多选，并集进 keywords / aiWordBank） =====
 // 每项：[name, keywords, aiWordBank(可省)]
 const ELEMENTS = {
@@ -479,9 +512,12 @@ function resolveTypeSku(sku) {
   if (theme) keywordParts.push(theme.keywords);
 
   // 3) 多选标签并集
-  const toneObjs = (s.tones || []).map((tId) => TONES[tId]).filter(Boolean);
-  for (const eId of (s.elements || [])) { const e = ELEMENTS[eId]; if (e) { keywordParts.push(e[1]); if (e[2]) wordParts.push(e[2]); } }
-  for (const pId of (s.personas || [])) { const p = CHARACTERS[pId]; if (p) keywordParts.push(p[1]); }
+  const toneEntries = (s.tones || []).map((id) => ({ id, value: TONES[id] })).filter((item) => item.value);
+  const toneObjs = toneEntries.map((item) => item.value);
+  const elementEntries = (s.elements || []).map((id) => ({ id, value: ELEMENTS[id] })).filter((item) => item.value);
+  const characterEntries = (s.personas || []).map((id) => ({ id, value: CHARACTERS[id] })).filter((item) => item.value);
+  for (const { value: e } of elementEntries) { keywordParts.push(e[1]); if (e[2]) wordParts.push(e[2]); }
+  for (const { value: p } of characterEntries) keywordParts.push(p[1]);
   for (const t of toneObjs) { keywordParts.push(t.keywords); }
 
   // 4) axes 合成：题材默认 < 大类基底 < tones（按选择顺序，后者覆盖已定义轴）
@@ -495,6 +531,17 @@ function resolveTypeSku(sku) {
   const outlineSeed = theme ? '' : '';
   // 叙事契约：由「题材 > 大类」在 genreContracts 里显式登记（不再让下游按类型名正则猜）
   const contract = resolveSkuContractKey(cat ? cat.id : s.category, theme ? theme.id : null);
+  const cp = CP_RELATIONS[s.cp] || null;
+  const selection = {
+    channel,
+    category: cat ? cat.name : '',
+    theme: theme ? theme.name : '',
+    elements: elementEntries.map(({ id, value }) => ({ id, name: value[0], keywords: value[1] })),
+    characters: characterEntries.map(({ id, value }) => ({ id, name: value[0], keywords: value[1] })),
+    tones: toneEntries.map(({ id, value }) => ({ id, name: value.name, keywords: value.keywords })),
+    cp: cp ? { id: s.cp, name: cp.name } : null,
+  };
+  const tagContract = buildTagContract({ theme, selection, cp });
 
   return {
     name,
@@ -508,7 +555,58 @@ function resolveTypeSku(sku) {
     contract,
     tones: toneObjs.map((t) => t.name),
     toneContract: buildToneContract(toneObjs),
+    selection,
+    tagContract,
   };
+}
+
+function buildTagContract({ theme, selection, cp }) {
+  const derivativeMode = ['acg_doujin', 'acg_zongman'].includes(theme && theme.id)
+    || selection.elements.some((tag) => ['manju', 'zongman'].includes(tag.id));
+  const originalityRule = derivativeMode
+    ? `当前为用户明确选择的同人/综漫模式：只可使用用户设定或参考原作中确实属于目标作品的角色；不得从无关动漫、轻小说、游戏中拼接角色姓名、身份或关系，也不得把多个作品的角色名单当作原创群像。`
+    : `当前为原创模式：所有角色姓名、身份、关系和经历必须原创。禁止直接使用、改一两个字使用、拆分拼接任何已存在的动漫、轻小说、漫画、游戏、影视作品角色全名；禁止把多个作品的角色名单混入大纲。输出前逐一检查姓名，若能明显联想到某个现成角色，必须重新命名并重写对应设定。`;
+  const themeRule = theme
+    ? `题材「${theme.name}」的锚点是：${theme.keywords}。主线矛盾、主要场景与角色职业/身份必须从这些锚点生长；至少把三个锚点转化为会约束人物选择的规则、场所或日常流程，不能只在简介里点名后改写成别的热门题材。`
+    : '';
+  const elementLines = selection.elements.map((tag) => `- 情节元素「${tag.name}」：${tag.keywords}。必须定义首次触发、持续限制、人物代价和至少一次后续回响，不能只在设定介绍里点名。`);
+  const characterLines = selection.characters.map((tag) => `- 人设原型「${tag.name}」：${tag.keywords}。把它分配给一名明确角色，并写出该角色独有的目标、盲点、说话句式、礼貌程度、回避方式和失控反应。`);
+  const toneLines = selection.tones.map((tag) => `- 基调「${tag.name}」：${TONE_RULES[tag.id] || tag.keywords}`);
+  const exact = [
+    selection.category && `大类=${selection.category}`,
+    selection.theme && `题材=${selection.theme}`,
+    selection.elements.length && `情节=${selection.elements.map((tag) => tag.name).join('、')}`,
+    selection.characters.length && `人设=${selection.characters.map((tag) => tag.name).join('、')}`,
+    selection.tones.length && `基调=${selection.tones.map((tag) => tag.name).join('、')}`,
+    selection.cp && `关系向=${selection.cp.name}`,
+  ].filter(Boolean).join('；');
+
+  return `【标签执行合同 — 优先于通用网文惯性】
+用户的精确选择：${exact || '仅使用当前题材默认规则'}。
+1. 大类和题材决定“故事发生在哪里、主要矛盾是什么”；情节标签必须变成因果机制；人设标签是角色差异化素材；基调决定叙述与互动方式；关系向决定亲密关系边界。不得把它们混成一串装饰关键词。
+2. 大纲必须为每个已选标签安排至少一个可定位的角色、场景或节点；章节计划必须持续兑现，正文不得用未选择的热门套路覆盖它们。
+3. 角色差异是硬指标：主要角色不能共享同一套冷静、理性、短句、淡漠反应。为每名主要角色固定“目标／盲点／关注点／句式／礼貌程度／情绪失控方式”，同一事件下必须作出不同反应。
+4. 禁止默认导入“霸道总裁、豪门继承、契约婚姻、商业帝国、兵王、战神、修仙升级、全员高冷智斗”等高频模板；只有用户所选题材、标签或世界观明确要求时才可使用。
+5. 【原创与版权边界】${originalityRule}
+${themeRule ? `
+【题材锚点】
+${themeRule}` : ''}
+${THEME_RULES[theme && theme.id] ? `
+【当前题材专属规则】
+${THEME_RULES[theme.id]}` : ''}
+${elementLines.length ? `
+【情节标签逐项落地】
+${elementLines.join('\n')}` : ''}
+${characterLines.length ? `
+【人设标签逐项落地】
+${characterLines.join('\n')}
+多个人设标签默认分配给不同角色，除非用户明确要求复合在同一人身上；没有被分配标签的配角也必须拥有不同说话方式。` : ''}
+${toneLines.length ? `
+【基调逐项落地】
+${toneLines.join('\n')}` : ''}
+${cp ? `
+【关系向规则：${cp.name}】
+${cp.rule}` : ''}`;
 }
 
 /**
@@ -576,6 +674,9 @@ module.exports = {
   TONES,
   ELEMENTS,
   CHARACTERS,
+  CP_RELATIONS,
+  TONE_RULES,
+  THEME_RULES,
   CATEGORY_TREE,
   resolveTypeSku,
   buildSkuCatalog,

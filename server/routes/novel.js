@@ -56,6 +56,9 @@ function resolveTypeContext(body) {
         contract: r.contract || '',
         toneContract: r.toneContract || '',
         toneNames: r.tones || [],
+        tagContract: r.tagContract || '',
+        selection: r.selection || null,
+        channel: r.channel || typeSku.channel || '',
       },
       skuAxes: r.axes,
       resolvedName: r.name,
@@ -149,6 +152,8 @@ const {
   buildFallbackChapterPlan,
   initializeCreativeState,
   ensureStoryBlueprint,
+  blueprintRequirements,
+  validateStoryBlueprint,
   normalizeProposedBlueprint,
   applyStoryBlueprint,
   renderStoryBlueprintForContext,
@@ -165,6 +170,17 @@ const {
   assessStoryCompletion,
   closeUnresolvedHooksAtEnding,
 } = require('../services/storyState');
+
+function getBlueprintTagChecklist(type) {
+  const selection = type?.selection || {};
+  return Array.from(new Set([
+    selection.theme,
+    ...(selection.elements || []).map((item) => item.name),
+    ...(selection.characters || []).map((item) => item.name),
+    ...(selection.tones || []).map((item) => item.name),
+    selection.cp?.name,
+  ].map((item) => String(item || '').trim()).filter(Boolean))).slice(0, 24);
+}
 const { sendBlueprintProposalNotification } = require('../services/emailService');
 
 // 全局活跃生成流跟踪
@@ -246,22 +262,47 @@ function notifyBlueprintProposal(user, novel, proposal) {
   });
 }
 
+function shouldReviewBlueprintAtChapter(novel, chapterNumber) {
+  const blueprint = novel?.storyBlueprint;
+  if (!blueprint?.autoReviewEnabled) return false;
+  const boundaries = new Set([
+    Number(blueprint.rollingPlan?.endChapter || 0),
+    ...(blueprint.phases || []).flatMap((phase) => [
+      Number(phase.endChapter || 0),
+      ...(phase.subphases || []).map((subphase) => Number(subphase.endChapter || 0)),
+    ]),
+  ].filter((number) => number > 0));
+  // 三级蓝图按滚动窗口/小阶段/大篇章边界校准；旧蓝图继续沿用每6章审核。
+  return boundaries.size ? boundaries.has(Number(chapterNumber)) : Number(chapterNumber) % 6 === 0;
+}
+
 async function createStoryBlueprintProposal({ user, modelConfig, novel, persona, signal, onUsage }) {
   if ((novel.storyBlueprintProposals || []).some((proposal) => proposal.status === 'pending')) return null;
   const chapterNumber = getHighestChapterNumber(novel);
   const totalChapters = getTotalPlannedChapters(parseChapterPlan(novel.chapterPlanData || novel.chapterPlan || ''), novel.targetWordCount, chapterNumber);
   const blueprint = ensureStoryBlueprint(novel, totalChapters);
+  const { type: blueprintType } = resolveTypeContextFromNovel(novel);
+  const requiredTags = getBlueprintTagChecklist(blueprintType);
+  const nextRollingStart = Math.min(totalChapters, chapterNumber + 1);
+  const nextRollingEnd = Math.min(totalChapters, nextRollingStart + 19);
   const context = buildContextFromDocs(
     novel.chapterSummaryDoc, novel.foreshadowingDoc, novel.outline, '', chapterNumber + 1, '',
     { contextMemory: novel.contextMemory, maxChars: 9000 }
   );
-  const prompt = `请担任“长篇小说剧情蓝图编辑”。基于已完成章节和当前已确认蓝图，判断后续是否需要补充支线、人物目标、伏笔回收或阶段反转。你只能提出建议，绝不能改写已经发生的事实、主角核心动机或已确认终局。
+  const prompt = `请担任“三级长篇小说剧情蓝图编辑”。基于已完成章节和当前已确认蓝图，校准全书篇章、篇章内小阶段以及未来10-20章的滚动执行卡。你只能提出建议，绝不能改写已经发生的事实、主角核心动机或已确认终局。
+
+${blueprintType?.tagContract || ''}
+
+所有调整都必须继续兑现这些已选标签：${requiredTags.join('、') || blueprintType?.name || novel.novelTypeName}
 
 【原始大纲】
 ${String(novel.outline || '无').slice(0, 5000)}
 
 【已确认动态蓝图】
 ${renderStoryBlueprintForContext(novel, chapterNumber + 1, totalChapters)}
+
+【完整三级蓝图结构（未受影响的篇章必须原样保留）】
+${JSON.stringify(blueprint)}
 
 【已写故事状态】
 ${context || '尚未生成正文，请只判断是否需要为后续阶段补充可执行细节。'}
@@ -279,12 +320,15 @@ ${(novel.plotThreads || []).map((thread) => `${thread.title || thread.id}：${th
   "affectedChapters": [${chapterNumber + 1}],
   "changes": [{"field":"支线/阶段/伏笔/人物关系","before":"当前安排","after":"建议安排","impact":"对后续章节的具体影响"}],
   "proposedBlueprint": {
-    "mainArc": "保留并细化后的主线",
+    "blueprintLevel": 3,
+    "mainArc": "保留并细化后的完整主线",
     "lockedFacts": ["必须不变的事实"],
-    "phases": [{"title":"阶段名","startChapter":1,"endChapter":12,"goal":"目标","obstacle":"阻力","reversal":"可选反转","threads":["主线或支线名称"]}]
+    "tagChecklist": ["已选标签原名"],
+    "phases": [{"title":"保留全部全书篇章","startChapter":1,"endChapter":12,"goal":"目标","obstacle":"阻力","reversal":"反转","threads":["剧情线"],"tagCommitments":["标签+兑现动作"],"characterBeats":[{"character":"角色","goal":"目标","conflict":"冲突","change":"变化","voiceGuard":"声线约束"}],"requiredScenes":["场景"],"forbiddenDrift":["禁止偏移"],"entryCondition":"进入条件","exitCondition":"离开条件","foreshadowing":[{"name":"伏笔","setupChapter":1,"progressChapters":[4],"payoffChapter":10,"plan":"推进"}],"unresolvedQuestions":["未决问题"],"subphases":[{"title":"连续小阶段，字段与父篇章相同但不再嵌套subphases","startChapter":1,"endChapter":6,"goal":"目标","obstacle":"阻力","reversal":"转折","threads":["剧情线"],"tagCommitments":["标签+兑现动作"],"characterBeats":[{"character":"角色","goal":"目标","conflict":"冲突","change":"变化","voiceGuard":"声线约束"}],"requiredScenes":["场景"],"forbiddenDrift":["禁止偏移"],"entryCondition":"进入条件","exitCondition":"离开条件","foreshadowing":[{"name":"伏笔","setupChapter":1,"progressChapters":[4],"payoffChapter":6,"plan":"推进"}],"unresolvedQuestions":["未决问题"]}]}],
+    "rollingPlan":{"startChapter":${nextRollingStart},"endChapter":${nextRollingEnd},"calibratedAtChapter":${chapterNumber},"objective":"新窗口目标","tagCommitments":["标签+执行方式"],"forbiddenDrift":["禁止偏移"],"chapters":[{"chapterNumber":${nextRollingStart},"title":"短标题","purpose":"状态变化","tagCommitments":["标签"],"characterBeats":[{"character":"角色","goal":"目标","conflict":"冲突","change":"变化","voiceGuard":"声线"}],"requiredScenes":["场景"],"relationshipChange":"关系变化","foreshadowingActions":["伏笔动作"],"exitHook":"章末钩子"}]}
   }
 }
-若当前蓝图足够，请输出 {"hasChanges":false,"summary":"当前无需调整"}。`;
+即使全书方向不需改变，只要旧 rollingPlan 已结束，也必须输出 hasChanges=true，仅校准新的 rollingPlan。只有全书结构和滚动执行卡都仍适用时，才输出 {"hasChanges":false,"summary":"当前无需调整"}。`;
   const result = await streamGenerate(
     `你是一位克制、重视因果与人物弧线的长篇小说编辑。${buildPersonaPrompt(persona, { includeDeslop: false })}`,
     prompt,
@@ -293,7 +337,7 @@ ${(novel.plotThreads || []).map((thread) => `${thread.title || thread.id}：${th
     resolveApiConfig(modelConfig || user?.modelConfig, 'reasoning'),
     1,
     0.3,
-    8000,
+    16000,
     300000
   );
   onUsage && onUsage('reasoning', result);
@@ -304,6 +348,22 @@ ${(novel.plotThreads || []).map((thread) => `${thread.title || thread.id}：${th
   const changes = normalizeProposalChanges(parsed.changes);
   if (!changes.length || !parsed.proposedBlueprint) return null;
   const proposedBlueprint = require('../services/storyState').normalizeProposedBlueprint(parsed.proposedBlueprint, novel, totalChapters);
+  if (Number(blueprint.blueprintLevel) === 3) {
+    const validation = validateStoryBlueprint(proposedBlueprint, totalChapters, {
+      expectedArcCount: blueprintRequirements(totalChapters).arcCount,
+      requiredTags,
+    });
+    // 审核阶段的滚动窗口应从下一章开始，不沿用“初始必须从第1章”的校验口径。
+    const rolling = proposedBlueprint.rollingPlan || {};
+    const rollingChapters = Array.isArray(rolling.chapters) ? rolling.chapters : [];
+    const rollingValid = Number(rolling.startChapter) === nextRollingStart
+      && Number(rolling.endChapter) === nextRollingEnd
+      && rollingChapters.length === Math.max(1, nextRollingEnd - nextRollingStart + 1);
+    const nonRollingErrors = validation.errors.filter((message) => !message.includes('初始滚动') && !message.includes('滚动执行蓝图'));
+    if (nonRollingErrors.length || !rollingValid) {
+      throw new Error(`剧情蓝图审核结构不完整：${[...nonRollingErrors.slice(0, 3), ...(rollingValid ? [] : ['新的滚动执行窗口不完整'])].join('；')}`);
+    }
+  }
   const proposal = {
     id: randomUUID(),
     status: 'pending',
@@ -877,7 +937,15 @@ router.post('/generate-outline', auth, async (req, res) => {
         (reasoning) => { thinkingEmitter(reasoning); send({ type: 'reasoning', content: reasoning }); },
         // 截断自动续写：单轮预算受服务商输出上限约束，超长篇大纲靠多轮接续累加，
         // 最多 6 轮；续写分片照常流式推给前端。
-        { stitchOnTruncation: true, maxStitchRounds: 6 }
+        {
+          stitchOnTruncation: true,
+          maxStitchRounds: 6,
+          onStreamReset: () => send({
+            type: 'stream_reset',
+            reason: 'invalid_encoding',
+            message: '检测到模型线路返回了损坏字符，已清空本次残片并自动重试',
+          }),
+        }
       );
 
       const outline = result.content || '';
@@ -929,18 +997,47 @@ router.post('/generate-blueprint', auth, async (req, res) => {
     const chapterWords = normalizeChapterWordTarget(chapterWordTarget);
     const persona = withSkuAxes(await resolveNovelPersona(req.userId, null, personaId), skuAxes);
     const totalChapters = Math.max(1, Math.ceil(target / chapterWords));
-    const blueprintRequirements = getOutlineRequirements(target, chapterWords);
-    const prompt = `请为一部${resolvedType.name}长篇小说制定“初始故事蓝图”，用于用户确认后再开始正文。蓝图必须补足大纲中没有展开的主要人物支线、主线侧枝、阶段目标、阶段阻力和可选反转，但不得违背大纲、世界观或已经确定的结局。不要把具体正文写进蓝图，也不要把每一章写成流水账。
+    const requirements = blueprintRequirements(totalChapters);
+    const requiredTags = getBlueprintTagChecklist(resolvedType);
+    const rollingEnd = requirements.rollingChapterCount;
+    const prompt = `请为一部${resolvedType.name}长篇小说制定“三级故事蓝图”，用于用户确认后再开始正文。蓝图必须补足大纲中没有展开的人物支线、主线侧枝、阶段目标、关系变化和伏笔，但不得违背大纲、世界观或已经确定的结局。
+
+三级结构必须同时存在：
+1. 全书级：严格规划 ${requirements.arcCount} 个连续大篇章，覆盖第1章到第${totalChapters}章，控制主线、终局和核心人物弧线。
+2. 篇章级：每个大篇章拆成2-4个连续小阶段（短篇章可为1个），明确标签兑现、人物目标/冲突/变化/声线、关系变化、场景和伏笔。
+3. 滚动执行级：逐章详细规划第1-${rollingEnd}章；每章写清用途、标签、人物推进、场景、关系变化、伏笔动作和章末钩子。不要把正文写进蓝图。
+
+${resolvedType.tagContract || ''}
+
+【必须原样出现在 tagCommitments 中的已选标签】
+${requiredTags.length ? requiredTags.join('、') : resolvedType.name}
 
 【主角】${protagonistName || '未设定'}
 【世界观】${worldSetting || '由大纲决定'}
 【目标字数】约${target}字，预计${totalChapters}章（每章约${chapterWords}字）
 【用户确认的大纲】
-${String(outline).slice(0, 12000)}
+${String(outline).slice(0, 60000)}
 
-只输出 JSON，不要 markdown：
-{"mainArc":"保留大纲主线并补足因果","lockedFacts":["不可擅自改变的设定/事实"],"phases":[{"title":"阶段名称","startChapter":1,"endChapter":${Math.max(1, Math.ceil(totalChapters * 0.2))},"goal":"阶段目标","obstacle":"主要阻力","reversal":"可选反转或误导","threads":["支线1","支线2"]}]}
-要求严格规划${blueprintRequirements.phaseCount}个阶段；每个阶段必须有至少一条支线或人物关系线，并写清阶段进入条件、阶段反转和离开时留下的未决问题；百万字作品不能压缩成四个笼统阶段。lockedFacts 只能填写大纲明确给出的事实。`;
+只输出 JSON，不要 markdown，字段必须完整：
+{
+ "mainArc":"保留大纲主线、终局和完整因果链",
+ "lockedFacts":["只能填写大纲明确给出的不可改写事实"],
+ "tagChecklist":[${requiredTags.map((tag) => JSON.stringify(tag)).join(',')}],
+ "phases":[{
+   "title":"全书级篇章名","startChapter":1,"endChapter":20,
+   "goal":"阶段目标","obstacle":"主要阻力","reversal":"关键反转","threads":["支线/关系线"],
+   "tagCommitments":["必须使用上方标签原名，并说明本篇章如何兑现"],
+   "characterBeats":[{"character":"角色名","goal":"本阶段目标","conflict":"内外冲突","change":"阶段变化","voiceGuard":"独有词汇、句长、礼貌/称呼、回避与失控方式；禁止只写性格形容词"}],
+   "requiredScenes":["会实际推动关系或信息的必备场景"],
+   "forbiddenDrift":["禁止霸总化/权谋化/全员冷静等具体偏移"],
+   "entryCondition":"进入本篇章前必须成立的状态","exitCondition":"进入下一篇章前必须发生的可验收变化",
+   "foreshadowing":[{"name":"伏笔名","setupChapter":2,"progressChapters":[6,10],"payoffChapter":18,"plan":"表面解释、真实含义与推进方式"}],
+   "unresolvedQuestions":["篇章结束后有意保留的问题"],
+   "subphases":[{"title":"篇章内小阶段","startChapter":1,"endChapter":8,"goal":"小阶段目标","obstacle":"阻力","reversal":"转折","threads":["关联线"],"tagCommitments":["标签原名+兑现动作"],"characterBeats":[{"character":"角色名","goal":"目标","conflict":"冲突","change":"变化","voiceGuard":"声线约束"}],"requiredScenes":["场景"],"forbiddenDrift":["禁止偏移"],"entryCondition":"进入条件","exitCondition":"离开条件","foreshadowing":[{"name":"伏笔","setupChapter":2,"progressChapters":[5],"payoffChapter":8,"plan":"推进"}],"unresolvedQuestions":["未决问题"]}]
+ }],
+ "rollingPlan":{"startChapter":1,"endChapter":${rollingEnd},"calibratedAtChapter":0,"objective":"首个滚动窗口目标","tagCommitments":["标签原名+执行方式"],"forbiddenDrift":["本窗口禁止偏移"],"chapters":[{"chapterNumber":1,"title":"章节短标题","purpose":"本章造成的具体状态变化","tagCommitments":["本章兑现标签"],"characterBeats":[{"character":"角色名","goal":"当章目标","conflict":"当章冲突","change":"当章变化","voiceGuard":"本章声线提醒"}],"requiredScenes":["场景"],"relationshipChange":"关系发生什么变化","foreshadowingActions":["埋设/推进/回收哪条伏笔"],"exitHook":"章末留下的新局面"}]}
+}
+硬性要求：phases 必须正好 ${requirements.arcCount} 个且无空档、无重叠；每个大篇章和小阶段都必须填写 tagCommitments、characterBeats、requiredScenes、forbiddenDrift、entryCondition、exitCondition、foreshadowing、unresolvedQuestions；rollingPlan.chapters 必须逐章包含第1-${rollingEnd}章。禁止把所有角色写成冷静、完整、讲逻辑的同一种声音。`;
     // SSE 流式输出：蓝图由推理模型生成，耗时长，前端实时展示生成进度。超时放宽到 60 分钟。
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -965,16 +1062,23 @@ ${String(outline).slice(0, 12000)}
 
     try {
       const result = await streamGenerate(
-        `你是一位重视因果、人物弧线和伏笔回收的长篇小说架构师。${buildPersonaPrompt(persona, { includeDeslop: false })}`,
+        `你是一位重视因果、人物弧线和标签兑现的长篇小说架构师。${buildPersonaPrompt(persona, { includeDeslop: false })}\n\n${resolvedType.tagContract || ''}`,
         prompt,
         (chunk) => send({ type: 'content', content: chunk }),
         abortController.signal,
         resolveApiConfig(req.userModelConfig, 'reasoning'),
         1,
         0.35,
-        Math.max(2600, Math.min(12000, blueprintRequirements.phaseCount * 900)),
+        24000,
         TIMEOUT.BLUEPRINT,
-        (reasoning) => { thinkingEmitter(reasoning); send({ type: 'reasoning', content: reasoning }); }
+        (reasoning) => { thinkingEmitter(reasoning); send({ type: 'reasoning', content: reasoning }); },
+        {
+          onStreamReset: () => send({
+            type: 'stream_reset',
+            reason: 'invalid_encoding',
+            message: '检测到模型线路返回了损坏字符，已清空本次残片并自动重试',
+          }),
+        }
       );
       const rawContent = String(result.content || '').trim();
       if (!rawContent) {
@@ -983,11 +1087,13 @@ ${String(outline).slice(0, 12000)}
       }
       const parsed = parseBlueprintPayload(rawContent);
       const blueprintShapeValid = parsed && typeof parsed === 'object'
-        && (Array.isArray(parsed.phases) || typeof parsed.mainArc === 'string');
-      // A non-empty but malformed model answer must not block the whole-book
-      // flow. Fall back to a conservative blueprint derived only from the user's
-      // confirmed outline; this keeps continuity safe and lets the user edit it.
-      const blueprintInput = blueprintShapeValid ? parsed : {};
+        && Array.isArray(parsed.phases) && parsed.phases.length
+        && parsed.rollingPlan && typeof parsed.mainArc === 'string';
+      if (!blueprintShapeValid) {
+        const reason = result.finishReason === 'length' ? '模型输出达到长度上限，三级蓝图不完整' : '模型返回的三级蓝图结构不完整';
+        send({ type: 'error', message: `${reason}，请重新生成；系统不会再用单一笼统阶段代替。` });
+        return res.end();
+      }
       const draft = {
         novelTypeName: novelTypeId,
         protagonistName: protagonistName || '',
@@ -998,20 +1104,25 @@ ${String(outline).slice(0, 12000)}
         plotThreads: [],
         storyBlueprint: {},
       };
-      const blueprint = normalizeProposedBlueprint(blueprintInput, draft, totalChapters);
+      const blueprint = normalizeProposedBlueprint(parsed, draft, totalChapters);
+      blueprint.tagChecklist = requiredTags;
       blueprint.version = 1;
       blueprint.lastReviewedChapter = 0;
       blueprint.autoReviewEnabled = false;
       blueprint.emailReminderEnabled = true;
-      // 截断要单独说清楚：否则用户只会看到"格式异常"，误以为是模型能力问题，
-      // 实际是输出被长度上限截断（思考型模型的思考会挤占输出预算的典型表现）。
-      const blueprintTruncated = result.finishReason === 'length';
-      const blueprintWarning = blueprintShapeValid
-        ? (blueprintTruncated ? '模型输出达到长度上限，蓝图可能不完整，建议检查阶段覆盖或改用更大输出上限的线路' : '')
-        : (blueprintTruncated
-          ? '模型输出被长度上限截断，已根据已确认大纲生成保守蓝图，可直接编辑后确认'
-          : '模型返回格式异常，已根据已确认大纲生成保守蓝图，可直接编辑后确认');
-      send({ type: 'completed', blueprint, tokenUsage: callUsageStats(result), warning: blueprintWarning });
+      const validation = validateStoryBlueprint(blueprint, totalChapters, {
+        expectedArcCount: requirements.arcCount,
+        requiredTags,
+      });
+      if (!validation.valid) {
+        send({
+          type: 'error',
+          message: `三级蓝图校验未通过：${validation.errors.slice(0, 4).join('；')}。请重新生成。`,
+          validation,
+        });
+        return res.end();
+      }
+      send({ type: 'completed', blueprint, validation, tokenUsage: callUsageStats(result), warning: '' });
       res.end();
     } catch (error) {
       if (abortController.signal.aborted) {
@@ -1068,7 +1179,17 @@ router.post('/generate', auth, async (req, res) => {
       status: 'generating', batchIndex: 0,
     });
     if (storyBlueprint && typeof storyBlueprint === 'object') {
-      const normalizedBlueprint = normalizeProposedBlueprint(storyBlueprint, novel, Math.max(1, Math.ceil(targetWordCount / chapterWordTarget)));
+      const totalBlueprintChapters = Math.max(1, Math.ceil(targetWordCount / chapterWordTarget));
+      const normalizedBlueprint = normalizeProposedBlueprint(storyBlueprint, novel, totalBlueprintChapters);
+      const requiredTags = getBlueprintTagChecklist(type);
+      if (requiredTags.length) normalizedBlueprint.tagChecklist = requiredTags;
+      if (Number(storyBlueprint.blueprintLevel) === 3 || storyBlueprint.rollingPlan) {
+        const validation = validateStoryBlueprint(normalizedBlueprint, totalBlueprintChapters, {
+          expectedArcCount: blueprintRequirements(totalBlueprintChapters).arcCount,
+          requiredTags,
+        });
+        if (!validation.valid) return res.status(400).json({ message: `三级蓝图校验未通过：${validation.errors.slice(0, 4).join('；')}`, validation });
+      }
       normalizedBlueprint.version = 1;
       novel.storyBlueprint = normalizedBlueprint;
       novel.markModified('storyBlueprint');
@@ -1456,7 +1577,7 @@ ${buildChapterTail({
           const genResult = await generateOneChapter(ch, chPrompt, contract);
           lastChapterContent = genResult.content;
           currentChapterNum = ch + 1;
-          if (novel.storyBlueprint?.autoReviewEnabled && ch % 6 === 0) {
+          if (shouldReviewBlueprintAtChapter(novel, ch)) {
             try {
               const proposal = await createStoryBlueprintProposal({ user: req.user, modelConfig: req.userModelConfig, novel, persona, signal: abortController.signal, onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats) });
               if (proposal) {
@@ -1603,8 +1724,22 @@ router.post('/continue/:novelId', auth, async (req, res) => {
     // and regeneration do not silently fall back to the shared AI voice.
     // 从 novel 重算类型上下文与风格轴（新作品携带 typeSku，旧作品回落 novelTypeId）
     const { type: contType, skuAxes: contAxes } = resolveTypeContextFromNovel(novel);
-    const cachedSystemPrompt = novel.generationContext || buildSystemPrompt(novel.novelTypeId, undefined, withSkuAxes(persona || novel.writingPersonaSnapshot, contAxes), contType);
-    const systemPrompt = `${cachedSystemPrompt}\n\n${buildGenreContract(novel.novelTypeId || novel.novelTypeName, contType)}`;
+    const currentSystemPrompt = buildSystemPrompt(
+      novel.novelTypeId,
+      undefined,
+      withSkuAxes(persona || novel.writingPersonaSnapshot, contAxes),
+      contType
+    );
+    // SKU 的标签合同会持续演进；续写时重算，避免旧 generationContext 把新标签规则
+    // 永久冻结在建书时的版本。联网取材块位于缓存尾部，单独带回，不能因刷新合同而丢失。
+    const cachedSystemPrompt = novel.generationContext || currentSystemPrompt;
+    const researchMarker = '【联网取材参考';
+    const researchIndex = cachedSystemPrompt.indexOf(researchMarker);
+    const cachedResearch = researchIndex >= 0 ? cachedSystemPrompt.slice(researchIndex) : '';
+    const systemPrompt = novel.typeSku
+      ? `${currentSystemPrompt}${cachedResearch ? `\n\n${cachedResearch}` : ''}`
+      : `${cachedSystemPrompt}\n\n${buildGenreContract(novel.novelTypeId || novel.novelTypeName, contType)}`;
+    if (novel.typeSku && novel.generationContext !== systemPrompt) novel.generationContext = systemPrompt;
     const typeName = novel.novelTypeName || '未知';
     const protagonistName = novel.protagonistName || '';
     const worldSetting = novel.worldSetting || '';
@@ -1805,7 +1940,7 @@ ${buildChapterTail({
           })}`;
 
           await generateOneChapter(ch, chPrompt, contract);
-          if (novel.storyBlueprint?.autoReviewEnabled && ch % 6 === 0) {
+          if (shouldReviewBlueprintAtChapter(novel, ch)) {
             try {
               const proposal = await createStoryBlueprintProposal({ user: req.user, modelConfig: req.userModelConfig, novel, persona, signal: abortController.signal, onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats) });
               if (proposal) {

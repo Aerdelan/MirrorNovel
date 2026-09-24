@@ -145,18 +145,22 @@ test('自由文本类型名的正则兜底：顺序修正后不再让"校园"吞
 
 test('类型元数据贯穿：大纲/章节计划/单章提示都带上关键词与风格基调', () => {
   const r = resolveTypeSku({ channel: 'male', category: 'acg', theme: 'acg_school', tones: ['gaoxiao'] });
-  const type = { id: r.name, name: r.name, keywords: r.keywords, aiWordBank: r.aiWordBank, axes: r.axes, contract: r.contract, toneContract: r.toneContract, toneNames: r.tones };
+  const type = { id: r.name, name: r.name, keywords: r.keywords, aiWordBank: r.aiWordBank, axes: r.axes, contract: r.contract, toneContract: r.toneContract, toneNames: r.tones, tagContract: r.tagContract, selection: r.selection };
 
   const outline = buildOutlinePrompt(r.name, '苍太', '日系校园', 50000, null, 3000, type);
   assert.match(outline, /写作类型：二次元·日系校园/);
   assert.match(outline, /日系校园/);
   assert.match(outline, /搞笑\/无厘头/);            // 基调要进策划阶段
   assert.match(outline, /轻小说\/ACGN/);            // 契约按 SKU 取
+  assert.match(outline, /【人物声音表】/);
+  assert.match(outline, /禁止所有人都冷静、完整、讲逻辑/);
 
   const plan = buildChapterPlan('大纲正文', 50000, '苍太', '日系校园', null, null, 3000, type);
   assert.match(plan, /写作类型：二次元·日系校园/);
   assert.match(plan, /写作关键词：.*日系校园/);
   assert.match(plan, /搞笑\/无厘头/);
+  assert.match(plan, /不同的当场目的与反应方式/);
+  assert.match(plan, /不能把所有人的台词统一成冷静、完整、讲逻辑/);
 
   const initial = buildInitialPrompt(r.name, '苍太', '日系校园', 50000, 'chapter', '大纲正文', null, type);
   assert.match(initial, /请创作一部二次元·日系校园小说/);
@@ -174,11 +178,16 @@ test('未传类型时旧行为不变（策划提示不因新参数而崩或串�
 
 test('系统提示：SKU 的基调契约与关键词都进正文提示', () => {
   const r = resolveTypeSku({ channel: 'male', category: 'acg', theme: 'acg_school', tones: ['gaoxiao'] });
-  const type = { id: r.name, name: r.name, keywords: r.keywords, aiWordBank: r.aiWordBank, axes: r.axes, contract: r.contract, toneContract: r.toneContract, toneNames: r.tones };
+  const type = { id: r.name, name: r.name, keywords: r.keywords, aiWordBank: r.aiWordBank, axes: r.axes, contract: r.contract, toneContract: r.toneContract, toneNames: r.tones, tagContract: r.tagContract, selection: r.selection };
   const sys = buildSystemPrompt(r.name, undefined, null, type);
   assert.match(sys, /写作类型：二次元·日系校园/);
   assert.match(sys, /风格基调契约/);
   assert.match(sys, /搞笑\/无厘头/);
   assert.match(sys, /轻小说\/ACGN/);
+  assert.match(sys, /标签执行合同/);
+  assert.match(sys, /禁止偷渡总裁、豪门继承、商业并购/);
+  assert.match(sys, /不能人人少年老成、冷静缜密/);
+  assert.match(sys, /成熟的轻小说作者/);
+  assert.doesNotMatch(sys, /【节奏紧凑】/);
   assert.doesNotMatch(sys, /言情\/关系/);
 });

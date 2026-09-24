@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld('mnDesktop', {
   getVersions: () => ipcRenderer.invoke('app:versions'),
   openExternal: (url) => ipcRenderer.invoke('app:open-external', url),
   apiTarget: () => ipcRenderer.invoke('api:target'),
+  adminUrl: () => ipcRenderer.invoke('app:admin-url'),
   // 桌面专属：用系统对话框保存文本（导出章节/整本）
   saveTextFile: (payload) => ipcRenderer.invoke('file:save-text', payload),
+  saveFile: (payload) => ipcRenderer.invoke('file:save', payload),
 })

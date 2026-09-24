@@ -18,6 +18,53 @@ test('思考/推理参数被上游拒绝时给出可读提示（覆盖各家措�
   assert.match(other, /AI 请求参数有误/);
 });
 
+test('上游返回 U+FFFD 时在写入前拦截，清空流式残片并自动重试', async () => {
+  const originalFetch = global.fetch;
+  let requestCount = 0;
+  let displayed = '';
+  let resetCount = 0;
+  try {
+    global.fetch = async () => {
+      requestCount += 1;
+      const chunks = requestCount === 1
+        ? ['正常前缀', '损坏�字符']
+        : ['重试后的完整大纲'];
+      let index = 0;
+      return {
+        ok: true,
+        body: {
+          getReader: () => ({
+            read: async () => {
+              if (index >= chunks.length) return { done: true, value: undefined };
+              const content = chunks[index++];
+              const data = `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`;
+              return { done: false, value: new TextEncoder().encode(data) };
+            },
+            cancel: async () => {},
+          }),
+        },
+      };
+    };
+
+    const result = await streamGenerate(
+      '系统', '用户',
+      (chunk) => { displayed += chunk; },
+      null,
+      { baseUrl: 'https://encoding.test/v1', model: 'test', disableThinking: true },
+      1, 0.2, 4000, 60000, null,
+      { onStreamReset: () => { displayed = ''; resetCount += 1; } },
+    );
+
+    assert.equal(requestCount, 2);
+    assert.equal(resetCount, 1);
+    assert.equal(result.content, '重试后的完整大纲');
+    assert.equal(displayed, '重试后的完整大纲');
+    assert.doesNotMatch(displayed, /�/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('generation output budget allows the configured 700k token ceiling', () => {
   assert.equal(MAX_GENERATION_TOKENS, 700000);
 });
@@ -265,6 +312,8 @@ test('outline requirements scale stages, cast, branches, nodes and output budget
   assert.ok(long.phaseCount > short.phaseCount);
   assert.ok(long.nodeCount > short.nodeCount);
   assert.ok(long.characterCount > short.characterCount);
+  assert.ok(long.coreCharacterCount <= 12);
+  assert.ok(long.coreCharacterCount < long.characterCount);
   assert.ok(long.subplotCount > short.subplotCount);
   assert.ok(long.outlineChars > short.outlineChars);
   assert.ok(long.outputTokens > short.outputTokens);
@@ -273,6 +322,8 @@ test('outline requirements scale stages, cast, branches, nodes and output budget
   assert.ok(long.outputTokens <= 48000);
   assert.match(buildOutlinePrompt('urban', '林舟', '旧城', 1000000), /严格写12个阶段/);
   assert.match(buildOutlinePrompt('urban', '林舟', '旧城', 1000000), /至少24条支线/);
+  assert.match(buildOutlinePrompt('urban', '林舟', '旧城', 2800000), /12名核心常驻角色、全书约40名/);
+  assert.match(buildOutlinePrompt('urban', '林舟', '旧城', 2800000), /不得为了凑数量一次性罗列姓名/);
 });
 
 test('outline prompt demands information density instead of word-count minimums', () => {
@@ -289,10 +340,15 @@ test('chapter plans receive the confirmed blueprint and flexible breathing guida
   const prompt = buildChapterPlan('主角追查旧案', 100000, '林舟', '旧城', '', null, {
     mainArc: '追查旧案并面对关系代价',
     lockedFacts: ['主角是记者'],
-    phases: [{ title: '关系裂变', startChapter: 5, endChapter: 12, goal: '信任崩塌', threads: ['苏晚的隐瞒'] }],
+    tagChecklist: ['日系校园', '搞笑'],
+    phases: [{ title: '关系裂变', startChapter: 5, endChapter: 12, goal: '信任崩塌', threads: ['苏晚的隐瞒'], tagCommitments: ['搞笑：误会型笑点'], characterBeats: [{ character: '苏晚', voiceGuard: '短句，不解释感受' }], requiredScenes: ['社团教室'], forbiddenDrift: ['禁止霸总化'], subphases: [{ title: '误会加深', startChapter: 5, endChapter: 8, tagCommitments: ['日系校园'] }] }],
+    rollingPlan: { startChapter: 1, endChapter: 2, chapters: [{ chapterNumber: 1, purpose: '建立社团关系', tagCommitments: ['搞笑'] }] },
   });
   assert.match(prompt, /用户已确认的故事蓝图/);
   assert.match(prompt, /苏晚的隐瞒/);
+  assert.match(prompt, /禁止霸总化/);
+  assert.match(prompt, /滚动执行蓝图/);
+  assert.match(prompt, /标签兑现/);
   assert.match(prompt, /缓冲功能/);
   assert.match(prompt, /禁止固定每隔 N 章/);
   assert.ok(getChapterPlanOutputTokens(1000000) > getChapterPlanOutputTokens(100000));

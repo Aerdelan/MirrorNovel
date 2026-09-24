@@ -174,9 +174,9 @@ export default {
     dirty: 'Unsaved changes',
     syncHintBefore: '“Sync default route to account” stores the ',
     syncHintBold: 'default route',
-    syncHintAfter: ' (URL, key, model) encrypted on the server so you can use it after signing in on another device. Other routes stay on this machine. With local-only storage the key never leaves this computer.',
+    syncHintAfter: ' (URL, key, model) encrypted on the server so you can use it after signing in on another device. Other routes stay on this machine. Local routes are not stored in your account database, but are forwarded temporarily to the active backend when generating.',
 
-    savedLocal: 'Saved locally: {n} route(s). Keys are never uploaded.',
+    savedLocal: 'Saved locally: {n} route(s). Not stored in your account database; forwarded temporarily to the active backend when generating.',
     syncedAccount: '“{name}” synced to your account (encrypted on the server); other routes stay local.',
     clearedLocal: 'Local config cleared; account config is untouched.',
 

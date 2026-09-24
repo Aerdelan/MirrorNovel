@@ -82,3 +82,63 @@ test('resolveTypeSku：风格基调(tones)升格为硬契约 toneContract，未�
   assert.equal(noTone.toneContract, '');
   assert.deepEqual(noTone.tones, []);
 });
+
+test('细分标签形成可执行合同：日系校园搞笑不会退化成霸总换皮，角色声音必须分化', () => {
+  const r = resolveTypeSku({
+    channel: 'male',
+    category: 'acg',
+    theme: 'acg_school',
+    elements: ['riben', 'xiaoguo'],
+    personas: ['aojiao', 'jiweng'],
+    tones: ['gaoxiao', 'richang'],
+    cp: 'single',
+  });
+
+  assert.equal(r.selection.theme, '日系校园');
+  assert.deepEqual(r.selection.characters.map((item) => item.name), ['傲娇', '机灵/毒舌']);
+  assert.equal(r.selection.cp.name, '单女主/单男主');
+  assert.match(r.tagContract, /至少把三个锚点转化为会约束人物选择的规则、场所或日常流程/);
+  assert.match(r.tagContract, /班级与座位、通学路线、部活分工/);
+  assert.match(r.tagContract, /禁止偷渡总裁、豪门继承、商业并购/);
+  assert.match(r.tagContract, /当前为原创模式/);
+  assert.match(r.tagContract, /禁止直接使用、改一两个字使用、拆分拼接任何已存在的动漫/);
+  assert.match(r.tagContract, /人设原型「傲娇」/);
+  assert.match(r.tagContract, /人设原型「机灵\/毒舌」/);
+  assert.match(r.tagContract, /禁止所有人都冷静分析、正确沟通/);
+  assert.match(r.tagContract, /关系向规则：单女主\/单男主/);
+});
+
+test('同人模式只放行目标原作，不允许从无关作品拼角色名单', () => {
+  const r = resolveTypeSku({ category: 'acg', theme: 'acg_doujin', elements: ['manju'] });
+  assert.match(r.tagContract, /用户明确选择的同人\/综漫模式/);
+  assert.match(r.tagContract, /不得从无关动漫、轻小说、游戏中拼接角色姓名/);
+  assert.doesNotMatch(r.tagContract, /当前为原创模式/);
+});
+
+test('全量题材都生成可执行锚点，不能只把细分 tag 拼进关键词', () => {
+  for (const [channel, categories] of Object.entries(CATEGORY_TREE)) {
+    for (const category of categories) {
+      for (const theme of category.themes) {
+        const r = resolveTypeSku({ channel, category: category.id, theme: theme.id });
+        assert.match(r.tagContract, /【题材锚点】/, `${theme.id} 缺少题材锚点`);
+        assert.ok(r.tagContract.includes(`题材「${theme.name}」`), `${theme.id} 未保留精确题材名`);
+        assert.match(r.tagContract, /主线矛盾、主要场景与角色职业\/身份必须从这些锚点生长/);
+      }
+    }
+  }
+});
+
+test('全量情节、人设与基调 tag 都进入逐项执行合同', () => {
+  for (const [id, value] of Object.entries(ELEMENTS)) {
+    const r = resolveTypeSku({ category: 'acg', theme: 'acg_school', elements: [id] });
+    assert.ok(r.tagContract.includes(`情节元素「${value[0]}」`), `情节 tag ${id} 未落地`);
+  }
+  for (const [id, value] of Object.entries(CHARACTERS)) {
+    const r = resolveTypeSku({ category: 'acg', theme: 'acg_school', personas: [id] });
+    assert.ok(r.tagContract.includes(`人设原型「${value[0]}」`), `人设 tag ${id} 未落地`);
+  }
+  for (const [id, value] of Object.entries(TONES)) {
+    const r = resolveTypeSku({ category: 'acg', theme: 'acg_school', tones: [id] });
+    assert.ok(r.tagContract.includes(`基调「${value.name}」`), `基调 tag ${id} 未落地`);
+  }
+});

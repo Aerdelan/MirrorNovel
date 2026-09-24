@@ -11,7 +11,7 @@ import { fileURLToPath, URL } from 'node:url'
  */
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '')
-  // 开发时后端地址：默认指向正式服务器（www.blockstory.top 为内测版，不要作为默认值），
+  // 开发时后端地址：项目当前正式环境使用 IP 部署；域名属于另一套产品。
   // 可用 MN_SERVER 覆盖（如 http://localhost:3000、内测版地址或自建服务器）
   const apiTarget = env.MN_SERVER || 'http://43.159.149.223:5173'
 

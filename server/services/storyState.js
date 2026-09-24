@@ -29,6 +29,10 @@ function normalizePlanChapter(chapter) {
     subplotFocus: String(chapter.subplotFocus || chapter.subplot || '').trim(),
     relationshipBeat: String(chapter.relationshipBeat || chapter.relationship || '').trim(),
     breathingPurpose: String(chapter.breathingPurpose || '').trim(),
+    tagCommitments: splitItems(chapter.tagCommitments || chapter.tags),
+    characterBeat: String(chapter.characterBeat || chapter.characterVoice || '').trim(),
+    requiredScenes: splitItems(chapter.requiredScenes || chapter.scenes),
+    forbiddenDrift: splitItems(chapter.forbiddenDrift || chapter.driftGuards),
     // Keep an omitted tension as 0 so buildEmotionPlan can apply the story-level
     // rhythm instead of treating every incomplete legacy plan as low pressure.
     tension: Number.isFinite(rawTension) && rawTension > 0 ? Math.max(1, Math.min(10, rawTension)) : 0,
@@ -72,6 +76,7 @@ function parseChapterPlan(rawPlan) {
           setHooks: chapter[3], resolveHooks: chapter[4], characters: chapter[5],
           chapterRole: chapter[6], tension: chapter[7], title: chapter[8],
           phase: chapter[9], subplotFocus: chapter[10], relationshipBeat: chapter[11], breathingPurpose: chapter[12],
+          tagCommitments: chapter[13], characterBeat: chapter[14], requiredScenes: chapter[15], forbiddenDrift: chapter[16],
         })
         : normalizePlanChapter(chapter)).filter((item) => item.chapterNumber > 0),
     };
@@ -95,6 +100,7 @@ function parseChapterPlan(rawPlan) {
               setHooks: chapter[3], resolveHooks: chapter[4], characters: chapter[5],
               chapterRole: chapter[6], tension: chapter[7], title: chapter[8],
               phase: chapter[9], subplotFocus: chapter[10], relationshipBeat: chapter[11], breathingPurpose: chapter[12],
+              tagCommitments: chapter[13], characterBeat: chapter[14], requiredScenes: chapter[15], forbiddenDrift: chapter[16],
             })
             : normalizePlanChapter(chapter)).filter((item) => item.chapterNumber > 0),
         };
@@ -205,6 +211,10 @@ function renderPlanForContext(planData, currentChapter) {
         item.subplotFocus ? '支线焦点: ' + item.subplotFocus : '',
         item.relationshipBeat ? '关系变化: ' + item.relationshipBeat : '',
         item.breathingPurpose ? '缓冲功能: ' + item.breathingPurpose : '',
+        item.tagCommitments.length ? '标签兑现: ' + item.tagCommitments.join('、') : '',
+        item.characterBeat ? '人物/声线: ' + item.characterBeat : '',
+        item.requiredScenes.length ? '必备场景: ' + item.requiredScenes.join('、') : '',
+        item.forbiddenDrift.length ? '禁止漂移: ' + item.forbiddenDrift.join('、') : '',
       ].filter(Boolean);
       return pieces.join(' | ');
     })
@@ -243,19 +253,181 @@ function textList(value, limit = 12) {
   return splitItems(value).slice(0, limit).map((item) => item.slice(0, 180));
 }
 
-function normalizeBlueprintPhase(phase, fallbackStart, fallbackEnd) {
-  phase = phase || {};
-  const start = Math.max(1, Number(phase.startChapter || fallbackStart || 1));
-  const end = Math.max(start, Number(phase.endChapter || fallbackEnd || start));
+function shortText(value, limit = 420) {
+  return String(value || '').trim().slice(0, limit);
+}
+
+function normalizeCharacterBeat(beat) {
+  if (typeof beat === 'string') {
+    return { character: '', goal: shortText(beat, 240), conflict: '', change: '', voiceGuard: '' };
+  }
+  beat = beat || {};
   return {
-    title: String(phase.title || '剧情阶段').trim().slice(0, 80),
+    character: shortText(beat.character || beat.name, 80),
+    goal: shortText(beat.goal || beat.objective, 240),
+    conflict: shortText(beat.conflict, 240),
+    change: shortText(beat.change || beat.arc, 240),
+    voiceGuard: shortText(beat.voiceGuard || beat.voice || beat.speechConstraint, 300),
+  };
+}
+
+function normalizeForeshadowing(item) {
+  if (typeof item === 'string') {
+    return { name: shortText(item, 160), setupChapter: 0, progressChapters: [], payoffChapter: 0, plan: '' };
+  }
+  item = item || {};
+  return {
+    name: shortText(item.name || item.thread || item.hook, 160),
+    setupChapter: Math.max(0, Number(item.setupChapter || item.setChapter || 0)),
+    progressChapters: toArray(item.progressChapters || item.developmentChapters)
+      .map(Number).filter((chapter) => Number.isFinite(chapter) && chapter > 0).slice(0, 12),
+    payoffChapter: Math.max(0, Number(item.payoffChapter || item.resolveChapter || item.targetChapter || 0)),
+    plan: shortText(item.plan || item.progression || item.meaning, 360),
+  };
+}
+
+function normalizeBlueprintStage(stage, fallbackStart, fallbackEnd, includeSubphases = false) {
+  stage = stage || {};
+  const start = Math.max(1, Math.round(Number(stage.startChapter || fallbackStart || 1)));
+  const end = Math.max(start, Math.round(Number(stage.endChapter || fallbackEnd || start)));
+  const normalized = {
+    title: shortText(stage.title || '剧情阶段', 80),
     startChapter: start,
     endChapter: end,
-    goal: String(phase.goal || '').trim().slice(0, 420),
-    obstacle: String(phase.obstacle || '').trim().slice(0, 420),
-    reversal: String(phase.reversal || '').trim().slice(0, 420),
-    threads: textList(phase.threads, 8),
+    goal: shortText(stage.goal, 420),
+    obstacle: shortText(stage.obstacle, 420),
+    reversal: shortText(stage.reversal || stage.turningPoint, 420),
+    threads: textList(stage.threads, 8),
+    tagCommitments: textList(stage.tagCommitments, 16),
+    characterBeats: toArray(stage.characterBeats).slice(0, 16).map(normalizeCharacterBeat)
+      .filter((beat) => beat.character || beat.goal || beat.conflict || beat.change || beat.voiceGuard),
+    requiredScenes: textList(stage.requiredScenes, 12),
+    forbiddenDrift: textList(stage.forbiddenDrift, 12),
+    entryCondition: shortText(stage.entryCondition, 360),
+    exitCondition: shortText(stage.exitCondition, 360),
+    foreshadowing: toArray(stage.foreshadowing).slice(0, 16).map(normalizeForeshadowing)
+      .filter((item) => item.name || item.plan),
+    unresolvedQuestions: textList(stage.unresolvedQuestions, 12),
   };
+  if (includeSubphases) {
+    const source = toArray(stage.subphases);
+    normalized.subphases = source.slice(0, 8).map((subphase, index) => normalizeBlueprintStage(
+      subphase,
+      index ? Number(source[index - 1]?.endChapter || start) + 1 : start,
+      end,
+      false
+    ));
+  }
+  return normalized;
+}
+
+function normalizeBlueprintPhase(phase, fallbackStart, fallbackEnd) {
+  return normalizeBlueprintStage(phase, fallbackStart, fallbackEnd, true);
+}
+
+function normalizeRollingChapter(chapter, fallbackNumber) {
+  chapter = chapter || {};
+  return {
+    chapterNumber: Math.max(1, Math.round(Number(chapter.chapterNumber || fallbackNumber || 1))),
+    title: shortText(chapter.title, 80),
+    purpose: shortText(chapter.purpose || chapter.goal, 360),
+    tagCommitments: textList(chapter.tagCommitments, 8),
+    characterBeats: toArray(chapter.characterBeats).slice(0, 10).map(normalizeCharacterBeat)
+      .filter((beat) => beat.character || beat.goal || beat.conflict || beat.change || beat.voiceGuard),
+    requiredScenes: textList(chapter.requiredScenes || chapter.scenes, 8),
+    relationshipChange: shortText(chapter.relationshipChange, 300),
+    foreshadowingActions: textList(chapter.foreshadowingActions, 8),
+    exitHook: shortText(chapter.exitHook || chapter.hook, 300),
+  };
+}
+
+function normalizeRollingPlan(rawPlan, totalChapters) {
+  rawPlan = rawPlan || {};
+  const total = Math.max(1, Number(totalChapters || 1));
+  const start = Math.max(1, Math.min(total, Math.round(Number(rawPlan.startChapter || 1))));
+  const end = Math.max(start, Math.min(total, Math.round(Number(rawPlan.endChapter || Math.min(total, start + 19)))));
+  return {
+    startChapter: start,
+    endChapter: end,
+    calibratedAtChapter: Math.max(0, Math.round(Number(rawPlan.calibratedAtChapter || 0))),
+    objective: shortText(rawPlan.objective || rawPlan.goal, 420),
+    tagCommitments: textList(rawPlan.tagCommitments, 16),
+    forbiddenDrift: textList(rawPlan.forbiddenDrift, 12),
+    chapters: toArray(rawPlan.chapters).slice(0, 20).map((chapter, index) => normalizeRollingChapter(chapter, start + index))
+      .filter((chapter) => chapter.chapterNumber >= start && chapter.chapterNumber <= end),
+  };
+}
+
+function blueprintRequirements(totalChapters) {
+  const total = Math.max(1, Number(totalChapters || 1));
+  return {
+    arcCount: Math.min(total, Math.max(10, Math.min(16, Math.ceil(total / 24)))),
+    rollingChapterCount: Math.min(total, 20),
+  };
+}
+
+function validateStoryBlueprint(blueprint, totalChapters, options = {}) {
+  const total = Math.max(1, Number(totalChapters || 1));
+  const requirements = blueprintRequirements(total);
+  const errors = [];
+  const warnings = [];
+  const phases = toArray(blueprint?.phases);
+  const expectedArcCount = Number(options.expectedArcCount || requirements.arcCount);
+  if (!blueprint?.mainArc || !String(blueprint.mainArc).trim()) errors.push('缺少全书主线');
+  if (phases.length !== expectedArcCount) errors.push(`全书级蓝图应包含 ${expectedArcCount} 个大篇章，当前为 ${phases.length} 个`);
+  phases.forEach((phase, index) => {
+    const label = `篇章${index + 1}`;
+    const previous = phases[index - 1];
+    if (index === 0 && Number(phase.startChapter) !== 1) errors.push(`${label}必须从第1章开始`);
+    if (previous && Number(phase.startChapter) !== Number(previous.endChapter) + 1) errors.push(`${label}与上一篇章存在章节空档或重叠`);
+    if (index === phases.length - 1 && Number(phase.endChapter) !== total) errors.push(`最后一个篇章必须覆盖到第${total}章`);
+    for (const [field, name] of [['tagCommitments', '标签兑现'], ['characterBeats', '人物推进'], ['requiredScenes', '必备场景'], ['forbiddenDrift', '禁止漂移'], ['foreshadowing', '伏笔计划'], ['unresolvedQuestions', '未决问题'], ['subphases', '篇章级小阶段']]) {
+      if (!Array.isArray(phase[field]) || !phase[field].length) errors.push(`${label}缺少${name}`);
+    }
+    if (!phase.entryCondition) errors.push(`${label}缺少进入条件`);
+    if (!phase.exitCondition) errors.push(`${label}缺少离开条件`);
+    const subphases = toArray(phase.subphases);
+    subphases.forEach((subphase, subIndex) => {
+      const subLabel = `${label}的小阶段${subIndex + 1}`;
+      if (subIndex === 0 && Number(subphase.startChapter) !== Number(phase.startChapter)) errors.push(`${subLabel}没有从篇章起点开始`);
+      if (subIndex > 0 && Number(subphase.startChapter) !== Number(subphases[subIndex - 1].endChapter) + 1) errors.push(`${subLabel}存在章节空档或重叠`);
+      if (subIndex === subphases.length - 1 && Number(subphase.endChapter) !== Number(phase.endChapter)) errors.push(`${subLabel}没有覆盖到篇章终点`);
+      if (!subphase.tagCommitments?.length) errors.push(`${subLabel}缺少标签兑现`);
+      if (!subphase.characterBeats?.length) errors.push(`${subLabel}缺少人物推进`);
+      if (!subphase.requiredScenes?.length) errors.push(`${subLabel}缺少必备场景`);
+      if (!subphase.forbiddenDrift?.length) errors.push(`${subLabel}缺少禁止漂移`);
+      if (!subphase.foreshadowing?.length) errors.push(`${subLabel}缺少伏笔计划`);
+      if (!subphase.unresolvedQuestions?.length) errors.push(`${subLabel}缺少未决问题`);
+      if (!subphase.entryCondition || !subphase.exitCondition) errors.push(`${subLabel}缺少进入/离开条件`);
+    });
+  });
+  const rolling = blueprint?.rollingPlan;
+  if (!rolling || typeof rolling !== 'object') errors.push('缺少滚动执行蓝图');
+  else {
+    const expectedRollingEnd = Math.min(total, requirements.rollingChapterCount);
+    if (Number(rolling.startChapter) !== 1) errors.push('初始滚动执行蓝图必须从第1章开始');
+    if (Number(rolling.endChapter) !== expectedRollingEnd) errors.push(`初始滚动执行蓝图必须覆盖第1-${expectedRollingEnd}章`);
+    const chapters = toArray(rolling.chapters);
+    if (chapters.length !== expectedRollingEnd) errors.push(`滚动执行蓝图应逐章规划 ${expectedRollingEnd} 章，当前为 ${chapters.length} 章`);
+    chapters.forEach((chapter, index) => {
+      if (Number(chapter.chapterNumber) !== index + 1) errors.push(`滚动执行蓝图缺少第${index + 1}章或章节顺序错误`);
+      if (!chapter.purpose) errors.push(`滚动执行蓝图第${index + 1}章缺少章节目的`);
+      if (!chapter.tagCommitments?.length) errors.push(`滚动执行蓝图第${index + 1}章缺少标签兑现`);
+      if (!chapter.characterBeats?.length) errors.push(`滚动执行蓝图第${index + 1}章缺少人物推进`);
+    });
+  }
+  const requiredTags = textList(options.requiredTags, 24);
+  if (requiredTags.length) {
+    const commitments = phases.flatMap((phase) => [
+      ...toArray(phase.tagCommitments),
+      ...toArray(phase.subphases).flatMap((subphase) => toArray(subphase.tagCommitments)),
+    ]).join('、');
+    for (const tag of requiredTags) {
+      if (!commitments.includes(tag)) errors.push(`所选标签“${tag}”没有落实到任何篇章`);
+    }
+  }
+  if (errors.length > 24) warnings.push(`另有 ${errors.length - 24} 项结构问题未展开`);
+  return { valid: errors.length === 0, errors: errors.slice(0, 24), warnings, requirements };
 }
 
 /**
@@ -267,9 +439,11 @@ function ensureStoryBlueprint(novel, totalChapters) {
   if (!novel.storyBlueprint) novel.storyBlueprint = {};
   const blueprint = novel.storyBlueprint;
   const total = Math.max(1, Number(totalChapters || Math.ceil(Number(novel.targetWordCount || 50000) / 3000)));
+  blueprint.blueprintLevel = 3;
   if (!blueprint.version) blueprint.version = 1;
   if (!blueprint.mainArc) blueprint.mainArc = String(novel.outline || novel.storyBible.theme || '按既定主线推进').slice(0, 1200);
   if (!Array.isArray(blueprint.lockedFacts)) blueprint.lockedFacts = [];
+  if (!Array.isArray(blueprint.tagChecklist)) blueprint.tagChecklist = [];
   if (!blueprint.lockedFacts.length) {
     blueprint.lockedFacts = textList([novel.protagonistName ? `主角：${novel.protagonistName}` : '', novel.worldSetting ? `世界观：${novel.worldSetting}` : ''].filter(Boolean), 8);
   }
@@ -282,6 +456,7 @@ function ensureStoryBlueprint(novel, totalChapters) {
   } else {
     blueprint.phases = blueprint.phases.map((phase) => normalizeBlueprintPhase(phase, 1, total));
   }
+  blueprint.rollingPlan = normalizeRollingPlan(blueprint.rollingPlan, total);
   if (typeof blueprint.autoReviewEnabled !== 'boolean') blueprint.autoReviewEnabled = false;
   if (typeof blueprint.emailReminderEnabled !== 'boolean') blueprint.emailReminderEnabled = true;
   if (!Number.isFinite(Number(blueprint.lastReviewedChapter))) blueprint.lastReviewedChapter = 0;
@@ -303,10 +478,13 @@ function normalizeProposedBlueprint(rawBlueprint, novel, totalChapters) {
     total
   ));
   return {
+    blueprintLevel: 3,
     version: Number(current.version || 1) + 1,
     mainArc: String(rawBlueprint.mainArc || current.mainArc || '').trim().slice(0, 1200),
     lockedFacts,
+    tagChecklist: textList(rawBlueprint.tagChecklist?.length ? rawBlueprint.tagChecklist : current.tagChecklist, 24),
     phases: phases.length ? phases : current.phases,
+    rollingPlan: normalizeRollingPlan(rawBlueprint.rollingPlan || current.rollingPlan, total),
     autoReviewEnabled: Boolean(current.autoReviewEnabled),
     emailReminderEnabled: current.emailReminderEnabled !== false,
     lastReviewedChapter: Number(current.lastReviewedChapter || 0),
@@ -319,7 +497,11 @@ function applyStoryBlueprint(novel, rawBlueprint, totalChapters) {
   initializeCreativeState(novel);
   const existingTitles = new Set(novel.plotThreads.map((thread) => String(thread.title || '').trim()).filter(Boolean));
   for (const phase of blueprint.phases) {
-    for (const title of phase.threads || []) {
+    const threadTitles = [
+      ...(phase.threads || []),
+      ...(phase.subphases || []).flatMap((subphase) => subphase.threads || []),
+    ];
+    for (const title of threadTitles) {
       if (!title || existingTitles.has(title)) continue;
       novel.plotThreads.push({
         id: `blueprint_${String(title).replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '').slice(0, 24) || novel.plotThreads.length + 1}`,
@@ -338,19 +520,45 @@ function applyStoryBlueprint(novel, rawBlueprint, totalChapters) {
 function renderStoryBlueprintForContext(novel, chapterNumber, totalChapters) {
   const blueprint = ensureStoryBlueprint(novel, totalChapters);
   const chapter = Math.max(1, Number(chapterNumber || 1));
-  const relevantPhases = blueprint.phases.filter((phase) => Number(phase.endChapter || 0) >= chapter).slice(0, 3);
-  const phaseText = relevantPhases.map((phase) => [
-    `第${phase.startChapter}-${phase.endChapter}章 ${phase.title}`,
+  const relevantPhases = blueprint.phases
+    .filter((phase) => Number(phase.endChapter || 0) >= chapter)
+    .slice(0, 2);
+  const renderStage = (phase, prefix = '') => [
+    `${prefix}第${phase.startChapter}-${phase.endChapter}章 ${phase.title}`,
     phase.goal ? `目标：${phase.goal}` : '',
     phase.obstacle ? `阻力：${phase.obstacle}` : '',
     phase.reversal ? `反转：${phase.reversal}` : '',
+    phase.entryCondition ? `进入条件：${phase.entryCondition}` : '',
+    phase.exitCondition ? `离开条件：${phase.exitCondition}` : '',
+    phase.tagCommitments?.length ? `必须兑现标签：${phase.tagCommitments.join('、')}` : '',
+    phase.characterBeats?.length ? `人物推进：${phase.characterBeats.map((beat) => `${beat.character || '相关人物'}[目标=${beat.goal || '未写'}；冲突=${beat.conflict || '未写'}；变化=${beat.change || '未写'}；声线=${beat.voiceGuard || '未写'}]`).join('；')}` : '',
+    phase.requiredScenes?.length ? `必备场景：${phase.requiredScenes.join('、')}` : '',
+    phase.forbiddenDrift?.length ? `禁止漂移：${phase.forbiddenDrift.join('、')}` : '',
+    phase.foreshadowing?.length ? `伏笔：${phase.foreshadowing.map((item) => `${item.name || '未命名'}(埋设${item.setupChapter || '?'}→回收${item.payoffChapter || '?'})`).join('、')}` : '',
+    phase.unresolvedQuestions?.length ? `阶段后保留问题：${phase.unresolvedQuestions.join('、')}` : '',
     phase.threads?.length ? `关联线：${phase.threads.join('、')}` : '',
-  ].filter(Boolean).join('；')).join('\n');
+  ].filter(Boolean).join('；');
+  const phaseText = relevantPhases.map((phase) => {
+    const activeSubphase = (phase.subphases || []).find((item) => chapter >= Number(item.startChapter) && chapter <= Number(item.endChapter));
+    return [renderStage(phase, '全书篇章：'), activeSubphase ? renderStage(activeSubphase, '当前小阶段：') : ''].filter(Boolean).join('\n');
+  }).join('\n');
+  const rolling = blueprint.rollingPlan || {};
+  const rollingChapter = toArray(rolling.chapters).find((item) => Number(item.chapterNumber) === chapter);
+  const rollingText = chapter >= Number(rolling.startChapter || 0) && chapter <= Number(rolling.endChapter || 0)
+    ? [
+      `滚动执行窗口：第${rolling.startChapter}-${rolling.endChapter}章；目标：${rolling.objective || '落实当前小阶段'}`,
+      rolling.tagCommitments?.length ? `窗口标签：${rolling.tagCommitments.join('、')}` : '',
+      rolling.forbiddenDrift?.length ? `窗口禁止漂移：${rolling.forbiddenDrift.join('、')}` : '',
+      rollingChapter ? `本章执行卡：${JSON.stringify(rollingChapter)}` : '',
+    ].filter(Boolean).join('\n')
+    : '';
   return [
-    `【动态故事蓝图｜已确认版本 ${blueprint.version}】`,
+    `【三级动态故事蓝图｜已确认版本 ${blueprint.version}】`,
     `主线：${blueprint.mainArc || '按已确认大纲推进'}`,
+    blueprint.tagChecklist?.length ? `全书标签清单：${blueprint.tagChecklist.join('、')}` : '',
     blueprint.lockedFacts.length ? `不可改写事实：${blueprint.lockedFacts.join('；')}` : '',
     phaseText,
+    rollingText,
     '只有用户应用剧情蓝图提案后，才能改变上述方向；不得自行改写终局、人物核心动机或已经发生的事实。',
   ].filter(Boolean).join('\n');
 }
@@ -617,6 +825,10 @@ function buildChapterContract(options) {
     subplotFocus: planChapter.subplotFocus || '',
     relationshipBeat: planChapter.relationshipBeat || '',
     breathingPurpose: planChapter.breathingPurpose || '',
+    tagCommitments: planChapter.tagCommitments || [],
+    characterBeat: planChapter.characterBeat || '',
+    requiredScenes: planChapter.requiredScenes || [],
+    forbiddenDrift: planChapter.forbiddenDrift || [],
     setHooks: planChapter.setHooks || [],
     resolveHooks: planChapter.resolveHooks || [],
     pendingHooks,
@@ -647,10 +859,13 @@ function renderChapterContract(contract) {
     '本章支线焦点：' + (contract.subplotFocus || '无；若有已建立关系线，选择一条自然带入'),
     '本章关系变化：' + (contract.relationshipBeat || '由场景中的选择和反应自然体现'),
     '本章缓冲功能：' + (contract.breathingPurpose || '无；不要为了凑字数插入无关日常'),
+    '本章必须兑现的标签：' + list(contract.tagCommitments),
+    '本章人物推进与声线：' + (contract.characterBeat || '依据人物声音表保持差异，不得全员冷静、完整、讲逻辑'),
+    '本章必备场景：' + list(contract.requiredScenes),
     '本章埋设伏笔：' + list(contract.setHooks),
     '本章应回收伏笔：' + list(contract.resolveHooks),
     '已存在的待回收伏笔：' + pending,
-    '明确禁止：' + contract.mustNot.join('；'),
+    '明确禁止：' + [...contract.mustNot, ...(contract.forbiddenDrift || [])].join('；'),
     '本章目标字数：约' + contract.wordTarget + '字；全书进度：' + contract.progress,
     contract.emotion.isBreath
       ? '喘息章规则：让读者缓一口气，但必须通过对话、物件、关系变化或新信息推进故事。'
@@ -865,6 +1080,8 @@ module.exports = {
   ensureCreativeState,
   initializeCreativeState,
   ensureStoryBlueprint,
+  blueprintRequirements,
+  validateStoryBlueprint,
   normalizeProposedBlueprint,
   applyStoryBlueprint,
   renderStoryBlueprintForContext,

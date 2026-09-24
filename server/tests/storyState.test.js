@@ -15,6 +15,8 @@ const {
   getChapterOutputTokenLimit,
   assessStoryCompletion,
   ensureStoryBlueprint,
+  blueprintRequirements,
+  validateStoryBlueprint,
   normalizeProposedBlueprint,
   applyStoryBlueprint,
   renderStoryBlueprintForContext,
@@ -376,6 +378,43 @@ test('story blueprint stays conservative until a proposal is explicitly applied'
   assert.equal(novel.storyBlueprint.version, 2);
   assert.equal(novel.storyBlueprint.phases[0].title, '反转追查');
   assert.ok(novel.plotThreads.some((thread) => thread.title === '苏晚的隐瞒'));
+});
+
+test('three-level blueprint validates arc coverage, subphases, tags and rolling chapters', () => {
+  const makeStage = (title, startChapter, endChapter) => ({
+    title, startChapter, endChapter, goal: '推进关系与主线', obstacle: '误解', reversal: '立场变化', threads: ['社团线'],
+    tagCommitments: ['日系校园：部活与值日', '搞笑：性格错位'],
+    characterBeats: [{ character: '林舟', goal: '融入班级', conflict: '嘴硬', change: '开始求助', voiceGuard: '短句，慌乱时跑题' }],
+    requiredScenes: ['午休教室'], forbiddenDrift: ['禁止霸总化'], entryCondition: '前一阶段结果成立', exitCondition: '关系发生可验收变化',
+    foreshadowing: [{ name: '旧钥匙', setupChapter: startChapter, progressChapters: [], payoffChapter: endChapter, plan: '阶段末回收' }],
+    unresolvedQuestions: ['匿名信来源'],
+  });
+  const phases = Array.from({ length: 10 }, (_, index) => {
+    const start = index * 10 + 1;
+    const end = start + 9;
+    const phase = makeStage(`篇章${index + 1}`, start, end);
+    phase.subphases = [makeStage('前半', start, start + 4), makeStage('后半', start + 5, end)];
+    return phase;
+  });
+  const blueprint = {
+    blueprintLevel: 3, mainArc: '学生们在校园事件中建立各自的关系与选择', lockedFacts: ['主角是学生'], tagChecklist: ['日系校园', '搞笑'], phases,
+    rollingPlan: {
+      startChapter: 1, endChapter: 20, objective: '建立班级与社团关系', tagCommitments: ['日系校园'], forbiddenDrift: ['禁止霸总化'],
+      chapters: Array.from({ length: 20 }, (_, index) => ({
+        chapterNumber: index + 1, title: `第${index + 1}章执行卡`, purpose: '造成具体状态变化', tagCommitments: ['搞笑'],
+        characterBeats: [{ character: '林舟', goal: '完成值日', conflict: '怕尴尬', change: '愿意开口', voiceGuard: '慌乱时跑题' }],
+        requiredScenes: ['教室'], relationshipChange: '同学关系推进', foreshadowingActions: ['推进旧钥匙'], exitHook: '留下新问题',
+      })),
+    },
+  };
+  assert.deepEqual(blueprintRequirements(100), { arcCount: 10, rollingChapterCount: 20 });
+  const valid = validateStoryBlueprint(blueprint, 100, { requiredTags: ['日系校园', '搞笑'] });
+  assert.equal(valid.valid, true, valid.errors.join('；'));
+  const broken = structuredClone(blueprint);
+  broken.phases[1].startChapter = 15;
+  const invalid = validateStoryBlueprint(broken, 100, { requiredTags: ['日系校园', '搞笑'] });
+  assert.equal(invalid.valid, false);
+  assert.ok(invalid.errors.some((message) => message.includes('空档或重叠')));
 });
 
 test('compressPreviousChapter keeps beginning, turning point and ending instead of tail only', () => {

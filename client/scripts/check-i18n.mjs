@@ -67,7 +67,9 @@ const files = [
 const problems = []
 for (const file of files) {
   const text = fs.readFileSync(file, 'utf8')
-  for (const match of text.matchAll(/\$t\('([^']+)'/g)) {
+  // 只检查静态字面量 key；`$t('prefix.' + dynamicPart)` 无法在这里静态解析，
+  // 旧正则会把它误报成不存在的 `prefix.`。
+  for (const match of text.matchAll(/\$t\(\s*'([^']+)'\s*(?=[,)])/g)) {
     const key = match[1]
     const { enValue, zhValue } = resolveKey(key)
     if (enValue !== undefined) continue

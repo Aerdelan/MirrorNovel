@@ -36,13 +36,7 @@
   </div>
   <span v-if="pendingBlueprintProposal" class="blueprint-badge">{{ $t('novelDetail.blueprintPending') }}</span>
  </div>
- <div class="blueprint-main"><span class="blueprint-label">{{ $t('novelDetail.blueprintMainArc') }}</span>{{ blueprint?.mainArc || novel.outline || $t('novelDetail.blueprintFollowOutline') }}</div>
- <div v-if="blueprint?.phases?.length" class="blueprint-phases">
-  <div v-for="phase in blueprint.phases.slice(0, 3)" :key="`${phase.title}-${phase.startChapter}`" class="blueprint-phase">
-   <span>{{ $t('novelDetail.chapterRange', { start: phase.startChapter, end: phase.endChapter }) }}</span><strong>{{ phase.title }}</strong>
-   <small v-if="phase.goal">{{ phase.goal }}</small>
-  </div>
- </div>
+ <pre class="blueprint-text-view">{{ blueprintReadableText }}</pre>
  <div class="blueprint-actions">
   <button class="btn btn-outline btn-sm" :disabled="blueprintLoading || blueprintReviewing" @click="reviewBlueprint">{{ blueprintReviewing ? $t('novelDetail.blueprintReviewing') : $t('novelDetail.blueprintAskAdjust') }}</button>
   <label class="blueprint-toggle"><input type="checkbox" :checked="blueprint?.autoReviewEnabled" @change="toggleBlueprintReview" /> {{ $t('novelDetail.blueprintRemindEvery6') }}</label>
@@ -202,6 +196,9 @@ import { ref, computed, onMounted, onUnmounted, onActivated, watch, nextTick } f
 import { useRoute, useRouter } from 'vue-router'
 import { useNovelStore } from '../stores/novel'
 import { useI18n } from '../composables/useI18n'
+import { formatBlueprintText } from '../utils/blueprintText'
+
+const emit = defineEmits(['novel-updated'])
 import { useSSE } from '../composables/useSSE'
 import api from '../api'
 
@@ -263,6 +260,11 @@ const blueprintReviewing = ref(false)
 const blueprintDecisionBusy = ref(false)
 const blueprintError = ref('')
 const pendingBlueprintProposal = computed(() => blueprintProposals.value.find((proposal) => proposal.status === 'pending') || null)
+const blueprintReadableText = computed(() => formatBlueprintText(blueprint.value || {
+ mainArc: novel.value?.outline || $t('novelDetail.blueprintFollowOutline'),
+ lockedFacts: [],
+ phases: [],
+}, $t))
 
 const pipelineSteps = computed(() => {
  const chapters = novel.value?.chapters || []
@@ -336,6 +338,8 @@ async function loadNovel() {
  const data = await novelStore.fetchNovelDetail(id)
  if (run !== loadRunId) return
  novel.value = data
+ emit('novel-updated', data)
+ await syncChapterFromQuery()
  await loadBlueprint()
  // 检查是否有正在运行或刚完成的后台调优任务
  if (data?.optimizeTask) {
@@ -360,6 +364,18 @@ async function loadNovel() {
 // keep-alive 会缓存本组件实例：路由 id 变化（watch）与从缓存返回（onActivated）都必须重新拉取，
 // 否则会出现“永远显示第一次进入的那本书”、章节数停留在旧快照的问题。
 watch(() => route.params.id, (id, oldId) => { if (id && id !== oldId) loadNovel() })
+watch(() => route.query.chapter, () => syncChapterFromQuery())
+
+async function syncChapterFromQuery() {
+ const chapterNumber = Number(route.query.chapter)
+ if (!Number.isFinite(chapterNumber) || chapterNumber <= 0 || !novel.value?.chapters?.length) return
+ const index = novel.value.chapters.findIndex(chapter => Number(chapter.chapterNumber) === chapterNumber)
+ if (index < 0) return
+ expandedChapter.value = index
+ await nextTick()
+ const node = document.querySelectorAll('.novel-detail-page .chapter-item')[index]
+ node?.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
+}
 
 onMounted(() => { loadNovel() })
 
@@ -610,7 +626,14 @@ async function deslopAllChapters() {
  alert($t('novelDetail.deslopAllDone', { success, extra: fail ? $t('novelDetail.deslopAllDoneFail', { n: fail }) : '' }))
 }
 
-async function refreshNovel() { try { novel.value = await novelStore.fetchNovelDetail(route.params.id); await loadBlueprint() } catch {} }
+async function refreshNovel() {
+ try {
+  novel.value = await novelStore.fetchNovelDetail(route.params.id)
+  emit('novel-updated', novel.value)
+  await loadBlueprint()
+  await syncChapterFromQuery()
+ } catch {}
+}
 function goBack() { router.push('/bookshelf') }
 </script>
 
@@ -686,12 +709,7 @@ function goBack() { router.push('/bookshelf') }
 .blueprint-header { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; }
 .blueprint-hint { color:var(--text-light); font-size:12px; }
 .blueprint-badge, .proposal-major { color:#ad6800; background:#fff7e6; border:1px solid #ffd591; border-radius:10px; padding:2px 8px; font-size:11px; white-space:nowrap; }
-.blueprint-main { margin-top:10px; color:var(--text-secondary); line-height:1.7; font-size:13px; }
-.blueprint-label { color:var(--text-light); margin-right:8px; }
-.blueprint-phases { display:flex; gap:8px; margin-top:10px; overflow-x:auto; }
-.blueprint-phase { min-width:160px; padding:8px 10px; border:1px solid var(--border-color); border-radius:8px; background:var(--bg); display:flex; flex-direction:column; gap:3px; }
-.blueprint-phase span, .blueprint-phase small { color:var(--text-light); font-size:11px; }
-.blueprint-phase strong { font-size:13px; color:var(--text-primary); }
+.blueprint-text-view { margin:10px 0 0; max-height:420px; overflow:auto; padding:12px 14px; border:1px solid var(--border-color); border-radius:8px; background:var(--bg); color:var(--text-secondary); font:inherit; font-size:13px; line-height:1.75; white-space:pre-wrap; overflow-wrap:anywhere; }
 .blueprint-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:12px; }
 .blueprint-toggle { font-size:12px; color:var(--text-secondary); display:flex; align-items:center; gap:5px; }
 .blueprint-error { margin-top:8px; color:#cf1322; background:#fff1f0; border-radius:6px; padding:7px 9px; font-size:12px; }

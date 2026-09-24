@@ -180,10 +180,11 @@ function claimedByQueryItem(base) {
   }))
 }
 
-function go(item) {
+async function go(item) {
   if (item.external) {
-    // 管理端为独立站点：桌面端新开窗口，避免打断当前写作上下文
-    window.open('/admin', '_blank', 'noopener')
+    // 管理端没有打进桌面安装包，必须打开部署站点的绝对地址。
+    const url = await window.mnDesktop?.adminUrl?.()
+    if (url) await window.mnDesktop.openExternal(url)
     return
   }
   if (route.fullPath !== item.path) router.push(item.path)

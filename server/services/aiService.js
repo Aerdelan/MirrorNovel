@@ -257,6 +257,7 @@ function buildSystemPrompt(novelTypeId, gender, persona, resolvedType) {
   const styleProfile = buildStyleProfileBlock(mergeAxes(type && type.axes, persona && persona.axes));
   // 风格基调契约（番茄式多选 tones 升格为硬承诺）：紧跟风格档案置顶，防止基调被世界观/剧情默认气氛稀释。
   const toneContractBlock = (type && type.toneContract) ? `${type.toneContract}\n\n` : '';
+  const tagContractBlock = (type && type.tagContract) ? `${type.tagContract}\n\n` : '';
 
   // ===== persona 注入分支 =====
   if (persona && (persona.voice || persona.tone || persona.rules)) {
@@ -278,7 +279,7 @@ function buildSystemPrompt(novelTypeId, gender, persona, resolvedType) {
 
     return `你是一位成熟的小说作者。请严格遵循下方给定的风格档案与写作人格进行创作，在全篇保持声线一致。
 
-${styleProfile ? `${styleProfile}\n\n` : ''}${toneContractBlock}${personaBlock}
+${styleProfile ? `${styleProfile}\n\n` : ''}${toneContractBlock}${tagContractBlock}${personaBlock}
 
 ${typeMeta}
 
@@ -291,17 +292,16 @@ ${genreStyleContract}
   if (!type) {
     return `你是一位专业的小说作者。先确认既有文本的叙事视角、叙事距离和语言气质，再沿用同一套作者声线继续创作。
 
-${styleProfile ? `${styleProfile}\n\n` : ''}${deslop.systemDeslopPrompt}`;
+${styleProfile ? `${styleProfile}\n\n` : ''}${tagContractBlock}${deslop.systemDeslopPrompt}`;
   }
 
   // 轻小说使用日式ACGN专属提示
-  if (novelTypeId && novelTypeId.startsWith('lightnovel_')) {
+  if ((novelTypeId && novelTypeId.startsWith('lightnovel_')) || type.contract === 'acgn') {
+    const typeMeta = renderTypeMetaBlock(type);
     return `你是一位成熟的轻小说作者。你会从题材、人物关系和既有文本中提炼稳定的作者声线，并在全篇保持一致。
 
-${styleProfile ? `${styleProfile}\n\n` : ''}${toneContractBlock}题材：${type.name}（日式ACGN风格）
-题材关键词：${type.keywords}
-题材语汇参考（只在具体语境成立时使用，禁止堆砌）：${type.aiWordBank}
-大纲参考：${type.outline}
+${styleProfile ? `${styleProfile}\n\n` : ''}${toneContractBlock}${tagContractBlock}${typeMeta}
+题材体系：日式ACGN风格
 
 核心写作要求：
 1. 【角色为核心】角色的辨识度来自成长背景、当前目标、性格弱点和彼此关系，不靠重复口头禅或标签化萌属性
@@ -334,7 +334,7 @@ ${genreStyleContract}
 9. 【战斗/冲突描写】动作场面要有画面感和层次感，避免干巴巴的叙述`;
 
   return `你是一位成熟的网文作者。你会从题材、人物关系和既有文本中提炼稳定的作者声线，并在全篇保持一致。
-${styleProfile ? `\n${styleProfile}\n` : ''}${toneContractBlock ? `\n${toneContractBlock}` : ''}写作类型：${type.name}
+${styleProfile ? `\n${styleProfile}\n` : ''}${toneContractBlock ? `\n${toneContractBlock}` : ''}${tagContractBlock ? `\n${tagContractBlock}` : ''}写作类型：${type.name}
 写作关键词：${type.keywords}
 大纲参考：${type.outline}
 题材语汇参考（只在具体语境成立时使用，禁止堆砌）：${type.aiWordBank}
@@ -379,9 +379,17 @@ function buildPersonaPrompt(persona, options = {}) {
  */
 function renderTypeMetaBlock(type) {
   if (!type || !type.name) return '';
+  const selection = type.selection;
+  const exactTags = selection ? [
+    selection.elements?.length ? `情节标签：${selection.elements.map((item) => item.name).join('、')}` : '',
+    selection.characters?.length ? `人设标签：${selection.characters.map((item) => item.name).join('、')}` : '',
+    selection.tones?.length ? `基调标签：${selection.tones.map((item) => item.name).join('、')}` : '',
+    selection.cp?.name ? `关系向：${selection.cp.name}` : '',
+  ].filter(Boolean) : [];
   return [
     `写作类型：${type.name}`,
     `写作关键词：${type.keywords || ''}`,
+    ...exactTags,
     type.outline ? `大纲参考：${type.outline}` : '',
     type.aiWordBank ? `题材语汇参考（只在具体语境成立时使用，禁止堆砌）：${type.aiWordBank}` : '',
   ].filter(Boolean).join('\n');
@@ -426,6 +434,9 @@ function getOutlineRequirements(targetWordCount, chapterWordTarget) {
   const phaseCount = target <= 50000 ? 4 : Math.max(5, Math.min(12, Math.ceil(4 + scale * 8)));
   const nodeCount = Math.max(12, Math.min(80, Math.round(14 + scale * 56)));
   const characterCount = Math.max(8, Math.min(40, Math.round(10 + scale * 30)));
+  // 超长篇需要更大的总角色池，但不能强迫模型一次性给四十人写完整档案；
+  // 那会诱发凑名单、套现成 IP 名字和同质化。核心常驻角色保持可管理，其余按阶段引入。
+  const coreCharacterCount = Math.max(5, Math.min(12, Math.round(5 + scale * 7)));
   const subplotCount = Math.max(4, Math.min(24, Math.round(5 + scale * 19)));
   // 大纲预算：提示词本身要求 8-12 阶段/40 人物/24 支线/60-80 节点，
   // 之前的 2 万/3 万字预算写不完这套结构，必然在支线中段截断。现在直接
@@ -435,7 +446,7 @@ function getOutlineRequirements(targetWordCount, chapterWordTarget) {
   const outputTokens = Math.max(9000, Math.min(48000, Math.ceil(outlineChars / 1.45)));
   const chapterWords = normalizeChapterWordTarget(chapterWordTarget);
   const estChapters = Math.max(1, Math.ceil(target / chapterWords));
-  return { target, phaseCount, nodeCount, characterCount, subplotCount, outlineChars, outputTokens, chapterWords, estChapters };
+  return { target, phaseCount, nodeCount, characterCount, coreCharacterCount, subplotCount, outlineChars, outputTokens, chapterWords, estChapters };
 }
 
 function buildOutlineSpec(targetWordCount, chapterWordTarget) {
@@ -444,18 +455,19 @@ function buildOutlineSpec(targetWordCount, chapterWordTarget) {
     ? `本书每章约${requirements.chapterWords}字，属于大章节奏：每个关键节点应承载完整的信息链（现场/线索→推理或冲突→新问题），不要把一个大章拆成多个重复场景，也不要压缩成流水账。`
     : `本书每章约${requirements.chapterWords}字，保持紧凑节奏：每个关键节点对应明确的场景推进，避免一章内塞入过多事件。`;
   return `【按目标字数动态规划的规模】
-目标约${requirements.target}字，预计需要${requirements.estChapters}章（每章约${requirements.chapterWords}字）。不要套用固定模板，必须完成：${requirements.phaseCount}个剧情阶段、约${requirements.nodeCount}个关键节点、${requirements.characterCount}名有明确目标和关系变化的主要/次要人物、至少${requirements.subplotCount}条可交叉推进的支线。规模必须随目标字数增长：百万字目标必须使用更大的阶段/节点/角色数量，不能退化成四阶段小结构。
+目标约${requirements.target}字，预计需要${requirements.estChapters}章（每章约${requirements.chapterWords}字）。不要套用固定模板，必须完成：${requirements.phaseCount}个剧情阶段、约${requirements.nodeCount}个关键节点、${requirements.coreCharacterCount}名核心常驻角色、全书约${requirements.characterCount}名有明确功能的主要/阶段配角、至少${requirements.subplotCount}条可交叉推进的支线。规模必须随目标字数增长，但不要在开篇一次性塞满总角色池：阶段配角只在其所属阶段首次出现并获得档案。
 ${chapterPacing}
 
 【输出内容要求 — 信息密度优先，长度是结果不是目标】
 1. 故事主线：写清起因、阶段性目标、因果链、主要反转、终局代价与结局落点，不能只写一句复仇/成长概括。
 2. 核心冲突：拆出外部目标、内部选择、关系冲突、资源限制和不断升级的阻力。
-3. 主要角色：至少${requirements.characterCount}人。每人写身份、表面目标、隐藏目标、与主角关系、阶段变化、关键选择、结局状态，以及一句"其他角色无法替代的功能"；删掉不影响主线走向的角色。
-4. 剧情阶段：严格写${requirements.phaseCount}个阶段。每阶段列出阶段目标、阻力、人物关系变化、主线推进、支线交叉点、阶段反转和进入下一阶段的条件。
-5. 支线与人物关系网：至少${requirements.subplotCount}条支线。每条写发起人物、独立目标、与主线的连接、至少两个转折、可能的误导、回收节点和最终状态。
-6. 关键节点：至少${requirements.nodeCount}个，按预计章节范围排列（全书约${requirements.estChapters}章）。每个节点必须写清：触发条件→参与人物→具体事件→信息变化→后果与对下一节点的推动；禁止只列结果不写因果。
-7. 伏笔与回收表：列出不少于${Math.max(8, Math.round(requirements.nodeCount * 0.45))}组伏笔，标明埋设阶段、表面解释、真实含义和回收阶段，禁止只写“后续揭晓”。
-8. 结局方向：说明主线、主要支线、人物弧线和核心悬念如何分别收束；允许保留余波，但不能只写“主角成功”。
+3. 角色规划：先完整设计${requirements.coreCharacterCount}名核心常驻角色；其余约${Math.max(0, requirements.characterCount - requirements.coreCharacterCount)}名阶段配角按剧情阶段分组，只写进入阶段、独立目标、不可替代功能和退出/转化方式，不得为了凑数量一次性罗列姓名。所有原创角色必须使用原创姓名，禁止借用、微调或拼接现有动漫、轻小说、漫画、游戏、影视角色全名。
+4. 人物声音表：为每名核心常驻角色分别写常用词汇范围、句子长短、礼貌/称呼习惯、遇到冲突时会说什么和刻意不说什么、情绪失控后的语言变化。至少给出一组同场对话的差异示例；禁止所有人都冷静、完整、讲逻辑，也禁止只靠口头禅区分人物。
+5. 剧情阶段：严格写${requirements.phaseCount}个阶段。每阶段列出阶段目标、阻力、人物关系变化、主线推进、支线交叉点、阶段反转和进入下一阶段的条件。
+6. 支线与人物关系网：至少${requirements.subplotCount}条支线。每条写发起人物、独立目标、与主线的连接、至少两个转折、可能的误导、回收节点和最终状态。
+7. 关键节点：至少${requirements.nodeCount}个，按预计章节范围排列（全书约${requirements.estChapters}章）。每个节点必须写清：触发条件→参与人物→具体事件→信息变化→后果与对下一节点的推动；禁止只列结果不写因果。
+8. 伏笔与回收表：列出不少于${Math.max(8, Math.round(requirements.nodeCount * 0.45))}组伏笔，标明埋设阶段、表面解释、真实含义和回收阶段，禁止只写“后续揭晓”。
+9. 结局方向：说明主线、主要支线、人物弧线和核心悬念如何分别收束；允许保留余波，但不能只写“主角成功”。
 
 【反重复约束】
 - 禁止用"更强的敌人/更大的危机/更高的境界"式数字升级凑节点；相邻阶段和节点必须改变人物关系或信息状态，而不只是提高强度。
@@ -476,7 +488,7 @@ function buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWo
 
 ${buildGenreStyleContract(novelTypeId, type)}
 
-${typeMeta ? `${typeMeta}\n` : ''}${toneHint ? `${toneHint}\n` : ''}
+${typeMeta ? `${typeMeta}\n` : ''}${toneHint ? `${toneHint}\n` : ''}${type?.tagContract ? `${type.tagContract}\n` : ''}
 主角名字：${protagonistName || '未设定'}
 世界观设定：${worldSetting || '由你自由发挥'}
 目标总字数：约${requirements.target}字（预计${requirements.estChapters}章，每章约${requirements.chapterWords}字）
@@ -494,6 +506,9 @@ ${buildOutlineSpec(targetWordCount, chapterWordTarget)}
 【主要角色】
 （列出主角和重要配角及其定位）
 
+【人物声音表】
+（逐人写词汇、句长、称呼礼貌、回避点、冲突反应和失控变化，并给出同场差异示例）
+
 【剧情阶段】
 （按上方动态规模划分阶段，逐阶段详细展开）
 
@@ -509,7 +524,7 @@ ${buildOutlineSpec(targetWordCount, chapterWordTarget)}
 【关键节点】
 （按章节范围列出动态数量的重要节点）
 
-请直接输出大纲内容，不要加额外的解释。`;
+请直接输出纯文本大纲内容，不要加额外的解释，也不要使用 Markdown 加粗符号（例如 ** 或 __）、代码块或其他富文本标记。`;
 }
 
 /** Build a bounded chapter context for continuation prompts. */
@@ -562,7 +577,7 @@ function buildInitialPrompt(novelTypeId, protagonistName, worldSetting, targetWo
   const typeMeta = renderTypeMetaBlock(type);
 
   return `请创作一部${type ? type.name : ''}小说。${buildPersonaPrompt(persona)}
-${typeMeta ? `\n${typeMeta}\n` : ''}
+${typeMeta ? `\n${typeMeta}\n` : ''}${type?.tagContract ? `\n${type.tagContract}\n` : ''}
 主角名字：${protagonistName || '未设定'}
 世界观设定：${worldSetting || '由你自由发挥'}
 目标字数：约${targetWordCount}字${outlineText}
@@ -784,6 +799,19 @@ function countOverlapSuffix(existing, head) {
   return 0;
 }
 
+function createInvalidEncodingError(source = '模型输出') {
+  const error = new Error(`${source}包含损坏的文字编码（�）。系统已阻止该内容进入作品；请重试，若反复出现请更换模型线路`);
+  error.code = 'INVALID_TEXT_ENCODING';
+  error.isApiError = true;
+  return error;
+}
+
+function assertValidGeneratedText(value, source) {
+  if (typeof value === 'string' && value.includes('\uFFFD')) {
+    throw createInvalidEncodingError(source);
+  }
+}
+
 async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConfig, retries = 2, temperature = 0.85, maxTokens = 16384, timeoutMs = 90000, onReasoning, options = {}) {
   const config = apiConfig || resolveApiConfig(null);
   // 线路诊断：每次 AI 调用打一行"实际连的域名/模型"，只含域名与模型名，绝不含密钥。
@@ -963,7 +991,9 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
       }
 
       const reader = response.body.getReader();
-      const decoder = new TextDecoder();
+      // fatal 模式可区分“合法 UTF-8 恰好跨 chunk”与“上游真的返回了非法字节”；
+      // 前者由 stream:true 正确拼接，后者抛错进入既有重试，避免把 � 写进作品。
+      const decoder = new TextDecoder('utf-8', { fatal: true });
       let fullContent = '';
       let buffer = '';
       // 服务商在流末尾返回的实际用量（若支持）。DeepSeek 附带
@@ -990,11 +1020,18 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
             try {
               const parsed = JSON.parse(line);
               const content = parsed.message?.content || '';
+              assertValidGeneratedText(content, '模型正文');
               if (content) { fullContent += content; if (onChunk) onChunk(content); }
               if (parsed.done && (parsed.prompt_eval_count || parsed.eval_count)) {
                 providerUsage = { prompt_tokens: parsed.prompt_eval_count, completion_tokens: parsed.eval_count };
               }
-            } catch (e) { /* skip */ }
+            } catch (e) {
+              if (e?.code === 'INVALID_TEXT_ENCODING') {
+                try { await reader.cancel(); } catch {}
+                throw e;
+              }
+              /* skip malformed provider line */
+            }
           }
         } else {
           const lines = buffer.split('\n');
@@ -1008,14 +1045,22 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
               try {
                 const parsed = JSON.parse(data);
                 const content = parsed.choices?.[0]?.delta?.content || '';
+                assertValidGeneratedText(content, '模型正文');
                 if (content) { fullContent += content; if (onChunk) onChunk(content); }
                 // 思考阶段只有 reasoning_content，不转发会导致前端长时间停在 0 字
                 const reasoning = parsed.choices?.[0]?.delta?.reasoning_content || '';
+                assertValidGeneratedText(reasoning, '模型思考过程');
                 if (reasoning) { reasoningChars += reasoning.length; if (onReasoning) onReasoning(reasoning); }
                 const reason = parsed.choices?.[0]?.finish_reason;
                 if (reason) finishReason = reason;
                 if (parsed.usage && typeof parsed.usage === 'object') providerUsage = parsed.usage;
-              } catch (e) { /* skip */ }
+              } catch (e) {
+                if (e?.code === 'INVALID_TEXT_ENCODING') {
+                  try { await reader.cancel(); } catch {}
+                  throw e;
+                }
+                /* skip malformed provider line */
+              }
             }
           }
         }
@@ -1037,6 +1082,9 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
           break;
         }
       } // while
+
+      // 冲刷 TextDecoder 内部可能保留的尾字节；若是不完整 UTF-8，fatal 模式会抛错重试。
+      buffer += decoder.decode();
 
       // 超时需覆盖整个流式读取过程：头部到达即停表会让慢速流（思考模型
       // 长推理）在无超时保护下无限挂起。到这里流已结束，停表。
@@ -1165,6 +1213,24 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
           ? new Error('AI API 请求已取消')
           : e;
       }
+      // 某些兼容网关会先把非法字节替换为合法的 U+FFFD（�），此时 fatal TextDecoder
+      // 看不出原始字节已损坏。必须在分片进入编辑框/作品前拦截。流式调用若允许重试，
+      // 调用方还必须提供 reset 回调清掉本次已显示的正常前缀，否则重试会造成内容重复。
+      if (e?.code === 'INVALID_TEXT_ENCODING') {
+        const canRetrySafely = !onChunk || typeof options.onStreamReset === 'function';
+        if (attempt < retries && canRetrySafely) {
+          if (typeof options.onStreamReset === 'function') {
+            try {
+              options.onStreamReset({ reason: 'invalid_encoding', attempt: attempt + 1 });
+            } catch {}
+          }
+          const delay = Math.pow(2, attempt) * 500;
+          console.warn(`[编码] 检测到 U+FFFD，已丢弃第 ${attempt + 1} 次输出并重试`);
+          await new Promise(r => setTimeout(r, delay));
+          continue;
+        }
+        throw e;
+      }
       // ① 额度预扣型网关：按 max_tokens 预留额度，请求"要价"太大就直接回 402/余额不足
       //    （同一个 key 在别的客户端能用，就是因为那边 max_tokens 小得多）。
       //    原参数重试没用，但把输出预算砍到 1/4 并关掉思考后往往能过 → 降级重试一次。
@@ -1244,18 +1310,31 @@ function buildChapterPlan(outline, targetWordCount, protagonistName, worldSettin
     ? `\n8. 每章约${chapterWords}字属于大章：必须承载完整的信息链或冲突推进（场景→交锋/推理→新局面），禁止把一章拆成多个场景重复或压缩成事件清单。`
     : '';
   const blueprint = storyBlueprint && typeof storyBlueprint === 'object' ? storyBlueprint : {};
-  const blueprintPhases = Array.isArray(blueprint.phases) ? blueprint.phases.slice(0, 12).map((phase) => ({
+  const compactBlueprintStage = (phase, includeSubphases = false) => ({
     title: phase.title || '', startChapter: phase.startChapter || 1, endChapter: phase.endChapter || estChapters,
     goal: phase.goal || '', obstacle: phase.obstacle || '', reversal: phase.reversal || '', threads: phase.threads || [],
-  })) : [];
+    tagCommitments: phase.tagCommitments || [], characterBeats: phase.characterBeats || [],
+    requiredScenes: phase.requiredScenes || [], forbiddenDrift: phase.forbiddenDrift || [],
+    entryCondition: phase.entryCondition || '', exitCondition: phase.exitCondition || '',
+    foreshadowing: phase.foreshadowing || [], unresolvedQuestions: phase.unresolvedQuestions || [],
+    ...(includeSubphases ? { subphases: (phase.subphases || []).map((item) => compactBlueprintStage(item, false)) } : {}),
+  });
+  const blueprintPhases = Array.isArray(blueprint.phases)
+    ? blueprint.phases.slice(0, 16).map((phase) => compactBlueprintStage(phase, true))
+    : [];
+  const rollingPlan = blueprint.rollingPlan && typeof blueprint.rollingPlan === 'object'
+    ? blueprint.rollingPlan
+    : null;
   const blueprintBrief = blueprintPhases.length
     ? `
 
 【用户已确认的故事蓝图（必须落实到章节计划）】
 主线：${String(blueprint.mainArc || '').slice(0, 1600)}
+  全书标签清单：${Array.isArray(blueprint.tagChecklist) ? blueprint.tagChecklist.join('、') : '无'}
 不可改写事实：${Array.isArray(blueprint.lockedFacts) ? blueprint.lockedFacts.join('；') : '无'}
-阶段与支线：${JSON.stringify(blueprintPhases)}
-章节计划必须把蓝图阶段边界、每条支线的进入/交叉/转折/回收位置写进对应章节，不能只在总述里提及。`
+  全书篇章与篇章内小阶段：${JSON.stringify(blueprintPhases)}
+  滚动执行蓝图：${rollingPlan ? JSON.stringify(rollingPlan) : '无'}
+  章节计划必须逐项落实蓝图的阶段边界、标签兑现、人物目标/冲突/变化/声线、必备场景、禁止漂移、关系变化与伏笔位置。滚动执行窗口内的章节必须优先采用逐章执行卡，不能只在总述里提及。`
     : `
 
 【故事蓝图】当前没有用户确认的细化蓝图。请根据大纲和人物关系自行形成阶段、支线和伏笔安排，但不要凭空改变大纲已确定的事实。`;
@@ -1271,16 +1350,16 @@ function buildChapterPlan(outline, targetWordCount, protagonistName, worldSettin
 素材：
 主角：${protagonistName || '未设定'}
 世界观：${worldSetting || '自由发挥'}
-${planTypeMeta ? `${planTypeMeta}\n` : ''}${planToneHint ? `${planToneHint}\n` : ''}大纲：
+${planTypeMeta ? `${planTypeMeta}\n` : ''}${planToneHint ? `${planToneHint}\n` : ''}${resolvedType?.tagContract ? `${resolvedType.tagContract}\n` : ''}大纲：
 ${outline || '无大纲，请自行规划故事'}`;
 
   planPrompt += blueprintBrief;
 
   planPrompt += `\n\n为避免长篇计划在输出时被截断，必须使用下面的紧凑 JSON 格式。不要 Markdown、不要解释、不要代码块：
-{"version":1,"phases":["阶段名：目标"],"chapters":[[章节号,目标字数,"核心事件","埋伏笔（无则空字符串）","回收伏笔（无则空字符串）","关键角色（无则空字符串）","章节角色",张力,"章节短标题","所属阶段","本章支线焦点（无则空字符串）","关系变化","缓冲功能（无则空字符串）"]]}
+{"version":1,"phases":["阶段名：目标"],"chapters":[[章节号,目标字数,"核心事件","埋伏笔（无则空字符串）","回收伏笔（无则空字符串）","关键角色（无则空字符串）","章节角色",张力,"章节短标题","所属阶段","本章支线焦点（无则空字符串）","关系变化","缓冲功能（无则空字符串）","标签兑现（顿号分隔）","人物目标/冲突/变化/声线","必备场景（顿号分隔）","禁止漂移（顿号分隔）"]]}
 
 示例：
-{"version":1,"phases":["开端：建立危机"],"chapters":[[1,3000,"收到匿名来信","旧钥匙","","林舟、苏晚","主线推进",5,"雨夜来信","开端","苏晚的隐瞒","两人从合作转为互相试探",""],[2,3000,"追查来信来源","","旧钥匙","林舟","信息揭示",6,"无名邮戳","开端","旧钥匙来源线","林舟开始怀疑苏晚",""],[3,2600,"在旧屋做饭并发现照片角落的标记","照片标记","","林舟、苏晚","喘息推进",4,"炉火余温","开端","关系线","短暂恢复日常信任并留下照片线索","让前几章的压力沉淀为关系和记忆变化"]]}
+{"version":1,"phases":["开端：建立危机"],"chapters":[[1,3000,"收到匿名来信","旧钥匙","","林舟、苏晚","主线推进",5,"雨夜来信","开端","苏晚的隐瞒","两人从合作转为互相试探","","校园、搞笑","林舟想藏信却越描越黑；苏晚用短句追问，林舟慌乱跑题","午休教室","禁止霸总式命令、禁止全员理性说明"]]}
 
 关键规则：
 1. 必须完整输出第 1 至第 ${estChapters} 章，不能省略、不能用“其余同理”。每个核心事件限 18-42 个汉字，其他字符串尽量短。
@@ -1289,7 +1368,9 @@ ${outline || '无大纲，请自行规划故事'}`;
 4. 张力是 1-10；连续 3 章不得都高于 7；全书约安排 ${plannedBreaths} 个喘息推进章，但位置和形式必须由当前人物压力、关系状态、题材和前后事件决定，禁止固定每隔 N 章安排，也禁止所有作品使用同一种日常模板。
 5. 喘息推进章不是无意义凑字数：必须让关系、信息、记忆、物件、支线或伏笔发生可见变化；可以是生活、旅途、工作、仪式、梦境、共同空间或题材特有的低压场景，但只能选择适合本书世界和人物的形式。
 6. 每条蓝图支线至少要有进入章节、一次中段变化和回收/转化章节；阶段反转必须落到具体章节，不能只写在 phases 总述。
-7. 每章目标字数 ${wordBandLow}-${wordBandHigh}，总章数约 ${estChapters} 章。最后一个字段必须给出 4-12 个汉字的章节短标题，具体、有画面感、不得重复，不要包含“第X章”。${chapterPacing}`;
+7. 每章目标字数 ${wordBandLow}-${wordBandHigh}，总章数约 ${estChapters} 章。最后一个字段必须给出 4-12 个汉字的章节短标题，具体、有画面感、不得重复，不要包含“第X章”。
+8. 两名以上主要角色同场时，核心事件或关系变化必须体现各自不同的当场目的与反应方式；后续正文严格沿用大纲中的人物声音表，不能把所有人的台词统一成冷静、完整、讲逻辑的说明句。
+9. 蓝图已有对应内容时，最后四个字段不得为空：必须把 tagCommitments、characterBeats、requiredScenes、forbiddenDrift 转译成当章可执行约束；尤其不能把题材标签只写在 phases 总述。${chapterPacing}`;
 
   return planPrompt;
 }

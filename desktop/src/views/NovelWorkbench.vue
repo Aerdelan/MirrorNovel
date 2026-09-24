@@ -23,7 +23,7 @@
     </template>
 
     <!-- 中栏：复用 Web 端的作品详情页（生成、编辑、去AI味、导出等能力原样保留） -->
-    <NovelDetailPage />
+    <NovelDetailPage @novel-updated="syncNovel" />
 
     <!-- 右栏：上下文 / 用量 / 质量 -->
     <template #inspector="{ tab }">
@@ -206,6 +206,14 @@ async function loadNovel() {
       : (chapters.value[chapters.value.length - 1]?.chapterNumber || 0)
   } catch {
     novel.value = null
+  }
+}
+
+function syncNovel(value) {
+  if (!value || String(value._id || '') !== String(route.params.id || '')) return
+  novel.value = value
+  if (!chapters.value.some((chapter) => chapter.chapterNumber === selectedChapter.value)) {
+    selectedChapter.value = chapters.value[chapters.value.length - 1]?.chapterNumber || 0
   }
 }
 

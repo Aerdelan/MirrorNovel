@@ -73,10 +73,21 @@ export function useSSE() {
         if (!line.startsWith('data: ')) continue
         try {
           const event = JSON.parse(line.slice(6))
+          // 某些兼容线路会把已经损坏的 Unicode 以 U+FFFD（�）合法编码后返回，
+          // 此时服务端 TextDecoder 无法再判断原字符。客户端在进入编辑框/落库前中止，
+          // 避免用户误把乱码大纲确认成正式作品。
+          const textFields = [event.content, event.outline, event.message]
+          if (textFields.some((value) => typeof value === 'string' && value.includes('\uFFFD'))) {
+            abortedByUs = true
+            fail($t('common.invalidEncoding'))
+            try { req.abort() } catch {}
+            return
+          }
           receivedEvent = true
           keepAlive()
           if (handlers.onEvent) handlers.onEvent(event)
-          if (event.type === 'reasoning' && handlers.onReasoning) handlers.onReasoning(event.content, event)
+          if (event.type === 'stream_reset' && handlers.onStreamReset) handlers.onStreamReset(event)
+          else if (event.type === 'reasoning' && handlers.onReasoning) handlers.onReasoning(event.content, event)
           else if (event.type === 'content' && handlers.onContent) handlers.onContent(event.content, event)
           else if (event.type === 'status' && handlers.onStatus) handlers.onStatus(event.message, event)
           // 思考进度心跳：服务商在思考阶段可能不下发任何分片，服务端定时上报

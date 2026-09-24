@@ -308,17 +308,8 @@ async function saveLocal() {
     // 落盘后以归一化结果回填，避免界面显示与存储不一致（如被裁剪的线路/悬空的任务分配）
     loadFromConfig()
     dirty.value = false
-    // 关键：生成真正使用的是【账号】里的线路（服务端按账号配置发起请求），
-    // 只保存到本机不同步的话，用户会以为"保存了就生效" —— 本次排查的总根源。
-    const synced = await syncDefaultToAccount({ quiet: true })
     message.value = $t('desktop.models.savedLocal', { n: saved.routes.length })
     messageIsError.value = false
-    if (synced) {
-      message.value += $t('desktop.models.syncedSuffix')
-    } else {
-      message.value += $t('desktop.models.errSyncSuffix')
-      messageIsError.value = true
-    }
   } finally {
     saving.value = false
   }
