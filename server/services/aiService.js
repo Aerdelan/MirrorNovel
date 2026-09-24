@@ -799,19 +799,6 @@ function countOverlapSuffix(existing, head) {
   return 0;
 }
 
-function createInvalidEncodingError(source = '模型输出') {
-  const error = new Error(`${source}包含损坏的文字编码（�）。系统已阻止该内容进入作品；请重试，若反复出现请更换模型线路`);
-  error.code = 'INVALID_TEXT_ENCODING';
-  error.isApiError = true;
-  return error;
-}
-
-function assertValidGeneratedText(value, source) {
-  if (typeof value === 'string' && value.includes('\uFFFD')) {
-    throw createInvalidEncodingError(source);
-  }
-}
-
 async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConfig, retries = 2, temperature = 0.85, maxTokens = 16384, timeoutMs = 90000, onReasoning, options = {}) {
   const config = apiConfig || resolveApiConfig(null);
   // 线路诊断：每次 AI 调用打一行"实际连的域名/模型"，只含域名与模型名，绝不含密钥。
@@ -991,9 +978,9 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
       }
 
       const reader = response.body.getReader();
-      // fatal 模式可区分“合法 UTF-8 恰好跨 chunk”与“上游真的返回了非法字节”；
-      // 前者由 stream:true 正确拼接，后者抛错进入既有重试，避免把 � 写进作品。
-      const decoder = new TextDecoder('utf-8', { fatal: true });
+      // 宽容解码：线路偶发非法字节时保留为 U+FFFD（�）并继续生成，
+      // 不因个别乱码中止或重试，避免重复消耗整次生成的 token。
+      const decoder = new TextDecoder('utf-8');
       let fullContent = '';
       let buffer = '';
       // 服务商在流末尾返回的实际用量（若支持）。DeepSeek 附带
@@ -1020,18 +1007,11 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
             try {
               const parsed = JSON.parse(line);
               const content = parsed.message?.content || '';
-              assertValidGeneratedText(content, '模型正文');
               if (content) { fullContent += content; if (onChunk) onChunk(content); }
               if (parsed.done && (parsed.prompt_eval_count || parsed.eval_count)) {
                 providerUsage = { prompt_tokens: parsed.prompt_eval_count, completion_tokens: parsed.eval_count };
               }
-            } catch (e) {
-              if (e?.code === 'INVALID_TEXT_ENCODING') {
-                try { await reader.cancel(); } catch {}
-                throw e;
-              }
-              /* skip malformed provider line */
-            }
+            } catch (e) { /* skip malformed provider line */ }
           }
         } else {
           const lines = buffer.split('\n');
@@ -1045,22 +1025,14 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
               try {
                 const parsed = JSON.parse(data);
                 const content = parsed.choices?.[0]?.delta?.content || '';
-                assertValidGeneratedText(content, '模型正文');
                 if (content) { fullContent += content; if (onChunk) onChunk(content); }
                 // 思考阶段只有 reasoning_content，不转发会导致前端长时间停在 0 字
                 const reasoning = parsed.choices?.[0]?.delta?.reasoning_content || '';
-                assertValidGeneratedText(reasoning, '模型思考过程');
                 if (reasoning) { reasoningChars += reasoning.length; if (onReasoning) onReasoning(reasoning); }
                 const reason = parsed.choices?.[0]?.finish_reason;
                 if (reason) finishReason = reason;
                 if (parsed.usage && typeof parsed.usage === 'object') providerUsage = parsed.usage;
-              } catch (e) {
-                if (e?.code === 'INVALID_TEXT_ENCODING') {
-                  try { await reader.cancel(); } catch {}
-                  throw e;
-                }
-                /* skip malformed provider line */
-              }
+              } catch (e) { /* skip malformed provider line */ }
             }
           }
         }
@@ -1083,7 +1055,7 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         }
       } // while
 
-      // 冲刷 TextDecoder 内部可能保留的尾字节；若是不完整 UTF-8，fatal 模式会抛错重试。
+      // 冲刷 TextDecoder 内部可能保留的尾字节；不完整 UTF-8 会被替换为 �，不中止生成。
       buffer += decoder.decode();
 
       // 超时需覆盖整个流式读取过程：头部到达即停表会让慢速流（思考模型
@@ -1212,24 +1184,6 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         throw (e.name === 'AbortError')
           ? new Error('AI API 请求已取消')
           : e;
-      }
-      // 某些兼容网关会先把非法字节替换为合法的 U+FFFD（�），此时 fatal TextDecoder
-      // 看不出原始字节已损坏。必须在分片进入编辑框/作品前拦截。流式调用若允许重试，
-      // 调用方还必须提供 reset 回调清掉本次已显示的正常前缀，否则重试会造成内容重复。
-      if (e?.code === 'INVALID_TEXT_ENCODING') {
-        const canRetrySafely = !onChunk || typeof options.onStreamReset === 'function';
-        if (attempt < retries && canRetrySafely) {
-          if (typeof options.onStreamReset === 'function') {
-            try {
-              options.onStreamReset({ reason: 'invalid_encoding', attempt: attempt + 1 });
-            } catch {}
-          }
-          const delay = Math.pow(2, attempt) * 500;
-          console.warn(`[编码] 检测到 U+FFFD，已丢弃第 ${attempt + 1} 次输出并重试`);
-          await new Promise(r => setTimeout(r, delay));
-          continue;
-        }
-        throw e;
       }
       // ① 额度预扣型网关：按 max_tokens 预留额度，请求"要价"太大就直接回 402/余额不足
       //    （同一个 key 在别的客户端能用，就是因为那边 max_tokens 小得多）。

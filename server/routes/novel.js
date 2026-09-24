@@ -940,11 +940,6 @@ router.post('/generate-outline', auth, async (req, res) => {
         {
           stitchOnTruncation: true,
           maxStitchRounds: 6,
-          onStreamReset: () => send({
-            type: 'stream_reset',
-            reason: 'invalid_encoding',
-            message: '检测到模型线路返回了损坏字符，已清空本次残片并自动重试',
-          }),
         }
       );
 
@@ -1071,14 +1066,7 @@ ${String(outline).slice(0, 60000)}
         0.35,
         24000,
         TIMEOUT.BLUEPRINT,
-        (reasoning) => { thinkingEmitter(reasoning); send({ type: 'reasoning', content: reasoning }); },
-        {
-          onStreamReset: () => send({
-            type: 'stream_reset',
-            reason: 'invalid_encoding',
-            message: '检测到模型线路返回了损坏字符，已清空本次残片并自动重试',
-          }),
-        }
+        (reasoning) => { thinkingEmitter(reasoning); send({ type: 'reasoning', content: reasoning }); }
       );
       const rawContent = String(result.content || '').trim();
       if (!rawContent) {

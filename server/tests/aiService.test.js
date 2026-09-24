@@ -18,17 +18,14 @@ test('思考/推理参数被上游拒绝时给出可读提示（覆盖各家措�
   assert.match(other, /AI 请求参数有误/);
 });
 
-test('上游返回 U+FFFD 时在写入前拦截，清空流式残片并自动重试', async () => {
+test('上游返回 U+FFFD 时原样继续产出，不中止也不重试', async () => {
   const originalFetch = global.fetch;
   let requestCount = 0;
   let displayed = '';
-  let resetCount = 0;
   try {
     global.fetch = async () => {
       requestCount += 1;
-      const chunks = requestCount === 1
-        ? ['正常前缀', '损坏�字符']
-        : ['重试后的完整大纲'];
+      const chunks = ['正常前缀', '损坏�字符', '后续仍然继续'];
       let index = 0;
       return {
         ok: true,
@@ -51,15 +48,13 @@ test('上游返回 U+FFFD 时在写入前拦截，清空流式残片并自动重
       (chunk) => { displayed += chunk; },
       null,
       { baseUrl: 'https://encoding.test/v1', model: 'test', disableThinking: true },
-      1, 0.2, 4000, 60000, null,
-      { onStreamReset: () => { displayed = ''; resetCount += 1; } },
+      2, 0.2, 4000, 60000,
     );
 
-    assert.equal(requestCount, 2);
-    assert.equal(resetCount, 1);
-    assert.equal(result.content, '重试后的完整大纲');
-    assert.equal(displayed, '重试后的完整大纲');
-    assert.doesNotMatch(displayed, /�/);
+    assert.equal(requestCount, 1);
+    assert.equal(result.content, '正常前缀损坏�字符后续仍然继续');
+    assert.equal(displayed, result.content);
+    assert.match(displayed, /�/);
   } finally {
     global.fetch = originalFetch;
   }

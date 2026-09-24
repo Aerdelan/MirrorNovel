@@ -893,13 +893,6 @@ function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, per
    appendReasoning(outlineReasoningText, content)
    scrollReasoningBox(outlineReasoningRef)
   },
-  onStreamReset: (event) => {
-   // 已显示的前缀属于失败的模型尝试；保留后再追加重试结果会造成重复大纲。
-   outlineModalText.value = ''
-   outlineReasoningText.value = ''
-   outlineUserEdited.value = false
-   outlineWarn.value = event.message || ''
-  },
   onContent: (content) => {
    outlineModalText.value += content
    scrollOutlineToBottom()
@@ -991,12 +984,6 @@ function generateInitialBlueprint() {
   onReasoning: (content) => {
    appendReasoning(blueprintReasoningText, content)
    scrollReasoningBox(blueprintReasoningRef)
-  },
-  onStreamReset: (event) => {
-   blueprintReasoningText.value = ''
-   initialBlueprintText.value = ''
-   initialBlueprint.value = null
-   blueprintWarning.value = event.message || ''
   },
   onContent: (content) => {
    // 服务端仍以 JSON 约束模型输出，但原始 JSON 不直接暴露给用户。
