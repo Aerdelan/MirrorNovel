@@ -197,6 +197,7 @@ async function startContinue() {
  else if (status.type === 'plan_needs_extension') { isGenerating.value = false; continueStatus.value = status.message || $t('generate.statusPlanExtend') }
  else if (status.type === 'token_exhausted') { isGenerating.value = false; continueStatus.value = $t('generate.statusStopped') }
  else if (status.type === 'error') { isGenerating.value = false; continueStatus.value = status.message || $t('continue.errContinue'); notifyModelError(status.message) }
+ else if (status.type === 'disconnected') { isGenerating.value = false; continueStatus.value = status.message || $t('common.streamDisconnected') }
  else if (status.type === 'paused') { isGenerating.value = false }
  }, genMode.value)
  } else {
@@ -211,6 +212,7 @@ async function startContinue() {
  if (status.type === 'completed') { generationDone.value = true; isGenerating.value = false; continueStatus.value = '' }
  else if (status.type === 'token_exhausted') { isGenerating.value = false; continueStatus.value = $t('generate.statusStopped') }
  else if (status.type === 'error') { isGenerating.value = false; continueStatus.value = status.message || $t('continue.errContinue'); notifyModelError(status.message) }
+ else if (status.type === 'disconnected') { isGenerating.value = false; continueStatus.value = status.message || $t('common.streamDisconnected') }
  else if (status.type === 'paused') { isGenerating.value = false }
  })
  }

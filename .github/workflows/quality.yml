@@ -1,0 +1,61 @@
+name: Quality Gates
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            server/package-lock.json
+            client/package-lock.json
+            admin/package-lock.json
+            desktop/package-lock.json
+
+      - name: Test server
+        working-directory: server
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+
+      - name: Test and build client
+        working-directory: client
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+          npm run check:i18n
+          npm run build
+
+      - name: Build admin
+        working-directory: admin
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Build desktop renderer
+        working-directory: desktop
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build

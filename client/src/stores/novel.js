@@ -2,6 +2,31 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import api from '../api'
 import { buildModelOverrideHeader, HEADER_NAME } from '../utils/modelOverride'
+import { classifySSEEnd, createSSEParser } from '../utils/sseParser'
+
+const STREAM_DISCONNECTED_MESSAGE = '连接已中断，后台任务状态未知；请返回书架刷新状态'
+
+function extractStreamError(xhr) {
+ const fallback = xhr.status ? `请求失败(${xhr.status})` : '网络连接已中断'
+ try {
+  const body = JSON.parse(xhr.responseText)
+  return body.error?.message || body.error || body.message || fallback
+ } catch { return fallback }
+}
+
+function unexpectedStreamEnd(xhr, parser) {
+ const result = classifySSEEnd({ status: xhr.status, state: parser.getState(), aborted: xhr._aborted })
+ if (result.kind === 'terminal' || result.kind === 'aborted') return null
+ if (result.kind === 'http_error' || result.kind === 'empty_response') {
+  return { type: 'error', message: extractStreamError(xhr) }
+ }
+ return {
+  type: 'disconnected',
+  status: 'unknown',
+  recoverable: true,
+  message: STREAM_DISCONNECTED_MESSAGE,
+ }
+}
 
 // 桌面端「模型线路」页配置的本机线路通过 x-mn-model-config 头下发。
 // axios 实例与 useSSE 都已带上，但本文件里 /generate、/continue、/continue-import、
@@ -60,6 +85,12 @@ async function fetchFullTypes() {
  await api.post(`/novel/pause/${novelId}`)
  }
 
+ async function fetchGenerationJob(novelId, afterSeq) {
+ const suffix = afterSeq == null ? '' : `/events?after=${encodeURIComponent(afterSeq)}`
+ const res = await api.get(`/novel/generation-job/${novelId}${suffix}`)
+ return res.data
+ }
+
  async function deleteNovel(novelId) {
  const token = localStorage.getItem('token')
  await api.delete(`/novel/${novelId}`, { headers: { Authorization: `Bearer ${token}` } })
@@ -91,38 +122,31 @@ async function fetchFullTypes() {
  let lastIndex = 0
  let humanizedReceived = false
  let humanizedContent = ''
- xhr.onprogress = () => {
- const newData = xhr.responseText.substring(lastIndex)
- lastIndex = xhr.responseText.length
- const lines = newData.split('\n').filter(l => l.startsWith('data: '))
- for (const line of lines) {
- try {
- const event = JSON.parse(line.substring(6))
+ const parser = createSSEParser({ onEvent(event) {
  if (event.type === 'content') {
  if (!humanizedReceived) { streamingText.value += event.content; if (onChunk) onChunk(event.content, streamingText.value) }
  }
- else if (event.type === 'outline') { generatedOutline.value = event.content; if (onStatus) onStatus({ type: 'outline', content: event.content }) }
- else if (event.type === 'status') { if (onStatus) onStatus(event) }
- else if (event.type === 'thinking') { if (onStatus) onStatus(event) }
- else if (event.type === 'novel_created') { if (onStatus) onStatus(event) }
- else if (event.type === 'chapter_start') { humanizedReceived = false; if (onStatus) onStatus(event) }
- else if (event.type === 'chapter_end') { if (onStatus) onStatus(event) }
- else if (event.type === 'quality_notice') { if (onStatus) onStatus(event) }
- else if (event.type === 'blueprint_proposal') { if (onStatus) onStatus(event) }
- else if (event.type === 'completed') { if (onStatus) onStatus(event) }
- else if (event.type === 'paused' || event.type === 'token_exhausted' || event.type === 'plan_needs_extension') { if (onStatus) onStatus(event) }
- else if (event.type === 'humanized') { humanizedReceived = true; humanizedContent = event.content; if (onStatus) onStatus(event) }
- else if (event.type === 'error') { if (onStatus) onStatus(event) }
- } catch {}
+ else if (event.type === 'draft_restored') {
+ streamingText.value = String(event.content || '')
+ humanizedReceived = false
+ if (onStatus) onStatus(event)
  }
+ else if (event.type === 'outline') { generatedOutline.value = event.content; if (onStatus) onStatus({ type: 'outline', content: event.content }) }
+ else if (event.type === 'chapter_start') { humanizedReceived = false; if (onStatus) onStatus(event) }
+ else if (event.type === 'humanized') { humanizedReceived = true; humanizedContent = event.content; if (onStatus) onStatus(event) }
+ else if (onStatus) onStatus(event)
+ } })
+ xhr.onprogress = () => {
+ parser.push(xhr.responseText.substring(lastIndex))
+ lastIndex = xhr.responseText.length
  // 如果已收到改写内容，用改写后的文本替换显示
  if (humanizedReceived) { streamingText.value = humanizedContent }
  }
  xhr.onloadend = () => {
+ parser.push(xhr.responseText.substring(lastIndex)); lastIndex = xhr.responseText.length; parser.finish()
  if (activeGenerationRequest.value === xhr) activeGenerationRequest.value = null
- if (!xhr._aborted && onStatus) {
- try { const ls = xhr.responseText.split('\n').filter(l => l.startsWith('data: ')); if (ls.length) { const ev = JSON.parse(ls[ls.length - 1].substring(6)); const terminalTypes = ['completed','paused','token_exhausted','plan_needs_extension','error']; if (!terminalTypes.includes(ev.type)) onStatus({ type: 'completed' }) } } catch {}
- }
+ const endEvent = unexpectedStreamEnd(xhr, parser)
+ if (endEvent && onStatus) onStatus(endEvent)
  }
  xhr.send(JSON.stringify(params))
  return xhr
@@ -138,43 +162,36 @@ async function fetchFullTypes() {
  xhr.setRequestHeader('Content-Type', 'application/json')
  applyModelOverrideHeader(xhr)
  xhr._aborted = false
- xhr._receivedTerminal = false
  let lastIndex = 0
- xhr.onprogress = () => {
- const newData = xhr.responseText.substring(lastIndex)
- lastIndex = xhr.responseText.length
- const lines = newData.split('\n').filter(l => l.startsWith('data: '))
- for (const line of lines) {
- try {
- const event = JSON.parse(line.substring(6))
+ const parser = createSSEParser({ onEvent(event) {
  if (event.type === 'content') { streamingText.value += event.content; if (onChunk) onChunk(event.content, streamingText.value) }
- else if (event.type === 'thinking') { if (onStatus) onStatus(event) }
- else if (event.type === 'status' || event.type === 'chapter_start' || event.type === 'chapter_end' || event.type === 'quality_notice' || event.type === 'blueprint_proposal' || event.type === 'completed' || event.type === 'paused' || event.type === 'token_exhausted' || event.type === 'plan_needs_extension' || event.type === 'error') {
- if (['completed','paused','token_exhausted','plan_needs_extension','error'].includes(event.type)) xhr._receivedTerminal = true
+ else if (event.type === 'draft_restored') {
+ streamingText.value = String(event.content || '')
+ if (onChunk) onChunk('', streamingText.value)
  if (onStatus) onStatus(event)
  }
- } catch {}
- }
+ else if (onStatus) onStatus(event)
+ } })
+ xhr.onprogress = () => {
+ parser.push(xhr.responseText.substring(lastIndex))
+ lastIndex = xhr.responseText.length
  }
  xhr.send(JSON.stringify({ mode: mode || 'chapter' }))
  return new Promise((resolve, reject) => {
  xhr.onloadend = () => {
+ parser.push(xhr.responseText.substring(lastIndex)); lastIndex = xhr.responseText.length; parser.finish()
  if (activeGenerationRequest.value === xhr) activeGenerationRequest.value = null
  if (xhr._aborted) return resolve()
- if (xhr.status >= 400) {
- let message = `请求失败(${xhr.status})`
- try { const body = JSON.parse(xhr.responseText); message = body.error || body.message || message } catch {}
- if (onStatus) onStatus({ type: 'error', message })
- return reject(new Error(message))
+ const endEvent = unexpectedStreamEnd(xhr, parser)
+ if (endEvent) {
+  if (onStatus) onStatus(endEvent)
+  if (endEvent.type === 'error') return reject(new Error(endEvent.message))
  }
- if (onStatus && !xhr._receivedTerminal) onStatus({ type: 'completed' })
  resolve()
  }
- xhr.onerror = () => {
- const message = '网络请求失败'
- if (onStatus) onStatus({ type: 'error', message })
- reject(new Error(message))
- }
+ // XHR guarantees loadend after error; final classification happens there so
+ // onerror + onloadend cannot report the same disconnect twice.
+ xhr.onerror = () => {}
  })
  }
 
@@ -188,43 +205,34 @@ async function fetchFullTypes() {
  xhr.setRequestHeader('Content-Type', 'application/json')
  applyModelOverrideHeader(xhr)
  xhr._aborted = false
- xhr._receivedTerminal = false
  let lastIndex = 0
- xhr.onprogress = () => {
- const newData = xhr.responseText.substring(lastIndex)
- lastIndex = xhr.responseText.length
- const lines = newData.split('\n').filter(l => l.startsWith('data: '))
- for (const line of lines) {
- try {
- const event = JSON.parse(line.substring(6))
+ const parser = createSSEParser({ onEvent(event) {
  if (event.type === 'content') { streamingText.value += event.content; if (onChunk) onChunk(event.content, streamingText.value) }
- else if (event.type === 'thinking') { if (onStatus) onStatus(event) }
- else if (event.type === 'status' || event.type === 'chapter_start' || event.type === 'chapter_end' || event.type === 'completed' || event.type === 'paused' || event.type === 'token_exhausted' || event.type === 'error') {
- if (['completed','paused','token_exhausted','error'].includes(event.type)) xhr._receivedTerminal = true
+ else if (event.type === 'draft_restored') {
+ streamingText.value = String(event.content || '')
+ if (onChunk) onChunk('', streamingText.value)
  if (onStatus) onStatus(event)
  }
- } catch {}
- }
+ else if (onStatus) onStatus(event)
+ } })
+ xhr.onprogress = () => {
+ parser.push(xhr.responseText.substring(lastIndex))
+ lastIndex = xhr.responseText.length
  }
  xhr.send(JSON.stringify(params))
  return new Promise((resolve, reject) => {
  xhr.onloadend = () => {
+ parser.push(xhr.responseText.substring(lastIndex)); lastIndex = xhr.responseText.length; parser.finish()
  if (activeGenerationRequest.value === xhr) activeGenerationRequest.value = null
  if (xhr._aborted) return resolve()
- if (xhr.status >= 400) {
- let message = `请求失败(${xhr.status})`
- try { const body = JSON.parse(xhr.responseText); message = body.error || body.message || message } catch {}
- if (onStatus) onStatus({ type: 'error', message })
- return reject(new Error(message))
+ const endEvent = unexpectedStreamEnd(xhr, parser)
+ if (endEvent) {
+  if (onStatus) onStatus(endEvent)
+  if (endEvent.type === 'error') return reject(new Error(endEvent.message))
  }
- if (onStatus && !xhr._receivedTerminal) onStatus({ type: 'completed' })
  resolve()
  }
- xhr.onerror = () => {
- const message = '网络请求失败'
- if (onStatus) onStatus({ type: 'error', message })
- reject(new Error(message))
- }
+ xhr.onerror = () => {}
  })
  }
 
@@ -238,19 +246,19 @@ async function fetchFullTypes() {
  applyModelOverrideHeader(xhr)
  xhr._aborted = false
  let lastIndex = 0
- xhr.onprogress = () => {
- const newData = xhr.responseText.substring(lastIndex)
- lastIndex = xhr.responseText.length
- const lines = newData.split('\n').filter(l => l.startsWith('data: '))
- for (const line of lines) {
- try {
- const event = JSON.parse(line.substring(6))
+ const parser = createSSEParser({ onEvent(event) {
  if (event.type === 'content' || event.type === 'deslop_content') { if (onChunk) onChunk(event.content, event.type === 'deslop_content') }
- else if (event.type === 'final_content' || event.type === 'diagnosis' || event.type === 'status' || event.type === 'completed' || event.type === 'token_exhausted' || event.type === 'error') { if (onStatus) onStatus(event) }
- } catch {}
+ else if (onStatus) onStatus(event)
+ } })
+ xhr.onprogress = () => {
+ parser.push(xhr.responseText.substring(lastIndex))
+ lastIndex = xhr.responseText.length
  }
+ xhr.onloadend = () => {
+  parser.push(xhr.responseText.substring(lastIndex)); lastIndex = xhr.responseText.length; parser.finish()
+  const endEvent = unexpectedStreamEnd(xhr, parser)
+  if (endEvent && onStatus) onStatus(endEvent)
  }
- xhr.onloadend = () => { if (!xhr._aborted && onStatus) { try { const ls = xhr.responseText.split('\n').filter(l => l.startsWith('data: ')); if (ls.length) { const ev = JSON.parse(ls[ls.length - 1].substring(6)); const terminalTypes = ['completed','paused','token_exhausted','error']; if (!terminalTypes.includes(ev.type)) onStatus({ type: 'completed' }) } } catch {} } }
  xhr.send(JSON.stringify(params))
  return xhr
  }
@@ -258,7 +266,7 @@ async function fetchFullTypes() {
  return {
  novelTypes, bookshelf, streamingText, generatedOutline, prefillContinue, skuCatalog,
  fetchTypes, fetchNovelTypes, fetchBookshelf, fetchNovelDetail, fetchFullTypes, fetchSkuCatalog,
- pauseNovel, deleteNovel,
+ pauseNovel, fetchGenerationJob, deleteNovel,
  setPrefillContinue, clearPrefillContinue,
  startGeneration, continueGeneration, startImportContinue, stopGeneration,
  startPolish,

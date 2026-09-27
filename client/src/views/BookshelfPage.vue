@@ -186,6 +186,8 @@ const currentContinueChapter = ref(0)
 const continueWordCount = ref(0)
 const continueThinkingCount = ref(0)
 const novelActionBusy = ref('')
+const continuingNovelId = ref('')
+let continueJobPollTimer = null
 
 // ---- 编辑引擎 ----
 const editorialRunning = ref(false)
@@ -211,6 +213,7 @@ const allSelected = computed(() => novelStore.bookshelf.length > 0 && selectedId
 onMounted(async () => {
  if (!authStore.isLoggedIn) { router.push('/login'); return }
  try { await novelStore.fetchBookshelf() } catch (e) { console.error('Failed to fetch bookshelf:', e) }
+ await restoreBackgroundGeneration()
  loading.value = false
 })
 
@@ -220,13 +223,18 @@ function handleContinueProgressKeydown(event) {
  if (event.key === 'Escape' && continueProgressVisible.value) hideContinueProgress()
 }
 onMounted(() => window.addEventListener('keydown', handleContinueProgressKeydown))
-onUnmounted(() => window.removeEventListener('keydown', handleContinueProgressKeydown))
+onUnmounted(() => {
+ window.removeEventListener('keydown', handleContinueProgressKeydown)
+ if (continueJobPollTimer) clearTimeout(continueJobPollTimer)
+ continueJobPollTimer = null
+})
 
 // 从 keep-alive 缓存重新激活时刷新书架数据（切换 tab 回来时）
 onActivated(async () => {
  if (!authStore.isLoggedIn) return
  loading.value = true
  try { await novelStore.fetchBookshelf() } catch (e) { console.error('Failed to refresh bookshelf:', e) }
+ await restoreBackgroundGeneration()
  loading.value = false
 })
 
@@ -258,24 +266,67 @@ function isTokenExhaustedError(message) {
 
 async function startBookContinue(novel) {
  continueDialogNovel.value = null; isContinuing.value = true; isBookContinuing.value = true; continueProgressVisible.value = true
+ continuingNovelId.value = novel._id
  currentContinueChapter.value = 0; continueWordCount.value = 0; continueThinkingCount.value = 0
  try {
  await novelStore.continueGeneration(novel._id, (chunk, fullText) => { continueWordCount.value = fullText.length }, (status) => {
  if (status.type === 'chapter_start') { currentContinueChapter.value = status.chapterNumber || 0; continueThinkingCount.value = 0; novelStore.fetchBookshelf().catch(() => {}) }
  if (status.type === 'chapter_end') novelStore.fetchBookshelf().catch(() => {})
  if (status.type === 'thinking') { continueThinkingCount.value = status.length || 0 }
- if (status.type === 'token_exhausted') { isContinuing.value = false; isBookContinuing.value = false; continueProgressVisible.value = false; novelStore.fetchBookshelf() }
- else if (status.type === 'plan_needs_extension') { isContinuing.value = false; isBookContinuing.value = false; continueProgressVisible.value = false; alert(status.message || $t('bookshelf.alertPlanMissing')); novelStore.fetchBookshelf() }
- else if (status.type === 'completed' || status.type === 'paused' || status.type === 'error') { isContinuing.value = false; isBookContinuing.value = false; continueProgressVisible.value = false; novelStore.fetchBookshelf() }
+ if (status.type === 'token_exhausted') { stopContinueTracking(); novelStore.fetchBookshelf() }
+ else if (status.type === 'plan_needs_extension') { stopContinueTracking(); alert(status.message || $t('bookshelf.alertPlanMissing')); novelStore.fetchBookshelf() }
+ else if (status.type === 'disconnected') { continueProgressVisible.value = false; reconcileContinueJob(novel._id) }
+ else if (status.type === 'completed' || status.type === 'paused' || status.type === 'error') { stopContinueTracking(); novelStore.fetchBookshelf() }
  }, 'book')
  } catch (e) {
- isContinuing.value = false
- isBookContinuing.value = false
- continueProgressVisible.value = false
+ stopContinueTracking()
  if (isTokenExhaustedError(e.message)) alert($t('bookshelf.alertStopped'))
  else if (e.message !== 'paused') alert($t('bookshelf.alertContinueFailed', { message: e.message }))
  novelStore.fetchBookshelf()
  }
+}
+
+function stopContinueTracking() {
+ if (continueJobPollTimer) clearTimeout(continueJobPollTimer)
+ continueJobPollTimer = null
+ continuingNovelId.value = ''
+ isContinuing.value = false
+ isBookContinuing.value = false
+ continueProgressVisible.value = false
+}
+
+async function reconcileContinueJob(novelId) {
+ if (!novelId || continuingNovelId.value !== novelId) return
+ if (continueJobPollTimer) clearTimeout(continueJobPollTimer)
+ continueJobPollTimer = null
+ try {
+  const { job } = await novelStore.fetchGenerationJob(novelId)
+  if (job && (job.status === 'running' || job.status === 'pause_requested')) {
+   isContinuing.value = true
+   isBookContinuing.value = true
+   currentContinueChapter.value = Number(job.chapterNumber || 0)
+   continueWordCount.value = Number(job.draftLength || 0)
+   continueJobPollTimer = setTimeout(() => reconcileContinueJob(novelId), 2000)
+   return
+  }
+ } catch (error) {
+  // A brief status-query failure must not manufacture a completion event.
+  continueJobPollTimer = setTimeout(() => reconcileContinueJob(novelId), 4000)
+  return
+ }
+ stopContinueTracking()
+ novelStore.fetchBookshelf().catch(() => {})
+}
+
+async function restoreBackgroundGeneration() {
+ if (isBookContinuing.value || continuingNovelId.value) return
+ const candidate = novelStore.bookshelf.find((novel) => novel.status === 'generating')
+ if (!candidate) return
+ continuingNovelId.value = candidate._id
+ isContinuing.value = true
+ isBookContinuing.value = true
+ continueProgressVisible.value = false
+ await reconcileContinueJob(candidate._id)
 }
 
 async function startChapterContinue(novel) {

@@ -15,6 +15,7 @@ const {
   buildSystemPrompt, buildPersonaPrompt: importedBuildPersonaPrompt, buildInitialPrompt, buildContinuePrompt,
   buildImportContinuePrompt, buildOutlinePrompt, getOutlineRequirements, buildOutlineSpec, getChapterPlanOutputTokens,
   buildChapterPlan, buildStoryStateSummary, buildGenreStyleContract, normalizeChapterWordTarget,
+  buildLongFormStyleAnchor: importedBuildLongFormStyleAnchor,
   mergeAxes,
   buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, extractChapterSummary,
   streamGenerate, resolveApiConfig, countTokens, humanizeRewrite, getFriendlyErrorMessage,
@@ -32,6 +33,9 @@ const buildPersonaPrompt = typeof importedBuildPersonaPrompt === 'function'
   : () => '';
 const buildGenreContract = typeof buildGenreStyleContract === 'function'
   ? buildGenreStyleContract
+  : () => '';
+const buildLongFormStyleAnchor = typeof importedBuildLongFormStyleAnchor === 'function'
+  ? importedBuildLongFormStyleAnchor
   : () => '';
 
 async function resolveNovelPersona(userId, novel, personaId) {
@@ -146,6 +150,7 @@ const {
   buildContextMemoryCheckpoint,
   selectRelevantHistory,
   renderOutlineForContext,
+  compileChapterExecutionPackage,
 } = require('../services/novelContext');
 const { recordTokenUsage, usageSnapshot, callUsageStats } = require('../services/tokenUsage');
 const { localExpertGate, shouldAuditChapterHooks } = require('../services/generationGates');
@@ -157,6 +162,7 @@ const {
   buildFallbackChapterPlan,
   initializeCreativeState,
   ensureStoryBlueprint,
+  ensureRollingPlanCoverage,
   blueprintRequirements,
   validateStoryBlueprint,
   normalizeProposedBlueprint,
@@ -174,6 +180,7 @@ const {
   getChapterOutputTokenLimit,
   assessStoryCompletion,
   closeUnresolvedHooksAtEnding,
+  auditChapterForCommit,
 } = require('../services/storyState');
 
 function getBlueprintTagChecklist(type) {
@@ -187,9 +194,308 @@ function getBlueprintTagChecklist(type) {
   ].map((item) => String(item || '').trim()).filter(Boolean))).slice(0, 24);
 }
 const { sendBlueprintProposalNotification } = require('../services/emailService');
+const {
+  resumeGenerationJob,
+  heartbeatGenerationJob,
+  requestPauseGenerationJob,
+  checkpointGenerationJob,
+  finalizeGenerationJob,
+  releaseGenerationJob,
+  getGenerationJob,
+  getActiveJob,
+  findLatestResumableJob,
+  recoverExpiredLeases,
+  appendGenerationEvent,
+  readGenerationEvents,
+  LeaseBusyError,
+} = require('../services/generationJob');
 
 // 全局活跃生成流跟踪
 const activeStreams = new Map();
+
+const GENERATION_LEASE_MS = 30_000;
+const GENERATION_HEARTBEAT_MS = 10_000;
+const DRAFT_CHECKPOINT_MS = 1_500;
+const DRAFT_CHECKPOINT_CHARS = 512;
+const generationWorkerId = `${process.pid}:${randomUUID()}`;
+
+function valueOf(document, key) {
+  if (!document) return undefined;
+  return typeof document.get === 'function' ? document.get(key) : document[key];
+}
+
+/**
+ * Reserve a novel synchronously before the first await.  The database lease is
+ * acquired immediately afterwards; together these prevent both double-click
+ * races in this process and duplicate writers on another server instance.
+ */
+function reserveGenerationRun(novelId, kind) {
+  const key = String(novelId);
+  if (activeStreams.has(key)) return null;
+  let resolveDone;
+  const run = {
+    runId: randomUUID(),
+    key,
+    kind,
+    controller: new AbortController(),
+    job: null,
+    owner: `${generationWorkerId}:${randomUUID()}`,
+    heartbeatTimer: null,
+    checkpointQueue: Promise.resolve(),
+    done: new Promise((resolve) => { resolveDone = resolve; }),
+    resolveDone,
+    settled: false,
+    pauseRequested: false,
+    abort() { this.pauseRequested = true; this.controller.abort(); },
+  };
+  activeStreams.set(key, run);
+  return run;
+}
+
+function isCurrentGenerationRun(run) {
+  return Boolean(run && activeStreams.get(run.key)?.runId === run.runId);
+}
+
+function cleanupGenerationRun(run) {
+  if (!run) return;
+  if (run.heartbeatTimer) clearInterval(run.heartbeatTimer);
+  run.heartbeatTimer = null;
+  if (isCurrentGenerationRun(run)) activeStreams.delete(run.key);
+  if (run.resolveDone) {
+    run.resolveDone();
+    run.resolveDone = null;
+  }
+}
+
+async function attachGenerationJob(run, input) {
+  try {
+    run.job = await resumeGenerationJob({
+      novelId: input.novelId,
+      kind: input.kind,
+      leaseOwner: run.owner,
+      leaseMs: GENERATION_LEASE_MS,
+      phase: input.phase || 'starting',
+      chapterNumber: input.chapterNumber || 0,
+      lastCommittedChapter: input.lastCommittedChapter || 0,
+      resumeRequestId: input.resumeRequestId || run.runId,
+      metadata: input.metadata || {},
+    });
+    run.jobId = valueOf(run.job, 'jobId');
+    run.fencingToken = valueOf(run.job, 'fencingToken');
+  } catch (error) {
+    cleanupGenerationRun(run);
+    throw error;
+  }
+
+  run.heartbeatTimer = setInterval(async () => {
+    if (!isCurrentGenerationRun(run) || run.settled || !run.job) return;
+    try {
+      const refreshed = await heartbeatGenerationJob({
+        jobId: valueOf(run.job, 'jobId'),
+        leaseOwner: run.owner,
+        fencingToken: valueOf(run.job, 'fencingToken'),
+        leaseMs: GENERATION_LEASE_MS,
+      });
+      if (valueOf(refreshed, 'pauseRequested') || valueOf(refreshed, 'status') === 'pause_requested') {
+        run.pauseRequested = true;
+        run.controller.abort();
+      }
+    } catch (error) {
+      console.error(`[GenerationJob] 心跳失败，停止本地任务 ${run.key}:`, error.message);
+      run.controller.abort();
+    }
+  }, GENERATION_HEARTBEAT_MS);
+  if (typeof run.heartbeatTimer.unref === 'function') run.heartbeatTimer.unref();
+  return run.job;
+}
+
+function createDraftCheckpointer(run, chapterNumber, getDraft) {
+  let persistedLength = String(valueOf(run.job, 'draft') || '').length;
+  let lastCheckpointAt = Date.now();
+  let draftSeq = Number(valueOf(run.job, 'draftSeq') || 0);
+
+  const enqueue = (phase = 'writing', force = false, extra = {}) => {
+    if (!run.job || run.settled) return run.checkpointQueue;
+    const draft = String(getDraft() || '');
+    if (!force && draft.length - persistedLength < DRAFT_CHECKPOINT_CHARS
+      && Date.now() - lastCheckpointAt < DRAFT_CHECKPOINT_MS) return run.checkpointQueue;
+    const nextSeq = ++draftSeq;
+    persistedLength = draft.length;
+    lastCheckpointAt = Date.now();
+    run.checkpointQueue = run.checkpointQueue.then(async () => {
+      run.job = await checkpointGenerationJob({
+        jobId: run.jobId || valueOf(run.job, 'jobId'),
+        leaseOwner: run.owner,
+        fencingToken: run.fencingToken ?? valueOf(run.job, 'fencingToken'),
+        draftSeq: nextSeq,
+        draft,
+        chapterNumber,
+        phase,
+        leaseMs: GENERATION_LEASE_MS,
+        ...(extra.lastCommittedChapter != null ? { lastCommittedChapter: extra.lastCommittedChapter } : {}),
+      });
+    }).catch((error) => {
+      console.error(`[GenerationJob] 草稿 checkpoint 失败 ${run.key}:`, error.message);
+      run.checkpointError = error;
+      run.controller.abort();
+    });
+    return run.checkpointQueue;
+  };
+  return {
+    schedule: (phase) => enqueue(phase, false),
+    flush: async (phase, extra = {}) => {
+      await enqueue(phase, true, extra);
+      if (run.checkpointError) throw run.checkpointError;
+    },
+    commit: async (lastCommittedChapter) => {
+      await enqueue('chapter_committed', true, { lastCommittedChapter });
+      if (run.checkpointError) throw run.checkpointError;
+    },
+  };
+}
+
+function resumeDraftFor(run, chapterNumber) {
+  if (!run?.job || Number(valueOf(run.job, 'chapterNumber')) !== Number(chapterNumber)) return '';
+  return String(valueOf(run.job, 'draft') || '');
+}
+
+function resumeDraftPhase(run) {
+  if (!run?.job) return '';
+  // Backward compatible with jobs created before `draftPhase` existed.
+  return String(valueOf(run.job, 'draftPhase') || valueOf(run.job, 'phase') || '');
+}
+
+function appendResumeInstruction(prompt, draft) {
+  if (!draft) return prompt;
+  return `${prompt}\n\n【断点续写】下面是本章已经生成并持久化的草稿。不要重复、改写或概括它，只输出紧接草稿末尾的后文：\n${draft.slice(-2400)}`;
+}
+
+async function settleGenerationRun(run, status, options = {}) {
+  if (!run || run.settled) return;
+  run.settled = true;
+  try { await run.checkpointQueue; } catch {}
+  if (!run.job && !run.jobId) {
+    cleanupGenerationRun(run);
+    return;
+  }
+  try {
+    try {
+      await appendGenerationEvent({
+        jobId: run.jobId || valueOf(run.job, 'jobId'),
+        leaseOwner: run.owner,
+        fencingToken: run.fencingToken ?? valueOf(run.job, 'fencingToken'),
+        type: status,
+        payload: {
+          phase: options.phase || status,
+          lastCommittedChapter: options.lastCommittedChapter,
+        },
+      });
+    } catch {}
+    if (status === 'completed' || status === 'failed' || status === 'cancelled') {
+      await finalizeGenerationJob({
+        jobId: run.jobId || valueOf(run.job, 'jobId'), leaseOwner: run.owner,
+        fencingToken: run.fencingToken ?? valueOf(run.job, 'fencingToken'), status,
+        phase: options.phase || status, error: options.error,
+        lastCommittedChapter: options.lastCommittedChapter,
+        draft: options.draft,
+      });
+    } else {
+      await releaseGenerationJob({
+        jobId: run.jobId || valueOf(run.job, 'jobId'), leaseOwner: run.owner,
+        fencingToken: run.fencingToken ?? valueOf(run.job, 'fencingToken'), status: status === 'queued' ? 'queued' : 'paused',
+        phase: options.phase || status,
+      });
+    }
+  } catch (error) {
+    // A stale fencing token means a newer owner already took responsibility.
+    console.warn(`[GenerationJob] 结束任务 ${run.key} 时租约已变化:`, error.message);
+  } finally {
+    cleanupGenerationRun(run);
+  }
+}
+
+function combineAbortSignals(...signals) {
+  const usable = signals.filter(Boolean);
+  if (!usable.length) return undefined;
+  if (typeof AbortSignal.any === 'function') return AbortSignal.any(usable);
+  const controller = new AbortController();
+  for (const signal of usable) {
+    if (signal.aborted) {
+      controller.abort();
+      break;
+    }
+    signal.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+  return controller.signal;
+}
+
+function isAbortError(error) {
+  return error?.name === 'AbortError' || /abort|取消|中断/i.test(String(error?.message || ''));
+}
+
+async function emitGenerationJobEvent(run, type, payload = {}) {
+  if (!run?.job && !run?.jobId) return;
+  try {
+    await appendGenerationEvent({
+      jobId: run.jobId || valueOf(run.job, 'jobId'),
+      leaseOwner: run.owner,
+      fencingToken: run.fencingToken ?? valueOf(run.job, 'fencingToken'),
+      type,
+      payload,
+    });
+  } catch {}
+}
+
+async function clearCommittedJobDraft(run, highestChapter) {
+  const draft = String(valueOf(run?.job, 'draft') || '');
+  const chapterNumber = Number(valueOf(run?.job, 'chapterNumber') || 0);
+  if (!draft || !chapterNumber || chapterNumber > Number(highestChapter || 0)) return;
+  let empty = '';
+  const checkpoint = createDraftCheckpointer(run, chapterNumber, () => empty);
+  await checkpoint.commit(highestChapter);
+}
+
+async function isNovelGenerationBusy(novelId) {
+  const key = String(novelId);
+  if (activeStreams.has(key)) return true;
+  try { return Boolean(await getActiveJob(novelId)); } catch { return false; }
+}
+
+async function rejectBusyNovelMutation(res, novelId) {
+  if (!(await isNovelGenerationBusy(novelId))) return false;
+  res.status(409).json({ message: '小说正在生成，请先暂停并等待断点保存完成后再修改' });
+  return true;
+}
+
+function serializeGenerationJob(job) {
+  if (!job) return null;
+  return {
+    jobId: valueOf(job, 'jobId'),
+    kind: valueOf(job, 'kind'),
+    status: valueOf(job, 'status'),
+    phase: valueOf(job, 'phase'),
+    draftPhase: valueOf(job, 'draftPhase') || valueOf(job, 'phase'),
+    chapterNumber: Number(valueOf(job, 'chapterNumber') || 0),
+    lastCommittedChapter: Number(valueOf(job, 'lastCommittedChapter') || 0),
+    draftLength: String(valueOf(job, 'draft') || '').length,
+    attempt: Number(valueOf(job, 'attempt') || 0),
+    eventSeq: Number(valueOf(job, 'eventSeq') || 0),
+    heartbeat: valueOf(job, 'heartbeat') || null,
+    updatedAt: valueOf(job, 'updatedAt') || null,
+    error: valueOf(job, 'error') || null,
+  };
+}
+
+async function waitForGenerationJob(jobId, timeoutMs = 12_000) {
+  const deadline = Date.now() + timeoutMs;
+  let latest = null;
+  while (Date.now() < deadline) {
+    try { latest = await getGenerationJob(jobId); } catch { break; }
+    if (!latest || !['running', 'pause_requested'].includes(String(valueOf(latest, 'status')))) return latest;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return latest;
+}
 
 function parseJsonObject(text) {
   const clean = String(text || '')
@@ -343,7 +649,9 @@ ${(novel.plotThreads || []).map((thread) => `${thread.title || thread.id}：${th
     1,
     0.3,
     16000,
-    300000
+    300000,
+    null,
+    { taskType: 'blueprint_review' }
   );
   onUsage && onUsage('reasoning', result);
   const parsed = parseJsonObject(result.content);
@@ -423,24 +731,31 @@ function getChapterTemperature(contract) {
 // 分层大纲 + 阶段记忆 + 开放剧情线，同一进度桶内逐字节一致）→ 逐章变化的
 // 契约与计划。DeepSeek/GLM 等服务商按前缀缓存命中计费（约 1/10 价格），
 // 把稳定内容前置可以直接换算成账单折扣。
-function buildStableChapterHead({ typeName, protagonistName, worldSetting, contextFromDocs }) {
+function buildStableChapterHead({ typeName, protagonistName, worldSetting, styleAnchor, contextFromDocs }) {
   return `请继续创作这部${typeName}小说。
 
 主角：${protagonistName || '未设定'}
 世界观：${worldSetting || '自由发挥'}
 
+${styleAnchor || ''}
+
 【已写内容与当前状态】
 ${contextFromDocs || '（故事开场，先建立人物当下处境。）'}`;
 }
 
-function buildChapterTail({ contract, planData, ch, novel, totalPlannedChapters, currentTotal, targetWordCount, variant }) {
+function buildChapterTail({ contract, planData, ch, novel, totalPlannedChapters, currentTotal, targetWordCount, styleAnchor, dynamicContext, variant }) {
   return `
+${dynamicContext ? `【本章动态承接上下文】
+${dynamicContext}
+` : ''}
 【后续计划摘要】
 ${renderPlanForContext(planData, ch) || '按故事主线自然推进。'}
 
 ${renderChapterContract(contract)}
 
 ${renderStoryBlueprintForContext(novel, ch, totalPlannedChapters)}
+
+${styleAnchor ? '【本章防漂移复核】上方“长篇文风防漂移锚点”仍是最高文风权威；近期章节只提供事实，不得沿用其中已经通用化、冷静化或同质化的措辞。' : ''}
 
           当前总字数：${currentTotal}/${targetWordCount}。即使总字数已经达到目标，也必须完成本章计划与所有后续章节，不能提前写结局。
 写作要求：
@@ -460,12 +775,22 @@ function emitTokenUsage(res, novel, role, stats, chapterStats) {
   }
   if (!snapshot) return null;
   if (chapterStats && typeof chapterStats === 'object') {
-    const entry = chapterStats[role] || (chapterStats[role] = { inputTokens: 0, outputTokens: 0, cacheSavedTokens: 0, calls: 0 });
+    const entry = chapterStats[role] || (chapterStats[role] = {
+      inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheSavedTokens: 0,
+      calls: 0, logicalCalls: 0, failedCalls: 0, estimatedCalls: 0, discardedTokens: 0,
+    });
     const call = callUsageStats(stats);
     entry.inputTokens += call.inputTokens;
     entry.outputTokens += call.outputTokens;
+    entry.reasoningTokens += call.reasoningTokens || 0;
     entry.cacheSavedTokens += call.cacheSavedTokens;
-    entry.calls += 1;
+    entry.calls += call.attempts?.length || 1;
+    entry.logicalCalls += 1;
+    entry.failedCalls += (call.attempts || []).filter((attempt) => attempt.error || !attempt.accepted).length;
+    entry.estimatedCalls += (call.attempts || []).filter((attempt) => attempt.estimated).length;
+    entry.discardedTokens += (call.attempts || [])
+      .filter((attempt) => attempt.discarded)
+      .reduce((sum, attempt) => sum + (Number(attempt.outputTokens) || 0), 0);
     // 思考型模型的额外开销与截断情况：让"思考占了多久/多少字"可观测，
     // 否则用户只能感知"慢"而无法归因。
     if (Number(stats?.reasoningChars) > 0) entry.reasoningChars = (entry.reasoningChars || 0) + Number(stats.reasoningChars);
@@ -485,20 +810,27 @@ function summarizeChapterTokens(chapterStats) {
   const roles = Object.entries(chapterStats).filter(([, v]) => v && v.calls > 0);
   if (!roles.length) return null;
   const byRole = {};
-  let inputTokens = 0, outputTokens = 0, cacheSavedTokens = 0, calls = 0;
+  let inputTokens = 0, outputTokens = 0, reasoningTokens = 0, cacheSavedTokens = 0, calls = 0;
+  let logicalCalls = 0, failedCalls = 0, estimatedCalls = 0, discardedTokens = 0;
   let reasoningChars = 0, stitchedRounds = 0, truncatedCalls = 0;
   for (const [role, value] of roles) {
     byRole[role] = { ...value };
     inputTokens += value.inputTokens || 0;
     outputTokens += value.outputTokens || 0;
+    reasoningTokens += value.reasoningTokens || 0;
     cacheSavedTokens += value.cacheSavedTokens || 0;
     calls += value.calls || 0;
+    logicalCalls += value.logicalCalls || 0;
+    failedCalls += value.failedCalls || 0;
+    estimatedCalls += value.estimatedCalls || 0;
+    discardedTokens += value.discardedTokens || 0;
     reasoningChars += value.reasoningChars || 0;
     stitchedRounds += value.stitchedRounds || 0;
     truncatedCalls += value.truncatedCalls || 0;
   }
   return {
-    inputTokens, outputTokens, cacheSavedTokens, calls, byRole,
+    inputTokens, outputTokens, reasoningTokens, cacheSavedTokens, calls,
+    logicalCalls, failedCalls, estimatedCalls, discardedTokens, byRole,
     // 思考开销与截断诊断（仅在有值时给出，避免污染旧数据形状）
     ...(reasoningChars ? { reasoningChars } : {}),
     ...(stitchedRounds ? { stitchedRounds } : {}),
@@ -639,7 +971,7 @@ function applyChapterRevision(novel, chapterNumber, content, { source = 'manual'
   return { chapter, continuity, originalLength: originalContent.length, finalLength: finalContent.length };
 }
 
-async function runExpertReview({ user, modelConfig, content, contract, signal, onStatus, persona, onUsage }) {
+async function runExpertReview({ user, modelConfig, content, contract, signal, onStatus, persona, styleAnchor, onUsage }) {
   const original = String(content || '').trim();
   if (original.length < 500) return { content: original, review: null };
 
@@ -671,7 +1003,7 @@ ${reviewSource}`;
   let reviewResult;
   try {
     reviewResult = await streamGenerate(
-      `你是一位严格但克制的小说连续性审稿专家。事实一致性优先于华丽表达。${buildPersonaPrompt(persona)}`,
+      `你是一位严格但克制的小说连续性审稿专家。事实一致性优先于华丽表达。注意：“克制”只描述你的审稿方式，不得要求正文变成克制冷静腔。${buildPersonaPrompt(persona)}\n\n${styleAnchor || ''}`,
       reviewPrompt,
       null,
       signal,
@@ -679,7 +1011,9 @@ ${reviewSource}`;
       0,
       0.25,
       8000,
-      300000
+      300000,
+      null,
+      { taskType: 'quality_review' }
     );
     onUsage && onUsage('reasoning', reviewResult);
   } catch (error) {
@@ -698,7 +1032,12 @@ ${reviewSource}`;
   // request; the review remains available for a later manual pass.
   if (original.length > 24000) return { content: original, review: report };
 
-  const revisePrompt = `请根据审稿意见修订下面这一章，只修复明确的问题，不改变核心事件、人物选择、伏笔安排和章末落点。
+  const revisePrompt = `请根据审稿意见修订下面这一章，只修复明确的问题，不改变核心事件、人物选择、伏笔安排和章末落点，也不得把本书改成润色者自己的固定文风。
+
+【本章契约】
+${renderChapterContract(contract)}
+
+${styleAnchor || ''}
 
 【审稿意见】
 ${reviewText.slice(0, 1800)}
@@ -710,7 +1049,7 @@ ${original}
   onStatus && onStatus(`润色专家正在修订第${contract?.chapterNumber || ''}章...`);
   try {
     const revised = await streamGenerate(
-      `你是一位谨慎的小说润色修订专家。保留事实和剧情，只修复审稿意见指出的问题。${buildPersonaPrompt(persona)}`,
+      `你是一位谨慎的小说润色修订专家。保留事实、剧情和作者声线，只修复审稿意见指出的问题。${buildPersonaPrompt(persona)}\n\n${styleAnchor || ''}`,
       revisePrompt,
       null,
       signal,
@@ -718,7 +1057,9 @@ ${original}
       1,
       0.55,
       getChapterOutputTokenLimit(Math.ceil(original.length * 0.9)),
-      600000
+      600000,
+      null,
+      { taskType: 'targeted_repair' }
     );
     onUsage && onUsage('polish', revised);
     const revisedText = String(revised?.content || '').trim();
@@ -757,6 +1098,14 @@ function finalizeGeneratedChapter({ novel, chapterNumber, rawContent, contract, 
     throw new Error(`第${chapterNumber}章已存在，已阻止重复写入`);
   }
 
+  const commitAudit = auditChapterForCommit(finalContent, contract);
+  if (!commitAudit.passed) {
+    const error = new Error(`章节未通过提交前硬约束：${commitAudit.blockers.join('；')}`);
+    error.code = 'CHAPTER_CONTRACT_BLOCKED';
+    error.commitAudit = commitAudit;
+    throw error;
+  }
+
   const previousChapter = (novel.chapters || []).length ? novel.chapters[novel.chapters.length - 1] : null;
   const continuity = checkChapterContinuity(finalContent, previousChapter, contract);
   novel.chapters.push({
@@ -769,6 +1118,8 @@ function finalizeGeneratedChapter({ novel, chapterNumber, rawContent, contract, 
       issues: continuity.issues,
       eventSignature: continuity.eventSignature,
       toolchain: toolchainReport,
+      contractAudit: commitAudit,
+      tagAudit: novel._lastTagAudit || null,
     },
   });
   updateCreativeState(novel, chapterNumber, finalContent, contract, continuity);
@@ -794,7 +1145,10 @@ async function auditChapterHooks({ user, modelConfig, novel, chapterNumber, cont
     const text = String(content || '').trim();
     if (text.length < 200) return null;
     const openHooks = (novel.foreshadowingLedger || [])
-      .filter((item) => ['pending', 'planned'].includes(item.status))
+      // seeded/reinforced/due are still open lifecycle stages. Sending only
+      // legacy pending/planned rows made the model unable to audit a hook that
+      // had already been advanced by the heuristic pass.
+      .filter((item) => ['pending', 'planned', 'seeded', 'reinforced', 'due'].includes(item.status) || ['planned', 'seeded', 'reinforced', 'due'].includes(item.stage))
       .slice(0, 12)
       .map((item) => `- id:${item.id} 内容：${String(item.content || '').slice(0, 80)}（第${item.setChapter || '?'}章埋设${item.targetChapter ? `，计划第${item.targetChapter}章回收` : ''}）`)
       .join('\n');
@@ -813,8 +1167,9 @@ ${openHooks || '（无）'}
 请通读本章正文，只依据正文实际内容回答，输出严格 JSON（不要 markdown、不要解释）：
 {"hooksSet":["本章实际新埋设、且账目中没有的伏笔，一句话概括。没有则空数组"],
 "hooksResolved":[{"content":"被回收伏笔的内容（须与账目中某条对应，可概括但保留核心名词）","evidence":"正文中回收它的原句，20-60字"}],
-"characterUpdates":[{"name":"角色名","location":"章末所在位置","emotionalState":"章末情绪状态","goal":"当前目标"}]}
-规则：只统计本章"实际发生"的埋设与回收，计划的但正文没写的不算；characterUpdates 只列本章出场且状态有变化的角色，最多 5 个；伏笔未回收就不要填进 hooksResolved。`;
+"characterUpdates":[{"name":"角色名","location":"章末所在位置","emotionalState":"章末情绪状态","goal":"当前目标","knownFacts":["本章后该角色确实知道的新增事实"],"unknownFacts":["本章后仍明确不知道的关键事实"],"knowledgeBoundary":"一句话说明该角色不能知道什么"}],
+"tagEvidence":[{"tag":"本章兑现的标签原名","evidence":"正文中体现该标签的具体动作、场景或关系变化"}]}
+规则：只统计本章"实际发生"的埋设与回收，计划的但正文没写的不算；characterUpdates 只列本章出场且状态有变化的角色，最多 5 个；knownFacts/unknownFacts 必须以正文为依据；伏笔未回收就不要填进 hooksResolved；tagEvidence 不得只写标签名，必须给出正文证据。`;
 
     const result = await streamGenerate(
       '你是严谨的小说连载审读员，只依据正文事实输出 JSON，不添加任何解释。',
@@ -825,12 +1180,14 @@ ${openHooks || '（无）'}
       0,
       0.2,
       2500,
-      180000
+      180000,
+      null,
+      { taskType: 'hook_audit' }
     );
     onUsage && onUsage('reasoning', result);
     const audit = parseJsonObject(result.content);
-    if (!audit || (!Array.isArray(audit.hooksSet) && !Array.isArray(audit.hooksResolved) && !Array.isArray(audit.characterUpdates))) return null;
-    const applied = applyHookAudit(novel, chapterNumber, audit);
+    if (!audit || (!Array.isArray(audit.hooksSet) && !Array.isArray(audit.hooksResolved) && !Array.isArray(audit.characterUpdates) && !Array.isArray(audit.tagEvidence))) return null;
+    const applied = applyHookAudit(novel, chapterNumber, audit, text);
     console.log(`[HookAudit] 第${chapterNumber}章自评：回收${applied.resolved}条、补录${applied.added}条、角色状态${applied.characters}个`);
     return { audit, applied };
   } catch (error) {
@@ -914,6 +1271,9 @@ function ensureExecutableChapterPlan(novel, targetWordCount) {
   novel.chapterPlanData = plan;
   novel.chapterPlan = JSON.stringify(plan);
   initializeCreativeState(novel);
+  const totalChapters = getTotalPlannedChapters(plan, targetWordCount, highestCompleted);
+  ensureStoryBlueprint(novel, totalChapters);
+  ensureRollingPlanCoverage(novel, Math.max(1, highestCompleted + 1), totalChapters, plan);
   seedPlannedHooks(novel, plan);
   novel.markModified('chapterPlanData');
   novel.markModified('chapterPlan');
@@ -992,6 +1352,7 @@ router.post('/generate-outline', auth, async (req, res) => {
         {
           stitchOnTruncation: true,
           maxStitchRounds: 6,
+          taskType: 'global_outline',
         }
       );
 
@@ -1120,7 +1481,7 @@ ${String(outline).slice(0, 60000)}
         BLUEPRINT_OUTPUT_TOKEN_LIMIT,
         TIMEOUT.BLUEPRINT,
         (reasoning) => { thinkingEmitter(reasoning); send({ type: 'reasoning', content: reasoning }); },
-        { stitchOnTruncation: true, maxStitchRounds: 8 }
+        { stitchOnTruncation: true, maxStitchRounds: 8, taskType: 'blueprint_initial' }
       );
       const rawContent = String(result.content || '').trim();
       if (!rawContent) {
@@ -1184,6 +1545,7 @@ ${String(outline).slice(0, 60000)}
 
 // 创建新小说并开始生成（SSE流式）
 router.post('/generate', auth, async (req, res) => {
+  let generationRun = null;
   try {
 
     let { novelTypeId, protagonistName, worldSetting, targetWordCount, personaId, storyBlueprint, typeSku } = req.body;
@@ -1288,19 +1650,31 @@ ${tmpl.dynamicPrompt}
     if (persona) {
       systemPrompt += `\n\n【写作人格优先级】用户选择的“${persona.name || '自定义模板'}”是本书的作者声线。题材模板只能补充题材事实、剧情结构与素材，不能改写其叙述视角、语气、节奏、词汇和人物声音。`;
     }
+    const styleContinuityAnchor = buildLongFormStyleAnchor(type, withSkuAxes(persona, skuAxes));
 
     novel.generationContext = systemPrompt;
     await saveNovelDoc(novel);
 
+    generationRun = reserveGenerationRun(novel._id, 'novel');
+    if (!generationRun) return res.status(409).json({ message: '这部小说正在生成，请等待当前任务完成或先暂停' });
+    await attachGenerationJob(generationRun, {
+      novelId: novel._id,
+      kind: 'novel',
+      phase: 'preparing',
+      chapterNumber: 1,
+      lastCommittedChapter: getHighestChapterNumber(novel),
+      metadata: { userId: String(req.userId), mode },
+    });
+
     // SSE（先发，让客户端知道连接已建立）
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' });
     res.write(`data: ${JSON.stringify({ type: 'novel_created', novelId: novel._id })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'generation_job', jobId: valueOf(generationRun.job, 'jobId'), status: 'running' })}\n\n`);
 
     // ====== 循环生成（提前声明，让close handler可以引用） ======
-    let abortController = new AbortController();
+    const abortController = generationRun.controller;
     let generationDone = false;
     const streamKey = novel._id.toString();
-    activeStreams.set(streamKey, abortController);
 
     let currentChapterNum = 1;
 
@@ -1360,7 +1734,7 @@ ${tmpl.dynamicPrompt}
         const t = setTimeout(() => { try { ac.abort(); } catch {}; console.log(`大纲生成超过阶段死线(${outlineStageDeadline / 60000}分钟)`); }, outlineStageDeadline);
         const outlineResult = await streamGenerate(
           `你是一位专业的小说大纲策划师。${buildPersonaPrompt(persona, { includeDeslop: false })}`,
-          outlinePrompt, null, ac.signal,
+          outlinePrompt, null, combineAbortSignals(ac.signal, abortController.signal),
           resolveApiConfig(req.userModelConfig, 'outline'),
           2,
           0.82,
@@ -1368,8 +1742,8 @@ ${tmpl.dynamicPrompt}
           TIMEOUT.OUTLINE,
           null,
           // 整本链路的大纲同样开启截断自动续写，与单大纲生成保持相同轮数。
-          { stitchOnTruncation: true, maxStitchRounds: 6 }
-        );
+          { stitchOnTruncation: true, maxStitchRounds: 6, taskType: 'global_outline' }
+        ).finally(() => clearTimeout(t));
         emitTokenUsage(res, novel, 'outline', outlineResult);
         clearTimeout(t); clearInterval(outlineHb); outlineHb = null;
         outline = outlineResult.content || '';
@@ -1386,6 +1760,8 @@ ${tmpl.dynamicPrompt}
         }
       } catch (e) {
         if (outlineHb) clearInterval(outlineHb);
+        if (e?.attempts || e?.usage) emitTokenUsage(res, novel, 'outline', e);
+        if (abortController.signal.aborted) throw e;
         console.error('大纲生成失败:', e.message);
         res.write(`data: ${JSON.stringify({ type: 'status', message: '大纲生成暂不可用，继续创作...' })}\n\n`);
       }
@@ -1424,11 +1800,13 @@ ${tmpl.dynamicPrompt}
 
         const planResult = await streamGenerate(
           '你是一位专业的小说章节规划师。你的任务是制定详细的章节计划表，确保每章有明确目标、伏笔合理铺设和回收、结局节奏自然。',
-          planPrompt, null, planController.signal,
+          planPrompt, null, combineAbortSignals(planController.signal, abortController.signal),
           resolveApiConfig(req.userModelConfig, 'reasoning'),
           1, 0.82,
           typeof getChapterPlanOutputTokens === 'function' ? getChapterPlanOutputTokens(targetWordCount, chapterWordTarget) : 16384,
-          planTimeoutMs
+          planTimeoutMs,
+          null,
+          { taskType: 'rolling_plan' }
         ).finally(() => { clearTimeout(planTimeout); clearInterval(heartbeat); });
 
         emitTokenUsage(res, novel, 'reasoning', planResult);
@@ -1448,6 +1826,8 @@ ${tmpl.dynamicPrompt}
           console.warn('章节计划表生成为空内容，将暂停整本生成');
         }
       } catch (e) {
+        if (e?.attempts || e?.usage) emitTokenUsage(res, novel, 'reasoning', e);
+        if (abortController.signal.aborted) throw e;
         console.error('章节计划生成失败:', e.message, '将根据已确认蓝图继续');
         res.write(`data: ${JSON.stringify({ type: 'status', message: hasConfirmedBlueprint ? '章节计划生成超时或暂不可用，正根据已确认蓝图补全执行计划...' : '章节计划生成暂不可用，准备暂停并等待补充计划...' })}\n\n`);
       }
@@ -1459,17 +1839,25 @@ ${tmpl.dynamicPrompt}
     // 章节计划的 JSON 可能为空、被截断或无法解析。只要用户已经确认了
     // 故事蓝图，就可以像“继续生成”一样使用保守的本地执行计划，避免
     // 首次生成在 0 字处直接暂停。没有蓝图的旧 API 调用仍保留严格校验。
-    if (isBook && !planData.chapters.length && String(outline || '').trim() && (targetWordCount >= 100000 || hasConfirmedBlueprint)) {
+    if (isBook && String(outline || '').trim() && (targetWordCount >= 100000 || hasConfirmedBlueprint)) {
+      const beforePlanEnd = planData.chapters.reduce((max, chapter) => Math.max(max, Number(chapter.chapterNumber || 0)), 0);
+      const beforePlanCount = planData.chapters.length;
       planData = ensureExecutableChapterPlan(novel, targetWordCount);
-      res.write(`data: ${JSON.stringify({ type: 'status', message: `章节计划输出不完整，已根据大纲自动补全 ${planData.chapters.length} 章执行计划，开始创作正文...` })}\n\n`);
-      await saveNovelDoc(novel);
+      const afterPlanEnd = planData.chapters.reduce((max, chapter) => Math.max(max, Number(chapter.chapterNumber || 0)), 0);
+      if (!beforePlanCount || afterPlanEnd > beforePlanEnd) {
+        const message = !beforePlanCount
+          ? `章节计划输出不完整，已根据大纲自动补全 ${planData.chapters.length} 章执行计划，开始创作正文...`
+          : `章节计划当前只有第${beforePlanEnd}章，已根据剩余目标自动扩展至第${afterPlanEnd}章，继续创作正文...`;
+        res.write(`data: ${JSON.stringify({ type: 'status', message })}\n\n`);
+        await saveNovelDoc(novel);
+      }
     }
     await saveNovelDoc(novel);
 
     // 整本生成必须建立在可机读章节计划上。计划生成失败时暂停，避免退化为无约束长循环。
     if (isBook && !planData.chapters.length) {
       generationDone = true;
-      activeStreams.delete(streamKey);
+      await settleGenerationRun(generationRun, 'paused', { phase: 'plan_required' });
       novel.status = 'paused';
       await saveNovelDoc(novel);
       res.write(`data: ${JSON.stringify({ type: 'plan_needs_extension', message: '未获得有效章节计划，已暂停生成，请先补充或重新生成章节计划' })}\n\n`);
@@ -1481,22 +1869,39 @@ ${tmpl.dynamicPrompt}
 
     /** 生成并保存一个章节 */
     async function generateOneChapter(chNum, prompt, contract) {
-      let buffer = '';
+      let buffer = resumeDraftFor(generationRun, chNum);
+      const resumedPhase = resumeDraftPhase(generationRun);
+      const checkpoint = createDraftCheckpointer(generationRun, chNum, () => buffer);
       // 本章各角色 token 用量（正文 + 专家审稿/修订），落库到 qualityReport.tokens。
       const chapterTokenStats = {};
 
       try { res.write(`data: ${JSON.stringify({ type: 'chapter_start', chapterNumber: chNum, title: formatChapterTitle(chNum, contract?.title) })}\n\n`); } catch {}
+      await emitGenerationJobEvent(generationRun, 'chapter_start', { chapterNumber: chNum, title: contract?.title || '' });
+      if (buffer) {
+        try { res.write(`data: ${JSON.stringify({ type: 'draft_restored', chapterNumber: chNum, length: buffer.length, content: buffer })}\n\n`); } catch {}
+      }
 
       // 温度随章节压力稳定变化，避免每章随机切换作者声线。
       const chapterTemp = getChapterTemperature(contract);
 
-      const genResult = await streamGenerate(systemPrompt, prompt, (chunk) => {
-        buffer += chunk;
-        try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
-      }, abortController.signal, resolveApiConfig(req.userModelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget), 900000, createThinkingEmitter(res), { stitchOnTruncation: true });
+      let genResult = null;
+      if (!(buffer && ['reviewing', 'draft_complete'].includes(resumedPhase))) {
+        try {
+          genResult = await streamGenerate(systemPrompt, appendResumeInstruction(prompt, buffer), (chunk) => {
+            buffer += chunk;
+            checkpoint.schedule('writing');
+            try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
+          }, abortController.signal, resolveApiConfig(req.userModelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget), 900000, createThinkingEmitter(res), { stitchOnTruncation: true, taskType: 'chapter_write' });
+        } catch (error) {
+          if (error?.attempts || error?.usage) emitTokenUsage(res, novel, 'writing', error, chapterTokenStats);
+          try { await checkpoint.flush('writing_interrupted'); } catch {}
+          throw error;
+        }
+        await checkpoint.flush('reviewing');
+      }
 
       // 记录本章正文生成的实际 token 用量（含服务商前缀缓存命中数据）。
-      emitTokenUsage(res, novel, 'writing', genResult, chapterTokenStats);
+      if (genResult) emitTokenUsage(res, novel, 'writing', genResult, chapterTokenStats);
 
       let chapterContent = buffer;
       let expertReview = null;
@@ -1510,7 +1915,7 @@ ${tmpl.dynamicPrompt}
           console.log(`[Expert] 第${chNum}章进入 AI 审稿（${gate.reason}）`);
           const expertResult = await runExpertReview({
             user: req.user, modelConfig: req.userModelConfig, novel, content: buffer, contract, signal: abortController.signal,
-            persona,
+            persona, styleAnchor: styleContinuityAnchor,
             onStatus: (message) => { try { res.write(`data: ${JSON.stringify({ type: 'status', message })}\n\n`); } catch {} },
             onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats, chapterTokenStats),
           });
@@ -1529,15 +1934,6 @@ ${tmpl.dynamicPrompt}
         contract,
         protagonistName,
       });
-      // 章节级 token 标注：写入 qualityReport.tokens（Mixed 字段，无需迁移）。
-      const chapterTokens = summarizeChapterTokens(chapterTokenStats);
-      if (chapterTokens) {
-        const savedChapter = novel.chapters[novel.chapters.length - 1];
-        if (savedChapter) {
-          savedChapter.qualityReport.tokens = chapterTokens;
-          novel.markModified('chapters');
-        }
-      }
       if (expertReview) {
         const savedChapter = novel.chapters[novel.chapters.length - 1];
         savedChapter.qualityReport.expert = expertReview;
@@ -1555,7 +1951,20 @@ ${tmpl.dynamicPrompt}
       } else {
         console.log(`[HookAudit] 第${chNum}章跳过自评：${auditGate.reason}`);
       }
+      // 伏笔审计也是本章成本的一部分，必须在审计之后再生成章节快照，
+      // 否则整本账本与逐章账本无法对账。
+      const chapterTokens = summarizeChapterTokens(chapterTokenStats);
+      if (chapterTokens) {
+        const savedChapter = novel.chapters[novel.chapters.length - 1];
+        if (savedChapter) {
+          savedChapter.qualityReport.tokens = chapterTokens;
+          novel.markModified('chapters');
+        }
+      }
       await saveNovelDoc(novel);
+      buffer = '';
+      await checkpoint.commit(chNum);
+      await emitGenerationJobEvent(generationRun, 'chapter_committed', { chapterNumber: chNum, wordCount: chapterResult.wordCount });
       if (chapterResult.continuity.issues.length) {
         try { res.write(`data: ${JSON.stringify({ type: 'quality_notice', chapterNumber: chNum, report: chapterResult.continuity })}\n\n`); } catch {}
       }
@@ -1589,26 +1998,27 @@ ${tmpl.dynamicPrompt}
           });
 
           // 近期摘要和伏笔来自已落库状态；计划单独以紧凑结构注入。
-          const contextFromDocs = buildContextFromDocs(
-            novel.chapterSummaryDoc, novel.foreshadowingDoc, renderOutlineForContext(outline, ch, totalPlannedChapters), '', ch,
-            lastChapterContent ? extractChapterSummary(lastChapterContent) : '',
-            {
-              contextMemory: novel.contextMemory,
-              relevantHistory: selectRelevantHistory(
-                novel.chapters,
-                [contract.coreEvent, ...(contract.characters || []), ...(contract.setHooks || []), ...(contract.resolveHooks || [])].join(' '),
-                { currentChapter: ch, maxChapters: 4, maxChars: 1800 }
-              ),
-              maxChars: 14000,
-            }
-          );
+          const executionContext = compileChapterExecutionPackage({
+            chapterSummaryDoc: novel.chapterSummaryDoc,
+            foreshadowingDoc: novel.foreshadowingDoc,
+            outline: renderOutlineForContext(outline, ch, totalPlannedChapters),
+            currentChapter: ch,
+            lastChapterSummary: lastChapterContent ? extractChapterSummary(lastChapterContent) : '',
+            contextMemory: novel.contextMemory,
+            relevantHistory: selectRelevantHistory(
+              novel.chapters,
+              [contract.coreEvent, ...(contract.characters || []), ...(contract.setHooks || []), ...(contract.resolveHooks || [])].join(' '),
+              { currentChapter: ch, maxChapters: 4, maxChars: 1800 }
+            ),
+          });
 
           // 稳定头部（大纲/阶段记忆/剧情线）前置以命中服务商前缀缓存，
           // 逐章变化的契约与字数状态放在尾部。
-          const chPrompt = `${buildStableChapterHead({ typeName: type.name, protagonistName, worldSetting, contextFromDocs })}
+          const chPrompt = `${buildStableChapterHead({ typeName: type.name, protagonistName, worldSetting, styleAnchor: styleContinuityAnchor, contextFromDocs: executionContext.stableContext })}
 ${buildChapterTail({
             contract, planData, ch, novel, totalPlannedChapters,
-            currentTotal, targetWordCount,
+            currentTotal, targetWordCount, styleAnchor: styleContinuityAnchor,
+            dynamicContext: executionContext.dynamicContext,
             variant: `1. 只完成本章的唯一核心事件，并让因果、人物选择和章末状态自然衔接。
 2. 用具体动作、感官和可见后果推进，不复述前情，不用抽象总结代替戏剧动作。
 3. 对话应符合角色认知、关系和当下情绪，保留潜台词与停顿，但不要靠随机吐槽、走神或口头禅伪造人味。
@@ -1634,7 +2044,7 @@ ${buildChapterTail({
         if (abortController.signal.aborted) {
           novel.status = 'paused';
           await saveNovelDoc(novel);
-          activeStreams.delete(streamKey);
+          await settleGenerationRun(generationRun, 'paused', { phase: 'paused', lastCommittedChapter: getHighestChapterNumber(novel) });
           try { res.write(`data: ${JSON.stringify({ type: 'paused', message: '生成已暂停' })}\n\n`); res.end(); } catch {}
           return;
         }
@@ -1651,7 +2061,7 @@ ${buildChapterTail({
         if (!finalCompletion.complete) {
           novel.status = 'paused';
           await saveNovelDoc(novel);
-          activeStreams.delete(streamKey);
+          await settleGenerationRun(generationRun, 'paused', { phase: 'plan_required', lastCommittedChapter: getHighestChapterNumber(novel) });
           const blockers = [];
           if (!finalCompletion.wordTargetReached) blockers.push(`当前 ${finalCompletion.currentWords}/${finalCompletion.wordTarget} 字，仍未达到目标字数`);
           if (finalCompletion.missingChapters.length) blockers.push(`尚未执行计划第 ${finalCompletion.missingChapters.join('、')} 章`);
@@ -1661,9 +2071,9 @@ ${buildChapterTail({
         }
 
         generationDone = true;
-        activeStreams.delete(streamKey);
         novel.status = 'completed';
         await saveNovelDoc(novel);
+        await settleGenerationRun(generationRun, 'completed', { lastCommittedChapter: getHighestChapterNumber(novel), draft: '' });
         res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`);
         res.end();
 
@@ -1680,18 +2090,18 @@ ${buildChapterTail({
         });
         // 单章模式同样走分层大纲：大纲中段已由章节契约与剧情脉络承载，不必逐字重发。
         const singleChapterOutline = renderOutlineForContext(outline, 1, getTotalPlannedChapters(planData, targetWordCount));
-        const userPrompt = `${buildInitialPrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, mode, singleChapterOutline, persona, type)}\n\n${renderChapterContract(contract)}\n\n请只输出正文，用具体事件和人物选择完成这章，不输出标题、提纲或“【未完待续】”标签。`;
+        const userPrompt = `${buildInitialPrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, mode, singleChapterOutline, persona, type)}\n\n${renderChapterContract(contract)}\n\n${styleContinuityAnchor}\n\n请只输出正文，用具体事件和人物选择完成这章，不输出标题、提纲或“【未完待续】”标签。`;
         await generateOneChapter(1, userPrompt, contract);
 
         generationDone = true;
-        activeStreams.delete(streamKey);
         novel.status = 'completed';
         await saveNovelDoc(novel);
+        await settleGenerationRun(generationRun, 'completed', { lastCommittedChapter: getHighestChapterNumber(novel), draft: '' });
         res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`);
         res.end();
       }
     } catch (streamError) {
-      const isAbort = streamError?.name === 'AbortError' || streamError?.message?.includes('abort');
+      const isAbort = isAbortError(streamError);
       const isApiError = streamError?.isApiError;
       if (isAbort) {
         console.log('⚠️ 生成被中断/取消（novelId:', novel._id, ', completed:', novel.chapters.length, '章）');
@@ -1700,7 +2110,12 @@ ${buildChapterTail({
       }
       novel.status = 'paused';
       await saveNovelDoc(novel);
-      activeStreams.delete(streamKey);
+      const resumable = isAbort || streamError?.resumable === true;
+      await settleGenerationRun(generationRun, resumable ? 'paused' : 'failed', {
+        phase: isAbort ? 'paused' : (resumable ? 'stream_interrupted' : 'failed'),
+        error: resumable ? null : { message: streamError?.message || 'Generation failed' },
+        lastCommittedChapter: getHighestChapterNumber(novel),
+      });
       try {
         if (isApiError) {
           // AI API 错误，发送友好提示
@@ -1714,6 +2129,11 @@ ${buildChapterTail({
       } catch {}
     }
   } catch (error) {
+    if (generationRun && !generationRun.settled) {
+      await settleGenerationRun(generationRun, 'failed', {
+        error: { message: error.message || 'Generation setup failed' },
+      });
+    }
     console.error('生成小说失败:', error.message);
     // 如果 SSE 已建立，通过 SSE 发送错误
     if (res.headersSent) {
@@ -1723,7 +2143,8 @@ ${buildChapterTail({
         res.end();
       } catch {}
     } else {
-      res.status(500).json({ message: error.isApiError ? error.message : '创建小说失败，请稍后重试' });
+      const status = error instanceof LeaseBusyError || error?.code === 'GENERATION_LEASE_BUSY' ? 409 : 500;
+      res.status(status).json({ message: status === 409 ? '这部小说正在另一项任务中生成，请先暂停或稍后再试' : (error.isApiError ? error.message : '创建小说失败，请稍后重试') });
     }
   }
 });
@@ -1731,6 +2152,7 @@ ${buildChapterTail({
 // 继续生成小说（SSE流式）—— 支持整本/单章模式
 router.post('/continue/:novelId', auth, async (req, res) => {
   let streamKey = null;
+  let generationRun = null;
   try {
     // 检查 Token 余额
 
@@ -1754,8 +2176,23 @@ router.post('/continue/:novelId', auth, async (req, res) => {
     }
     // 守卫与注册之间不允许有任何 await：否则双击续写的两个请求会同时通过守卫，
     // 并发进入后互相覆盖保存，触发 Mongoose VersionError。
-    let abortController = new AbortController();
-    activeStreams.set(streamKey, abortController);
+    generationRun = reserveGenerationRun(streamKey, 'novel');
+    if (!generationRun) return res.status(409).json({ message: '这部小说正在生成，请等待当前任务完成或先暂停' });
+    const abortController = generationRun.controller;
+    try {
+      await attachGenerationJob(generationRun, {
+        novelId: novel._id,
+        kind: 'novel',
+        phase: 'resuming',
+        chapterNumber: getHighestChapterNumber(novel) + 1,
+        lastCommittedChapter: getHighestChapterNumber(novel),
+        metadata: { userId: String(req.userId), mode: req.body.mode || 'chapter' },
+      });
+      await clearCommittedJobDraft(generationRun, getHighestChapterNumber(novel));
+    } catch (error) {
+      if (error instanceof LeaseBusyError) return res.status(409).json({ message: '这部小说正在另一项任务中生成，请先暂停或稍后再试' });
+      throw error;
+    }
 
     const mode = req.body.mode || 'chapter'; // 'chapter' | 'book'
     const persona = await resolveNovelPersona(req.userId, novel);
@@ -1766,12 +2203,14 @@ router.post('/continue/:novelId', auth, async (req, res) => {
     // and regeneration do not silently fall back to the shared AI voice.
     // 从 novel 重算类型上下文与风格轴（新作品携带 typeSku，旧作品回落 novelTypeId）
     const { type: contType, skuAxes: contAxes } = resolveTypeContextFromNovel(novel);
+    const continuationPersona = withSkuAxes(persona || novel.writingPersonaSnapshot, contAxes);
     const currentSystemPrompt = buildSystemPrompt(
       novel.novelTypeId,
       undefined,
-      withSkuAxes(persona || novel.writingPersonaSnapshot, contAxes),
+      continuationPersona,
       contType
     );
+    const styleContinuityAnchor = buildLongFormStyleAnchor(contType, continuationPersona);
     // SKU 的标签合同会持续演进；续写时重算，避免旧 generationContext 把新标签规则
     // 永久冻结在建书时的版本。联网取材块位于缓存尾部，单独带回，不能因刷新合同而丢失。
     const cachedSystemPrompt = novel.generationContext || currentSystemPrompt;
@@ -1813,6 +2252,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
     });
 
     res.write(`data: ${JSON.stringify({ type: 'continue_start', novelId: novel._id })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'generation_job', jobId: valueOf(generationRun.job, 'jobId'), status: 'running' })}\n\n`);
     if (resumedPlanEnd > previousPlanEnd && previousPlanEnd > 0) {
       res.write(`data: ${JSON.stringify({
         type: 'status',
@@ -1831,19 +2271,36 @@ router.post('/continue/:novelId', auth, async (req, res) => {
 
     /** 生成并保存一个章节（内部函数） */
     async function generateOneChapter(chNum, prompt, contract) {
-      let buffer = '';
+      let buffer = resumeDraftFor(generationRun, chNum);
+      const resumedPhase = resumeDraftPhase(generationRun);
+      const checkpoint = createDraftCheckpointer(generationRun, chNum, () => buffer);
       const chapterTokenStats = {};
 
       try { res.write(`data: ${JSON.stringify({ type: 'chapter_start', chapterNumber: chNum, title: formatChapterTitle(chNum, contract?.title) })}\n\n`); } catch {}
+      await emitGenerationJobEvent(generationRun, 'chapter_start', { chapterNumber: chNum, title: contract?.title || '' });
+      if (buffer) {
+        try { res.write(`data: ${JSON.stringify({ type: 'draft_restored', chapterNumber: chNum, length: buffer.length, content: buffer })}\n\n`); } catch {}
+      }
 
       const chapterTemp = getChapterTemperature(contract);
 
-      const contResult = await streamGenerate(systemPrompt, prompt, (chunk) => {
-        buffer += chunk;
-        try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
-      }, abortController.signal, resolveApiConfig(req.userModelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget), 900000, createThinkingEmitter(res), { stitchOnTruncation: true });
+      let contResult = null;
+      if (!(buffer && ['reviewing', 'draft_complete'].includes(resumedPhase))) {
+        try {
+          contResult = await streamGenerate(systemPrompt, appendResumeInstruction(prompt, buffer), (chunk) => {
+            buffer += chunk;
+            checkpoint.schedule('writing');
+            try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
+          }, abortController.signal, resolveApiConfig(req.userModelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget), 900000, createThinkingEmitter(res), { stitchOnTruncation: true, taskType: 'chapter_write' });
+        } catch (error) {
+          if (error?.attempts || error?.usage) emitTokenUsage(res, novel, 'writing', error, chapterTokenStats);
+          try { await checkpoint.flush('writing_interrupted'); } catch {}
+          throw error;
+        }
+        await checkpoint.flush('reviewing');
+      }
 
-      emitTokenUsage(res, novel, 'writing', contResult, chapterTokenStats);
+      if (contResult) emitTokenUsage(res, novel, 'writing', contResult, chapterTokenStats);
 
       let chapterContent = buffer;
       let expertReview = null;
@@ -1857,7 +2314,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
           console.log(`[Expert] 第${chNum}章进入 AI 审稿（${gate.reason}）`);
           const expertResult = await runExpertReview({
             user: req.user, modelConfig: req.userModelConfig, novel, content: buffer, contract, signal: abortController.signal,
-            persona,
+            persona, styleAnchor: styleContinuityAnchor,
             onStatus: (message) => { try { res.write(`data: ${JSON.stringify({ type: 'status', message })}\n\n`); } catch {} },
             onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats, chapterTokenStats),
           });
@@ -1876,14 +2333,6 @@ router.post('/continue/:novelId', auth, async (req, res) => {
         contract,
         protagonistName,
       });
-      const chapterTokens = summarizeChapterTokens(chapterTokenStats);
-      if (chapterTokens) {
-        const savedChapter = novel.chapters[novel.chapters.length - 1];
-        if (savedChapter) {
-          savedChapter.qualityReport.tokens = chapterTokens;
-          novel.markModified('chapters');
-        }
-      }
       if (expertReview) {
         const savedChapter = novel.chapters[novel.chapters.length - 1];
         savedChapter.qualityReport.expert = expertReview;
@@ -1901,7 +2350,18 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       } else {
         console.log(`[HookAudit] 第${chNum}章跳过自评：${auditGate.reason}`);
       }
+      const chapterTokens = summarizeChapterTokens(chapterTokenStats);
+      if (chapterTokens) {
+        const savedChapter = novel.chapters[novel.chapters.length - 1];
+        if (savedChapter) {
+          savedChapter.qualityReport.tokens = chapterTokens;
+          novel.markModified('chapters');
+        }
+      }
       await saveNovelDoc(novel);
+      buffer = '';
+      await checkpoint.commit(chNum);
+      await emitGenerationJobEvent(generationRun, 'chapter_committed', { chapterNumber: chNum, wordCount: chapterResult.wordCount });
       if (chapterResult.continuity.issues.length) {
         try { res.write(`data: ${JSON.stringify({ type: 'quality_notice', chapterNumber: chNum, report: chapterResult.continuity })}\n\n`); } catch {}
       }
@@ -1917,7 +2377,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
           novel.status = 'paused';
           await saveNovelDoc(novel);
           generationDone = true;
-          activeStreams.delete(streamKey);
+          await settleGenerationRun(generationRun, 'paused', { phase: 'plan_required', lastCommittedChapter: getHighestChapterNumber(novel) });
           res.write(`data: ${JSON.stringify({ type: 'plan_needs_extension', message: '缺少大纲和有效章节计划，已暂停，请先补充大纲或重新生成章节计划' })}\n\n`);
           res.end();
           return;
@@ -1926,9 +2386,9 @@ router.post('/continue/:novelId', auth, async (req, res) => {
         const beforeCompletion = assessStoryCompletion(novel, planData, targetWordCount);
         if (beforeCompletion.complete) {
           generationDone = true;
-          activeStreams.delete(streamKey);
           novel.status = 'completed';
           await saveNovelDoc(novel);
+          await settleGenerationRun(generationRun, 'completed', { lastCommittedChapter: getHighestChapterNumber(novel), draft: '' });
           res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`);
           res.end();
           return;
@@ -1945,15 +2405,16 @@ router.post('/continue/:novelId', auth, async (req, res) => {
           }
           if (completion.complete) {
             generationDone = true;
-            activeStreams.delete(streamKey);
             novel.status = 'completed';
             await saveNovelDoc(novel);
+            await settleGenerationRun(generationRun, 'completed', { lastCommittedChapter: getHighestChapterNumber(novel), draft: '' });
             try { res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`); res.end(); } catch {}
             return;
           }
           novel.status = 'paused';
           await saveNovelDoc(novel);
-          activeStreams.delete(streamKey);
+          generationDone = true;
+          await settleGenerationRun(generationRun, 'paused', { phase: 'plan_required', lastCommittedChapter: getHighestChapterNumber(novel) });
           const blockers = [];
           if (!completion.wordTargetReached) blockers.push(`当前 ${completion.currentWords}/${completion.wordTarget} 字，仍未达到目标字数`);
           if (completion.missingChapters.length) blockers.push(`尚未执行计划第 ${completion.missingChapters.join('、')} 章`);
@@ -1975,23 +2436,25 @@ router.post('/continue/:novelId', auth, async (req, res) => {
             targetWords: targetWordCount,
             previousChapter: novel.chapters.length ? novel.chapters[novel.chapters.length - 1] : null,
           });
-          const contextFromDocs = (novel.chapterSummaryDoc || novel.foreshadowingDoc)
-            ? buildContextFromDocs(novel.chapterSummaryDoc, novel.foreshadowingDoc, renderOutlineForContext(outline, ch, totalPlannedChapters), '', ch, '', {
-              contextMemory: novel.contextMemory,
-              relevantHistory: selectRelevantHistory(
-                novel.chapters,
-                [contract.coreEvent, ...(contract.characters || []), ...(contract.setHooks || []), ...(contract.resolveHooks || [])].join(' '),
-                { currentChapter: ch, maxChapters: 4, maxChars: 1800 }
-              ),
-              maxChars: 14000,
-            })
-            : buildAugmentedContext(novel.chapters);
+          const executionContext = compileChapterExecutionPackage({
+            chapterSummaryDoc: novel.chapterSummaryDoc || buildAugmentedContext(novel.chapters),
+            foreshadowingDoc: novel.foreshadowingDoc,
+            outline: renderOutlineForContext(outline, ch, totalPlannedChapters),
+            currentChapter: ch,
+            contextMemory: novel.contextMemory,
+            relevantHistory: selectRelevantHistory(
+              novel.chapters,
+              [contract.coreEvent, ...(contract.characters || []), ...(contract.setHooks || []), ...(contract.resolveHooks || [])].join(' '),
+              { currentChapter: ch, maxChapters: 4, maxChars: 1800 }
+            ),
+          });
 
           // 与 /generate 相同的稳定前缀布局：全书固定信息前置，逐章契约后置。
-          const chPrompt = `${buildStableChapterHead({ typeName, protagonistName, worldSetting, contextFromDocs })}
+          const chPrompt = `${buildStableChapterHead({ typeName, protagonistName, worldSetting, styleAnchor: styleContinuityAnchor, contextFromDocs: executionContext.stableContext })}
 ${buildChapterTail({
             contract, planData, ch, novel, totalPlannedChapters,
-            currentTotal: curTotal, targetWordCount,
+            currentTotal: curTotal, targetWordCount, styleAnchor: styleContinuityAnchor,
+            dynamicContext: executionContext.dynamicContext,
             variant: `1. 只完成本章唯一核心事件，推进至少一条主线或关系线，不复述已有剧情。
 2. 通过行动、因果和人物选择衔接上一章；避免百科式解释、空泛升华和流水账。
 3. 对话要符合人物认知与关系，有潜台词和自然停顿，但不靠随机吐槽或突兀搞笑制造人味。
@@ -2014,7 +2477,8 @@ ${buildChapterTail({
         if (abortController.signal.aborted) {
           novel.status = 'paused';
           await saveNovelDoc(novel);
-          activeStreams.delete(streamKey);
+          generationDone = true;
+          await settleGenerationRun(generationRun, 'paused', { phase: 'paused', lastCommittedChapter: getHighestChapterNumber(novel) });
           try { res.write(`data: ${JSON.stringify({ type: 'paused', message: '生成已暂停' })}\n\n`); res.end(); } catch {}
           return;
         }
@@ -2026,16 +2490,17 @@ ${buildChapterTail({
         if (!hasPlan) {
           if (wordTargetReached) {
             generationDone = true;
-            activeStreams.delete(streamKey);
             novel.status = 'completed';
             await saveNovelDoc(novel);
+            await settleGenerationRun(generationRun, 'completed', { lastCommittedChapter: getHighestChapterNumber(novel), draft: '' });
             res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`);
             res.end();
             return;
           }
           novel.status = 'paused';
           await saveNovelDoc(novel);
-          activeStreams.delete(streamKey);
+          generationDone = true;
+          await settleGenerationRun(generationRun, 'paused', { phase: 'plan_required', lastCommittedChapter: getHighestChapterNumber(novel) });
           try { res.write(`data: ${JSON.stringify({ type: 'paused', message: `当前 ${getCompletedWordCount(novel)}/${targetWordCount} 字，已暂停，可再次点击续写` })}\n\n`); res.end(); } catch {}
           return;
         }
@@ -2047,7 +2512,8 @@ ${buildChapterTail({
         if (!finalCompletion.complete) {
           novel.status = 'paused';
           await saveNovelDoc(novel);
-          activeStreams.delete(streamKey);
+          generationDone = true;
+          await settleGenerationRun(generationRun, 'paused', { phase: 'plan_required', lastCommittedChapter: getHighestChapterNumber(novel) });
           const blockers = [];
           if (!finalCompletion.wordTargetReached) blockers.push(`当前 ${finalCompletion.currentWords}/${finalCompletion.wordTarget} 字，仍未达到目标字数`);
           if (finalCompletion.missingChapters.length) blockers.push(`尚未执行计划第 ${finalCompletion.missingChapters.join('、')} 章`);
@@ -2057,9 +2523,9 @@ ${buildChapterTail({
         }
 
         generationDone = true;
-        activeStreams.delete(streamKey);
         novel.status = 'completed';
         await saveNovelDoc(novel);
+        await settleGenerationRun(generationRun, 'completed', { lastCommittedChapter: getHighestChapterNumber(novel), draft: '' });
         res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`);
         res.end();
 
@@ -2078,33 +2544,40 @@ ${buildChapterTail({
         });
         // 单章续写同样按进度分层注入大纲，避免长篇大纲整份重发。
         const singleChapterOutline = renderOutlineForContext(outline, chapterNumber, totalPlannedChapters);
-        const userPrompt = `${buildContinuePrompt(novel._id, novel, persona, singleChapterOutline)}\n\n${renderChapterContract(contract)}\n\n仅输出正文。严格承接上一章，完成本章唯一核心事件；用人物行动和具体后果推进，不输出标题、提纲或“【未完待续】”标签。`;
+        const userPrompt = `${buildContinuePrompt(novel._id, novel, persona, singleChapterOutline)}\n\n${renderChapterContract(contract)}\n\n${styleContinuityAnchor}\n\n仅输出正文。严格承接上一章，完成本章唯一核心事件；用人物行动和具体后果推进，不输出标题、提纲或“【未完待续】”标签。`;
         await generateOneChapter(chapterNumber, userPrompt, contract);
 
         if (abortController.signal.aborted) {
           novel.status = 'paused';
           await saveNovelDoc(novel);
-          activeStreams.delete(streamKey);
+          generationDone = true;
+          await settleGenerationRun(generationRun, 'paused', { phase: 'paused', lastCommittedChapter: getHighestChapterNumber(novel) });
           return;
         }
 
         generationDone = true;
-        activeStreams.delete(streamKey);
         // completed 事件表示本次单章请求完成；作品仍可继续追加后续章节。
         novel.status = 'paused';
         await saveNovelDoc(novel);
+        await settleGenerationRun(generationRun, 'completed', { lastCommittedChapter: getHighestChapterNumber(novel), draft: '' });
 
         res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`);
         res.end();
       }
     } catch (streamError) {
-      const isAbort = streamError?.name === 'AbortError' || streamError?.message?.toLowerCase().includes('abort');
+      const isAbort = isAbortError(streamError);
       const isApiError = streamError?.isApiError;
       if (isAbort) console.log('继续生成已暂停');
       else console.error('继续生成失败:', streamError.message);
       novel.status = 'paused';
       await saveNovelDoc(novel);
-      activeStreams.delete(streamKey);
+      generationDone = true;
+      const resumable = isAbort || streamError?.resumable === true;
+      await settleGenerationRun(generationRun, resumable ? 'paused' : 'failed', {
+        phase: isAbort ? 'paused' : (resumable ? 'stream_interrupted' : 'failed'),
+        error: resumable ? null : { message: streamError?.message || 'Generation failed' },
+        lastCommittedChapter: getHighestChapterNumber(novel),
+      });
       try {
         if (isAbort) {
           res.write(`data: ${JSON.stringify({ type: 'paused', message: '生成已暂停' })}\n\n`);
@@ -2118,42 +2591,36 @@ ${buildChapterTail({
     }
   } catch (error) {
     console.error('继续生成失败:', error.message);
-    // 释放并发守卫占位，避免早期失败导致该小说永久 409
-    if (streamKey) activeStreams.delete(streamKey);
+    if (generationRun && !generationRun.settled) {
+      await settleGenerationRun(generationRun, 'failed', { error: { message: error.message || 'Generation setup failed' } });
+    }
     const msg = error.isApiError ? error.message : '继续生成失败，请稍后重试';
     if (res.headersSent) {
       try { res.write(`data: ${JSON.stringify({ type: 'error', message: msg })}\n\n`); res.end(); } catch {}
     } else {
-      res.status(500).json({ message: msg });
+      const status = error instanceof LeaseBusyError || error?.code === 'GENERATION_LEASE_BUSY' ? 409 : 500;
+      res.status(status).json({ message: status === 409 ? '这部小说正在另一项任务中生成，请先暂停或稍后再试' : msg });
     }
   }
 });
 
 // 导入外部小说并续写（SSE流式）
 router.post('/continue-import', auth, async (req, res) => {
+  let generationRun = null;
+  let novel = null;
   try {
-
     const { importedText, continuationRequest, novelTypeName, title, novelId, personaId } = req.body;
-
     if (!importedText || importedText.trim().length < 50) {
       return res.status(400).json({ message: '导入的小说内容太少（至少50字）' });
     }
 
     const typeName = novelTypeName || '自定义';
-    let novel;
     let isAppend = false;
-    let baseChapterNumber = 1;
-
     if (novelId) {
-      // 追加到已有小说
       novel = await Novel.findOne({ _id: novelId, userId: req.userId });
       if (!novel) return res.status(404).json({ message: '原小说不存在' });
       isAppend = true;
-      novel.status = 'generating';
-      baseChapterNumber = (novel.currentChapterIndex || 0) + 1;
-      await saveNovelDoc(novel);
     } else {
-      // 创建全新记录
       const novelTitle = title || `续写：${typeName}小说`;
       novel = new Novel({
         userId: req.userId,
@@ -2168,6 +2635,57 @@ router.post('/continue-import', auth, async (req, res) => {
       await saveNovelDoc(novel);
     }
 
+    generationRun = reserveGenerationRun(novel._id, 'novel');
+    if (!generationRun) return res.status(409).json({ message: '这部小说正在生成，请等待当前任务完成或先暂停' });
+    const highestChapter = getHighestChapterNumber(novel);
+    let recoveredImportCommit = null;
+    try {
+      await attachGenerationJob(generationRun, {
+        novelId: novel._id,
+        kind: 'novel',
+        phase: 'import_resuming',
+        chapterNumber: highestChapter + 1,
+        lastCommittedChapter: highestChapter,
+        metadata: { userId: String(req.userId), operation: 'continue_import' },
+      });
+      const attachedDraft = String(valueOf(generationRun.job, 'draft') || '');
+      const attachedChapter = Number(valueOf(generationRun.job, 'chapterNumber') || 0);
+      if (attachedDraft && resumeDraftPhase(generationRun) === 'commit_ready' && attachedChapter <= highestChapter) {
+        const saved = (novel.chapters || []).find((item) => Number(item.chapterNumber) === attachedChapter);
+        const processedDraft = processChapter(attachedDraft.trim()).text;
+        if (processedDraft && String(saved?.content || '') === processedDraft) recoveredImportCommit = saved;
+      }
+      await clearCommittedJobDraft(generationRun, highestChapter);
+    } catch (error) {
+      if (error instanceof LeaseBusyError || error?.code === 'GENERATION_LEASE_BUSY') {
+        return res.status(409).json({ message: '这部小说正在另一项任务中生成，请先暂停或稍后再试' });
+      }
+      throw error;
+    }
+
+    // The chapter save and the subsequent draft-clear are two durable writes.
+    // If the process died between them, acknowledge that prior commit instead
+    // of paying for and appending an extra chapter on the retry.
+    if (recoveredImportCommit) {
+      await settleGenerationRun(generationRun, 'completed', {
+        lastCommittedChapter: highestChapter,
+        draft: '',
+      });
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      });
+      try {
+        res.write(`data: ${JSON.stringify({ type: 'novel_created', novelId: novel._id })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber: recoveredImportCommit.chapterNumber, title: recoveredImportCommit.title, wordCount: recoveredImportCommit.wordCount, recoveredCommit: true })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount, recoveredCommit: true })}\n\n`);
+        res.end();
+      } catch {}
+      return;
+    }
+
     // 构建续写系统提示词；已有作品优先使用生成时锁定的人格。
     const persona = await resolveNovelPersona(req.userId, novel, personaId);
     if (persona && !novel.writingPersonaSnapshot) {
@@ -2175,13 +2693,16 @@ router.post('/continue-import', auth, async (req, res) => {
       novel.writingPersonaSnapshot = persona;
     }
     // 契约：追加到已有作品时按该作品的 typeSku 解析；全新导入按传入的类型名走登记表/兜底
-    const { type: importType } = resolveTypeContextFromNovel(isAppend ? novel : null);
-    const systemPrompt = `你是一位专业的小说续写专家，擅长模仿各种文风进行创作。${buildGenreContract(typeName, importType || null)}${buildPersonaPrompt(persona)}`;
+    const { type: importType, skuAxes: importAxes } = resolveTypeContextFromNovel(isAppend ? novel : null);
+    const importPersona = withSkuAxes(persona, importAxes);
+    const styleContinuityAnchor = buildLongFormStyleAnchor(importType || { name: typeName }, importPersona);
+    const systemPrompt = `你是一位专业的小说续写专家，必须延续原文已经建立的叙事声线、人物差异和因果关系。${buildGenreContract(typeName, importType || null)}${buildPersonaPrompt(importPersona)}\n\n${styleContinuityAnchor}`;
     const mode = req.body.mode || 'book';
-    const userPrompt = buildImportContinuePrompt(importedText, continuationRequest, typeName, req.body.targetWordCount || 50000, mode, persona);
+    const userPrompt = buildImportContinuePrompt(importedText, continuationRequest, typeName, req.body.targetWordCount || 50000, mode, importPersona);
 
     novel.lastPrompt = userPrompt;
     novel.generationContext = systemPrompt;
+    novel.status = 'generating';
     await saveNovelDoc(novel);
 
     // SSE
@@ -2193,92 +2714,136 @@ router.post('/continue-import', auth, async (req, res) => {
     });
 
     res.write(`data: ${JSON.stringify({ type: 'novel_created', novelId: novel._id })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'generation_job', jobId: generationRun.jobId, status: 'running' })}\n\n`);
 
-    let chapterBuffer = '';
-    let abortController = new AbortController();
+    const durableChapter = Number(valueOf(generationRun.job, 'chapterNumber') || 0);
+    const requestedChapter = highestChapter + 1;
+    const chapterNumber = String(valueOf(generationRun.job, 'draft') || '') && durableChapter > highestChapter
+      ? durableChapter
+      : requestedChapter;
+    let chapterBuffer = resumeDraftFor(generationRun, chapterNumber);
+    const resumedDraftPhase = resumeDraftPhase(generationRun);
+    const abortController = generationRun.controller;
     let generationDone = false;
-    let lastAutoSave = 0;
-    const chapterNumber = baseChapterNumber;
-    const streamKey = novel._id.toString();
-    activeStreams.set(streamKey, abortController);
+    const checkpoint = createDraftCheckpointer(generationRun, chapterNumber, () => chapterBuffer);
+    const chapterTokenStats = {};
+    let finalSavePromise = null;
 
-    async function saveProgress(status = 'generating') {
-      try {
-        if (!chapterBuffer.trim()) return;
-        const savedWords = novel.chapters.reduce((s, c) => s + (c.wordCount || 0), 0);
-        await Novel.findByIdAndUpdate(novel._id, { $set: { status, currentWordCount: savedWords + chapterBuffer.length } });
-        lastAutoSave = Date.now();
-      } catch (e) { console.error('自动保存失败:', e.message); }
-    }
-
-    async function finalSave(status = 'completed') {
-      if (chapterBuffer.trim()) {
+    function finalSave(status = 'completed') {
+      if (finalSavePromise) return finalSavePromise;
+      finalSavePromise = (async () => {
+        await checkpoint.flush('commit_ready');
+        const processed = processChapter(String(chapterBuffer || '').trim()).text;
+        if (processed.length < 20) throw new Error('本章生成内容过短，未保存为正式章节');
+        if ((novel.chapters || []).some((item) => Number(item.chapterNumber) === chapterNumber)) {
+          throw new Error(`第${chapterNumber}章已存在，已阻止重复写入`);
+        }
+        const tokens = summarizeChapterTokens(chapterTokenStats);
         novel.chapters.push({
           chapterNumber,
-          title: formatChapterTitle(chapterNumber, deriveLocalChapterTitle({ notes: continuationRequest, content: chapterBuffer })),
-          content: chapterBuffer,
-          wordCount: chapterBuffer.length,
+          title: formatChapterTitle(chapterNumber, deriveLocalChapterTitle({ notes: continuationRequest, content: processed })),
+          content: processed,
+          wordCount: processed.length,
+          ...(tokens ? { qualityReport: { tokens } } : {}),
         });
-      }
-      const savedWords = novel.chapters.reduce((s, c) => s + (c.wordCount || 0), 0);
-      novel.currentWordCount = savedWords;
-      novel.currentChapterIndex = chapterNumber;
-      novel.status = status;
-      await saveNovelDoc(novel);
+        novel.currentWordCount = getCompletedWordCount(novel);
+        novel.currentChapterIndex = Math.max(Number(novel.currentChapterIndex || 0), chapterNumber);
+        novel.status = status;
+        novel.markModified('chapters');
+        await saveNovelDoc(novel);
+        chapterBuffer = '';
+        await checkpoint.commit(chapterNumber);
+        await emitGenerationJobEvent(generationRun, 'chapter_committed', { chapterNumber, wordCount: processed.length });
+        return novel.chapters[novel.chapters.length - 1];
+      })();
+      return finalSavePromise;
     }
 
-    req.on('close', async () => {
+    req.on('close', () => {
       if (!generationDone) {
-        abortController.abort();
-        await finalSave('paused');
-        activeStreams.delete(streamKey);
-        try { res.write(`data: ${JSON.stringify({ type: 'paused' })}\n\n`); res.end(); } catch {}
+        console.log(`⚠️ [ImportContinue] 客户端断开连接（novelId=${novel._id}），继续后台生成`);
       }
     });
 
     res.write(`data: ${JSON.stringify({ type: 'chapter_start', chapterNumber, title: formatChapterTitle(chapterNumber, deriveLocalChapterTitle({ notes: continuationRequest })) })}\n\n`);
+    await emitGenerationJobEvent(generationRun, 'chapter_start', { chapterNumber });
+    if (chapterBuffer) {
+      try { res.write(`data: ${JSON.stringify({ type: 'draft_restored', chapterNumber, length: chapterBuffer.length, content: chapterBuffer })}\n\n`); } catch {}
+    }
 
     try {
-      await streamGenerate(
-        systemPrompt,
-        userPrompt,
-        (chunk) => {
-          chapterBuffer += chunk;
-          if (Date.now() - lastAutoSave > 5000) saveProgress('generating');
-          res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`);
-        },
-        abortController.signal,
-        resolveApiConfig(req.userModelConfig, 'writing'),
-        2, 0.85, 16384, 900000, createThinkingEmitter(res),
-        { stitchOnTruncation: true }
-      );
+      let result;
+      if (!(chapterBuffer && ['draft_complete', 'commit_ready'].includes(resumedDraftPhase))) {
+        try {
+          result = await streamGenerate(
+            systemPrompt,
+            appendResumeInstruction(userPrompt, chapterBuffer),
+            (chunk) => {
+              chapterBuffer += chunk;
+              checkpoint.schedule('writing');
+              try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
+            },
+            abortController.signal,
+            resolveApiConfig(req.userModelConfig, 'writing'),
+            2, 0.85, 16384, 900000, createThinkingEmitter(res),
+            { stitchOnTruncation: true, taskType: 'chapter_write' }
+          );
+          emitTokenUsage(res, novel, 'writing', result, chapterTokenStats);
+          await checkpoint.flush('draft_complete');
+        } catch (error) {
+          if (error?.attempts || error?.usage) emitTokenUsage(res, novel, 'writing', error, chapterTokenStats);
+          try { await checkpoint.flush('writing_interrupted'); } catch {}
+          throw error;
+        }
+      }
 
       if (abortController.signal.aborted) {
-        await finalSave('paused');
-        activeStreams.delete(streamKey);
+        novel.status = 'paused';
+        await saveNovelDoc(novel);
+        generationDone = true;
+        await settleGenerationRun(generationRun, 'paused', { phase: 'paused', lastCommittedChapter: getHighestChapterNumber(novel) });
+        try { res.write(`data: ${JSON.stringify({ type: 'paused', message: '生成已暂停，断点草稿已保存' })}\n\n`); res.end(); } catch {}
         return;
       }
 
       generationDone = true;
-      activeStreams.delete(streamKey);
-      await finalSave('completed');
+      const savedChapter = await finalSave('completed');
+      await settleGenerationRun(generationRun, 'completed', { lastCommittedChapter: chapterNumber, draft: '' });
 
-      const savedChapter = novel.chapters.find((item) => Number(item.chapterNumber) === Number(chapterNumber));
-      res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber, title: savedChapter?.title, wordCount: chapterBuffer.length })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber, title: savedChapter?.title, wordCount: savedChapter?.wordCount || 0 })}\n\n`);
       res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`);
       res.end();
     } catch (streamError) {
       console.error('续写失败:', streamError.message);
-      try { await finalSave('paused'); } catch {}
-      activeStreams.delete(streamKey);
+      novel.status = 'paused';
+      try { await saveNovelDoc(novel); } catch {}
+      generationDone = true;
+      const resumable = isAbortError(streamError) || streamError?.resumable === true;
+      await settleGenerationRun(generationRun, resumable ? 'paused' : 'failed', {
+        phase: isAbortError(streamError) ? 'paused' : (resumable ? 'stream_interrupted' : 'failed'),
+        error: resumable ? null : { message: streamError.message || 'Generation failed' },
+        lastCommittedChapter: getHighestChapterNumber(novel),
+      });
       try {
-        res.write(`data: ${JSON.stringify({ type: 'paused' })}\n\n`);
+        const event = resumable
+          ? { type: 'paused', message: '生成已中断，断点草稿已保存，可继续恢复' }
+          : { type: 'error', message: streamError.isApiError ? streamError.message : '续写失败，断点草稿已保存' };
+        res.write(`data: ${JSON.stringify(event)}\n\n`);
         res.end();
       } catch {}
     }
   } catch (error) {
     console.error('续写失败:', error);
-    res.status(500).json({ message: '续写失败' });
+    if (generationRun && !generationRun.settled) {
+      await settleGenerationRun(generationRun, 'failed', { error: { message: error.message || 'Generation setup failed' } });
+    }
+    const status = error instanceof LeaseBusyError || error?.code === 'GENERATION_LEASE_BUSY' ? 409 : 500;
+    const message = status === 409 ? '这部小说正在另一项任务中生成，请先暂停或稍后再试' : '续写失败';
+    if (res.headersSent) {
+      try { res.write(`data: ${JSON.stringify({ type: 'error', message })}\n\n`); res.end(); } catch {}
+    } else {
+      res.status(status).json({ message });
+    }
   }
 });
 
@@ -2397,7 +2962,7 @@ router.post('/:novelId/blueprint/review', auth, async (req, res) => {
   try {
     const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
     if (!novel) return res.status(404).json({ message: '小说不存在' });
-    if (activeStreams.has(novel._id.toString())) return res.status(409).json({ message: '小说正在生成，请稍后再审核蓝图' });
+    if (await isNovelGenerationBusy(novel._id)) return res.status(409).json({ message: '小说正在生成，请稍后再审核蓝图' });
     const pending = (novel.storyBlueprintProposals || []).find((proposal) => proposal.status === 'pending');
     if (pending) return res.json({ proposal: pending, message: '已有待确认的剧情蓝图提案' });
     const persona = await resolveNovelPersona(req.userId, novel);
@@ -2440,6 +3005,42 @@ router.post('/:novelId/blueprint/proposals/:proposalId/decision', auth, async (r
   }
 });
 
+// 查询持久化生成任务。连接断开后客户端可用它区分“仍在后台运行”与
+// “已经暂停且存在可恢复草稿”，不再把 HTTP/SSE 断开误判成完成。
+router.get('/generation-job/:novelId', auth, async (req, res) => {
+  try {
+    const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
+    if (!novel) return res.status(404).json({ message: '小说不存在' });
+    const recovered = await recoverExpiredLeases({ novelId: novel._id });
+    if (recovered > 0 && novel.status === 'generating') {
+      novel.status = 'paused';
+      await saveNovelDoc(novel);
+    }
+    const job = await getActiveJob(novel._id) || await findLatestResumableJob(novel._id);
+    res.json({ job: serializeGenerationJob(job) });
+  } catch (error) {
+    res.status(500).json({ message: '获取生成任务状态失败' });
+  }
+});
+
+router.get('/generation-job/:novelId/events', auth, async (req, res) => {
+  try {
+    const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
+    if (!novel) return res.status(404).json({ message: '小说不存在' });
+    const recovered = await recoverExpiredLeases({ novelId: novel._id });
+    if (recovered > 0 && novel.status === 'generating') {
+      novel.status = 'paused';
+      await saveNovelDoc(novel);
+    }
+    const job = await getActiveJob(novel._id) || await findLatestResumableJob(novel._id);
+    if (!job) return res.json({ job: null, events: [] });
+    const events = await readGenerationEvents(valueOf(job, 'jobId'), req.query.after || 0);
+    res.json({ job: serializeGenerationJob(job), events });
+  } catch (error) {
+    res.status(500).json({ message: '获取生成任务事件失败' });
+  }
+});
+
 // 获取小说详情（含章节）
 router.get('/:novelId', auth, async (req, res) => {
   try {
@@ -2460,6 +3061,9 @@ router.get('/:novelId', auth, async (req, res) => {
 // 删除小说
 router.delete('/:novelId', auth, async (req, res) => {
   try {
+    const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
+    if (!novel) return res.status(404).json({ message: '小说不存在' });
+    if (await rejectBusyNovelMutation(res, novel._id)) return;
     const result = await Novel.deleteOne({ _id: req.params.novelId, userId: req.userId });
     if (result.deletedCount === 0) {
       return res.status(404).json({ message: '小说不存在' });
@@ -2478,16 +3082,52 @@ router.post('/pause/:novelId', auth, async (req, res) => {
       return res.status(404).json({ message: '小说不存在' });
     }
     
-    // 如果有活跃的流，中断它
     const streamKey = novel._id.toString();
-    if (activeStreams.has(streamKey)) {
-      activeStreams.get(streamKey).abort();
-      activeStreams.delete(streamKey);
+    const localRun = activeStreams.get(streamKey) || null;
+    await recoverExpiredLeases({ novelId: novel._id });
+    let job = localRun?.job
+      || await getActiveJob(novel._id)
+      || await findLatestResumableJob(novel._id);
+
+    if (job) {
+      try {
+        job = await requestPauseGenerationJob({
+          jobId: valueOf(job, 'jobId'),
+          novelId: novel._id,
+        });
+      } catch (error) {
+        if (error?.code !== 'GENERATION_JOB_INVALID_TRANSITION') throw error;
+      }
+      if (localRun) {
+        localRun.pauseRequested = true;
+        localRun.controller.abort();
+        await Promise.race([
+          localRun.done,
+          new Promise((resolve) => setTimeout(resolve, 12_000)),
+        ]);
+      }
+      const settledJob = await waitForGenerationJob(valueOf(job, 'jobId'), localRun ? 1_000 : 12_000);
+      const status = String(valueOf(settledJob, 'status') || valueOf(job, 'status') || 'pause_requested');
+      if (['paused', 'completed', 'failed', 'cancelled'].includes(status)) {
+        if (status === 'paused' && novel.status !== 'paused') {
+          novel.status = 'paused';
+          await saveNovelDoc(novel);
+        }
+        return res.json({
+          message: status === 'paused' ? '已暂停生成，断点草稿已保存' : '生成任务已结束',
+          job: serializeGenerationJob(settledJob || job),
+        });
+      }
+      return res.status(202).json({
+        message: '暂停请求已提交，正在保存断点草稿',
+        job: serializeGenerationJob(settledJob || job),
+      });
     }
 
+    // 没有持久化任务时才直接修正小说展示状态。
     novel.status = 'paused';
     await saveNovelDoc(novel);
-    res.json({ message: '已暂停生成' });
+    res.json({ message: '已暂停生成', job: null });
   } catch (error) {
     res.status(500).json({ message: '暂停失败' });
   }
@@ -2498,6 +3138,7 @@ router.put('/:novelId/outline', auth, async (req, res) => {
   try {
     const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
     if (!novel) return res.status(404).json({ message: '小说不存在' });
+    if (await rejectBusyNovelMutation(res, novel._id)) return;
     novel.outline = req.body.outline || '';
     await saveNovelDoc(novel);
     res.json({ message: '大纲已更新', outline: novel.outline });
@@ -2513,6 +3154,7 @@ router.delete('/:novelId/chapter/:chapterNumber', auth, async (req, res) => {
   try {
     const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
     if (!novel) return res.status(404).json({ message: '小说不存在' });
+    if (await rejectBusyNovelMutation(res, novel._id)) return;
 
     const chNum = Number(req.params.chapterNumber);
     const idx = novel.chapters.findIndex(c => c.chapterNumber === chNum);
@@ -2535,6 +3177,7 @@ router.put('/:novelId/chapter/:chapterNumber', auth, async (req, res) => {
   try {
     const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
     if (!novel) return res.status(404).json({ message: '小说不存在' });
+    if (await rejectBusyNovelMutation(res, novel._id)) return;
 
     const chNum = Number(req.params.chapterNumber);
     const chapter = novel.chapters.find(c => c.chapterNumber === chNum);
@@ -2553,28 +3196,76 @@ router.put('/:novelId/chapter/:chapterNumber', auth, async (req, res) => {
 
 // 继续生成/新建指定章节（SSE流式）
 router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) => {
+  let generationRun = null;
+  let novel = null;
   try {
-    const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
+    novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
     if (!novel) return res.status(404).json({ message: '小说不存在' });
     const chNum = Number(req.params.chapterNumber);
+    if (!Number.isSafeInteger(chNum) || chNum < 1) return res.status(400).json({ message: '章节号无效' });
     const { wordCount, notes } = req.body;
+
+    generationRun = reserveGenerationRun(novel._id, 'novel');
+    if (!generationRun) return res.status(409).json({ message: '这部小说正在生成，请等待当前任务完成或先暂停' });
+    try {
+      await attachGenerationJob(generationRun, {
+        novelId: novel._id,
+        kind: 'novel',
+        phase: 'chapter_resuming',
+        chapterNumber: chNum,
+        lastCommittedChapter: getHighestChapterNumber(novel),
+        metadata: { userId: String(req.userId), operation: 'continue_chapter', requestedChapter: chNum },
+      });
+    } catch (error) {
+      if (error instanceof LeaseBusyError || error?.code === 'GENERATION_LEASE_BUSY') {
+        return res.status(409).json({ message: '这部小说正在另一项任务中生成，请先暂停或稍后再试' });
+      }
+      throw error;
+    }
+
+    const durableDraft = String(valueOf(generationRun.job, 'draft') || '');
+    const durableChapter = Number(valueOf(generationRun.job, 'chapterNumber') || 0);
+    if (durableDraft && durableChapter !== chNum) {
+      await settleGenerationRun(generationRun, 'paused', { phase: 'resume_conflict', lastCommittedChapter: getHighestChapterNumber(novel) });
+      return res.status(409).json({ message: `这部小说还有第${durableChapter}章的断点草稿，请先从书架“继续生成”恢复该断点` });
+    }
+
+    // Crash window protection: the chapter save may have succeeded just
+    // before the job draft was cleared. In that case acknowledge the prior
+    // commit instead of appending the same durable draft a second time.
+    const durablePhase = resumeDraftPhase(generationRun);
+    const alreadyCommittedChapter = novel.chapters.find(c => Number(c.chapterNumber) === chNum);
+    const durableAddition = durableDraft ? processChapter(durableDraft.trim()).text : '';
+    if (durableDraft && durablePhase === 'commit_ready' && durableAddition
+      && String(alreadyCommittedChapter?.content || '').endsWith(durableAddition)) {
+      let emptyDraft = '';
+      const recoveryCheckpoint = createDraftCheckpointer(generationRun, chNum, () => emptyDraft);
+      await recoveryCheckpoint.commit(getHighestChapterNumber(novel));
+      await settleGenerationRun(generationRun, 'completed', { lastCommittedChapter: getHighestChapterNumber(novel), draft: '' });
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' });
+      res.write(`data: ${JSON.stringify({ type: 'chapter_continued', chapterNumber: chNum, addedLength: 0, recoveredCommit: true })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: 'completed', recoveredCommit: true })}\n\n`);
+      res.end();
+      return;
+    }
+
     const persona = await resolveNovelPersona(req.userId, novel);
     const { type: ccType, skuAxes: ccAxes } = resolveTypeContextFromNovel(novel);
     const personaStyle = withSkuAxes(persona, ccAxes);
+    const styleContinuityAnchor = buildLongFormStyleAnchor(ccType, personaStyle);
 
-    let chapter = novel.chapters.find(c => c.chapterNumber === chNum);
+    let chapter = novel.chapters.find(c => Number(c.chapterNumber) === chNum);
+    const originalContent = String(chapter?.content || '');
     let systemPrompt, userPrompt;
 
     if (chapter) {
-      const existing = (chapter.content || '').slice(-2000);
-      systemPrompt = `${buildSystemPrompt(novel.novelTypeId, undefined, personaStyle, ccType)}\n\n你是一位专业的小说续写专家，请接着用户已有的章节内容继续往下写，保持风格一致。`;
+      const existing = originalContent.slice(-2000);
+      systemPrompt = `${buildSystemPrompt(novel.novelTypeId, undefined, personaStyle, ccType)}\n\n${styleContinuityAnchor}\n\n你是一位专业的小说续写专家，请接着用户已有的章节内容继续往下写，保持风格一致。`;
       userPrompt = `以下是该章节已有的结尾部分：\n\n${existing}\n\n请接着上面的内容继续往下写。\n${notes ? '写作方向/备注：' + notes : '保持原有风格继续推进剧情。'}\n目标字数：约${wordCount || 2000}字。\n请直接输出续写内容，不要重复已有内容。`;
     } else {
       const lastCh = novel.chapters[novel.chapters.length - 1];
       const lastContent = lastCh ? (lastCh.content || '').slice(-1500) : '（故事开始）';
-      chapter = { chapterNumber: chNum, title: formatChapterTitle(chNum, deriveLocalChapterTitle({ notes })), content: '', wordCount: 0 };
-      novel.chapters.push(chapter);
-      systemPrompt = `${buildSystemPrompt(novel.novelTypeId, undefined, personaStyle, ccType)}\n\n你是一位专业的小说家，请接着用户已有的小说内容创作下一章，保持风格一致。`;
+      systemPrompt = `${buildSystemPrompt(novel.novelTypeId, undefined, personaStyle, ccType)}\n\n${styleContinuityAnchor}\n\n你是一位专业的小说家，请接着用户已有的小说内容创作下一章，保持风格一致。`;
       userPrompt = `以下是上一章的结尾部分：\n\n${lastContent}\n\n请接着上面的内容创作第${chNum}章。\n${notes ? '写作方向/备注：' + notes : '保持原有风格继续推进剧情。'}\n目标字数：约${wordCount || 2000}字。\n请直接输出章节内容。`;
     }
 
@@ -2582,79 +3273,124 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
     await saveNovelDoc(novel);
 
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' });
-    res.write(`data: ${JSON.stringify({ type: 'chapter_start', chapterNumber: chNum, title: chapter.title || formatChapterTitle(chNum, deriveLocalChapterTitle({ notes })) })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'generation_job', jobId: generationRun.jobId, status: 'running' })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'chapter_start', chapterNumber: chNum, title: chapter?.title || formatChapterTitle(chNum, deriveLocalChapterTitle({ notes })) })}\n\n`);
+    await emitGenerationJobEvent(generationRun, 'chapter_start', { chapterNumber: chNum });
 
-    let appendBuffer = '';
-    let abortController = new AbortController();
+    let appendBuffer = resumeDraftFor(generationRun, chNum);
+    const resumedDraftPhase = resumeDraftPhase(generationRun);
+    const abortController = generationRun.controller;
     let generationDone = false;
-    let lastAutoSave = 0;
-    const streamKey = `${novel._id}_ch${chNum}`;
-    activeStreams.set(streamKey, abortController);
+    const checkpoint = createDraftCheckpointer(generationRun, chNum, () => appendBuffer);
+    const chapterTokenStats = {};
+    let commitPromise = null;
 
-    async function saveAppendProgress() {
-      try {
-        if (!appendBuffer.trim()) return;
-        await Novel.findByIdAndUpdate(novel._id, { $set: { status: 'generating', currentWordCount: novel.currentWordCount + appendBuffer.length } });
-        lastAutoSave = Date.now();
-      } catch {}
+    if (appendBuffer) {
+      try { res.write(`data: ${JSON.stringify({ type: 'draft_restored', chapterNumber: chNum, length: appendBuffer.length, content: appendBuffer })}\n\n`); } catch {}
     }
 
-    function saveChapterContent(isFinal = false) {
-      if (!appendBuffer.trim()) return;
-      const idx = novel.chapters.findIndex(c => c.chapterNumber === chNum);
-      if (idx > -1) {
-        const newContent = (novel.chapters[idx].content || '') + appendBuffer;
-        novel.chapters[idx].content = isFinal ? processChapter(newContent).text : newContent;
-        novel.chapters[idx].wordCount = novel.chapters[idx].content.length;
-        if (isFinal && /^第\s*\d+\s*章\s*(?:故事未尽)?\s*$/.test(String(novel.chapters[idx].title || ''))) {
-          novel.chapters[idx].title = formatChapterTitle(chNum, deriveLocalChapterTitle({ notes, content: novel.chapters[idx].content }));
+    function commitChapterContent() {
+      if (commitPromise) return commitPromise;
+      commitPromise = (async () => {
+        await checkpoint.flush('commit_ready');
+        const addition = processChapter(String(appendBuffer || '').trim()).text;
+        if (addition.length < 10) throw new Error('续写内容过短，未写入章节');
+        let target = novel.chapters.find(c => Number(c.chapterNumber) === chNum);
+        if (!target) {
+          target = { chapterNumber: chNum, title: formatChapterTitle(chNum, deriveLocalChapterTitle({ notes, content: addition })), content: '', wordCount: 0 };
+          novel.chapters.push(target);
         }
-        novel.markModified(`chapters.${idx}`);
-      }
-      novel.currentWordCount = (novel.currentWordCount || 0) + appendBuffer.length;
+        target.content = processChapter(`${originalContent}${addition}`).text;
+        target.wordCount = target.content.length;
+        if (/^第\s*\d+\s*章\s*(?:故事未尽)?\s*$/.test(String(target.title || ''))) {
+          target.title = formatChapterTitle(chNum, deriveLocalChapterTitle({ notes, content: target.content }));
+        }
+        const tokens = summarizeChapterTokens(chapterTokenStats);
+        if (tokens) target.qualityReport = { ...(target.qualityReport || {}), tokens };
+        novel.currentWordCount = getCompletedWordCount(novel);
+        novel.currentChapterIndex = Math.max(getHighestChapterNumber(novel), Number(novel.currentChapterIndex || 0));
+        novel.status = 'paused';
+        novel.markModified('chapters');
+        await saveNovelDoc(novel);
+        appendBuffer = '';
+        await checkpoint.commit(getHighestChapterNumber(novel));
+        await emitGenerationJobEvent(generationRun, 'chapter_committed', { chapterNumber: chNum, wordCount: target.wordCount });
+        return { chapter: target, addedLength: addition.length };
+      })();
+      return commitPromise;
     }
 
-    req.on('close', async () => {
-      activeStreams.delete(streamKey);
+    req.on('close', () => {
       if (!generationDone) {
-        abortController.abort();
-        saveChapterContent(true);
-        novel.status = 'paused'; await saveNovelDoc(novel);
-        try { res.write(`data: ${JSON.stringify({ type: 'paused' })}\n\n`); res.end(); } catch {}
+        console.log(`⚠️ [ContinueChapter] 客户端断开连接（novelId=${novel._id}, chapter=${chNum}），继续后台生成`);
       }
     });
 
     try {
-      await streamGenerate(systemPrompt, userPrompt, (chunk) => {
-        appendBuffer += chunk;
-        if (Date.now() - lastAutoSave > 5000) saveAppendProgress();
-        res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`);
-      }, abortController.signal, resolveApiConfig(req.userModelConfig, 'writing'), 2, 0.85, 16384, 900000, createThinkingEmitter(res), { stitchOnTruncation: true });
+      let result;
+      if (!(appendBuffer && ['draft_complete', 'commit_ready'].includes(resumedDraftPhase))) {
+        try {
+          result = await streamGenerate(systemPrompt, appendResumeInstruction(userPrompt, appendBuffer), (chunk) => {
+            appendBuffer += chunk;
+            checkpoint.schedule('writing');
+            try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
+          }, abortController.signal, resolveApiConfig(req.userModelConfig, 'writing'), 2, 0.85, 16384, 900000, createThinkingEmitter(res), { stitchOnTruncation: true, taskType: 'chapter_write' });
+          emitTokenUsage(res, novel, 'writing', result, chapterTokenStats);
+          await checkpoint.flush('draft_complete');
+        } catch (error) {
+          if (error?.attempts || error?.usage) emitTokenUsage(res, novel, 'writing', error, chapterTokenStats);
+          try { await checkpoint.flush('writing_interrupted'); } catch {}
+          throw error;
+        }
+      }
 
       if (abortController.signal.aborted) {
-        activeStreams.delete(streamKey);
-        saveChapterContent(true);
-        novel.status = 'paused'; await saveNovelDoc(novel);
+        novel.status = 'paused';
+        await saveNovelDoc(novel);
+        generationDone = true;
+        await settleGenerationRun(generationRun, 'paused', { phase: 'paused', lastCommittedChapter: getHighestChapterNumber(novel) });
+        try { res.write(`data: ${JSON.stringify({ type: 'paused', message: '生成已暂停，断点草稿已保存' })}\n\n`); res.end(); } catch {}
         return;
       }
 
       generationDone = true;
-      activeStreams.delete(streamKey);
-      saveChapterContent(true);
-      // completed 事件只表示本次指定章节续写完成，整部小说仍可继续创作。
-      novel.status = 'paused'; await saveNovelDoc(novel);
+      const committed = await commitChapterContent();
+      await settleGenerationRun(generationRun, 'completed', { lastCommittedChapter: getHighestChapterNumber(novel), draft: '' });
 
-      res.write(`data: ${JSON.stringify({ type: 'chapter_continued', chapterNumber: chNum, addedLength: appendBuffer.length })}\n\n`);
-      res.write(`data: ${JSON.stringify({ type: 'completed' })}\n\n`);
-      res.end();
+      try {
+        res.write(`data: ${JSON.stringify({ type: 'chapter_continued', chapterNumber: chNum, addedLength: committed.addedLength })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'completed' })}\n\n`);
+        res.end();
+      } catch {}
     } catch (streamError) {
-      activeStreams.delete(streamKey);
-      saveChapterContent(true);
-      novel.status = 'paused'; await saveNovelDoc(novel);
-      try { res.write(`data: ${JSON.stringify({ type: 'paused' })}\n\n`); res.end(); } catch {}
+      novel.status = 'paused';
+      try { await saveNovelDoc(novel); } catch {}
+      generationDone = true;
+      const resumable = isAbortError(streamError) || streamError?.resumable === true;
+      await settleGenerationRun(generationRun, resumable ? 'paused' : 'failed', {
+        phase: isAbortError(streamError) ? 'paused' : (resumable ? 'stream_interrupted' : 'failed'),
+        error: resumable ? null : { message: streamError.message || 'Generation failed' },
+        lastCommittedChapter: getHighestChapterNumber(novel),
+      });
+      try {
+        const event = resumable
+          ? { type: 'paused', message: '生成已中断，断点草稿已保存，可继续恢复' }
+          : { type: 'error', message: streamError.isApiError ? streamError.message : '续写出错，断点草稿已保存' };
+        res.write(`data: ${JSON.stringify(event)}\n\n`);
+        res.end();
+      } catch {}
     }
   } catch (error) {
-    res.status(500).json({ message: '续写出错' });
+    if (generationRun && !generationRun.settled) {
+      await settleGenerationRun(generationRun, 'failed', { error: { message: error.message || 'Generation setup failed' } });
+    }
+    const status = error instanceof LeaseBusyError || error?.code === 'GENERATION_LEASE_BUSY' ? 409 : 500;
+    const message = status === 409 ? '这部小说正在另一项任务中生成，请先暂停或稍后再试' : '续写出错';
+    if (res.headersSent) {
+      try { res.write(`data: ${JSON.stringify({ type: 'error', message })}\n\n`); res.end(); } catch {}
+    } else {
+      res.status(status).json({ message });
+    }
   }
 });
 
@@ -2779,7 +3515,8 @@ router.post('/deslop', auth, async (req, res) => {
       null,
       null,
       resolveApiConfig(req.userModelConfig, 'polish'),
-      2, 0.85, undefined, 600000
+      2, 0.85, undefined, 600000, null,
+      { taskType: 'deslop_rewrite' }
     );
 
     res.json({ original: text, processed: processChapter(result.content).text });
@@ -2824,7 +3561,8 @@ router.post('/deslop-stream', auth, async (req, res) => {
           fullContent += chunk;
           res.write(`data: ${JSON.stringify({ type: 'content', content: chunk, pass: 1 })}\n\n`);
         },
-        null, apiConfig, 2, 0.92, undefined, 600000
+        null, apiConfig, 2, 0.92, undefined, 600000, null,
+        { taskType: 'deslop_rewrite_pass_1' }
       );
       if (result1 && result1.content && result1.content.length > text.length * 0.3) {
         fullContent = result1.content;
@@ -2870,7 +3608,8 @@ ${fullContent}`;
           finalContent += chunk;
           res.write(`data: ${JSON.stringify({ type: 'content', content: chunk, pass: 2 })}\n\n`);
         },
-        null, apiConfig, 2, 0.95, undefined, 600000
+        null, apiConfig, 2, 0.95, undefined, 600000, null,
+        { taskType: 'deslop_rewrite_pass_2' }
       );
 
       if (finalContent && finalContent.length > fullContent.length * 0.3) {
@@ -2978,7 +3717,8 @@ ${genreHint}\n${genreContract}${buildPersonaPrompt(persona)}`;
 ${text.slice(0, 8000)}`,
           null, abortController.signal,
           resolveApiConfig(req.userModelConfig, 'polish'),
-          1, 0.3, 8000, 300000
+          1, 0.3, 8000, 300000, null,
+          { taskType: 'polish_diagnosis' }
         );
         try {
           let raw = (diagResult?.content || '').replace(/```json|```/g, '').trim();
@@ -3017,7 +3757,9 @@ ${text.slice(0, 8000)}`,
         1,
         0.65,
         polishMaxTokens,
-        120000
+        120000,
+        null,
+        { taskType: 'polish_rewrite' }
       );
     } catch (e) {
       if (e.name !== 'AbortError') throw e;
@@ -3045,7 +3787,9 @@ ${text.slice(0, 8000)}`,
             1,
             0.65,
             getChapterOutputTokenLimit(Math.ceil(polished.length * 1.1)),
-            120000
+            120000,
+            null,
+            { taskType: 'polish_deslop' }
           );
         } catch (e) {
           if (e.name !== 'AbortError') throw e;
@@ -3327,7 +4071,12 @@ ${content}
 3. 关键字用逗号分隔，每类至少 2-3 个人物/场景
 4. 关键字可直接用于 AI 图像生成提示词的拼接`;
 
-    const result = await streamGenerate(systemPrompt, userPrompt, null, null, resolveApiConfig(req.userModelConfig, 'reasoning'), 2, 0.7, 4000, 300000);
+    const result = await streamGenerate(
+      systemPrompt, userPrompt, null, null,
+      resolveApiConfig(req.userModelConfig, 'reasoning'),
+      2, 0.7, 4000, 300000, null,
+      { taskType: 'keyword_extraction' }
+    );
 
     if (!result || !result.content) {
       return res.status(500).json({ message: '关键字生成失败' });
@@ -3385,7 +4134,8 @@ async function runOptimizeTask(novelId, userId, apiConfig) {
     );
     const analysisResult = await streamGenerate(
       '你是一位专业的小说编辑。请分析小说全文，找出所有问题。',
-      analysisPrompt, null, null, apiConfig, 2, 0.5, 8000, 300000
+      analysisPrompt, null, null, apiConfig, 2, 0.5, 8000, 300000, null,
+      { taskType: 'full_book_analysis' }
     );
     const analysis = analysisResult?.content || '';
 
@@ -3423,7 +4173,8 @@ async function runOptimizeTask(novelId, userId, apiConfig) {
       );
       const chResult = await streamGenerate(
         '你是一位专业的小说编辑。请根据分析报告优化指定章节。',
-        chPrompt, null, null, apiConfig, 2, 0.75, undefined, 600000
+        chPrompt, null, null, apiConfig, 2, 0.75, undefined, 600000, null,
+        { taskType: 'full_book_chapter_repair' }
       );
       let newContent = chResult?.content || '';
       const minRetainedLength = Math.max(120, Math.floor(sourceContent.length * 0.45));

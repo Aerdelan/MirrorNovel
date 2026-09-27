@@ -80,6 +80,7 @@ import { ref, computed } from 'vue'
 import { useAuthStore } from '../../stores/auth'
 import { xhrUrl } from '../../utils/apiUrl'
 import { toUserFacingMessage } from '../../utils/userFacing'
+import { classifySSEEnd, createSSEParser } from '../../utils/sseParser'
 
 const authStore = useAuthStore()
 
@@ -134,43 +135,82 @@ function startPolish() {
   polishedText.value = ''; polishStatusText.value = '正在润色...'
   polishProgress.value = 0
   let totalChunks = 0
+  let deslopStarted = false
 
   const token = getToken()
   const xhr = new XMLHttpRequest()
+  xhr._aborted = false
   xhr.open('POST', xhrUrl('/api/novel/polish'))
   xhr.setRequestHeader('Authorization', `Bearer ${token}`)
   xhr.setRequestHeader('Content-Type', 'application/json')
   xhr.setRequestHeader('Accept', 'text/event-stream')
   let lastIdx = 0
 
+  // SSE data lines can be split at any byte/character boundary. Keep one
+  // incremental parser for the whole request and only trust an explicit
+  // terminal event as proof that polishing completed.
+  const parser = createSSEParser({ onEvent(event) {
+    if (event.type === 'content') {
+      // The server emits pass-1 content first. If the optional de-AI pass
+      // starts, display that pass on its own until final_content arrives.
+      if (!deslopStarted) polishedText.value += String(event.content || '')
+      totalChunks++
+      polishProgress.value = Math.min(95, Math.round(totalChunks / 10))
+      polishStatusText.value = '正在润色...'
+    } else if (event.type === 'deslop_content') {
+      if (!deslopStarted) {
+        deslopStarted = true
+        polishedText.value = ''
+      }
+      polishedText.value += String(event.content || '')
+      polishStatusText.value = '正在去AI味...'
+      polishProgress.value = 96
+    } else if (event.type === 'final_content') {
+      // Post-processing is authoritative. Replacing the streamed preview
+      // prevents pass-1/pass-2 content from being saved twice.
+      polishedText.value = String(event.content ?? '')
+    } else if (event.type === 'status') {
+      polishStatusText.value = toUserFacingMessage(event.message)
+    } else if (event.type === 'completed') {
+      polishStatusText.value = '润色完成（' + polishedText.value.length + '字）'
+      polishProgress.value = 100
+      polishCompleted.value = true
+      polishing.value = false
+    } else if (event.type === 'error') {
+      polishStatusText.value = toUserFacingMessage(event.message || '润色失败')
+      polishing.value = false
+    } else if (event.type === 'disconnected') {
+      polishStatusText.value = toUserFacingMessage(event.message || '连接已中断，请返回后重试')
+      polishing.value = false
+    }
+  } })
+
   xhr.onprogress = () => {
     const newData = xhr.responseText.substring(lastIdx)
     lastIdx = xhr.responseText.length
-    const lines = newData.split('\n').filter(l => l.startsWith('data: '))
-    for (const line of lines) {
-      try {
-        const event = JSON.parse(line.substring(6))
-        if (event.type === 'content') {
-          polishedText.value += event.content; totalChunks++
-          polishProgress.value = Math.min(95, Math.round(totalChunks / 10))
-          polishStatusText.value = '正在润色...'
-        } else if (event.type === 'deslop_content') {
-          polishedText.value += event.content
-          polishStatusText.value = '正在去AI味...'
-          polishProgress.value = 96
-        } else if (event.type === 'status') {
-          polishStatusText.value = toUserFacingMessage(event.message)
-        } else if (event.type === 'completed') {
-          polishStatusText.value = '润色完成（' + polishedText.value.length + '字）'
-          polishProgress.value = 100; polishCompleted.value = true; polishing.value = false
-        } else if (event.type === 'error') {
-          polishStatusText.value = toUserFacingMessage(event.message || '润色失败'); polishing.value = false
-        }
-      } catch {}
+    parser.push(newData)
+  }
+
+  xhr.onloadend = () => {
+    const newData = xhr.responseText.substring(lastIdx)
+    lastIdx = xhr.responseText.length
+    parser.push(newData)
+    parser.finish()
+
+    if (xhr._aborted || parser.getState().hasTerminalEvent) return
+    const end = classifySSEEnd({ status: xhr.status, state: parser.getState() })
+    if (end.kind === 'http_error' || end.kind === 'empty_response') {
+      polishStatusText.value = toUserFacingMessage(xhr.status ? `请求失败（${xhr.status}）` : '请求失败')
+      polishing.value = false
+    } else if (end.kind === 'disconnected') {
+      polishStatusText.value = toUserFacingMessage('连接已中断，后台任务状态未知；请返回后刷新状态')
+      polishing.value = false
     }
   }
 
-  xhr.onerror = () => { polishing.value = false; polishStatusText.value = '❌ 网络请求失败' }
+  // loadend performs the final classification so onerror cannot report a
+  // duplicate failure or turn a partial stream into a successful result.
+  xhr.onerror = () => {}
   xhr.send(JSON.stringify({ text, polishPrompt: polishPrompt.value || undefined, doDeslop: polishDoDeslop.value }))
 }
 

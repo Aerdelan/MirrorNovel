@@ -22,7 +22,7 @@ const {
 const { CATEGORY_TREE, resolveTypeSku } = require('../config/novelTypeSku');
 const novelTypes = require('../config/novelTypes');
 const novelTypeData = require('../config/novelTypeData');
-const { buildGenreStyleContract, buildSystemPrompt, buildOutlinePrompt, buildChapterPlan, buildInitialPrompt } = require('../services/aiService');
+const { buildGenreStyleContract, buildSystemPrompt, buildOutlinePrompt, buildChapterPlan, buildInitialPrompt, buildLongFormStyleAnchor } = require('../services/aiService');
 
 function allSkuCategories() {
   return [...CATEGORY_TREE.male, ...CATEGORY_TREE.female];
@@ -190,4 +190,23 @@ test('系统提示：SKU 的基调契约与关键词都进正文提示', () => {
   assert.match(sys, /成熟的轻小说作者/);
   assert.doesNotMatch(sys, /【节奏紧凑】/);
   assert.doesNotMatch(sys, /言情\/关系/);
+});
+
+test('长篇防漂移锚点在每章重申精确标签，并拒绝模仿已漂移的近期文风', () => {
+  const r = resolveTypeSku({
+    channel: 'male', category: 'acg', theme: 'acg_school',
+    elements: ['xiaoguo'], personas: ['aojiao'], tones: ['gaoxiao'], cp: 'single',
+  });
+  const type = {
+    id: r.name, name: r.name, keywords: r.keywords, aiWordBank: r.aiWordBank,
+    axes: r.axes, contract: r.contract, toneContract: r.toneContract,
+    toneNames: r.tones, tagContract: r.tagContract, selection: r.selection,
+  };
+  const anchor = buildLongFormStyleAnchor(type, { name: '轻快声线', voice: '吐槽型近距离叙述者' });
+  assert.match(anchor, /长篇文风防漂移锚点/);
+  assert.match(anchor, /二次元·日系校园/);
+  assert.match(anchor, /搞笑\/无厘头/);
+  assert.match(anchor, /人设标签：傲娇/);
+  assert.match(anchor, /最近章节.*不是新的文风权威/);
+  assert.match(anchor, /禁止全员冷静、完整、讲逻辑/);
 });

@@ -406,6 +406,37 @@ function renderTonePlanHint(type) {
 }
 
 /**
+ * Long novels need a short, repeated style authority close to the generation
+ * instruction.  A system prompt alone is not enough: after dozens of chapters
+ * the model tends to imitate its own increasingly averaged recent prose.  This
+ * block makes the user's original type/tags/persona authoritative again for
+ * every chapter while keeping recent chapters as continuity facts only.
+ */
+function buildLongFormStyleAnchor(resolvedType, persona) {
+  const type = resolvedType || null;
+  const profile = buildStyleProfileBlock(mergeAxes(type && type.axes, persona && persona.axes));
+  const typeMeta = renderTypeMetaBlock(type);
+  const personaLines = [
+    persona?.voice ? `作者声线：${String(persona.voice).slice(0, 1200)}` : '',
+    persona?.tone ? `语气与节奏：${String(persona.tone).slice(0, 900)}` : '',
+    persona?.rules ? `自定义写作规则：${String(persona.rules).slice(0, 1800)}` : '',
+    persona?.vocab ? `用词边界：${String(persona.vocab).slice(0, 900)}` : '',
+  ].filter(Boolean).join('\n');
+  const genreContract = type ? buildGenreStyleContract(type.id || type.name, type) : '';
+  const blocks = [profile, typeMeta, type?.toneContract, type?.tagContract, personaLines, genreContract].filter(Boolean);
+  if (!blocks.length) return '';
+  return `【长篇文风防漂移锚点｜本章重新生效】
+以下是本书从开篇到结局都不可被后文稀释的作者身份与类型承诺：
+${blocks.join('\n\n')}
+
+执行规则：
+1. 最近章节、剧情摘要和阶段记忆只提供“已经发生什么”，不是新的文风权威；若它们的措辞逐渐变得通用、冷静或同质，必须以本锚点纠偏，不得继续模仿漂移后的腔调。
+2. 题材、基调和人物声线必须落实到本章的叙述距离、词汇、句法、对白节奏、反应方式和场景选择，不能只在剧情名词上贴标签。
+3. 同一事件下，不同角色必须因目标、盲点、礼貌程度和失控方式不同而说不同的话、做不同的选择；禁止全员冷静、完整、讲逻辑。
+4. 写完后在内部检查“删掉类型名后，本章是否仍能从语气、互动和场景辨认出本书”；若不能，先纠偏再输出。不要输出检查过程。`;
+}
+
+/**
  * 题材叙事契约：按类型体系里显式登记的 contract 取正文。
  *
  * 旧实现是对类型名做正则猜（"校园"会把「二次元·日系校园」判成言情、游戏/军事/纯爱
@@ -783,6 +814,12 @@ function extractProviderMaxTokens(errorText) {
 const providerTokenCapCache = new Map();
 const PROVIDER_CAP_CACHE_LIMIT = 50;
 
+// Most OpenAI-compatible providers support stream_options.include_usage, but
+// a few older gateways reject the entire request when that field is present.
+// Ask for real usage by default, then remember a rejection per route/model so
+// subsequent calls do not pay another failed round trip.
+const usageStreamRejectedCache = new Set();
+
 function providerCapKey(config) {
   return `${config?.baseUrl || ''}::${config?.model || ''}`;
 }
@@ -793,6 +830,94 @@ function rememberProviderCap(config, cap) {
     providerTokenCapCache.delete(providerTokenCapCache.keys().next().value);
   }
   providerTokenCapCache.set(key, cap);
+}
+
+function usageStreamRejectedKey(config) {
+  return `${config?.baseUrl || ''}|${config?.model || ''}`.toLowerCase();
+}
+
+function isUsageStreamParamRejected(errorText) {
+  const text = String(errorText || '');
+  return /stream_options|include_usage/i.test(text)
+    && /unknown|unsupported|not\s+support|unrecognized|invalid|incorrect|forbidden|not\s+permitted|extra\s+inputs|不支持|未知|无效|错误|无法识别/i.test(text);
+}
+
+function tokenNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.round(number) : 0;
+}
+
+function cachedTokensFromUsage(usage) {
+  return tokenNumber(usage?.prompt_cache_hit_tokens)
+    || tokenNumber(usage?.prompt_tokens_details?.cached_tokens)
+    || tokenNumber(usage?.input_tokens_details?.cached_tokens);
+}
+
+function reasoningTokensFromUsage(usage) {
+  return tokenNumber(usage?.reasoning_tokens)
+    || tokenNumber(usage?.completion_tokens_details?.reasoning_tokens)
+    || tokenNumber(usage?.output_tokens_details?.reasoning_tokens);
+}
+
+/**
+ * Normalize one physical provider request into a stable, provider-neutral
+ * attempt record. Prompts and credentials are intentionally never retained.
+ */
+function buildAttemptRecord({
+  role, attempt, usage, estimatedInputTokens, estimatedOutputTokens,
+  estimatedReasoningTokens, finishReason, accepted, discarded, error,
+  retryReason, taskType, model, routeId, providerHost, startedAt,
+  durationMs, statusCode,
+}) {
+  const hasProviderUsage = usage && typeof usage === 'object';
+  const providerInput = tokenNumber(usage?.prompt_tokens) || tokenNumber(usage?.input_tokens);
+  const providerOutput = tokenNumber(usage?.completion_tokens) || tokenNumber(usage?.output_tokens);
+  const providerReasoning = reasoningTokensFromUsage(usage);
+  return {
+    role: String(role || 'writing'),
+    taskType: String(taskType || role || 'writing').slice(0, 80),
+    model: model ? String(model).slice(0, 160) : null,
+    routeId: routeId ? String(routeId).slice(0, 120) : null,
+    providerHost: providerHost ? String(providerHost).slice(0, 200) : null,
+    attempt: Math.max(1, Number(attempt) || 1),
+    finishReason: finishReason || null,
+    accepted: accepted === true,
+    discarded: discarded === true,
+    inputTokens: providerInput || tokenNumber(estimatedInputTokens),
+    outputTokens: providerOutput || tokenNumber(estimatedOutputTokens),
+    reasoningTokens: providerReasoning || tokenNumber(estimatedReasoningTokens),
+    cacheSavedTokens: hasProviderUsage ? cachedTokensFromUsage(usage) : 0,
+    error: error ? String(error).slice(0, 1000) : null,
+    retryReason: retryReason || null,
+    startedAt: startedAt || new Date().toISOString(),
+    durationMs: Math.max(0, Math.round(Number(durationMs) || 0)),
+    statusCode: Number.isFinite(Number(statusCode)) && Number(statusCode) > 0
+      ? Math.round(Number(statusCode))
+      : null,
+    // A provider may return only some usage fields. Mark the record estimated
+    // whenever either the input or visible output had to be inferred locally.
+    estimated: !providerInput || (!providerOutput && tokenNumber(estimatedOutputTokens) > 0),
+  };
+}
+
+function aggregateAttemptUsage(attempts) {
+  const totals = (Array.isArray(attempts) ? attempts : []).reduce((sum, item) => {
+    sum.prompt_tokens += tokenNumber(item?.inputTokens);
+    sum.completion_tokens += tokenNumber(item?.outputTokens);
+    sum.reasoning_tokens += tokenNumber(item?.reasoningTokens);
+    sum.prompt_cache_hit_tokens += tokenNumber(item?.cacheSavedTokens);
+    if (item?.estimated) sum.estimated_attempts += 1;
+    return sum;
+  }, {
+    prompt_tokens: 0,
+    completion_tokens: 0,
+    reasoning_tokens: 0,
+    prompt_cache_hit_tokens: 0,
+    estimated_attempts: 0,
+  });
+  totals.total_tokens = totals.prompt_tokens + totals.completion_tokens;
+  totals.estimated = totals.estimated_attempts > 0;
+  return totals;
 }
 
 /**
@@ -870,9 +995,49 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
   // 继续逐级"收紧重试"只会让下一轮更早被掐死（表现为长时间生成不完）。
   // 掐一次拿到"这不是失控"的证据后就放行，让本次尝试跑完，由 timeoutMs 兜底。
   const MAX_WATCHDOG_HITS = 1;
-  // 输入 token 估算（无服务商用量时回退使用）。system+user 在重试间不变，
-  // 只需计算一次。
-  const estimatedInputTokens = countTokens(systemPrompt) + countTokens(userPrompt);
+  // 一个 streamGenerate 可能包含参数探测、临时错误重试以及截断续写。
+  // 过去只返回最后一次请求的 usage，会把前面已经消耗的 token 全部漏掉。
+  // 这里按每个真实 HTTP 请求建账，最终统一聚合。
+  const attemptsLedger = [];
+  let attemptSequence = 0;
+  let providerHost = null;
+  try { providerHost = new URL(config.baseUrl).host; } catch {}
+  const appendAttempt = (data) => {
+    const record = buildAttemptRecord({
+      ...data,
+      role: data?.role || config.role || 'writing',
+      taskType: data?.taskType || options.taskType || config.taskType || config.role || 'writing',
+      model: data?.model || config.model,
+      routeId: data?.routeId || config.routeId || null,
+      providerHost: data?.providerHost || providerHost,
+      attempt: ++attemptSequence,
+    });
+    attemptsLedger.push(record);
+    return record;
+  };
+  const appendChildAttempts = (children) => {
+    for (const child of (Array.isArray(children) ? children : [])) {
+      attemptsLedger.push({
+        ...child,
+        role: child?.role || config.role || 'writing',
+        attempt: ++attemptSequence,
+      });
+    }
+  };
+  const attachTelemetry = (error, partialContent = '', extra = {}) => {
+    const target = error instanceof Error ? error : new Error(String(error || 'AI API 请求失败'));
+    const usage = aggregateAttemptUsage(attemptsLedger);
+    target.attempts = attemptsLedger.map(item => ({ ...item }));
+    target.usage = usage;
+    target.inputTokens = usage.prompt_tokens;
+    target.tokenCount = usage.completion_tokens;
+    if (partialContent) {
+      target.partial = true;
+      target.partialContent = partialContent;
+    }
+    Object.assign(target, extra);
+    return target;
+  };
 
   const currentCandidate = () => fieldCandidates[Math.min(candidateIndex, fieldCandidates.length - 1)];
 
@@ -886,6 +1051,9 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         stream: true,
         temperature,
         max_tokens: thinkingPolicy.maxTokens,
+        ...(usageStreamRejectedCache.has(usageStreamRejectedKey(config))
+          ? {}
+          : { stream_options: { include_usage: true } }),
         ...currentCandidate().fields,
       };
   };
@@ -901,6 +1069,37 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
     }
     let timeoutId;
     let currentSignal;
+    let requestInputEstimate = 0;
+    let fullContent = '';
+    let providerUsage = null;
+    let finishReason = null;
+    let reasoningChars = 0;
+    let reasoningTokenEstimate = 0;
+    let attemptRecorded = false;
+    let attemptRecord = null;
+    let streamStarted = false;
+    const attemptStartedAtMs = Date.now();
+    let responseStatus = null;
+    const recordPhysicalAttempt = (data = {}) => {
+      if (attemptRecorded) {
+        if (data.retryReason) attemptRecord.retryReason = data.retryReason;
+        if (data.error) attemptRecord.error = String(data.error).slice(0, 1000);
+        return attemptRecord;
+      }
+      attemptRecord = appendAttempt({
+        usage: providerUsage,
+        estimatedInputTokens: requestInputEstimate,
+        estimatedOutputTokens: countTokens(fullContent),
+        estimatedReasoningTokens: reasoningTokenEstimate,
+        finishReason,
+        startedAt: new Date(attemptStartedAtMs).toISOString(),
+        durationMs: Date.now() - attemptStartedAtMs,
+        statusCode: data.statusCode || responseStatus,
+        ...data,
+      });
+      attemptRecorded = true;
+      return attemptRecord;
+    };
     try {
       const timeoutController = new AbortController();
       // 超时按"每次尝试"计算，不是全请求共享：思考型线路一次空输出尝试
@@ -921,11 +1120,31 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         currentSignal = timeoutController.signal;
       }
 
-      const response = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify(buildRequestBody()), signal: currentSignal });
+      const requestBody = buildRequestBody();
+      requestInputEstimate = (requestBody.messages || []).reduce(
+        (sum, message) => sum + countTokens(message?.content || ''),
+        0,
+      );
+      const response = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify(requestBody), signal: currentSignal });
+      responseStatus = response.status || (response.ok ? 200 : null);
 
       if (!response.ok) {
         const errorText = await response.text();
         clearTimeout(timeoutId);
+        // Some compatible gateways reject include_usage instead of ignoring it.
+        // Adapt once, cache the capability, and keep the failed physical request
+        // in the attempt ledger.
+        if (!isOllama && isUsageStreamParamRejected(errorText)
+            && !usageStreamRejectedCache.has(usageStreamRejectedKey(config))) {
+          usageStreamRejectedCache.add(usageStreamRejectedKey(config));
+          recordPhysicalAttempt({
+            accepted: false, discarded: true, error: errorText,
+            retryReason: 'usage_stream_unsupported',
+          });
+          console.warn(`AI 线路不接受 stream_options.include_usage，已降级并记住：${config.model}`);
+          attempt -= 1;
+          continue;
+        }
         // 1) 模型要求"必须开启深度思考"：不再直接报"不支持"，而是开启思考并把
         //    思考预算纳入预算分离（正文预算不受影响），这样深度思考模型可以直接使用。
         if (/必须开启|must\s+(be\s+)?enable|required/i.test(errorText) && /深度思考|thinking|reasoning/i.test(errorText)) {
@@ -934,6 +1153,10 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
           thinkingPolicy = nextPolicy;
           rebuildCandidates(true);
           if (changed) {
+            recordPhysicalAttempt({
+              accepted: false, discarded: true, error: errorText,
+              retryReason: 'thinking_required',
+            });
             console.warn(`AI 线路要求必须开启深度思考，已按策略开启：${describeThinkingPolicy(thinkingPolicy)}`);
             attempt -= 1; // 参数适配不计入重试次数
             continue;
@@ -951,6 +1174,10 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
             thinkingRejectedCache.add(thinkingRejectedKey(config));
             console.warn(`AI 线路不接受思考参数（${rejected}），后续请求不再下发思考字段：${config.model}`);
           }
+          recordPhysicalAttempt({
+            accepted: false, discarded: true, error: errorText,
+            retryReason: 'thinking_parameter_fallback',
+          });
           console.warn(`AI API 拒绝思考参数（${rejected}），降级为 ${currentCandidate().label} 后重试`);
           attempt -= 1;
           continue;
@@ -967,11 +1194,19 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
             providerCapTokens: providerMaxTokens,
             forceDisabled: config.disableThinking === true,
           });
+          recordPhysicalAttempt({
+            accepted: false, discarded: true, error: errorText,
+            retryReason: 'provider_token_cap',
+          });
           console.warn(`AI API max_tokens 超限（${previous.maxTokens}→${thinkingPolicy.maxTokens}，上限 ${providerMaxTokens}），已优先压缩思考预算：${describeThinkingPolicy(thinkingPolicy)}`);
           attempt -= 1;
           continue;
         }
         if ((response.status === 503 || response.status === 429) && attempt < retries) {
+          recordPhysicalAttempt({
+            accepted: false, discarded: true, error: errorText,
+            retryReason: response.status === 429 ? 'rate_limited' : 'service_unavailable',
+          });
           const delay = Math.pow(2, attempt) * 1000;
           console.warn(`AI API 请求 ${response.status}，第 ${attempt + 1} 次重试，等待 ${delay}ms`);
           await new Promise(r => setTimeout(r, delay));
@@ -982,22 +1217,22 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         const err = new Error(friendlyMsg);
         err.statusCode = response.status;
         err.isApiError = true;
+        err.attemptRecord = recordPhysicalAttempt({
+          accepted: false, discarded: true, error: errorText,
+        });
         throw err;
       }
 
+      streamStarted = true;
       const reader = response.body.getReader();
       // 宽容解码：线路偶发非法字节时保留为 U+FFFD（�）并继续生成，
       // 不因个别乱码中止或重试，避免重复消耗整次生成的 token。
       const decoder = new TextDecoder('utf-8');
-      let fullContent = '';
       let buffer = '';
       // 服务商在流末尾返回的实际用量（若支持）。DeepSeek 附带
       // prompt_cache_hit_tokens，OpenAI 兼容线路在 prompt_tokens_details.cached_tokens
       // 中给出前缀缓存命中量。不做请求体改动，被动捕获即可，兼容所有线路。
-      let providerUsage = null;
       // finish_reason 与 reasoning 累计用于空输出诊断与看门狗判定。
-      let finishReason = null;
-      let reasoningChars = 0;
       // 看门狗：思考长度超过策略上限且正文仍未开始 → 立刻掐断本次尝试。
       // 旧实现只能等模型把思考写完（实测可达数万字、数百秒）才知道正文没了。
       let watchdogTripped = false;
@@ -1016,6 +1251,7 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
               const parsed = JSON.parse(line);
               const content = parsed.message?.content || '';
               if (content) { fullContent += content; if (onChunk) onChunk(content); }
+              if (parsed.done_reason) finishReason = parsed.done_reason;
               if (parsed.done && (parsed.prompt_eval_count || parsed.eval_count)) {
                 providerUsage = { prompt_tokens: parsed.prompt_eval_count, completion_tokens: parsed.eval_count };
               }
@@ -1036,7 +1272,11 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
                 if (content) { fullContent += content; if (onChunk) onChunk(content); }
                 // 思考阶段只有 reasoning_content，不转发会导致前端长时间停在 0 字
                 const reasoning = parsed.choices?.[0]?.delta?.reasoning_content || '';
-                if (reasoning) { reasoningChars += reasoning.length; if (onReasoning) onReasoning(reasoning); }
+                if (reasoning) {
+                  reasoningChars += reasoning.length;
+                  reasoningTokenEstimate += countTokens(reasoning);
+                  if (onReasoning) onReasoning(reasoning);
+                }
                 const reason = parsed.choices?.[0]?.finish_reason;
                 if (reason) finishReason = reason;
                 if (parsed.usage && typeof parsed.usage === 'object') providerUsage = parsed.usage;
@@ -1074,6 +1314,12 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
       // 看门狗掐断：收紧思考策略（连续掐断则直接关闭思考）后立即重试。
       // 这是"深度思考模型响应慢"的主要止血点——不再等模型把失控的思考写完。
       if (watchdogTripped && watchdogHits < MAX_WATCHDOG_HITS) {
+        recordPhysicalAttempt({
+          accepted: false,
+          discarded: true,
+          retryReason: 'thinking_watchdog',
+          error: `reasoning exceeded ${thinkingPolicy.maxReasoningChars} chars before usable content`,
+        });
         watchdogHits += 1;
         const disable = watchdogHits >= MAX_WATCHDOG_HITS;
         thinkingPolicy = tightenThinking(thinkingPolicy, { disableThinking: disable });
@@ -1090,6 +1336,14 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
       // 若原因是思考吃满预算（finish=length 且有 reasoning），旧实现"放大总预算"
       // 只会让下一次思考更长更慢；改为压缩/关闭思考并保持正文预算不变。
       if (!fullContent.trim() && attempt < retries) {
+        recordPhysicalAttempt({
+          accepted: false,
+          discarded: true,
+          retryReason: finishReason === 'length' && reasoningChars > 0
+            ? 'reasoning_exhausted_budget'
+            : 'empty_output',
+          error: 'provider returned no usable content',
+        });
         const delay = Math.pow(2, attempt) * 1500;
         if (finishReason === 'length' && reasoningChars > 0) {
           emptyReasoningHits += 1;
@@ -1103,6 +1357,15 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         await new Promise(r => setTimeout(r, delay));
         continue;
       }
+
+      // This physical request is now part of the returned result. A truncated
+      // response is accepted as a prefix and may be completed by child calls;
+      // it must not be counted as discarded output.
+      recordPhysicalAttempt({
+        accepted: Boolean(fullContent.trim()),
+        discarded: !fullContent.trim(),
+        error: fullContent.trim() ? null : 'provider returned no usable content',
+      });
 
       // 截断续写：finish=length 说明正文被输出预算截断，此时结果本身是可用正文，
       // 与其把半截大纲丢弃，不如补一次“从中断处继续”。仅调用方显式开启时生效。
@@ -1140,7 +1403,7 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
           const continued = await streamGenerate(
             systemPrompt, continuationPrompt, forward, signal, apiConfig,
             0, temperature, Math.max(2048, thinkingPolicy.contentBudget),
-            timeoutMs, onReasoning, { stitchOnTruncation: false }
+            timeoutMs, onReasoning, { ...options, stitchOnTruncation: false }
           );
           // 流已结束但缓冲未满 300 字：此时才能判定重复前缀并补发。
           if (!flushing) {
@@ -1150,26 +1413,50 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
             if (rest) { emitted += rest; if (onChunk) onChunk(rest); }
           }
           if (!emitted) {
+            appendChildAttempts((continued?.attempts || []).map(item => ({
+              ...item,
+              accepted: false,
+              discarded: true,
+              retryReason: item.retryReason || 'duplicate_continuation',
+            })));
             console.warn('[Stitch] 续写未产生新增内容，停止拼接');
             break;
           }
+          appendChildAttempts(continued?.attempts);
           fullContent = `${fullContent}${emitted}`;
           finishReason = continued?.finishReason || null;
-          if (continued?.usage) providerUsage = continued.usage;
           if (continued?.reasoningChars) totalReasoningChars += continued.reasoningChars;
           console.log(`[Stitch] 第 ${stitchedRounds} 轮补全完成，正文 ${fullContent.length} 字（继续状态：${finishReason || 'done'}）`);
         } catch (error) {
-          // 续写失败不应让已产出的正文作废：保留当前内容直接返回。
+          // 续写失败不应让已产出的正文作废。若子调用已经流出一部分，
+          // forward 已完成去重与透传，这里也把同一份 emitted 合并进返回值，
+          // 保证调用方保存的内容与用户实际看到的内容一致。
+          if (!flushing && held) {
+            const overlap = countOverlapSuffix(fullContent, held.slice(0, overlapLimit));
+            const rest = held.slice(overlap);
+            held = '';
+            if (rest) { emitted += rest; if (onChunk) onChunk(rest); }
+          }
+          appendChildAttempts((error?.attempts || []).map(item => emitted ? item : ({
+            ...item,
+            accepted: false,
+            discarded: true,
+            retryReason: item.retryReason || 'continuation_failed',
+          })));
+          if (emitted) fullContent = `${fullContent}${emitted}`;
+          if (Number(error?.reasoningChars) > 0) totalReasoningChars += Number(error.reasoningChars);
           console.warn('[Stitch] 截断续写失败，保留已生成内容:', error.message);
           break;
         }
       }
 
+      const cumulativeUsage = aggregateAttemptUsage(attemptsLedger);
       return {
         content: fullContent,
         tokenCount: countTokens(fullContent),
-        inputTokens: estimatedInputTokens,
-        usage: providerUsage,
+        inputTokens: cumulativeUsage.prompt_tokens,
+        usage: cumulativeUsage,
+        attempts: attemptsLedger.map(item => ({ ...item })),
         // 诊断字段：思考字数与截断状态供调用方记账/展示。
         reasoningChars: totalReasoningChars,
         finishReason,
@@ -1186,18 +1473,50 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
 
     } catch (e) {
       clearTimeout(timeoutId);
+      // Once any visible正文 has been streamed, restarting the original prompt
+      // would emit a second beginning and bill the user twice. Surface a
+      // resumable partial error instead; the generation job can checkpoint the
+      // exact prefix and continue from its tail.
+      if (streamStarted && fullContent.length > 0) {
+        recordPhysicalAttempt({
+          accepted: true,
+          discarded: false,
+          error: e?.message || 'stream interrupted after partial output',
+          retryReason: 'partial_output_requires_resume',
+          finishReason: finishReason || 'stream_error',
+        });
+        const partialError = attachTelemetry(e, fullContent, {
+          finishReason: finishReason || 'stream_error',
+          reasoningChars: totalReasoningChars + reasoningChars,
+          resumable: true,
+        });
+        partialError.isApiError = true;
+        throw partialError;
+      }
+
+      // Network/HTTP failures before正文 may still be retried. Keep every
+      // physical attempt, including capability probing and timeouts, in the
+      // ledger even when the provider supplied no usage frame.
+      recordPhysicalAttempt({
+        accepted: false,
+        discarded: true,
+        error: e?.message || String(e),
+      });
       // 强制深推模型换参数重试也必然失败，直接把提示抛给用户
-      if (e.forceThinking) throw e;
+      if (e.forceThinking) throw attachTelemetry(e);
       if (signal?.aborted) {
-        throw (e.name === 'AbortError')
+        const cancelled = (e.name === 'AbortError')
           ? new Error('AI API 请求已取消')
           : e;
+        cancelled.name = 'AbortError';
+        throw attachTelemetry(cancelled);
       }
       // ① 额度预扣型网关：按 max_tokens 预留额度，请求"要价"太大就直接回 402/余额不足
       //    （同一个 key 在别的客户端能用，就是因为那边 max_tokens 小得多）。
       //    原参数重试没用，但把输出预算砍到 1/4 并关掉思考后往往能过 → 降级重试一次。
       const quotaRejected = /balance is insufficient|insufficient[_ ]?balance|insufficient_quota|insufficient funds|quota|402|余额|额度/i.test(String(e.message || ''));
       if (quotaRejected && !quotaShrinkTried) {
+        attemptRecord.retryReason = 'quota_budget_shrink';
         quotaShrinkTried = true;
         const previousBudget = thinkingPolicy.maxTokens;
         contentLimitRequested = Math.max(1024, Math.floor(contentLimitRequested / 4));
@@ -1226,20 +1545,24 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         // 这种无从下手的兜底文案 —— 额度不足、Key 错误等都会被这一句吃掉。
         configErr.isApiError = true;
         configErr.statusCode = e?.statusCode || 0;
-        throw configErr;
+        throw attachTelemetry(configErr);
       }
       if (attempt < retries) {
+        attemptRecord.retryReason = e?.name === 'AbortError' ? 'timeout' : 'transient_error';
         const delay = Math.pow(2, attempt) * 1000;
         console.warn(`AI API 请求异常（${e.message}），第 ${attempt + 1} 次重试，等待 ${delay}ms`);
         await new Promise(r => setTimeout(r, delay));
         continue;
       }
       // 所有重试耗尽，向外抛
-      throw (e.name === 'AbortError') ? new Error(`AI API 请求超时（${Math.round((Number(timeoutMs) || 90000) / 1000)}s）`) : e;
+      const finalError = (e.name === 'AbortError')
+        ? new Error(`AI API 请求超时（${Math.round((Number(timeoutMs) || 90000) / 1000)}s）`)
+        : e;
+      throw attachTelemetry(finalError);
     }
   } // for
   // 所有尝试均失败（理论上不会到达，但保留以防万一）
-  throw new Error('AI API 请求失败，所有重试均已耗尽');
+  throw attachTelemetry(new Error('AI API 请求失败，所有重试均已耗尽'));
 }
 
 /**
@@ -1553,7 +1876,11 @@ ${pass1}`;
 async function completeOnce(systemPrompt, userPrompt, apiConfig, options = {}) {
   const { temperature = 0.4, maxTokens = 2048, timeoutMs = 60000, retries = 1 } = options;
   const config = apiConfig || resolveApiConfig(null, 'polish');
-  const result = await streamGenerate(systemPrompt, userPrompt, null, null, config, retries, temperature, maxTokens, timeoutMs);
+  const result = await streamGenerate(
+    systemPrompt, userPrompt, null, null, config,
+    retries, temperature, maxTokens, timeoutMs, null,
+    { taskType: options.taskType || 'single_completion' },
+  );
   return (result && result.content) || '';
 }
 
@@ -1561,6 +1888,7 @@ module.exports = {
   buildSystemPrompt, buildPersonaPrompt, buildInitialPrompt, buildContinuePrompt,
   buildImportContinuePrompt, buildOutlinePrompt,
   getOutlineRequirements, buildOutlineSpec, getChapterPlanOutputTokens, buildGenreStyleContract,
+  buildLongFormStyleAnchor,
   // 风格光谱六轴与档案工具（供 routes/novel.js 做 人格>tones>题材 的 axes 合并与渲染）
   STYLE_AXES, STYLE_AXIS_KEYS, normalizeAxes, mergeAxes, buildStyleProfileBlock,
   normalizeChapterWordTarget,

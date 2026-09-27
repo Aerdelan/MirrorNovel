@@ -1,5 +1,6 @@
 import { useI18n } from './useI18n'
 import { buildModelOverrideHeader, HEADER_NAME } from '../utils/modelOverride'
+import { classifySSEEnd, createSSEParser, isTerminalSSEEvent } from '../utils/sseParser'
 
 /**
  * 统一的 SSE 流式请求封装：消除各页面重复的 XHR + onprogress + 缓冲解析逻辑。
@@ -36,6 +37,7 @@ export function useSSE() {
     // 关闭可能残留的上一次连接
     abort()
     const req = new XMLHttpRequest()
+    req._mnAbortedByUs = false
     xhr = req
     req.open('POST', url)
     req.setRequestHeader('Content-Type', 'application/json')
@@ -47,8 +49,6 @@ export function useSSE() {
     if (overrideHeader) req.setRequestHeader(HEADER_NAME, overrideHeader)
 
     let lastIndex = 0
-    let sseBuffer = ''
-    let receivedEvent = false
     let settled = false
     let abortedByUs = false
 
@@ -58,53 +58,79 @@ export function useSSE() {
       if (handlers.onError) handlers.onError(message || $t('common.requestFailed'))
     }
 
-    let idleTimer = setTimeout(() => fail($t('common.requestTimeout')), IDLE_TIMEOUT_MS)
-    const keepAlive = () => {
-      clearTimeout(idleTimer)
-      idleTimer = setTimeout(() => fail($t('common.requestTimeout')), IDLE_TIMEOUT_MS)
+    const disconnected = () => {
+      if (settled || abortedByUs || req._mnAbortedByUs) return
+      settled = true
+      const event = {
+        type: 'disconnected',
+        status: 'unknown',
+        recoverable: true,
+        message: $t('common.streamDisconnected'),
+      }
+      if (handlers.onEvent) handlers.onEvent(event)
+      if (handlers.onDisconnected) handlers.onDisconnected(event)
+      else if (handlers.onError) handlers.onError(event.message, event)
     }
 
+    const onIdle = () => {
+      disconnected()
+      try { req.abort() } catch {}
+    }
+    let idleTimer = setTimeout(onIdle, IDLE_TIMEOUT_MS)
+    const keepAlive = () => {
+      clearTimeout(idleTimer)
+      idleTimer = setTimeout(onIdle, IDLE_TIMEOUT_MS)
+    }
+
+    const parser = createSSEParser({
+      onEvent(event) {
+        keepAlive()
+        if (handlers.onEvent) handlers.onEvent(event)
+        if (event.type === 'reasoning' && handlers.onReasoning) handlers.onReasoning(event.content, event)
+        else if (event.type === 'content' && handlers.onContent) handlers.onContent(event.content, event)
+        else if (event.type === 'status' && handlers.onStatus) handlers.onStatus(event.message, event)
+        // 思考进度心跳：服务商在思考阶段可能不下发任何分片，服务端定时上报
+        // "已思考字数 + 已用时间"，让等待过程始终有可见反馈。
+        else if (event.type === 'thinking' && handlers.onThinking) handlers.onThinking(event)
+        else if (event.type === 'completed' && handlers.onCompleted) handlers.onCompleted(event)
+        else if (event.type === 'error' && handlers.onError) handlers.onError(event.message, event)
+        if (isTerminalSSEEvent(event)) {
+          settled = true
+          clearTimeout(idleTimer)
+        }
+      },
+    })
+
     req.onprogress = () => {
-      sseBuffer += req.responseText.substring(lastIndex)
+      parser.push(req.responseText.substring(lastIndex))
       lastIndex = req.responseText.length
-      const lines = sseBuffer.split('\n')
-      sseBuffer = lines.pop() // 末尾可能是不完整的一行，留到下次
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        try {
-          const event = JSON.parse(line.slice(6))
-          receivedEvent = true
-          keepAlive()
-          if (handlers.onEvent) handlers.onEvent(event)
-          if (event.type === 'reasoning' && handlers.onReasoning) handlers.onReasoning(event.content, event)
-          else if (event.type === 'content' && handlers.onContent) handlers.onContent(event.content, event)
-          else if (event.type === 'status' && handlers.onStatus) handlers.onStatus(event.message, event)
-          // 思考进度心跳：服务商在思考阶段可能不下发任何分片，服务端定时上报
-          // "已思考字数 + 已用时间"，让等待过程始终有可见反馈。
-          else if (event.type === 'thinking' && handlers.onThinking) handlers.onThinking(event)
-          else if (event.type === 'completed' && handlers.onCompleted) handlers.onCompleted(event)
-          else if (event.type === 'error' && handlers.onError) handlers.onError(event.message, event)
-        } catch {}
-      }
     }
 
     req.onloadend = () => {
       clearTimeout(idleTimer)
-      // 关键兜底：一个事件都没收到（或 HTTP 状态异常）时必须报错。
-      // 过去的实现会把 4xx/5xx 的 JSON 体直接丢掉，界面上就成了"什么都没发生就停了"。
-      if (!settled && !abortedByUs) {
-        if (req.status >= 400) fail(extractErrorDetail(req.responseText) || `HTTP ${req.status}`)
-        else if (!receivedEvent) fail(extractErrorDetail(req.responseText) || $t('common.requestFailed'))
+      parser.push(req.responseText.substring(lastIndex))
+      lastIndex = req.responseText.length
+      parser.finish()
+      if (!settled && !abortedByUs && !req._mnAbortedByUs) {
+        const end = classifySSEEnd({ status: req.status, state: parser.getState() })
+        if (end.kind === 'http_error' || end.kind === 'empty_response') {
+          fail(extractErrorDetail(req.responseText) || (end.status ? `HTTP ${end.status}` : $t('common.requestFailed')))
+        } else if (end.kind === 'disconnected') {
+          disconnected()
+        } else {
+          settled = true
+        }
       }
-      settled = true
       if (handlers.onLoadend) handlers.onLoadend()
+      if (xhr === req) xhr = null
     }
-    req.onerror = () => fail($t('common.requestFailed'))
+    req.onerror = () => disconnected()
     req.send(JSON.stringify(body || {}))
 
     return {
       abort: () => {
         abortedByUs = true
+        req._mnAbortedByUs = true
         settled = true
         clearTimeout(idleTimer)
         if (req) { try { req.abort() } catch {} }
@@ -114,7 +140,11 @@ export function useSSE() {
   }
 
   function abort() {
-    if (xhr) { try { xhr.abort() } catch {} xhr = null }
+    if (xhr) {
+      xhr._mnAbortedByUs = true
+      try { xhr.abort() } catch {}
+      xhr = null
+    }
   }
 
   return { openSSE, abort }

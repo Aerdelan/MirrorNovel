@@ -7,7 +7,9 @@ const serverRoot = path.resolve(__dirname, '..');
 
 const state = {
   novels: new Map(),
+  jobs: new Map(),
   nextNovelId: 1,
+  nextJobId: 1,
   nextNovelDefaults: null,
   chapterQueue: [],
   planContent: '',
@@ -23,7 +25,9 @@ function clone(value) {
 
 function resetState() {
   state.novels.clear();
+  state.jobs.clear();
   state.nextNovelId = 1;
+  state.nextJobId = 1;
   state.nextNovelDefaults = null;
   state.chapterQueue = [];
   state.planContent = '';
@@ -220,6 +224,118 @@ mockModule('services/editorialEngine.js', {
   runEditorialPipeline: async () => ({ content: '' }),
   STAGES: [],
 });
+
+class LeaseBusyError extends Error {
+  constructor(novelId) {
+    super(`busy:${novelId}`);
+    this.code = 'GENERATION_LEASE_BUSY';
+  }
+}
+
+function activeJobFor(novelId) {
+  return [...state.jobs.values()].find((job) => String(job.novelId) === String(novelId)
+    && ['running', 'pause_requested'].includes(job.status)) || null;
+}
+
+const generationJobMock = {
+  LeaseBusyError,
+  resumeGenerationJob: async (input) => {
+    const active = activeJobFor(input.novelId);
+    if (active) throw new LeaseBusyError(input.novelId);
+    let job = [...state.jobs.values()].reverse().find((item) => String(item.novelId) === String(input.novelId)
+      && item.kind === input.kind && ['queued', 'paused', 'failed'].includes(item.status));
+    if (!job) {
+      job = {
+        jobId: `job-${state.nextJobId++}`,
+        novelId: input.novelId,
+        kind: input.kind,
+        status: 'queued',
+        phase: input.phase || 'queued',
+        draftPhase: input.phase || 'queued',
+        chapterNumber: input.chapterNumber || 0,
+        lastCommittedChapter: input.lastCommittedChapter || 0,
+        draft: '',
+        draftSeq: 0,
+        fencingToken: 0,
+        events: [],
+        eventSeq: 0,
+        attempt: 0,
+      };
+      state.jobs.set(job.jobId, job);
+    }
+    job.status = 'running';
+    job.phase = input.phase || 'resuming';
+    job.leaseOwner = input.leaseOwner;
+    job.fencingToken += 1;
+    job.attempt += 1;
+    job.updatedAt = new Date();
+    return job;
+  },
+  heartbeatGenerationJob: async (input) => {
+    const job = state.jobs.get(input.jobId);
+    if (!job) throw new Error('stale');
+    job.pauseRequested = job.status === 'pause_requested';
+    return job;
+  },
+  requestPauseGenerationJob: async (input) => {
+    const job = state.jobs.get(input.jobId);
+    if (!job) throw new Error('missing job');
+    if (job.status === 'queued' || job.status === 'paused') job.status = 'paused';
+    else if (job.status === 'running' || job.status === 'pause_requested') job.status = 'pause_requested';
+    else {
+      const error = new Error('invalid transition');
+      error.code = 'GENERATION_JOB_INVALID_TRANSITION';
+      throw error;
+    }
+    job.pauseRequested = job.status === 'pause_requested';
+    return job;
+  },
+  recoverExpiredLeases: async () => 0,
+  checkpointGenerationJob: async (input) => {
+    const job = state.jobs.get(input.jobId);
+    if (!job) throw new Error('stale');
+    if (Number(input.draftSeq) > Number(job.draftSeq || 0)) {
+      job.draftSeq = input.draftSeq;
+      job.draft = String(input.draft || '');
+      job.chapterNumber = input.chapterNumber ?? job.chapterNumber;
+      job.phase = input.phase || job.phase;
+      job.draftPhase = input.phase || job.draftPhase;
+      if (input.lastCommittedChapter != null) job.lastCommittedChapter = Math.max(job.lastCommittedChapter || 0, input.lastCommittedChapter);
+    }
+    return job;
+  },
+  finalizeGenerationJob: async (input) => {
+    const job = state.jobs.get(input.jobId);
+    if (!job) throw new Error('stale');
+    job.status = input.status;
+    job.phase = input.phase || input.status;
+    if (input.draft != null) job.draft = String(input.draft);
+    if (input.lastCommittedChapter != null) job.lastCommittedChapter = Math.max(job.lastCommittedChapter || 0, input.lastCommittedChapter);
+    delete job.leaseOwner;
+    return job;
+  },
+  releaseGenerationJob: async (input) => {
+    const job = state.jobs.get(input.jobId);
+    if (!job) throw new Error('stale');
+    job.status = input.status || 'paused';
+    job.phase = input.phase || job.status;
+    delete job.leaseOwner;
+    return job;
+  },
+  getGenerationJob: async (jobId) => state.jobs.get(String(jobId)) || null,
+  getActiveJob: async (novelId) => activeJobFor(novelId),
+  findLatestResumableJob: async (novelId, kind) => [...state.jobs.values()].reverse().find((job) => String(job.novelId) === String(novelId)
+    && (!kind || job.kind === kind) && ['queued', 'paused', 'failed'].includes(job.status)) || null,
+  appendGenerationEvent: async (input) => {
+    const job = state.jobs.get(input.jobId);
+    if (!job) throw new Error('missing job');
+    job.eventSeq = (job.eventSeq || 0) + 1;
+    job.events.push({ seq: job.eventSeq, type: input.type, payload: clone(input.payload || {}) });
+    return job;
+  },
+  readGenerationEvents: async (jobId, after = 0) => (state.jobs.get(String(jobId))?.events || []).filter((event) => event.seq > Number(after || 0)),
+};
+mockModule('services/generationJob.js', generationJobMock);
 mockModule('config/novelTemplates.js', {
   // 只放一条模板用于验证"旧路径仍会注入"；注入策略用真实实现，避免把被测逻辑复制到 mock 里。
   typeTemplates: [{ name: '二次元', gender: 'male', keywords: ['二次元', '日系', '校园', '日常'], variants: [] }],
@@ -716,6 +832,47 @@ test('指定章节续写：创建下一章并保持连续章节号和可续写�
   assert.ok(novel.currentWordCount < novel.targetWordCount);
 });
 
+test('断点恢复：已完成的持久化草稿直接提交，不重复调用模型续写', async () => {
+  const existing = makeChapter('林舟把旧账本带回办公室逐页核对', '断点原文');
+  const durableDraft = makeChapter('林舟从夹页中找到一张没有日期的寄存单', '断点草稿');
+  const novel = await seedNovel({
+    _id: 'resume-complete-draft',
+    status: 'paused',
+    targetWordCount: 10000,
+    chapters: [{ chapterNumber: 1, title: '第1章', content: existing, wordCount: existing.length }],
+  });
+  const job = {
+    jobId: 'job-draft-complete',
+    novelId: novel._id,
+    kind: 'novel',
+    status: 'paused',
+    phase: 'paused',
+    draftPhase: 'draft_complete',
+    chapterNumber: 1,
+    lastCommittedChapter: 0,
+    draft: durableDraft,
+    draftSeq: 1,
+    fencingToken: 1,
+    events: [],
+    eventSeq: 0,
+    attempt: 1,
+  };
+  state.jobs.set(job.jobId, job);
+
+  const { response, events } = await postSse(`/${novel._id}/continue-chapter/1`, {
+    wordCount: 600,
+    notes: '提交断点草稿',
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(state.aiCalls.filter((call) => call.kind === 'chapter').length, 0);
+  assert.ok(events.some((event) => event.type === 'draft_restored' && event.content === durableDraft));
+  assert.equal(events.at(-1).type, 'completed');
+  assert.equal(novel.chapters[0].content, existing + durableDraft);
+  assert.equal(job.draft, '');
+  assert.equal(job.status, 'completed');
+});
+
 test('正文空输出：不保存空章，作品暂停并返回错误事件', async () => {
   state.chapterQueue = [''];
 
@@ -817,13 +974,21 @@ test('主动暂停：中断 AI 信号、阻止并发续写，并允许之后重�
   assert.equal(pausedEvents.at(-1).type, 'paused');
   assert.equal(novel.status, 'paused');
   assert.deepEqual(novel.chapters.map((chapter) => chapter.chapterNumber), [1]);
+  const pausedJob = [...state.jobs.values()].find((job) => String(job.novelId) === String(novel._id));
+  assert.equal(pausedJob.status, 'paused');
+  assert.match(pausedJob.draft, /开始重新检查证据/);
+  assert.equal(pausedJob.chapterNumber, 2);
 
   state.aiHandler = null;
   state.chapterQueue = [makeChapter('林舟重新检查证据并决定继续追查', '暂停后续写')];
   const resumed = await postSse(`/continue/${novel._id}`, { mode: 'chapter' });
   assert.equal(resumed.response.status, 200);
   assert.equal(resumed.events.at(-1).type, 'completed');
+  assert.ok(resumed.events.some((event) => event.type === 'draft_restored' && /开始重新检查证据/.test(event.content)));
   assert.deepEqual(novel.chapters.map((chapter) => chapter.chapterNumber), [1, 2]);
+  assert.match(novel.chapters[1].content, /开始重新检查证据/);
+  assert.equal(pausedJob.draft, '');
+  assert.equal(pausedJob.status, 'completed');
   assert.equal(novel.status, 'paused');
 });
 

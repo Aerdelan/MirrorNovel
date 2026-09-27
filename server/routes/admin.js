@@ -109,21 +109,36 @@ const USAGE_ROLE_LABELS = {
 };
 
 function emptyUsageCell() {
-  return { inputTokens: 0, outputTokens: 0, cacheSavedTokens: 0, calls: 0 };
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    cacheSavedTokens: 0,
+    calls: 0,
+    logicalCalls: 0,
+    failedCalls: 0,
+    estimatedCalls: 0,
+    discardedTokens: 0,
+  };
 }
 
 function addUsageCell(target, source) {
   target.inputTokens += Number(source?.inputTokens) || 0;
   target.outputTokens += Number(source?.outputTokens) || 0;
+  target.reasoningTokens += Number(source?.reasoningTokens) || 0;
   target.cacheSavedTokens += Number(source?.cacheSavedTokens) || 0;
   target.calls += Number(source?.calls) || 0;
+  target.logicalCalls += Number(source?.logicalCalls) || 0;
+  target.failedCalls += Number(source?.failedCalls) || 0;
+  target.estimatedCalls += Number(source?.estimatedCalls) || 0;
+  target.discardedTokens += Number(source?.discardedTokens) || 0;
   return target;
 }
 
 router.get('/token-usage', async (req, res) => {
   try {
     const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 10));
-    const [roleRows, totalsRows, countedNovels, topNovels] = await Promise.all([
+    const [roleRows, totalsRows, countedNovels, topNovels, taskRows, recentAttemptRows] = await Promise.all([
       Novel.aggregate([
         { $match: { 'tokenUsage.byRole': { $type: 'object' } } },
         { $project: { roles: { $objectToArray: '$tokenUsage.byRole' } } },
@@ -133,8 +148,13 @@ router.get('/token-usage', async (req, res) => {
             _id: '$roles.k',
             inputTokens: { $sum: '$roles.v.inputTokens' },
             outputTokens: { $sum: '$roles.v.outputTokens' },
+            reasoningTokens: { $sum: '$roles.v.reasoningTokens' },
             cacheSavedTokens: { $sum: '$roles.v.cacheSavedTokens' },
             calls: { $sum: '$roles.v.calls' },
+            logicalCalls: { $sum: '$roles.v.logicalCalls' },
+            failedCalls: { $sum: '$roles.v.failedCalls' },
+            estimatedCalls: { $sum: '$roles.v.estimatedCalls' },
+            discardedTokens: { $sum: '$roles.v.discardedTokens' },
           },
         },
         { $sort: { inputTokens: -1 } },
@@ -145,8 +165,13 @@ router.get('/token-usage', async (req, res) => {
             _id: null,
             inputTokens: { $sum: '$tokenUsage.inputTokens' },
             outputTokens: { $sum: '$tokenUsage.outputTokens' },
+            reasoningTokens: { $sum: '$tokenUsage.reasoningTokens' },
             cacheSavedTokens: { $sum: '$tokenUsage.cacheSavedTokens' },
             calls: { $sum: '$tokenUsage.calls' },
+            logicalCalls: { $sum: '$tokenUsage.logicalCalls' },
+            failedCalls: { $sum: '$tokenUsage.failedCalls' },
+            estimatedCalls: { $sum: '$tokenUsage.estimatedCalls' },
+            discardedTokens: { $sum: '$tokenUsage.discardedTokens' },
           },
         },
       ]),
@@ -156,6 +181,71 @@ router.get('/token-usage', async (req, res) => {
         .sort({ 'tokenUsage.inputTokens': -1 })
         .limit(limit)
         .lean(),
+      Novel.aggregate([
+        { $match: { 'tokenUsage.attempts.0': { $exists: true } } },
+        { $unwind: '$tokenUsage.attempts' },
+        {
+          $group: {
+            _id: {
+              taskType: { $ifNull: ['$tokenUsage.attempts.taskType', '$tokenUsage.attempts.role'] },
+              role: { $ifNull: ['$tokenUsage.attempts.role', 'other'] },
+              model: { $ifNull: ['$tokenUsage.attempts.model', 'unknown'] },
+              routeId: { $ifNull: ['$tokenUsage.attempts.routeId', ''] },
+              providerHost: { $ifNull: ['$tokenUsage.attempts.providerHost', ''] },
+            },
+            inputTokens: { $sum: '$tokenUsage.attempts.inputTokens' },
+            outputTokens: { $sum: '$tokenUsage.attempts.outputTokens' },
+            reasoningTokens: { $sum: '$tokenUsage.attempts.reasoningTokens' },
+            cacheSavedTokens: { $sum: '$tokenUsage.attempts.cacheSavedTokens' },
+            calls: { $sum: 1 },
+            failedCalls: {
+              $sum: { $cond: [{ $or: [
+                { $ne: ['$tokenUsage.attempts.error', null] },
+                { $ne: ['$tokenUsage.attempts.accepted', true] },
+              ] }, 1, 0] },
+            },
+            estimatedCalls: { $sum: { $cond: ['$tokenUsage.attempts.estimated', 1, 0] } },
+            discardedTokens: {
+              $sum: { $cond: ['$tokenUsage.attempts.discarded', '$tokenUsage.attempts.outputTokens', 0] },
+            },
+            averageDurationMs: { $avg: '$tokenUsage.attempts.durationMs' },
+            lastRecordedAt: { $max: '$tokenUsage.attempts.recordedAt' },
+          },
+        },
+        { $sort: { inputTokens: -1, outputTokens: -1 } },
+        { $limit: 50 },
+      ]),
+      Novel.aggregate([
+        { $match: { 'tokenUsage.attempts.0': { $exists: true } } },
+        { $project: { title: 1, attempt: '$tokenUsage.attempts' } },
+        { $unwind: '$attempt' },
+        { $sort: { 'attempt.recordedAt': -1 } },
+        { $limit: 50 },
+        {
+          $project: {
+            _id: 0,
+            novelId: { $toString: '$_id' },
+            novelTitle: '$title',
+            taskType: '$attempt.taskType',
+            role: '$attempt.role',
+            model: '$attempt.model',
+            routeId: '$attempt.routeId',
+            providerHost: '$attempt.providerHost',
+            accepted: '$attempt.accepted',
+            discarded: '$attempt.discarded',
+            estimated: '$attempt.estimated',
+            inputTokens: '$attempt.inputTokens',
+            outputTokens: '$attempt.outputTokens',
+            reasoningTokens: '$attempt.reasoningTokens',
+            finishReason: '$attempt.finishReason',
+            retryReason: '$attempt.retryReason',
+            error: '$attempt.error',
+            durationMs: '$attempt.durationMs',
+            statusCode: '$attempt.statusCode',
+            recordedAt: '$attempt.recordedAt',
+          },
+        },
+      ]),
     ]);
 
     const totals = addUsageCell(emptyUsageCell(), totalsRows[0] || {});
@@ -177,9 +267,33 @@ router.get('/token-usage', async (req, res) => {
         // cacheSavedTokens 是服务商前缀缓存命中量（其本身已计入 inputTokens），
         // 命中率越高，账单口径越接近 1/10 单价。
         cacheHitRate: totals.inputTokens > 0 ? Number((totals.cacheSavedTokens / totals.inputTokens).toFixed(4)) : 0,
+        discardedRate: totals.outputTokens > 0 ? Number((totals.discardedTokens / totals.outputTokens).toFixed(4)) : 0,
+        estimatedCallRate: totals.calls > 0 ? Number((totals.estimatedCalls / totals.calls).toFixed(4)) : 0,
         novelCount: Number(countedNovels) || 0,
       },
       byRole,
+      // Attempt rows are a bounded diagnostic window (last 200 per novel),
+      // not a second lifetime total. They answer which concrete task/model is
+      // retrying, slow, estimated or throwing output away.
+      byTask: taskRows.map((row) => ({
+        taskType: String(row._id?.taskType || row._id?.role || 'other'),
+        role: String(row._id?.role || 'other'),
+        model: String(row._id?.model || 'unknown'),
+        routeId: String(row._id?.routeId || ''),
+        providerHost: String(row._id?.providerHost || ''),
+        inputTokens: Number(row.inputTokens) || 0,
+        outputTokens: Number(row.outputTokens) || 0,
+        reasoningTokens: Number(row.reasoningTokens) || 0,
+        cacheSavedTokens: Number(row.cacheSavedTokens) || 0,
+        calls: Number(row.calls) || 0,
+        failedCalls: Number(row.failedCalls) || 0,
+        estimatedCalls: Number(row.estimatedCalls) || 0,
+        discardedTokens: Number(row.discardedTokens) || 0,
+        averageDurationMs: Math.round(Number(row.averageDurationMs) || 0),
+        lastRecordedAt: row.lastRecordedAt || null,
+      })),
+      recentAttempts: recentAttemptRows,
+      attemptWindow: { maxPerNovel: 200 },
       topNovels: topNovels.map((novel) => {
         const usage = addUsageCell(emptyUsageCell(), novel.tokenUsage || {});
         const words = Number(novel.currentWordCount) || 0;

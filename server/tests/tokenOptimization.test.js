@@ -85,7 +85,10 @@ test('usageSnapshot exposes plain data without internals', () => {
   const novel = {};
   recordTokenUsage(novel, 'writing', { inputTokens: 100, tokenCount: 20, usage: { prompt_tokens: 110, completion_tokens: 22, prompt_cache_hit_tokens: 80 } });
   const snapshot = usageSnapshot(novel.tokenUsage);
-  assert.deepEqual(Object.keys(snapshot).sort(), ['byRole', 'cacheSavedTokens', 'calls', 'inputTokens', 'outputTokens']);
+  assert.deepEqual(Object.keys(snapshot).sort(), [
+    'byRole', 'cacheSavedTokens', 'calls', 'discardedTokens', 'estimatedCalls',
+    'failedCalls', 'inputTokens', 'logicalCalls', 'outputTokens', 'reasoningTokens',
+  ]);
   assert.equal(snapshot.byRole.writing.cacheSavedTokens, 80);
   assert.deepEqual(usageSnapshot(null).byRole, {});
 });
@@ -93,6 +96,9 @@ test('usageSnapshot exposes plain data without internals', () => {
 test('extractCachedTokens understands both provider conventions', () => {
   assert.equal(extractCachedTokens({ prompt_cache_hit_tokens: 1200 }), 1200);
   assert.equal(extractCachedTokens({ prompt_tokens_details: { cached_tokens: 340 } }), 340);
+  assert.equal(extractCachedTokens({ input_tokens_details: { cached_tokens: 275 } }), 275);
+  // Some adapters include a zero direct field alongside the real nested value.
+  assert.equal(extractCachedTokens({ prompt_cache_hit_tokens: 0, prompt_tokens_details: { cached_tokens: 340 } }), 340);
   assert.equal(extractCachedTokens({ prompt_tokens: 500 }), 0);
   assert.equal(extractCachedTokens(null), 0);
 });
@@ -128,12 +134,12 @@ test('callUsageStats exposes single-call numbers for chapter/proposal display', 
   assert.deepEqual(callUsageStats({
     inputTokens: 5000, tokenCount: 900,
     usage: { prompt_tokens: 5200, completion_tokens: 950, prompt_cache_hit_tokens: 3800 },
-  }), { inputTokens: 5200, outputTokens: 950, cacheSavedTokens: 3800 });
+  }), { inputTokens: 5200, outputTokens: 950, reasoningTokens: 0, cacheSavedTokens: 3800, attempts: [] });
   // 无服务商数据时用本地估算，缓存节省为 0（不虚构收益）
   assert.deepEqual(callUsageStats({ inputTokens: 5000, tokenCount: 900 }), {
-    inputTokens: 5000, outputTokens: 900, cacheSavedTokens: 0,
+    inputTokens: 5000, outputTokens: 900, reasoningTokens: 0, cacheSavedTokens: 0, attempts: [],
   });
-  assert.deepEqual(callUsageStats({}), { inputTokens: 0, outputTokens: 0, cacheSavedTokens: 0 });
+  assert.deepEqual(callUsageStats({}), { inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheSavedTokens: 0, attempts: [] });
 });
 
 test('auth middleware rejects disabled users with 403 on every protected request', async () => {

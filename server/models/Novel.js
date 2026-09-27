@@ -122,7 +122,19 @@ const novelSchema = new mongoose.Schema({
   // 旧作品没有该字段时按需创建，不需要回填迁移。
   tokenUsage: {
     type: mongoose.Schema.Types.Mixed,
-    default: () => ({ inputTokens: 0, outputTokens: 0, cacheSavedTokens: 0, calls: 0, byRole: {} }),
+    default: () => ({
+      inputTokens: 0,
+      outputTokens: 0,
+      reasoningTokens: 0,
+      cacheSavedTokens: 0,
+      calls: 0,
+      logicalCalls: 0,
+      failedCalls: 0,
+      estimatedCalls: 0,
+      discardedTokens: 0,
+      byRole: {},
+      attempts: [],
+    }),
   },
   // 大纲生成的单次用量（生成时展示用，也可能为空表示大纲是用户手填的）。
   outlineTokenUsage: {
@@ -136,6 +148,16 @@ const novelSchema = new mongoose.Schema({
     tone: { type: String, default: '' },
     taboos: { type: [String], default: [] },
     worldRules: { type: [String], default: [] },
+  },
+  // 长篇人物圣经与标签兑现账本。它们使用宽松的 Mixed 子结构以兼容旧作品，
+  // 但新生成会持续写入知识边界、声线、覆盖证据和待偿还标签债务。
+  characterBible: {
+    type: [mongoose.Schema.Types.Mixed],
+    default: [],
+  },
+  tagLedger: {
+    type: [mongoose.Schema.Types.Mixed],
+    default: [],
   },
   // 可滚动细化的故事蓝图。outline 是用户确认的故事骨架；蓝图承载
   // 后续章节可执行的阶段、支线和节奏安排，不能被 AI 静默改写。
@@ -195,6 +217,11 @@ const novelSchema = new mongoose.Schema({
     goal: { type: String, default: '' },
     relationships: { type: [String], default: [] },
     knownFacts: { type: [String], default: [] },
+    unknownFacts: { type: [String], default: [] },
+    knowledgeBoundary: { type: String, default: '' },
+    voiceRules: { type: [String], default: [] },
+    background: { type: String, default: '' },
+    stressResponse: { type: String, default: '' },
     location: { type: String, default: '' },
     emotionalState: { type: String, default: '' },
     lastChapter: { type: Number, default: 0 },
@@ -212,7 +239,12 @@ const novelSchema = new mongoose.Schema({
     content: { type: String, default: '' },
     setChapter: { type: Number, default: 0 },
     targetChapter: { type: Number, default: 0 },
-    status: { type: String, enum: ['planned', 'pending', 'resolved', 'abandoned'], default: 'pending' },
+    // status 保留旧值 resolved/abandoned 以兼容已有作品；stage 是新的可审计生命周期。
+    status: { type: String, enum: ['planned', 'pending', 'seeded', 'reinforced', 'due', 'paid_off', 'resolved', 'abandoned'], default: 'pending' },
+    stage: { type: String, enum: ['planned', 'seeded', 'reinforced', 'due', 'paid_off'], default: 'planned' },
+    setupEvidence: { type: String, default: '' },
+    progressEvidence: { type: [String], default: [] },
+    resolutionEvidence: { type: String, default: '' },
     resolvedChapter: { type: Number, default: 0 },
     resolution: { type: String, default: '' },
   }],

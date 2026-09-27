@@ -68,6 +68,7 @@
 <script setup>
 import { ref } from 'vue'
 import { xhrUrl } from '../../utils/apiUrl'
+import { classifySSEEnd, createSSEParser } from '../../utils/sseParser'
 
 const importedText = ref('')
 const fileName = ref('')
@@ -113,26 +114,54 @@ function startContinue() {
   xhr.setRequestHeader('Authorization', `Bearer ${token}`)
   xhr.setRequestHeader('Content-Type', 'application/json')
   xhr.setRequestHeader('Accept', 'text/event-stream')
+  xhr._aborted = false
   let lastIdx = 0
+
+  const parser = createSSEParser({ onEvent(event) {
+    if (event.type === 'content') {
+      streamingText.value += String(event.content || '')
+    } else if (event.type === 'draft_restored') {
+      // A reconnect may restore a durable partial chapter. Replace the
+      // preview instead of appending the same draft twice.
+      streamingText.value = String(event.content || '')
+    } else if (event.type === 'completed') {
+      continuing.value = false
+      uni.showToast({ title: '续写完成', icon: 'success' })
+    } else if (event.type === 'paused') {
+      continuing.value = false
+      uni.showToast({ title: '已暂停' })
+    } else if (event.type === 'error') {
+      continuing.value = false
+      uni.showToast({ title: event.message || '续写失败', icon: 'none' })
+    } else if (event.type === 'disconnected') {
+      continuing.value = false
+      uni.showToast({ title: event.message || '连接已中断，请到书架刷新状态', icon: 'none' })
+    }
+  } })
 
   xhr.onprogress = () => {
     const newData = xhr.responseText.substring(lastIdx)
     lastIdx = xhr.responseText.length
-    const lines = newData.split('\n').filter(l => l.startsWith('data: '))
-    for (const line of lines) {
-      try {
-        const event = JSON.parse(line.substring(6))
-        if (event.type === 'content') streamingText.value += event.content
-        else if (event.type === 'completed' || event.type === 'paused') {
-          continuing.value = false
-          if (event.type === 'paused') uni.showToast({ title: '已暂停' })
-          else uni.showToast({ title: '续写完成', icon: 'success' })
-        }
-      } catch {}
+    parser.push(newData)
+  }
+
+  xhr.onloadend = () => {
+    const newData = xhr.responseText.substring(lastIdx)
+    lastIdx = xhr.responseText.length
+    parser.push(newData)
+    parser.finish()
+
+    if (xhr._aborted || parser.getState().hasTerminalEvent) return
+    const end = classifySSEEnd({ status: xhr.status, state: parser.getState() })
+    if (end.kind !== 'terminal') {
+      continuing.value = false
+      uni.showToast({ title: end.kind === 'http_error' ? `请求失败（${xhr.status}）` : '连接已中断，请到书架刷新状态', icon: 'none' })
     }
   }
 
-  xhr.onerror = () => { continuing.value = false; uni.showToast({ title: '网络请求失败', icon: 'none' }) }
+  // loadend performs final stream classification; avoid duplicate toasts from
+  // onerror and never treat a clean socket close as successful completion.
+  xhr.onerror = () => {}
   xhr.send(JSON.stringify({
     importedText: text,
     continuationRequest: continuationRequest.value,

@@ -71,15 +71,21 @@
    <div class="grid usage-cards">
     <div class="card"><strong>{{ formatTokenCount(usage.totals.inputTokens) }}</strong><span>输入 Token</span></div>
     <div class="card"><strong>{{ formatTokenCount(usage.totals.outputTokens) }}</strong><span>输出 Token</span></div>
+    <div class="card"><strong>{{ formatTokenCount(usage.totals.reasoningTokens) }}</strong><span>其中思考 Token</span></div>
     <div class="card"><strong>{{ formatTokenCount(usage.totals.cacheSavedTokens) }}</strong><span>前缀缓存命中</span></div>
     <div class="card"><strong>{{ formatPercent(usage.totals.cacheHitRate) }}</strong><span>缓存命中率</span></div>
-    <div class="card"><strong>{{ formatTokenCount(usage.totals.calls) }}</strong><span>累计调用次数</span></div>
+    <div class="card"><strong>{{ formatTokenCount(usage.totals.calls) }}</strong><span>物理请求次数</span></div>
+    <div class="card"><strong>{{ formatTokenCount(usage.totals.logicalCalls) }}</strong><span>业务调用次数</span></div>
+    <div class="card"><strong>{{ formatTokenCount(usage.totals.failedCalls) }}</strong><span>失败/未采用请求</span></div>
+    <div class="card"><strong>{{ formatPercent(usage.totals.estimatedCallRate) }}</strong><span>估算用量占比</span></div>
+    <div class="card"><strong>{{ formatTokenCount(usage.totals.discardedTokens) }}</strong><span>丢弃输出 Token</span></div>
+    <div class="card"><strong>{{ formatPercent(usage.totals.discardedRate) }}</strong><span>输出浪费率</span></div>
     <div class="card"><strong>{{ usage.totals.novelCount }}</strong><span>计费作品数</span></div>
    </div>
 
    <h3 class="usage-subhead">按任务角色归因（输入占比决定优化方向）</h3>
    <div class="table-wrap"><table><thead><tr>
-    <th>角色</th><th>输入 Token</th><th>输入占比</th><th>输出 Token</th><th>缓存命中</th><th>调用次数</th><th>说明</th>
+    <th>角色</th><th>输入 Token</th><th>输入占比</th><th>输出 Token</th><th>思考 Token</th><th>缓存命中</th><th>物理/业务调用</th><th>失败</th><th>丢弃输出</th><th>说明</th>
    </tr></thead><tbody>
     <tr v-for="row in usage.byRole" :key="row.role">
      <td><strong>{{ row.label }}</strong></td>
@@ -91,11 +97,31 @@
       </div>
      </td>
      <td>{{ formatTokenCount(row.outputTokens) }}</td>
+     <td>{{ formatTokenCount(row.reasoningTokens) }}</td>
      <td>{{ formatTokenCount(row.cacheSavedTokens) }}</td>
-     <td>{{ row.calls }}</td>
+     <td>{{ row.calls }} / {{ row.logicalCalls }}</td>
+     <td>{{ row.failedCalls }}</td>
+     <td>{{ formatTokenCount(row.discardedTokens) }}</td>
      <td class="usage-note">{{ roleNote(row.role) }}</td>
     </tr>
-    <tr v-if="!usage.byRole.length && !usageLoading"><td colspan="7" class="empty">暂无用量数据（尚无作品产生计费调用）</td></tr>
+    <tr v-if="!usage.byRole.length && !usageLoading"><td colspan="10" class="empty">暂无用量数据（尚无作品产生计费调用）</td></tr>
+   </tbody></table></div>
+
+   <h3 class="usage-subhead">近期调用明细（每本作品最多保留 200 次物理请求）</h3>
+   <div class="table-wrap"><table><thead><tr>
+    <th>具体任务</th><th>模型 / 线路</th><th>请求数</th><th>输入 / 输出</th><th>失败</th><th>估算</th><th>丢弃输出</th><th>平均耗时</th>
+   </tr></thead><tbody>
+    <tr v-for="row in usage.byTask" :key="`${row.taskType}:${row.model}:${row.routeId}:${row.providerHost}`">
+     <td><strong>{{ row.taskType }}</strong><div class="usage-note">{{ row.role }}</div></td>
+     <td>{{ row.model }}<div class="usage-note">{{ row.routeId || '默认线路' }}{{ row.providerHost ? ` · ${row.providerHost}` : '' }}</div></td>
+     <td>{{ row.calls }}</td>
+     <td>{{ formatTokenCount(row.inputTokens) }} / {{ formatTokenCount(row.outputTokens) }}</td>
+     <td>{{ row.failedCalls }}</td>
+     <td>{{ row.estimatedCalls }}</td>
+     <td>{{ formatTokenCount(row.discardedTokens) }}</td>
+     <td>{{ formatDuration(row.averageDurationMs) }}</td>
+    </tr>
+    <tr v-if="!usage.byTask.length && !usageLoading"><td colspan="8" class="empty">暂无逐次调用数据</td></tr>
    </tbody></table></div>
 
    <h3 class="usage-subhead">单本作品消耗 Top {{ usageLimit }}（每千字输入越低越省）</h3>
@@ -193,8 +219,14 @@ async function loadModels() { routes.value = (await api.get('/admin/models')).da
 const usageLimit = ref(10)
 const usageLoading = ref(false)
 const emptyUsagePayload = () => ({
- totals: { inputTokens: 0, outputTokens: 0, cacheSavedTokens: 0, calls: 0, cacheHitRate: 0, novelCount: 0 },
+ totals: {
+  inputTokens: 0, outputTokens: 0, reasoningTokens: 0, cacheSavedTokens: 0,
+  calls: 0, logicalCalls: 0, failedCalls: 0, estimatedCalls: 0, discardedTokens: 0,
+  cacheHitRate: 0, estimatedCallRate: 0, discardedRate: 0, novelCount: 0,
+ },
  byRole: [],
+ byTask: [],
+ recentAttempts: [],
  topNovels: [],
 })
 const usage = ref(emptyUsagePayload())
@@ -202,6 +234,13 @@ const usage = ref(emptyUsagePayload())
 function formatPercent(value) {
  const number = Number(value) || 0
  return `${(number * 100).toFixed(1)}%`
+}
+
+function formatDuration(value) {
+ const ms = Number(value) || 0
+ if (ms >= 60000) return `${(ms / 60000).toFixed(1)} 分`
+ if (ms >= 1000) return `${(ms / 1000).toFixed(1)} 秒`
+ return `${Math.round(ms)} ms`
 }
 
 // 角色说明：告诉运维"这个环节为什么会花这么多"，而不只是一个数字。

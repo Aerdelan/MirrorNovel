@@ -243,6 +243,8 @@ function startPolish() {
  } else if (event.type === 'error') {
  polishStatusText.value = ' ' + event.message; polishing.value = false
  notifyModelError(event.message)
+ } else if (event.type === 'disconnected') {
+ polishStatusText.value = event.message || $t('common.streamDisconnected'); polishing.value = false
  }
  }
  )

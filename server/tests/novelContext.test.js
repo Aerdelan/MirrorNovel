@@ -5,6 +5,7 @@ const {
   buildContextMemoryCheckpoint,
   selectRelevantHistory,
   buildContextFromDocs,
+  compileChapterExecutionPackage,
 } = require('../services/novelContext');
 
 function chapter(chapterNumber, content) {
@@ -27,6 +28,26 @@ test('context checkpoints preserve facts and open loops without model calls', ()
   assert.match(memory.checkpointSummary, /第1章/);
   assert.ok(memory.facts.some((fact) => fact.includes('旧城每逢暴雨会停电')));
   assert.ok(memory.openLoops.some((loop) => loop.includes('打开地下室')));
+});
+
+test('context checkpoint compression keeps the newest chapter state', () => {
+  const summaries = Array.from({ length: 52 }, (_, index) =>
+    `第${index + 1}章：开篇设定与冲突。${'最新剧情状态和后果。'.repeat(24)}`
+  ).join('\n');
+  const first = buildContextMemoryCheckpoint({ chapterSummaryDoc: summaries, chapterNumber: 50 });
+
+  assert.ok(first.checkpointSummary.length <= 6000);
+  assert.match(first.checkpointSummary, /第1章/);
+  assert.match(first.checkpointSummary, /第50章/);
+  assert.match(first.checkpointSummary, /阶段记忆中段已压缩/);
+
+  const next = buildContextMemoryCheckpoint({
+    chapterSummaryDoc: summaries,
+    chapterNumber: 51,
+    previousMemory: first,
+  });
+  assert.ok(next.checkpointSummary.length <= 6000);
+  assert.match(next.checkpointSummary, /第51章/);
 });
 
 test('relevant history retrieves matching old chapters and excludes unrelated prose', () => {
@@ -62,4 +83,23 @@ test('context builder remains backward compatible and applies a hard size limit'
   assert.ok(output.length <= 6000);
   assert.match(output, /阶段记忆检查点/);
   assert.match(output, /相关历史片段/);
+});
+
+test('chapter execution package separates stable and changing context without duplicating outline', () => {
+  const execution = compileChapterExecutionPackage({
+    chapterSummaryDoc: '第1章：林舟进入旧邮局。',
+    foreshadowingDoc: '待回收：铜钥匙裂纹',
+    outline: '大纲：林舟追查旧案',
+    currentChapter: 2,
+    contextMemory: { checkpointSummary: '阶段记忆：旧邮局停电', facts: ['林舟必须保留证据'], openLoops: ['地下室门锁待核对'] },
+    relevantHistory: ['第1章（相关历史）：铜钥匙指向地下室'],
+  });
+
+  assert.match(execution.stableContext, /创作大纲/);
+  assert.match(execution.stableContext, /阶段记忆检查点/);
+  assert.doesNotMatch(execution.stableContext, /第1章：林舟进入旧邮局/);
+  assert.match(execution.dynamicContext, /已有章节剧情脉络/);
+  assert.match(execution.dynamicContext, /相关历史片段/);
+  assert.doesNotMatch(execution.dynamicContext, /创作大纲/);
+  assert.equal(execution.inputChars, execution.stableChars + execution.dynamicChars);
 });

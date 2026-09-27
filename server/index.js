@@ -7,6 +7,8 @@ const path = require('path');
 const connectDB = require('./config/db');
 const User = require('./models/User');
 const Novel = require('./models/Novel');
+const GenerationJob = require('./models/GenerationJob');
+const { recoverExpiredJobs } = require('./services/generationJob');
 
 // 加载环境变量（支持 --env test 加载 .env.test）
 const envFile = process.argv.includes('--env') && process.argv[process.argv.indexOf('--env') + 1] === 'test'
@@ -17,6 +19,11 @@ console.log(`📄 加载环境配置: ${envFile}`);
 
 const startApp = async () => {
   await connectDB();
+
+  // The sparse unique lease index is the cross-process generation mutex. Do
+  // not accept traffic until MongoDB confirms it exists; otherwise two server
+  // instances could write the same novel concurrently during index startup.
+  await GenerationJob.init();
 
   try {
     const SysConfig = require('./models/SysConfig');
@@ -56,11 +63,25 @@ const startApp = async () => {
     console.error('创建管理员失败:', e.message);
   }
 
-  // 启动时清理 orphaned 生成状态：服务重启意味着 activeStreams 已丢失，
-  // 所有残留的 status='generating' 小说应自动转为 'paused'，否则用户将无法续写。
+  // 服务重启后先释放已过期的数据库租约。中章 draft 仍保留在 GenerationJob，
+  // 用户下次点击续写时会从同一个 job/fencing 序列恢复，而不是重写本章开头。
   try {
+    const recoveredJobs = await recoverExpiredJobs();
+    if (recoveredJobs > 0) console.log(`🔧 启动恢复：已释放 ${recoveredJobs} 个过期生成任务租约，断点草稿已保留`);
+  } catch (e) {
+    console.warn('生成任务租约恢复失败（非致命）:', e.message);
+  }
+
+  // 只重置没有有效分布式租约的孤儿作品。不能再把所有 generating 作品
+  // 一刀切成 paused：多实例部署时它们可能正在另一台服务器正常生成。
+  try {
+    const activeNovelIds = await GenerationJob.distinct('novelId', {
+      status: { $in: ['running', 'pause_requested'] },
+      leaseKey: { $exists: true },
+      leaseUntil: { $gt: new Date() },
+    });
     const orphaned = await Novel.updateMany(
-      { status: 'generating' },
+      { status: 'generating', _id: { $nin: activeNovelIds } },
       { $set: { status: 'paused' } }
     );
     if (orphaned.modifiedCount > 0) {
@@ -123,4 +144,9 @@ const startApp = async () => {
   server.requestTimeout = 0;
 };
 
-startApp();
+startApp().catch((error) => {
+  // Initialization failures (database connection, required indexes, etc.) must
+  // be visible and must not leave a half-started process behind.
+  console.error('服务器启动失败:', error);
+  process.exit(1);
+});

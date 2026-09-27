@@ -15,6 +15,7 @@ const {
   getChapterOutputTokenLimit,
   assessStoryCompletion,
   ensureStoryBlueprint,
+  ensureRollingPlanCoverage,
   blueprintRequirements,
   validateStoryBlueprint,
   normalizeProposedBlueprint,
@@ -127,6 +128,47 @@ test('fallback plan and output budget honor a per-chapter word target for long-f
   })) };
   const firstTarget = getAdaptiveChapterWordTarget({ planData, chapterNumber: 1, currentWords: 0, targetWords: 100000 });
   assert.ok(firstTarget >= 8000, `大章计划的字数目标被截短了：${firstTarget}`);
+});
+
+test('late fallback chapters inherit SKU style tags and active blueprint voice constraints', () => {
+  const novel = makeNovel({
+    novelTypeName: '二次元·日系校园',
+    targetWordCount: 180000,
+    chapterWordTarget: 3000,
+    typeSku: {
+      channel: 'male', category: 'acg', theme: 'acg_school',
+      elements: ['xiaoguo'], personas: ['aojiao'], tones: ['gaoxiao'], cp: 'single',
+    },
+    storyBlueprint: {
+      version: 2,
+      mainArc: '学生会与社团共同筹备学园祭',
+      phases: [{
+        title: '学园祭冲刺', startChapter: 21, endChapter: 60,
+        tagCommitments: ['部活协作', '性格错位喜剧'],
+        characterBeats: [{ character: '苍太', goal: '守住社团摊位', conflict: '怕丢脸却总出错', change: '学会求助', voiceGuard: '慌乱时长句跑题' }],
+        requiredScenes: ['放学后的部室'],
+        forbiddenDrift: ['禁止霸总化', '禁止学生像董事会一样汇报'],
+        subphases: [],
+      }],
+      rollingPlan: { startChapter: 1, endChapter: 20, chapters: [] },
+    },
+  });
+
+  const fallback = buildFallbackChapterPlan(novel, { targetWords: 180000, startChapter: 41 });
+  const late = fallback.chapters.find((chapter) => chapter.chapterNumber === 45);
+  assert.ok(late);
+  assert.ok(late.tagCommitments.includes('日系校园'));
+  assert.ok(late.tagCommitments.includes('搞笑/无厘头'));
+  assert.ok(late.tagCommitments.includes('部活协作'));
+  assert.match(late.characterBeat, /慌乱时长句跑题/);
+  assert.ok(late.requiredScenes.includes('放学后的部室'));
+  assert.ok(late.forbiddenDrift.includes('禁止霸总化'));
+
+  const contract = buildChapterContract({ novel, chapterNumber: 45, totalChapters: 60, planData: fallback });
+  assert.ok(contract.styleCommitments.includes('日系校园'));
+  assert.ok(contract.styleCommitments.includes('搞笑/无厘头'));
+  assert.match(contract.characterBeat, /慌乱时长句跑题/);
+  assert.match(renderChapterContract(contract), /全书风格\/题材标签（每章持续生效）/);
 });
 
 test('chapter plans retain authored short titles and safely derive legacy titles', () => {
@@ -380,6 +422,64 @@ test('story blueprint stays conservative until a proposal is explicitly applied'
   assert.ok(novel.plotThreads.some((thread) => thread.title === '苏晚的隐瞒'));
 });
 
+test('blueprint normalization merges excess phases and inherits missing subphase constraints', () => {
+  const makeStage = (title, startChapter, endChapter) => ({
+    title, startChapter, endChapter,
+    goal: '推进主线并改变关系', obstacle: '信息被刻意隐瞒', reversal: '角色选择公开真相',
+    threads: ['旧案线'], tagCommitments: ['日系校园：部活与值日'],
+    characterBeats: [{ character: '林舟', goal: '查清线索', conflict: '害怕牵连同伴', change: '主动求助', voiceGuard: '慌乱时短句跑题' }],
+    requiredScenes: ['放学后的部室'], forbiddenDrift: ['禁止霸总化'],
+    entryCondition: '上一阶段结果成立', exitCondition: '关系发生可验收变化',
+    foreshadowing: [{ name: '旧钥匙', setupChapter: startChapter, payoffChapter: endChapter, plan: '逐步指向旧档案' }],
+    unresolvedQuestions: ['匿名信来自谁'],
+  });
+  const phases = Array.from({ length: 12 }, (_, index) => {
+    const start = index * 20 + 1;
+    const end = start + 19;
+    const phase = makeStage(`篇章${index + 1}`, start, end);
+    phase.subphases = [{
+      ...phase,
+      title: `小阶段${index + 1}`,
+      characterBeats: [],
+      forbiddenDrift: [],
+      foreshadowing: [],
+    }];
+    return phase;
+  });
+  const normalized = normalizeProposedBlueprint({
+    mainArc: '追查旧案并完成关系选择',
+    phases,
+    rollingPlan: {
+      startChapter: 1,
+      endChapter: 20,
+      objective: '建立调查关系',
+      chapters: Array.from({ length: 20 }, (_, index) => ({
+        chapterNumber: index + 1,
+        purpose: '造成具体状态变化',
+        tagCommitments: ['日系校园'],
+        characterBeats: [{ character: '林舟', goal: '推进调查' }],
+      })),
+    },
+  }, makeNovel({ targetWordCount: 720000 }), 240);
+
+  assert.equal(normalized.phases.length, 10);
+  assert.equal(normalized.phases[0].startChapter, 1);
+  assert.equal(normalized.phases.at(-1).endChapter, 240);
+  normalized.phases.slice(1).forEach((phase, index) => {
+    assert.equal(phase.startChapter, normalized.phases[index].endChapter + 1);
+  });
+  const firstSubphase = normalized.phases[0].subphases[0];
+  assert.ok(firstSubphase.characterBeats.length);
+  assert.ok(firstSubphase.forbiddenDrift.length);
+  assert.ok(firstSubphase.foreshadowing.length);
+
+  const validation = validateStoryBlueprint(normalized, 240, {
+    expectedArcCount: 10,
+    requiredTags: ['日系校园'],
+  });
+  assert.equal(validation.valid, true, validation.errors.join('；'));
+});
+
 test('three-level blueprint validates arc coverage, subphases, tags and rolling chapters', () => {
   const makeStage = (title, startChapter, endChapter) => ({
     title, startChapter, endChapter, goal: '推进关系与主线', obstacle: '误解', reversal: '立场变化', threads: ['社团线'],
@@ -415,6 +515,51 @@ test('three-level blueprint validates arc coverage, subphases, tags and rolling 
   const invalid = validateStoryBlueprint(broken, 100, { requiredTags: ['日系校园', '搞笑'] });
   assert.equal(invalid.valid, false);
   assert.ok(invalid.errors.some((message) => message.includes('空档或重叠')));
+});
+
+test('rolling execution coverage fills missing future cards and chapter contracts retain blueprint constraints', () => {
+  const novel = makeNovel({
+    tagLedger: [],
+    storyBlueprint: {
+      version: 2,
+      mainArc: '校园社团在学园祭前解决旧钥匙谜团',
+      lockedFacts: ['主角必须保留旧钥匙'],
+      tagChecklist: ['日系校园', '搞笑'],
+      phases: [{
+        title: '学园祭准备', startChapter: 1, endChapter: 5,
+        goal: '让社团在冲突中形成合作', obstacle: '时间不足', reversal: '钥匙指向校方旧档案',
+        threads: ['社团线'], tagCommitments: ['日系校园'],
+        characterBeats: [{ character: '林舟', goal: '查清钥匙', conflict: '害怕求助', change: '主动开口', voiceGuard: '慌乱时跑题' }],
+        requiredScenes: ['放学后的部室'], forbiddenDrift: ['禁止霸总化'],
+        entryCondition: '社团接下学园祭任务', exitCondition: '社团决定共同查档案',
+        foreshadowing: [{ name: '旧钥匙', setupChapter: 1, payoffChapter: 5, plan: '逐步指向旧档案' }],
+        unresolvedQuestions: ['钥匙来自谁'], subphases: [],
+      }],
+      rollingPlan: { startChapter: 1, endChapter: 2, objective: '建立社团合作', chapters: [{ chapterNumber: 1, purpose: '接下任务', tagCommitments: ['搞笑'], characterBeats: [{ character: '林舟', goal: '接任务' }] }] },
+    },
+  });
+  const planData = parseChapterPlan({ chapters: [
+    { chapterNumber: 1, coreEvent: '接下学园祭任务', tagCommitments: ['搞笑'] },
+    { chapterNumber: 2, coreEvent: '在部室发现旧钥匙', setHooks: ['旧钥匙'] },
+    { chapterNumber: 3, coreEvent: '追查钥匙来源' },
+    { chapterNumber: 4, coreEvent: '社团决定共同查档案' },
+    { chapterNumber: 5, coreEvent: '打开旧档案完成阶段转折' },
+  ] });
+  const rolling = ensureRollingPlanCoverage(novel, 1, 5, planData);
+  assert.equal(rolling.startChapter, 1);
+  assert.equal(rolling.endChapter, 5);
+  assert.equal(rolling.chapters.length, 5);
+  assert.equal(rolling.chapters.find((card) => card.chapterNumber === 2).purpose, '在部室发现旧钥匙');
+
+  const contract = buildChapterContract({ novel, chapterNumber: 2, totalChapters: 5, planData });
+  assert.equal(contract.blueprintStageTitle, '学园祭准备');
+  assert.match(contract.blueprintStageGoal, /社团/);
+  assert.match(contract.blueprintEntryCondition, /接下学园祭/);
+  assert.ok(contract.blueprintForeshadowing.some((item) => item.includes('旧钥匙')));
+  assert.ok(contract.tagCommitments.includes('日系校园'));
+  assert.ok(contract.lockedFacts.includes('主角必须保留旧钥匙'));
+  assert.match(renderChapterContract(contract), /本章执行卡目的/);
+  assert.match(renderChapterContract(contract), /不可改写事实/);
 });
 
 test('compressPreviousChapter keeps beginning, turning point and ending instead of tail only', () => {
@@ -475,6 +620,33 @@ test('applyHookAudit patches missed resolutions, adds unplanned hooks and update
   const again = applyHookAudit(novel, 2, audit);
   assert.equal(again.resolved, 0);
   assert.equal(again.added, 0);
+});
+
+test('applyHookAudit persists character bible fields and explicit tag evidence', () => {
+  const { applyHookAudit } = require('../services/storyState');
+  const novel = {
+    foreshadowingLedger: [{ id: 'h1', content: '旧钥匙', status: 'due', stage: 'due', setChapter: 1 }],
+    characterStates: [], characterBible: [], tagLedger: [], storyBible: {},
+  };
+  applyHookAudit(novel, 4, {
+    hooksResolved: [{ id: 'h1', evidence: '林舟用旧钥匙打开了档案柜。' }],
+    characterUpdates: [{
+      name: '林舟', location: '档案室', goal: '确认旧案真相',
+      knownFacts: ['钥匙来自校方档案室'], unknownFacts: ['不知道钥匙是谁留下的'],
+      knowledgeBoundary: '不能知道幕后人尚未透露的动机',
+      voiceRules: ['紧张时会先否认再追问'], background: '曾经错过一次关键证词',
+      stressResponse: '压力下反复确认手边证据',
+    }],
+    tagEvidence: [{ tag: '日系校园', evidence: '放学后的部室里，社团成员争论学园祭分工。' }],
+  }, '林舟在放学后的部室里，和社团成员争论学园祭分工；随后用旧钥匙打开了档案柜。');
+  assert.equal(novel.foreshadowingLedger[0].status, 'resolved');
+  assert.equal(novel.foreshadowingLedger[0].stage, 'paid_off');
+  assert.match(novel.foreshadowingLedger[0].resolutionEvidence, /旧钥匙/);
+  assert.equal(novel.characterBible[0].knowledgeBoundary, '不能知道幕后人尚未透露的动机');
+  assert.ok(novel.characterBible[0].voiceRules.includes('紧张时会先否认再追问'));
+  assert.equal(novel.characterStates[0].lastChapter, 4);
+  assert.equal(novel.tagLedger[0].status, 'covered');
+  assert.match(novel.tagLedger[0].lastEvidence, /部室/);
 });
 
 test('章末防同构：收尾形式逐章轮换，近期实际收尾进入负面清单', () => {

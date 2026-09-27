@@ -1164,7 +1164,13 @@ async function startGen() {
  genStatus.value = $t('generate.statusStopped'); generating.value = false
  } else if (event.type === 'plan_needs_extension') {
  genStatus.value = event.message || $t('generate.statusPlanExtend'); generating.value = false
-} else if (event.type === 'research_status') {
+ } else if (event.type === 'disconnected') {
+ genStatus.value = event.message || $t('common.streamDisconnected'); generating.value = false
+ } else if (event.type === 'draft_restored') {
+ rawStreamingText.value = String(event.content || '')
+ streamingText.value = rawStreamingText.value
+ scrollToBottom()
+ } else if (event.type === 'research_status') {
  if (event.state === 'start') researchHint.value = $t('generate.researchStatus.start')
  else if (event.state === 'done') {
  const n = Array.isArray(event.sources) ? event.sources.length : 0
@@ -1172,7 +1178,7 @@ async function startGen() {
  } else {
  researchHint.value = $t('generate.researchStatus.skipped')
  }
-} else if (event.type === 'error') {
+ } else if (event.type === 'error') {
  genStatus.value = ' ' + (event.message || $t('generate.errGen')); generating.value = false
  notifyModelError(event.message)
  }
@@ -1454,7 +1460,12 @@ async function startLNGen() {
  lnStatus.value = $t('generate.statusStopped'); lnGenerating.value = false
  } else if (event.type === 'plan_needs_extension') {
  lnStatus.value = event.message || $t('generate.statusPlanExtend'); lnGenerating.value = false
-} else if (event.type === 'error') {
+ } else if (event.type === 'disconnected') {
+ lnStatus.value = event.message || $t('common.streamDisconnected'); lnGenerating.value = false
+ } else if (event.type === 'draft_restored') {
+ lnStreamingText.value = String(event.content || '')
+ lnScrollToBottom()
+ } else if (event.type === 'error') {
  lnStatus.value = ' ' + (event.message || $t('generate.errGen')); lnGenerating.value = false
  notifyModelError(event.message)
  }

@@ -71,6 +71,7 @@ import { ref, computed } from 'vue'
 import { useNovelStore } from '../../stores/novel'
 import { useAuthStore } from '../../stores/auth'
 import { xhrUrl } from '../../utils/apiUrl'
+import { classifySSEEnd, createSSEParser } from '../../utils/sseParser'
 
 const novelStore = useNovelStore()
 const authStore = useAuthStore()
@@ -125,23 +126,31 @@ async function startGen() {
   xhr.setRequestHeader('Content-Type', 'application/json')
   let lastIndex = 0
 
-  xhr.onprogress = () => {
-    const newData = xhr.responseText.substring(lastIndex)
-    lastIndex = xhr.responseText.length
-    const lines = newData.split('\n').filter(l => l.startsWith('data: '))
-    for (const line of lines) {
-      try {
-        const event = JSON.parse(line.substring(6))
-        if (event.type === 'content') streamingText.value += event.content
-        else if (event.type === 'completed') {
-          generating.value = false
-          uni.showToast({ title: '生成完成', icon: 'success' })
-        }
-      } catch {}
+  const parser = createSSEParser({ onEvent(event) {
+    if (event.type === 'content') streamingText.value += event.content
+    else if (event.type === 'completed') {
+      generating.value = false
+      uni.showToast({ title: '生成完成', icon: 'success' })
+    } else if (event.type === 'paused' || event.type === 'token_exhausted' || event.type === 'error') {
+      generating.value = false
+      if (event.type === 'error') uni.showToast({ title: event.message || '生成失败', icon: 'none' })
     }
+  } })
+
+  xhr.onprogress = () => {
+    parser.push(xhr.responseText.substring(lastIndex))
+    lastIndex = xhr.responseText.length
   }
 
-  xhr.onerror = () => { generating.value = false }
+  xhr.onloadend = () => {
+    parser.push(xhr.responseText.substring(lastIndex)); lastIndex = xhr.responseText.length; parser.finish()
+    const end = classifySSEEnd({ status: xhr.status, state: parser.getState() })
+    if (end.kind !== 'terminal') {
+      generating.value = false
+      uni.showToast({ title: '连接已中断，任务状态未知，请到书架刷新', icon: 'none' })
+    }
+  }
+  xhr.onerror = () => {}
   xhr.send(JSON.stringify({
     novelTypeId: selectedType.value,
     protagonistName: protagonistName.value,

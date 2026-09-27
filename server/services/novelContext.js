@@ -290,6 +290,7 @@ module.exports = {
   buildContextMemoryCheckpoint,
   selectRelevantHistory,
   renderOutlineForContext,
+  compileChapterExecutionPackage,
 }
 
 /**
@@ -382,6 +383,18 @@ function compactLine(value, maxLength = 180) {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, maxLength)
 }
 
+// Checkpoint summaries grow over the life of a book. Keeping only the head
+// makes the summary silently stop changing once the limit is reached, so a
+// later chapter can never replace stale state in the stable prompt prefix.
+function compactHeadTail(value, maxLength = 6000, headLength = 1200) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim()
+  if (text.length <= maxLength) return text
+  const marker = ' …（阶段记忆中段已压缩，末端为最新状态）… '
+  const head = Math.max(0, Math.min(headLength, maxLength - marker.length - 1))
+  const tail = Math.max(0, maxLength - head - marker.length)
+  return `${text.slice(0, head)}${marker}${text.slice(-tail)}`
+}
+
 /**
  * Create a deterministic phase checkpoint. The original chapters remain the
  * source of truth; this object is only a small index that can be safely
@@ -404,8 +417,11 @@ function buildContextMemoryCheckpoint({
     const match = line.match(/^第(\d+)章：/)
     return match && Number(match[1]) > previousChapter && Number(match[1]) <= Number(chapterNumber)
   })
-  const priorSummary = compactLine(previousMemory.checkpointSummary || '', 9000)
-  const checkpointSummary = compactLine([priorSummary, ...delta.map((line) => compactLine(line, 220))].filter(Boolean).join('\n'), 10000)
+  const priorSummary = compactHeadTail(previousMemory.checkpointSummary || '', 5400)
+  const checkpointSummary = compactHeadTail(
+    [priorSummary, ...delta.map((line) => compactLine(line, 220))].filter(Boolean).join('\n'),
+    6000,
+  )
   const activeThreads = (Array.isArray(plotThreads) ? plotThreads : [])
     .filter((thread) => ['active', 'planned'].includes(thread.status) && thread.nextMilestone)
     .slice(0, 8)
@@ -569,4 +585,46 @@ function buildContextFromDocs(chapterSummaryDoc, foreshadowingDoc, outline, chap
   const headLength = Math.floor(maxChars * 0.68)
   const tailLength = maxChars - headLength
   return `${result.slice(0, headLength)}\n…（上下文压缩，保留末端状态）…\n${result.slice(-tailLength)}`
+}
+
+/**
+ * Compile one chapter's context into a stable prefix and a changing suffix.
+ * Keeping the two sections separate avoids repeating the same outline/history
+ * in one request and lets providers reuse the stable prefix cache.
+ */
+function compileChapterExecutionPackage({
+  chapterSummaryDoc = '',
+  foreshadowingDoc = '',
+  outline = '',
+  chapterPlan = '',
+  currentChapter = 1,
+  lastChapterSummary = '',
+  contextMemory = {},
+  relevantHistory = [],
+  maxStableChars = 9000,
+  maxDynamicChars = 7000,
+} = {}) {
+  const memory = contextMemory || {};
+  const stableMemory = memory.checkpointSummary
+    ? { checkpointSummary: memory.checkpointSummary }
+    : {};
+  const dynamicMemory = {
+    facts: Array.isArray(memory.facts) ? memory.facts : [],
+    openLoops: Array.isArray(memory.openLoops) ? memory.openLoops : [],
+  };
+  const stableContext = buildContextFromDocs(
+    '', '', outline, '', currentChapter, '',
+    { contextMemory: stableMemory, maxChars: maxStableChars },
+  );
+  const dynamicContext = buildContextFromDocs(
+    chapterSummaryDoc, foreshadowingDoc, '', chapterPlan, currentChapter, lastChapterSummary,
+    { contextMemory: dynamicMemory, relevantHistory, maxChars: maxDynamicChars },
+  );
+  return {
+    stableContext,
+    dynamicContext,
+    stableChars: stableContext.length,
+    dynamicChars: dynamicContext.length,
+    inputChars: stableContext.length + dynamicContext.length,
+  };
 }

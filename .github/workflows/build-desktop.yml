@@ -12,6 +12,7 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -22,7 +23,11 @@ jobs:
         with:
           node-version: 20
           cache: 'npm'
-          cache-dependency-path: desktop/package-lock.json
+          cache-dependency-path: |
+            server/package-lock.json
+            client/package-lock.json
+            admin/package-lock.json
+            desktop/package-lock.json
 
       - name: Show environment
         working-directory: desktop
@@ -32,14 +37,44 @@ jobs:
           npm config get cache
           npm config get registry
 
-      - name: Install dependencies
+      - name: Install and test server
+        working-directory: server
+        env:
+          NPM_CONFIG_CACHE: ${{ runner.temp }}\npm-cache
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+
+      - name: Install, test and build client
+        working-directory: client
+        env:
+          NPM_CONFIG_CACHE: ${{ runner.temp }}\npm-cache
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+          npm run check:i18n
+          npm run build
+
+      - name: Install and build admin
+        working-directory: admin
+        env:
+          NPM_CONFIG_CACHE: ${{ runner.temp }}\npm-cache
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Install desktop dependencies
         working-directory: desktop
         # 兜底：仓库 .npmrc 里若写了本机专属缓存路径（例如 cache=E:/npm-cache），
         # 这里强制改回 runner 自己的临时目录，否则 npm 会因盘符不存在直接 ENOENT 失败。
         # 注意：runner 上下文只在 step 级可用，写在 job 级 env 会让整个工作流文件非法。
         env:
           NPM_CONFIG_CACHE: ${{ runner.temp }}\npm-cache
-        run: npm install --no-audit --no-fund
+        run: npm ci --no-audit --no-fund
+
+      - name: Build desktop renderer
+        working-directory: desktop
+        run: npm run build
 
       - name: Build installer (NSIS)
         working-directory: desktop
