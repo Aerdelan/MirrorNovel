@@ -274,7 +274,11 @@ function saveDesktopRoutes() {
  configMsgOk.value = false
  return
  }
- writeLocalModelConfig(next)
+ if (!writeLocalModelConfig(next)) {
+ configMsg.value = $t('desktop.profile.errIncomplete')
+ configMsgOk.value = false
+ return
+ }
  loadLocalRoutes()
  configMsg.value = $t('desktop.profile.savedAssign')
  configMsgOk.value = true

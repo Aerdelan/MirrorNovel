@@ -1,6 +1,6 @@
 <template>
   <!-- 登录类页面独占窗口；其余页面统一包在桌面外壳（侧栏 + 顶栏 + 状态栏）里 -->
-  <DesktopShell v-if="useShell">
+  <DesktopShell v-if="useShell" :key="accountKey">
     <router-view v-slot="{ Component }">
       <keep-alive>
         <component :is="Component" />
@@ -35,6 +35,8 @@ import { useAuthStore } from '@client/stores/auth'
 
 const route = useRoute()
 const authStore = useAuthStore()
+// 切换账号时销毁 keep-alive 中的表单，避免旧账号的线路/密钥留在页面内存中。
+const accountKey = computed(() => authStore.isLoggedIn ? authStore.user?.id || authStore.user?._id || '' : '')
 const useShell = computed(() => !SHELL_LESS_ROUTES.includes(route.name))
 
 // 与 Web 端共用同一个 key，桌面端同意过就不必再弹

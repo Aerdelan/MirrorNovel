@@ -41,7 +41,7 @@ export function useModelConfig() {
   function saveConfig(config) {
     const normalized = normalizeLocalConfig(config)
     if (!normalized) return null
-    writeLocalModelConfig(normalized)
+    if (!writeLocalModelConfig(normalized)) return null
     localConfig.value = normalized
     return normalized
   }

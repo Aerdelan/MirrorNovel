@@ -17,6 +17,9 @@ const state = {
   aiHandler: null,
   aiCalls: [],
   lastSystemPromptArgs: null,
+  saveFailureAt: 0,
+  saveCount: 0,
+  jobError: null,
 };
 
 function clone(value) {
@@ -35,6 +38,9 @@ function resetState() {
   state.aiHandler = null;
   state.aiCalls = [];
   state.lastSystemPromptArgs = null;
+  state.saveFailureAt = 0;
+  state.saveCount = 0;
+  state.jobError = null;
 }
 
 class InMemoryNovel {
@@ -72,6 +78,8 @@ class InMemoryNovel {
   }
 
   async save() {
+    state.saveCount += 1;
+    if (state.saveCount === state.saveFailureAt) throw new Error('isolated persistence failure');
     state.novels.set(String(this._id), this);
     return this;
   }
@@ -240,6 +248,7 @@ function activeJobFor(novelId) {
 const generationJobMock = {
   LeaseBusyError,
   resumeGenerationJob: async (input) => {
+    if (state.jobError) throw state.jobError;
     const active = activeJobFor(input.novelId);
     if (active) throw new LeaseBusyError(input.novelId);
     let job = [...state.jobs.values()].reverse().find((item) => String(item.novelId) === String(input.novelId)
@@ -422,6 +431,75 @@ function getCreatedNovel(events) {
   assert.ok(novel, '内存数据库中缺少新建小说');
   return novel;
 }
+
+test('创建失败：首次保存失败返回阶段和编号，不调用模型', async () => {
+  state.saveFailureAt = 1;
+  const response = await fetch(`${baseUrl}/generate`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ novelTypeId: 'xianxia', mode: 'chapter' }),
+  });
+  const error = await response.json();
+  assert.equal(response.status, 500);
+  assert.equal(error.phase, 'saving_novel');
+  assert.match(error.message, /保存新作品失败/);
+  assert.ok(error.message.includes(error.errorId));
+  assert.equal(state.novels.size, 0);
+  assert.equal(state.aiCalls.length, 0);
+});
+
+test('创建失败：任务初始化失败后作品暂停，可以重新续写', async () => {
+  state.jobError = new Error('isolated job failure');
+  const response = await fetch(`${baseUrl}/generate`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ novelTypeId: 'xianxia', mode: 'chapter' }),
+  });
+  const error = await response.json();
+  assert.equal(error.phase, 'starting_job');
+  const novel = [...state.novels.values()][0];
+  assert.equal(novel.status, 'paused');
+  state.jobError = null;
+  state.chapterQueue = [makeChapter('林舟进入邮局找到旧案线索', '恢复创建')];
+  const resumed = await postSse(`/continue/${novel._id}`, { mode: 'chapter' });
+  assert.equal(resumed.response.status, 200);
+  assert.ok(resumed.events.some((event) => event.type === 'chapter_end'));
+});
+
+test('创建失败：SSE 建立后保存大纲失败也会暂停作品并返回阶段', async () => {
+  state.saveFailureAt = 2;
+  const { response, events } = await postSse('/generate', {
+    novelTypeId: 'xianxia', mode: 'book', outline: '已确认的测试大纲', enableResearch: false,
+  });
+  assert.equal(response.status, 200);
+  const error = events.find((event) => event.type === 'error');
+  assert.equal(error.phase, 'outline');
+  assert.ok(error.message.includes(error.errorId));
+  assert.equal(getCreatedNovel(events).status, 'paused');
+  assert.equal([...state.jobs.values()][0].status, 'failed');
+  assert.equal(state.aiCalls.length, 0);
+});
+
+test('180万字、每章8000字及联网取材、专家团可完成创建并进入正文', async () => {
+  state.aiHandler = async (call) => {
+    if (call.kind === 'chapter') throw abortError(); // Stop before producing a whole book.
+    return defaultAiHandler(call);
+  };
+  const { response, events } = await postSse('/generate', {
+    novelTypeId: 'xianxia', outline: '主角追查旧案，在危机中揭开真相。',
+    mode: 'book', targetWordCount: 1800000, chapterWordTarget: 8000,
+    expertMode: true, enableResearch: true,
+    researchLinks: ['https://www.wenku8.net/novel/0/7/index.htm'],
+  });
+  assert.equal(response.status, 200);
+  assert.ok(events.some((event) => event.type === 'research_status'));
+  assert.ok(events.some((event) => event.type === 'chapter_start'));
+  assert.ok(events.some((event) => event.type === 'paused'));
+  assert.equal(events.some((event) => event.type === 'error'), false);
+  const novel = getCreatedNovel(events);
+  assert.equal(novel.chapterWordTarget, 8000);
+  assert.equal(novel.targetWordCount, 1800000);
+  assert.equal(novel.expertMode, true);
+  assert.equal(novel.chapterPlanData.chapters.length, 225);
+});
 
 test('新书单章：SSE、正文、质量状态和创作状态完整落库', async () => {
   const content = makeChapter('林舟决定在雨停前进入旧邮局寻找失踪证人的登记簿', '雨夜邮局');

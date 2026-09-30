@@ -155,6 +155,7 @@ const {
 const { recordTokenUsage, usageSnapshot, callUsageStats } = require('../services/tokenUsage');
 const { localExpertGate, shouldAuditChapterHooks } = require('../services/generationGates');
 const { saveNovelDoc } = require('../services/novelPersist');
+const { describeGenerationFailure, redactError } = require('../services/generationError');
 const { processChapter } = require('../services/chapterToolchain');
 const { runEditorialPipeline, STAGES } = require('../services/editorialEngine');
 const {
@@ -1546,6 +1547,10 @@ ${String(outline).slice(0, 60000)}
 // 创建新小说并开始生成（SSE流式）
 router.post('/generate', auth, async (req, res) => {
   let generationRun = null;
+  let novel = null;
+  let novelPersisted = false;
+  let generationPhase = 'preparing';
+  const errorId = randomUUID().slice(0, 12);
   try {
 
     let { novelTypeId, protagonistName, worldSetting, targetWordCount, personaId, storyBlueprint, typeSku } = req.body;
@@ -1571,7 +1576,7 @@ router.post('/generate', auth, async (req, res) => {
       : String(req.body.researchLinks || '').split(/[\n,，]/);
 
     // 创建小说记录
-    const novel = new Novel({
+    novel = new Novel({
       userId: req.userId,
       title: `${type.name}：${protagonistName || '未命名'}的传奇`,
       novelTypeId: novelTypeId || type.id, novelTypeName: type.name,
@@ -1653,8 +1658,11 @@ ${tmpl.dynamicPrompt}
     const styleContinuityAnchor = buildLongFormStyleAnchor(type, withSkuAxes(persona, skuAxes));
 
     novel.generationContext = systemPrompt;
+    generationPhase = 'saving_novel';
     await saveNovelDoc(novel);
+    novelPersisted = true;
 
+    generationPhase = 'starting_job';
     generationRun = reserveGenerationRun(novel._id, 'novel');
     if (!generationRun) return res.status(409).json({ message: '这部小说正在生成，请等待当前任务完成或先暂停' });
     await attachGenerationJob(generationRun, {
@@ -1688,6 +1696,7 @@ ${tmpl.dynamicPrompt}
 
     // ====== 联网取材（整本创建时一次，结果写入 generationContext 供全程复用）======
     let researchBlock = '';
+    generationPhase = 'research';
     if (enableResearch || researchLinks.filter(Boolean).length) {
       res.write(`data: ${JSON.stringify({ type: 'research_status', state: 'start' })}\n\n`);
       let researchHb = null;
@@ -1719,6 +1728,7 @@ ${tmpl.dynamicPrompt}
 
     // ====== 自动生成大纲（整本模式且用户未填写，300秒超时） ======
     let outline = req.body.outline || '';
+    generationPhase = 'outline';
     let outlineHb = null;
     if (isBook && !outline) {
       res.write(`data: ${JSON.stringify({ type: 'status', message: '正在根据您的设定生成创作大纲（大部头作品可能需要10分钟以上）...' })}\n\n`);
@@ -1772,6 +1782,7 @@ ${tmpl.dynamicPrompt}
 
     // 初始化一份保守的动态故事蓝图。它只复述用户已确认的信息，不增加
     // 隐形剧情；后续细化必须通过书内提案确认。
+    generationPhase = 'blueprint';
     ensureStoryBlueprint(novel, Math.max(1, Math.ceil(targetWordCount / chapterWordTarget)));
     novel.markModified('storyBlueprint');
     await saveNovelDoc(novel);
@@ -1780,6 +1791,7 @@ ${tmpl.dynamicPrompt}
 
     // ====== 生成章节计划表（整本模式） ======
     let chapterPlan = '';
+    generationPhase = 'chapter_plan';
     if (isBook && outline) {
       try {
         res.write(`data: ${JSON.stringify({ type: 'status', message: '正在制定章节计划表...' })}\n\n`);
@@ -1834,6 +1846,7 @@ ${tmpl.dynamicPrompt}
     }
 
     // 正文生成始终从同一份结构化创作状态开始，兼容旧作品的纯文本计划。
+    generationPhase = 'creative_state';
     if (chapterPlan) novel.chapterPlan = chapterPlan;
     let planData = prepareCreativeState(novel);
     // 章节计划的 JSON 可能为空、被截断或无法解析。只要用户已经确认了
@@ -2129,22 +2142,27 @@ ${buildChapterTail({
       } catch {}
     }
   } catch (error) {
+    const failure = describeGenerationFailure(error, generationPhase, errorId);
+    // Persist the state before releasing our lease so a retry cannot race this save.
+    if (novelPersisted && failure.status !== 409) {
+      novel.status = 'paused';
+      try { await saveNovelDoc(novel); }
+      catch (saveError) { console.error(`[生成 ${errorId}] 保存暂停状态失败:`, redactError(saveError.message)); }
+    }
     if (generationRun && !generationRun.settled) {
       await settleGenerationRun(generationRun, 'failed', {
-        error: { message: error.message || 'Generation setup failed' },
+        error: { message: failure.message },
       });
     }
-    console.error('生成小说失败:', error.message);
+    console.error(`[生成 ${errorId}] 阶段=${generationPhase} 作品=${novel?._id || '未创建'}:`, redactError(error.stack || error.message));
     // 如果 SSE 已建立，通过 SSE 发送错误
     if (res.headersSent) {
       try {
-        const msg = error.isApiError ? error.message : '创建小说失败，请稍后重试';
-        res.write(`data: ${JSON.stringify({ type: 'error', message: msg })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'error', message: failure.message, phase: failure.phase, errorId })}\n\n`);
         res.end();
       } catch {}
     } else {
-      const status = error instanceof LeaseBusyError || error?.code === 'GENERATION_LEASE_BUSY' ? 409 : 500;
-      res.status(status).json({ message: status === 409 ? '这部小说正在另一项任务中生成，请先暂停或稍后再试' : (error.isApiError ? error.message : '创建小说失败，请稍后重试') });
+      res.status(failure.status).json({ message: failure.message, phase: failure.phase, errorId });
     }
   }
 });

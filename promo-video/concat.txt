@@ -1,0 +1,6 @@
+file 'D:/MirrorNovel-main (2)/promo-video/scenes/scene_1.mp4'
+file 'D:/MirrorNovel-main (2)/promo-video/scenes/scene_2.mp4'
+file 'D:/MirrorNovel-main (2)/promo-video/scenes/scene_3.mp4'
+file 'D:/MirrorNovel-main (2)/promo-video/scenes/scene_4.mp4'
+file 'D:/MirrorNovel-main (2)/promo-video/scenes/scene_5.mp4'
+file 'D:/MirrorNovel-main (2)/promo-video/scenes/scene_6.mp4'

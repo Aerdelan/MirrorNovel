@@ -376,19 +376,32 @@
  <div class="persona-modal-body">
    <!-- 工具栏 -->
    <div class="persona-toolbar">
-     <button class="btn btn-sm btn-primary" @click="openEditPersona(null)">{{ $t('generate.personaNew') }}</button>
-     <button class="btn btn-sm btn-secondary" @click="aiGenInput.novelType ? null : (aiGenInput.novelType = selectedType ? $tn(selectedType) : '') ; personaStatus=''; ">{{ $t('generate.personaAIGen') }}</button>
+     <button class="btn btn-sm btn-primary" :disabled="personaBusy || referenceLoading" @click="openEditPersona(null)">{{ $t('generate.personaNew') }}</button>
+     <button class="btn btn-sm btn-secondary" :disabled="personaBusy" @click="openPersonaAIGen">{{ $t('generate.personaAIGen') }}</button>
      <span v-if="personaBusy" class="persona-busy"><span class="spinner" style="width:14px;height:14px;display:inline-block;vertical-align:middle;"></span> {{ personaStatus || $t('generate.processing') }}</span>
    </div>
 
    <!-- AI 生成输入区 -->
-   <div v-if="aiGenInput.novelType !== '' || personaStatus" class="persona-ai-gen">
+   <div v-if="showPersonaAIGen" ref="personaAIGenPanel" class="persona-ai-gen">
      <div class="label-sm">{{ $t('generate.personaAIGenTitle') }}</div>
-     <input v-model="aiGenInput.novelType" class="input" :placeholder="$t('generate.personaAIGenTypePlaceholder')" />
-     <textarea v-model="aiGenInput.hint" class="textarea" rows="2" :placeholder="$t('generate.personaAIGenHintPlaceholder')"></textarea>
+     <input v-model="aiGenInput.novelType" class="input" :disabled="personaBusy || referenceLoading" :placeholder="$t('generate.personaAIGenTypePlaceholder')" />
+     <textarea v-model="aiGenInput.hint" class="textarea" rows="2" :disabled="personaBusy || referenceLoading" :placeholder="$t('generate.personaAIGenHintPlaceholder')"></textarea>
+     <div class="persona-reference-actions">
+       <input ref="personaReferenceFile" type="file" accept=".txt,.md,.epub,.zip,text/plain,text/markdown,application/epub+zip,application/zip" hidden @change="importPersonaReference" />
+       <button class="btn btn-sm btn-secondary" :disabled="personaBusy || referenceLoading" @click="personaReferenceFile?.click()">{{ referenceLoading ? $t('common.loading') : $t('generate.personaReferenceImport') }}</button>
+       <button v-if="personaReferenceText" class="btn btn-sm btn-secondary" :disabled="personaBusy || referenceLoading" @click="clearPersonaReference">{{ $t('generate.personaReferenceClear') }}</button>
+     </div>
+     <p class="label-sm">{{ $t('generate.personaReferenceHint') }}</p>
+     <p v-if="personaReferenceName" class="label-sm">{{ $t('generate.personaReferenceLoaded', { name: personaReferenceName, total: personaReferenceTotalChars, sampled: personaReferenceText.length }) }}</p>
+     <details v-if="personaReferenceFiles.length > 1" class="label-sm">
+       <summary>{{ $t('generate.personaReferenceBooks', { count: personaReferenceFiles.length }) }}</summary>
+       <ul><li v-for="name in personaReferenceFiles" :key="name">{{ name }}</li></ul>
+     </details>
+     <textarea v-model="personaReferenceText" class="textarea" rows="4" :disabled="personaBusy || referenceLoading" :placeholder="$t('generate.personaReferencePlaceholder')"></textarea>
+     <p v-if="personaAIGenError" class="persona-error" role="alert">{{ personaAIGenError }}</p>
      <div class="persona-ai-actions">
-       <button class="btn btn-sm btn-primary" :disabled="personaBusy" @click="aiGeneratePersona">{{ $t('generate.personaAIGen') }}</button>
-       <button class="btn btn-sm btn-secondary" @click="aiGenInput = { novelType: '', hint: '' }; personaStatus=''">{{ $t('common.cancel') }}</button>
+       <button class="btn btn-sm btn-primary" :disabled="personaBusy || referenceLoading" @click="aiGeneratePersona">{{ personaBusy ? personaStatus : (personaReferenceText.trim() ? $t('generate.personaReferenceGenerate') : $t('generate.personaAIGen')) }}</button>
+       <button class="btn btn-sm btn-secondary" :disabled="personaBusy || referenceLoading" @click="showPersonaAIGen = false; personaAIGenError = ''">{{ $t('common.cancel') }}</button>
      </div>
    </div>
 
@@ -402,15 +415,16 @@
        </div>
        <div class="persona-list-desc">{{ $tp(p.name, 'desc') || p.description || p.voice?.slice(0, 60) }}</div>
        <div class="persona-list-actions" @click.stop>
-         <button class="btn btn-xs btn-secondary" @click="openEditPersona(p)">{{ $t('common.edit') }}</button>
-         <button v-if="!p.isSystem" class="btn btn-xs btn-secondary" @click="clonePersona(p)">{{ $t('generate.personaClone') }}</button>
-         <button v-if="!p.isSystem" class="btn btn-xs btn-danger" @click="deletePersona(p)">{{ $t('common.delete') }}</button>
+         <button class="btn btn-xs btn-secondary" :disabled="personaBusy || referenceLoading" @click="openEditPersona(p)">{{ p.isSystem ? $t('generate.personaEditCopy') : $t('common.edit') }}</button>
+         <button v-if="!p.isSystem" class="btn btn-xs btn-secondary" :disabled="personaBusy || referenceLoading" @click="clonePersona(p)">{{ $t('generate.personaClone') }}</button>
+         <button v-if="!p.isSystem" class="btn btn-xs btn-danger" :disabled="personaBusy || referenceLoading" @click="deletePersona(p)">{{ $t('common.delete') }}</button>
        </div>
      </div>
    </div>
 
    <!-- 编辑表单 -->
-   <div v-if="editingPersona" class="persona-edit-form">
+   <div v-if="editingPersona" ref="personaEditPanel" class="persona-edit-form">
+     <p v-if="editingSystemName" class="label-sm">{{ $t('generate.personaSystemCopyHint', { name: editingSystemName }) }}</p>
      <div class="label-sm">{{ editingPersona._id ? $t('common.edit') : $t('generate.personaNew') }}：{{ editingPersona.name || $t('generate.personaUntitled') }}</div>
      <input v-model="personaForm.name" class="input" :placeholder="$t('generate.personaFormName')" maxlength="40" :disabled="editingPersona.isSystem" />
      <input v-model="personaForm.description" class="input" :placeholder="$t('generate.personaFormDesc')" maxlength="200" />
@@ -444,7 +458,7 @@
      </label>
      <div class="persona-edit-actions">
        <button class="btn btn-sm btn-primary" :disabled="personaBusy" @click="savePersona">{{ $t('common.save') }}</button>
-       <button class="btn btn-sm btn-secondary" @click="openEditPersona(null)">{{ $t('common.cancel') }}</button>
+       <button class="btn btn-sm btn-secondary" @click="editingPersona = null">{{ $t('common.cancel') }}</button>
      </div>
    </div>
  </div>
@@ -485,6 +499,8 @@ import { useRouter } from 'vue-router'
 import { useNovelStore } from '../stores/novel'
 import { useAuthStore } from '../stores/auth'
 import { usePersonaStore } from '../stores/persona'
+import { createPersonaEditDraft } from '../utils/personaEditor'
+import { readReferenceNovelFile, buildPersonaGenerationInput } from '../utils/personaReference'
 import { notifyModelError } from '../utils/notify'
 import { useSSE } from '../composables/useSSE'
 import { useI18n } from '../composables/useI18n'
@@ -604,6 +620,7 @@ const selectedPersona = computed(() => personas.value.find(p => p._id === select
 const showPersonaModal = ref(false)
 // persona 编辑表单
 const editingPersona = ref(null)
+const editingSystemName = ref('')
 // 风格光谱六轴（与后端 STYLE_AXES 同 key）；axesEnabled=false 时不随人格下发 axes（从题材/大类继承）。
 const AXIS_DEFS = [
   { key: 'temperature' }, { key: 'diction' }, { key: 'narrator' },
@@ -614,6 +631,16 @@ const axesEnabled = ref(false)
 const personaForm = ref({ name: '', description: '', voice: '', tone: '', rules: '', vocab: '', overrideDeslop: false, applicableTypes: [], axes: blankAxes() })
 // AI 生成 / 从参考生成 的输入
 const aiGenInput = ref({ novelType: '', hint: '' })
+const showPersonaAIGen = ref(false)
+const personaAIGenPanel = ref(null)
+const personaEditPanel = ref(null)
+const personaReferenceFile = ref(null)
+const personaReferenceText = ref('')
+const personaReferenceName = ref('')
+const personaReferenceTotalChars = ref(0)
+const personaReferenceFiles = ref([])
+const referenceLoading = ref(false)
+const personaAIGenError = ref('')
 const personaBusy = ref(false)
 const personaStatus = ref('')
 
@@ -636,28 +663,30 @@ function selectPersona(p) {
 }
 
 function openEditPersona(p) {
- editingPersona.value = p ? { ...p } : null
- const axes = p && p.axes ? { ...blankAxes(), ...p.axes } : blankAxes()
- axesEnabled.value = !!(p && p.axes)
- personaForm.value = p
-   ? { name: p.name, description: p.description, voice: p.voice, tone: p.tone, rules: p.rules, vocab: p.vocab, overrideDeslop: p.overrideDeslop, applicableTypes: p.applicableTypes || [], axes }
-   : { name: '', description: '', voice: '', tone: '', rules: '', vocab: '', overrideDeslop: false, applicableTypes: [], axes }
+ const draft = createPersonaEditDraft(p, personas.value, $t('generate.personaCopySuffix'))
+ editingPersona.value = draft.editingPersona
+ editingSystemName.value = draft.systemName
+ axesEnabled.value = draft.axesEnabled
+ personaForm.value = draft.form
 }
 
 async function savePersona() {
+ if (personaBusy.value) return
  const f = { ...personaForm.value }
  if (!f.name.trim()) return alert($t('generate.personaErrName'))
  // 未开启风格轴则不下发 axes（null），让人格从题材/大类默认继承，避免强制中值抹平类型风格。
  f.axes = axesEnabled.value ? { ...f.axes } : null
  personaBusy.value = true
  try {
+   let saved
    if (editingPersona.value?._id) {
-     await personaStore.update(editingPersona.value._id, f)
+     saved = await personaStore.update(editingPersona.value._id, f)
    } else {
-     await personaStore.create(f)
+     saved = await personaStore.create(f)
    }
    personas.value = personaStore.personas
-   openEditPersona(null)
+   selectedPersonaId.value = saved._id
+   editingPersona.value = null
  } catch (e) {
    alert(e.response?.data?.message || e.message || $t('generate.personaErrSave'))
  } finally {
@@ -678,25 +707,76 @@ async function deletePersona(p) {
 
 async function clonePersona(p) {
  try {
-   await personaStore.clone(p._id)
+   const copy = await personaStore.clone(p._id)
    personas.value = personaStore.personas
+   openEditPersona(copy)
  } catch (e) {
    alert(e.response?.data?.message || e.message || $t('generate.personaErrClone'))
  }
 }
 
-async function aiGeneratePersona() {
- if (!aiGenInput.value.novelType.trim()) return alert($t('generate.personaErrNeedType'))
- personaBusy.value = true
- personaStatus.value = $t('generate.personaAIGenerating')
+async function openPersonaAIGen() {
+ showPersonaAIGen.value = true
+ editingPersona.value = null
+ personaAIGenError.value = ''
+ if (!aiGenInput.value.novelType && selectedType.value) aiGenInput.value.novelType = $tn(selectedType.value)
+ await nextTick()
+ personaAIGenPanel.value?.scrollIntoView({ block: 'start' })
+}
+
+function clearPersonaReference() {
+ personaReferenceText.value = ''
+ personaReferenceName.value = ''
+ personaReferenceTotalChars.value = 0
+ personaReferenceFiles.value = []
+ personaAIGenError.value = ''
+ if (personaReferenceFile.value) personaReferenceFile.value.value = ''
+}
+
+async function importPersonaReference(event) {
+ const file = event.target.files?.[0]
+ if (!file || personaBusy.value || referenceLoading.value) return
+ referenceLoading.value = true
+ personaAIGenError.value = ''
  try {
-   await personaStore.aiGenerate(aiGenInput.value.novelType, aiGenInput.value.hint)
+   const reference = await readReferenceNovelFile(file)
+   personaReferenceText.value = reference.text
+   personaReferenceName.value = reference.name
+   personaReferenceTotalChars.value = reference.totalChars
+   personaReferenceFiles.value = reference.files || [reference.name]
+ } catch (error) {
+   const key = { type: 'personaReferenceErrType', size: 'personaReferenceErrSize', short: 'personaReferenceErrShort', archive: 'personaReferenceErrArchive', epub: 'personaReferenceErrEpub', archiveLimit: 'personaReferenceErrArchiveLimit', emptyArchive: 'personaReferenceErrEmptyArchive' }[error.code] || 'personaReferenceErrRead'
+   personaAIGenError.value = $t(`generate.${key}`)
+ } finally {
+   referenceLoading.value = false
+   event.target.value = ''
+ }
+}
+
+async function aiGeneratePersona() {
+ if (personaBusy.value || referenceLoading.value) return
+ personaAIGenError.value = ''
+ let payload
+ try {
+   payload = buildPersonaGenerationInput({ ...aiGenInput.value, referenceText: personaReferenceText.value, referenceName: personaReferenceName.value })
+ } catch (error) {
+   personaAIGenError.value = $t(error.code === 'short' ? 'generate.personaReferenceErrShort' : 'generate.personaErrNeedTypeOrReference')
+   return
+ }
+ personaBusy.value = true
+ personaStatus.value = $t(personaReferenceText.value.trim() ? 'generate.personaReferenceAnalyzing' : 'generate.personaAIGenerating')
+ try {
+   const generated = await personaStore.aiGenerate(payload.novelType, payload.hint)
    personas.value = personaStore.personas
-   aiGenInput.value = { novelType: '', hint: '' }
+   selectedPersonaId.value = generated._id
+   openEditPersona(generated)
+   showPersonaAIGen.value = false
    personaStatus.value = ''
+   await nextTick()
+   personaEditPanel.value?.scrollIntoView({ block: 'start' })
  } catch (e) {
    personaStatus.value = ''
-   alert(e.response?.data?.message || e.message || $t('generate.personaErrAIGen'))
+   personaAIGenError.value = e.response?.data?.message || e.message || $t('generate.personaErrAIGen')
  } finally {
    personaBusy.value = false
  }
@@ -2514,6 +2594,8 @@ onMounted(async () => {
  display: flex;
  gap: 8px;
 }
+.persona-reference-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.persona-error { color: var(--error, #b33); font-size: 12px; }
 .persona-list {
  display: flex;
  flex-direction: column;

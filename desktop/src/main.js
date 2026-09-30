@@ -3,9 +3,11 @@ import { createPinia } from 'pinia'
 import DesktopApp from './DesktopApp.vue'
 import { createDesktopRouter } from './router'
 import { useI18n } from '@client/composables/useI18n'
+import { clearLegacyLocalModelConfig } from '@client/utils/modelOverride'
 import '@client/assets/main.css'
 import './styles/desktop.css'
 
+clearLegacyLocalModelConfig()
 const app = createApp(DesktopApp)
 app.use(createPinia())
 app.use(createDesktopRouter())

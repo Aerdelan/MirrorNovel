@@ -13,9 +13,10 @@
  *   defaultRouteId: '',                     // 默认线路（空则用第一条）
  *   taskRoutes: { outline:'', writing:'', reasoning:'', polish:'' }  // 空 = 跟随默认线路
  * }
- * 旧版 v1（单线路 { baseUrl, apiKey, models }）读取时自动迁移，用户无需重填。
+ * 当前用户名下的旧版 v1（单线路 { baseUrl, apiKey, models }）读取时自动转成 v2。
  */
 
+// 旧的共用键没有归属信息，启动及读写时删除，避免遗留 API Key。
 export const LOCAL_CONFIG_KEY = 'mn_model_config_local'
 export const HEADER_NAME = 'x-mn-model-config'
 
@@ -105,22 +106,50 @@ function emptyTaskRoutes() {
   return { outline: '', writing: '', reasoning: '', polish: '' }
 }
 
-export function readLocalModelConfig() {
+/** 仅清除旧的共用配置，不读取密钥、不备份，也不影响按账号保存的新配置。 */
+export function clearLegacyLocalModelConfig() {
   try {
-    return normalizeLocalConfig(safeParse(localStorage.getItem(LOCAL_CONFIG_KEY) || ''))
+    localStorage.removeItem(LOCAL_CONFIG_KEY)
+    return true
+  } catch { return false }
+}
+
+/** 本机线路按登录用户隔离；未登录或身份不完整时不读取/保存密钥。 */
+function localConfigKey() {
+  const token = localStorage.getItem('token')
+  if (!token || token === 'undefined' || token === 'null') return ''
+  const user = safeParse(localStorage.getItem('user') || '')
+  const id = user?.id || user?._id
+  if (typeof id !== 'string' || !id.trim()) return ''
+  return `${LOCAL_CONFIG_KEY}:user:${encodeURIComponent(id.trim())}`
+}
+
+export function readLocalModelConfig() {
+  clearLegacyLocalModelConfig()
+  try {
+    const key = localConfigKey()
+    return key ? normalizeLocalConfig(safeParse(localStorage.getItem(key) || '')) : null
   } catch {
     return null
   }
 }
 
 export function writeLocalModelConfig(config) {
+  clearLegacyLocalModelConfig()
   try {
-    localStorage.setItem(LOCAL_CONFIG_KEY, JSON.stringify(config))
-  } catch { /* 隐私模式下写入失败：退化为本次会话内存态 */ }
+    const key = localConfigKey()
+    if (!key) return false
+    localStorage.setItem(key, JSON.stringify(config))
+    return true
+  } catch { return false }
 }
 
 export function clearLocalModelConfig() {
-  try { localStorage.removeItem(LOCAL_CONFIG_KEY) } catch { /* 忽略 */ }
+  clearLegacyLocalModelConfig()
+  try {
+    const key = localConfigKey()
+    if (key) localStorage.removeItem(key)
+  } catch { /* 忽略 */ }
 }
 
 /** 某任务实际生效的线路 id（未指定则跟随默认线路） */

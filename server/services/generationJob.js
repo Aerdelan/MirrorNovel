@@ -162,7 +162,11 @@ async function createGenerationJob(input, options = {}) {
     return await Model.findOneAndUpdate(
       { idempotencyKey },
       { $setOnInsert: inserted },
-      { upsert: true, new: true, setDefaultsOnInsert: true },
+      // This insert supplies both timestamps. Mongoose's timestamps middleware
+      // otherwise adds $set.updatedAt alongside $setOnInsert.updatedAt, which
+      // MongoDB rejects with code 40 before any generation job can be created.
+      // Retrying the same insert must also preserve the existing job's dates.
+      { upsert: true, new: true, setDefaultsOnInsert: true, timestamps: false },
     );
   } catch (error) {
     // A concurrent upsert can lose the unique-index race. Read the winner.

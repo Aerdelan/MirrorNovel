@@ -1,7 +1,7 @@
 <template>
  <div class="app">
  <router-view v-slot="{ Component }">
- <keep-alive>
+ <keep-alive :key="accountKey">
  <component :is="Component" />
  </keep-alive>
  </router-view>
@@ -77,6 +77,7 @@ import { useI18n } from './composables/useI18n'
 
 const route = useRoute()
 const authStore = useAuthStore()
+const accountKey = computed(() => authStore.isLoggedIn ? authStore.user?.id || authStore.user?._id || '' : '')
 const { isZh, setLocale } = useI18n()
 
 const hiddenRoutes = ['Login', 'Register', 'ForgotPassword', 'NovelDetail']

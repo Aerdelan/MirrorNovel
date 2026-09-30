@@ -137,7 +137,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onActivated, reactive, ref } from 'vue'
 import api from '@client/api'
 import { useI18n } from '@client/composables/useI18n'
 import { createRoute, MODEL_ROLE_KEYS } from '@client/utils/modelOverride'
@@ -146,7 +146,7 @@ import { useModelConfig } from '../composables/useModelConfig'
 const MAX_ROUTES = 6
 
 const { $t } = useI18n()
-const { localConfig, hasLocal, saveConfig, clearLocal } = useModelConfig()
+const { localConfig, hasLocal, saveConfig, clearLocal, reload } = useModelConfig()
 
 // labelKey 用于表单与任务分配（较长），shortKey 用于概览行（较短）
 const roles = [
@@ -173,6 +173,7 @@ const message = ref('')
 const messageIsError = ref(false)
 const dirty = ref(false)
 const accountConfig = ref(null)
+let configLoaded = false
 
 const sourceLabel = computed(() => {
   if (hasLocal.value) return $t('desktop.models.sourceLocal')
@@ -392,7 +393,20 @@ function removeLocal() {
   messageIsError.value = false
 }
 
-onMounted(async () => {
+onActivated(async () => {
+  const previous = JSON.stringify(localConfig.value)
+  reload()
+  // 同账号且存储未变时保留未保存的编辑；「我的」页改过任务分配后才重新回填。
+  if (configLoaded && previous === JSON.stringify(localConfig.value)) return
+  configLoaded = true
+  routes.value = []
+  propsForm.defaultRouteId = ''
+  for (const key of ROLE_KEYS) propsForm.taskRoutes[key] = ''
+  showKey.value = {}
+  testResults.value = {}
+  accountConfig.value = null
+  message.value = ''
+  dirty.value = false
   const hadLocal = loadFromConfig()
   await loadAccountConfig()
   if (!hadLocal && routes.value.length && !propsForm.defaultRouteId) {

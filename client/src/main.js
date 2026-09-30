@@ -3,8 +3,10 @@ import { createPinia } from 'pinia'
 import App from './App.vue'
 import router from './router'
 import { useI18n } from './composables/useI18n'
+import { clearLegacyLocalModelConfig } from './utils/modelOverride'
 import './assets/main.css'
 
+clearLegacyLocalModelConfig()
 const app = createApp(App)
 app.use(createPinia())
 app.use(router)
