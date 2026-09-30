@@ -14,8 +14,8 @@ concurrency:
 permissions:
   contents: read
 
-# 每个包一个独立任务：失败时在 Actions 列表里一眼看出是哪个包挂了，
-# 也不用再让一个 monolithic job 的早期失败掩盖其它包的真实状态。
+# 每个包一个独立任务；失败时把错误摘要写进 annotations（无需登录即可见），
+# 否则"Sign in to view logs"会把排查卡在登录上。
 jobs:
   server:
     name: server · test
@@ -40,7 +40,17 @@ jobs:
 
       - name: Test
         working-directory: server
-        run: npm test
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee /tmp/server-test.log
+
+      - name: Report test failures as annotations
+        if: failure()
+        run: |
+          echo "### server test 失败摘要" >> "$GITHUB_STEP_SUMMARY"
+          grep -E "✖|not ok [0-9]+|failing|# Subtest.*fail" /tmp/server-test.log | head -30 >> "$GITHUB_STEP_SUMMARY" || true
+          grep -A 18 -m 3 -E "✖|not ok [0-9]+" /tmp/server-test.log | head -120 >> "$GITHUB_STEP_SUMMARY" || true
+          grep -m 6 -E "✖|not ok [0-9]+|Error \[|AssertionError|Error:" /tmp/server-test.log | while read -r line; do echo "::error::${line:0:400}"; done || true
 
   client:
     name: client · test & build
@@ -119,4 +129,13 @@ jobs:
 
       - name: Build renderer
         working-directory: desktop
-        run: npm run build
+        run: |
+          set -o pipefail
+          npm run build 2>&1 | tee /tmp/desktop-build.log
+
+      - name: Report build failure as annotations
+        if: failure()
+        run: |
+          echo "### desktop build 失败摘要" >> "$GITHUB_STEP_SUMMARY"
+          grep -n -iE "error|failed|cannot|not found|exception" /tmp/desktop-build.log | tail -30 >> "$GITHUB_STEP_SUMMARY" || true
+          grep -iE "error|failed|cannot|not found|exception" /tmp/desktop-build.log | tail -8 | while read -r line; do echo "::error::${line:0:400}"; done || true
