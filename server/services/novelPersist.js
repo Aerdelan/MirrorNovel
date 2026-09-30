@@ -14,6 +14,7 @@
  */
 
 const Novel = require('../models/Novel');
+const { repairDuplicateChapters } = require('./novelChapters');
 
 // MongoDB 不允许在同一次 $set 里同时更新父子路径（会报 conflict），
 // 因此父路径入选后要跳过它的子路径。
@@ -43,6 +44,9 @@ function collectModifiedUpdates(novel) {
  */
 async function saveNovelDoc(novel, options = {}) {
   const NovelModel = options.NovelModel || Novel;
+  // A metadata-only save must not start rewriting an old chapter snapshot
+  // while another request commits a new chapter.
+  if (novel.isModified?.('chapters')) repairDuplicateChapters(novel);
   try {
     return await novel.save();
   } catch (error) {
@@ -52,11 +56,20 @@ async function saveNovelDoc(novel, options = {}) {
     // 没有任何可写字段时无法安全降级，保留原始错误交给调用方处理。
     if (!Object.keys(updates).length) throw error;
 
-    await NovelModel.updateOne({ _id: novel._id }, { $set: updates });
+    const result = await NovelModel.updateOne({ _id: novel._id }, { $set: updates });
+    if (result?.acknowledged === false || result?.matchedCount === 0) throw error;
+
+    // Mongoose restores dirty paths AND queued array $push operations when a
+    // save hits VersionError. Our successful $set fallback must acknowledge
+    // both, or the next status/chapter save appends the old chapters again.
+    // Use the same reset as Mongoose save, then clear its version bookkeeping.
+    if (typeof novel.$__reset === 'function') novel.$__reset();
+    if (typeof novel.$clearModifiedPaths === 'function') novel.$clearModifiedPaths();
 
     // 对齐内存中的版本号，让后续保存不再连续撞版本。
     const fresh = await NovelModel.findById(novel._id).select('__v').lean();
     if (fresh && typeof fresh.__v === 'number') novel.__v = fresh.__v;
+    if (typeof novel.unmarkModified === 'function') novel.unmarkModified('__v');
 
     return novel;
   }

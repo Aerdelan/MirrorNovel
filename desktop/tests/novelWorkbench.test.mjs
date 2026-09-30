@@ -36,7 +36,7 @@ test('workbench follows background progress, waits for pause, guards duplicate s
    localStorage.setItem('mn_disclaimer_agreed', '1')
   })
   const chapter = n => ({ chapterNumber: n, title: `第${n}章 测试章节`, wordCount: 1000, content: '测试正文。' })
-  const novel = { _id: 'book-a', title: '后台生成测试', status: 'generating', targetWordCount: 1800000, currentWordCount: 3000, currentChapterIndex: 3, chapters: [1, 2, 3].map(chapter) }
+  const novel = { _id: 'book-a', title: '后台生成测试', status: 'generating', targetWordCount: 1800000, currentWordCount: 4000, currentChapterIndex: 3, chapters: [1, 2, 3, 3].map(chapter) }
   const secondNovel = { ...novel, _id: 'book-b', title: '另一部作品', status: 'paused', chapters: [chapter(1)], currentChapterIndex: 1 }
   let job = { jobId: 'j1', status: 'running', chapterNumber: 4, lastCommittedChapter: 3, draftLength: 8032 }
   let offline = false
@@ -72,10 +72,13 @@ test('workbench follows background progress, waits for pause, guards duplicate s
   const footer = page.locator('.wb-foot')
   await footer.getByText('正在生成第 4 章 · 已生成 8032 字').waitFor()
   assert.equal(await footer.getByText('继续生成下一章').count(), 0)
+  assert.equal(await page.locator('.wb-chapters .chapter-item').count(), 3, 'old-server exact duplicates must not appear in the chapter sidebar')
+  assert.equal(await page.locator('.novel-detail-page .chapter-item').count(), 3, 'the main chapter list must use the same normalized response')
   assert.equal(await page.locator('.chapter-actions .action-edit:enabled').count(), 0)
-  novel.chapters.push(chapter(4)); novel.currentChapterIndex = 4
+  novel.chapters.push(chapter(4), chapter(4)); novel.currentChapterIndex = 4
   job = { ...job, chapterNumber: 5, lastCommittedChapter: 4, draftLength: 10 }
   await page.waitForFunction(() => document.querySelectorAll('.wb-chapters .chapter-item').length === 4)
+  assert.equal(await page.locator('.novel-detail-page .chapter-item').count(), 4)
   await footer.getByRole('button', { name: /暂停/ }).click()
   await footer.getByText('正在暂停并保存草稿…').first().waitFor()
   assert.equal(await footer.locator('button').isDisabled(), true)

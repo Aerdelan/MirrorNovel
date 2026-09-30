@@ -1032,6 +1032,29 @@ test('打开旧作品：修正兜底占位标题，保留手动标题和正文',
   assert.equal(state.saveCount, saveCount);
 });
 
+test('历史重复章：详情修复完全相同的副本，生成中的读取不改写数据库', async () => {
+  const rows = [1, 2, 3, 4, 5].map(number => ({ _id: `chapter-${number}`, chapterNumber: number, title: `第${number}章 保留原题`, content: `原始正文${number}`, wordCount: 5 }));
+  const novel = await seedNovel({ _id: 'duplicate-chapters', status: 'generating', chapters: [...rows.slice(0, 4), clone(rows[2]), clone(rows[3]), rows[4]], currentWordCount: 35, currentChapterIndex: 5 });
+  const saved = state.saveCount;
+  const active = await fetch(`${baseUrl}/${novel._id}`);
+  const view = await active.json();
+  assert.equal(active.status, 200);
+  assert.deepEqual(view.chapters.map(chapter => chapter.chapterNumber), [1, 2, 3, 4, 5]);
+  assert.equal(view.currentWordCount, 25);
+  assert.equal(state.saveCount, saved);
+  assert.equal(novel.chapters.length, 7, 'read must not mutate an active worker snapshot');
+  novel.status = 'paused';
+  const paused = await fetch(`${baseUrl}/${novel._id}`);
+  assert.equal(paused.status, 200);
+  assert.deepEqual(novel.chapters.map(chapter => chapter.chapterNumber), [1, 2, 3, 4, 5]);
+  assert.equal(novel.currentWordCount, 25);
+  assert.equal(novel.currentChapterIndex, 5);
+  assert.deepEqual(novel.chapters.map(chapter => chapter.content), rows.map(chapter => chapter.content));
+  const after = state.saveCount;
+  await fetch(`${baseUrl}/${novel._id}`);
+  assert.equal(state.saveCount, after, 'repair must be idempotent');
+});
+
 test('正文空输出：不保存空章，作品暂停并返回错误事件', async () => {
   state.chapterQueue = [''];
 

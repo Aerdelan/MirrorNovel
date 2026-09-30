@@ -103,12 +103,11 @@ test('库中记录已不存在时不写入空更新，并保留原始错误', as
     saveImpl: () => { throw versionError(); },
   });
   const NovelModel = {
-    updateOne: async () => {},
+    updateOne: async () => ({ acknowledged: true, matchedCount: 0 }),
     findById: () => ({ select: () => ({ lean: async () => null }) }),
   };
 
-  // 记录消失属于异常状态：降级写回仍然完成（避免生成结果全丢），但版本号保持不动。
-  const result = await saveNovelDoc(novel, { NovelModel });
-  assert.equal(result, novel);
+  // 没有实际写入时不能确认保存成功或清掉待保存的章节。
+  await assert.rejects(() => saveNovelDoc(novel, { NovelModel }), error => error.name === 'VersionError');
   assert.equal(novel.__v, 15);
 });

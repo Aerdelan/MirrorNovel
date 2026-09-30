@@ -145,7 +145,7 @@
  <div v-if="novel" class="card">
  <div class="section-title"> {{ $t('novelDetail.chapterListTitle') }}</div>
  <div v-if="!novel?.chapters?.length" class="empty-chapters">{{ $t('novelDetail.chapterListEmpty') }}</div>
- <div v-for="(chapter, index) in novel?.chapters" :key="chapter.chapterNumber" class="chapter-item">
+ <div v-for="(chapter, index) in novel?.chapters" :key="`${chapter.chapterNumber}:${chapter._id || ''}:${index}`" class="chapter-item">
  <div class="chapter-header" @click="toggleChapter(index)">
  <span class="chapter-num">{{ chapter.title || $t('novelDetail.chapterTitle', { n: chapter.chapterNumber }) }}</span>
  <span v-if="chapterTokens(chapter)" class="chapter-tokens" :title="$t('novelDetail.chapterTokensTip')">⚡{{ formatTokenCount(chapterTokens(chapter).inputTokens) }}↑ / {{ formatTokenCount(chapterTokens(chapter).outputTokens) }}↓</span>
@@ -287,7 +287,7 @@ const pipelineSteps = computed(() => {
  ]
 })
 
-const lastChapterNum = computed(() => novel.value?.chapters?.length || 0)
+const lastChapterNum = computed(() => (novel.value?.chapters || []).reduce((highest, chapter) => Math.max(highest, Number(chapter.chapterNumber || 0)), 0))
 
 // ====== token 用量展示 =====
 // 账本有数据（calls>0）才显示；旧作品没有 tokenUsage 时保持原有界面。

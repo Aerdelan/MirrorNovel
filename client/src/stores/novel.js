@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import api from '../api'
 import { buildModelOverrideHeader, HEADER_NAME } from '../utils/modelOverride'
 import { classifySSEEnd, createSSEParser } from '../utils/sseParser'
+import { normalizeNovelChapters } from '../utils/novelChapters'
 
 const STREAM_DISCONNECTED_MESSAGE = '连接已中断，后台任务状态未知；请返回书架刷新状态'
 
@@ -64,7 +65,7 @@ async function fetchTypes() {
  async function fetchNovelDetail(novelId, options = {}) {
  const token = localStorage.getItem('token')
  const res = await api.get(`/novel/${novelId}`, { ...options, headers: { Authorization: `Bearer ${token}` } })
- return res.data
+ return normalizeNovelChapters(res.data)
  }
 
 async function fetchFullTypes() {

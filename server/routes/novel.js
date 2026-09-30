@@ -3,6 +3,7 @@ const router = express.Router();
 const { randomUUID } = require('crypto');
 const auth = require('../middleware/auth');
 const Novel = require('../models/Novel');
+const { distinctChapters, repairDuplicateChapters } = require('../services/novelChapters');
 const User = require('../models/User');
 const WritingPersona = require('../models/WritingPersona');
 const novelTypes = require('../config/novelTypes');
@@ -285,6 +286,8 @@ async function attachGenerationJob(run, input) {
     });
     run.jobId = valueOf(run.job, 'jobId');
     run.fencingToken = valueOf(run.job, 'fencingToken');
+    // Repair the writer's snapshot only after acquiring the durable lease.
+    if (input.novel) repairDuplicateChapters(input.novel);
   } catch (error) {
     cleanupGenerationRun(run);
     throw error;
@@ -700,7 +703,7 @@ ${(novel.plotThreads || []).map((thread) => `${thread.title || thread.id}：${th
 }
 
 function getCompletedWordCount(novel) {
-  return (novel.chapters || []).reduce((sum, chapter) => sum + Number(chapter.wordCount || 0), 0);
+  return distinctChapters(novel.chapters).reduce((sum, chapter) => sum + Number(chapter.wordCount || 0), 0);
 }
 
 function getHighestChapterNumber(novel) {
@@ -1672,6 +1675,7 @@ ${tmpl.dynamicPrompt}
     if (!generationRun) return res.status(409).json({ message: '这部小说正在生成，请等待当前任务完成或先暂停' });
     await attachGenerationJob(generationRun, {
       novelId: novel._id,
+      novel,
       kind: 'novel',
       phase: 'preparing',
       chapterNumber: 1,
@@ -2205,6 +2209,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
     try {
       await attachGenerationJob(generationRun, {
         novelId: novel._id,
+        novel,
         kind: 'novel',
         phase: 'resuming',
         chapterNumber: getHighestChapterNumber(novel) + 1,
@@ -2665,6 +2670,7 @@ router.post('/continue-import', auth, async (req, res) => {
     try {
       await attachGenerationJob(generationRun, {
         novelId: novel._id,
+        novel,
         kind: 'novel',
         phase: 'import_resuming',
         chapterNumber: highestChapter + 1,
@@ -2911,7 +2917,10 @@ async function exportNovels(req, res) {
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
   archive.pipe(res);
 
-  for (const novel of novels) {
+  for (const savedNovel of novels) {
+    // Export a normalized copy; exporting an active work must not save over it.
+    const novel = savedNovel.toObject();
+    repairDuplicateChapters(novel);
     const safeTitle = novel.title.replace(/[<>:"/\\|?*]/g, '_').substring(0, 50);
     let fullText = `【${novel.novelTypeName}】${novel.title}\n作者：${req.user.nickname || '书友'}\n主角：${novel.protagonistName || '未设定'}\n世界观设定：${novel.worldSetting || '自由发挥'}\n总字数：${novel.currentWordCount} / ${novel.targetWordCount}\n状态：${novel.status === 'completed' ? '已完成' : novel.status === 'generating' ? '生成中' : '已暂停'}\n${'='.repeat(50)}\n\n`;
     for (const ch of novel.chapters) {
@@ -3076,10 +3085,17 @@ router.get('/:novelId', auth, async (req, res) => {
     // that another worker is currently committing.
     if (novel.status === 'generating' || activeStreams.has(String(novel._id))) {
       const view = novel.toObject();
+      repairDuplicateChapters(view);
       ensureChapterTitles(view);
       return res.json(view);
     }
-    if (ensureChapterTitles(novel)) await saveNovelDoc(novel);
+    const repairedChapters = repairDuplicateChapters(novel);
+    if (ensureChapterTitles(novel) || repairedChapters) {
+      // A read-time repair may lose a version race, but must never replay its
+      // old chapter snapshot over a worker's new commit via the save fallback.
+      try { await novel.save(); }
+      catch (error) { if (error?.name !== 'VersionError') throw error; }
+    }
     res.json(novel);
   } catch (error) {
     res.status(500).json({ message: '获取小说详情失败' });
@@ -3238,6 +3254,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
     try {
       await attachGenerationJob(generationRun, {
         novelId: novel._id,
+        novel,
         kind: 'novel',
         phase: 'chapter_resuming',
         chapterNumber: chNum,

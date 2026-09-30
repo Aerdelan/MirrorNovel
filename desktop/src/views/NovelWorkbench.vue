@@ -4,8 +4,8 @@
     <template #chapters="{ keyword }">
       <div class="chapter-list">
         <button
-          v-for="chapter in filteredChapters(keyword)"
-          :key="chapter.chapterNumber"
+          v-for="(chapter, index) in filteredChapters(keyword)"
+          :key="`${chapter.chapterNumber}:${chapter._id || ''}:${index}`"
           class="chapter-item"
           :class="{ active: selectedChapter === chapter.chapterNumber }"
           @click="focusChapter(chapter)"
