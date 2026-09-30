@@ -155,7 +155,7 @@ const {
 const { recordTokenUsage, usageSnapshot, callUsageStats } = require('../services/tokenUsage');
 const { localExpertGate, shouldAuditChapterHooks } = require('../services/generationGates');
 const { saveNovelDoc } = require('../services/novelPersist');
-const { describeGenerationFailure, redactError } = require('../services/generationError');
+const { describeGenerationFailure, describeChapterFailure, redactError } = require('../services/generationError');
 const { processChapter } = require('../services/chapterToolchain');
 const { runEditorialPipeline, STAGES } = require('../services/editorialEngine');
 const {
@@ -2136,7 +2136,7 @@ ${buildChapterTail({
         } else if (isAbort) {
           res.write(`data: ${JSON.stringify({ type: 'paused', message: '生成已暂停' })}\n\n`);
         } else {
-          res.write(`data: ${JSON.stringify({ type: 'error', message: '生成过程中出现错误，请稍后重试' })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: 'error', message: describeChapterFailure(streamError, '生成过程中出现错误，请稍后重试') })}\n\n`);
         }
         res.end();
       } catch {}
@@ -2602,7 +2602,7 @@ ${buildChapterTail({
         } else if (isApiError) {
           res.write(`data: ${JSON.stringify({ type: 'error', message: streamError.message || 'AI 服务暂时不可用，请稍后重试' })}\n\n`);
         } else {
-          res.write(`data: ${JSON.stringify({ type: 'error', message: '续写过程中出现错误，请稍后重试' })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: 'error', message: describeChapterFailure(streamError, '续写过程中出现错误，请稍后重试') })}\n\n`);
         }
         res.end();
       } catch {}

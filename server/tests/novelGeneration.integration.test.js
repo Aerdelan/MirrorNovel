@@ -951,6 +951,48 @@ test('断点恢复：已完成的持久化草稿直接提交，不重复调用�
   assert.equal(job.status, 'completed');
 });
 
+test('校园误判修复：复用失败的第三章草稿，不重写正文或改动前两章', async () => {
+  const first = makeChapter('拓也接到班主任的社团通知', '第一章');
+  const second = makeChapter('拓也带着申请表走向A班', '第二章');
+  const draft = makeChapter('拓也来到校园走廊，与千鹤商量社团报名', '第三章草稿')
+    + '千鹤放下笔，把申请表推回桌上，拓也只好站在门边等她重新核对条件。'.repeat(15);
+  const novel = await seedNovel({
+    _id: 'campus-failed-draft', status: 'paused', chapterWordTarget: 8000, targetWordCount: 1800000,
+    novelTypeId: '二次元·日系校园', novelTypeName: '二次元·日系校园',
+    typeSku: { channel: 'male', category: 'acg', theme: 'acg_school', tones: ['richang'], cp: 'multi' },
+    outline: '拓也在校园中组建社团，与千鹤共同处理委托。',
+    chapterPlanData: { chapters: [{ chapterNumber: 3, wordTarget: 8000, coreEvent: '招募千鹤',
+      forbiddenDrift: ['禁止把所选标签“日系校园', '轻松日常', '多女主/后宫'] }] },
+    chapters: [
+      { chapterNumber: 1, title: '第一章', content: first, wordCount: first.length },
+      { chapterNumber: 2, title: '第二章', content: second, wordCount: second.length },
+    ],
+  });
+  const job = { jobId: 'campus-third-job', novelId: novel._id, kind: 'novel', status: 'failed',
+    phase: 'failed', draftPhase: 'reviewing', chapterNumber: 3, lastCommittedChapter: 2,
+    draft, draftSeq: 1, fencingToken: 1, events: [], eventSeq: 0, attempt: 3 };
+  state.jobs.set(job.jobId, job);
+  const { response, events } = await postSse(`/continue/${novel._id}`, { mode: 'chapter' });
+  assert.equal(response.status, 200);
+  assert.equal(events.some((event) => event.type === 'error'), false);
+  assert.ok(events.some((event) => event.type === 'draft_restored' && event.content === draft));
+  assert.ok(events.some((event) => event.type === 'chapter_end' && event.chapterNumber === 3));
+  assert.equal(state.aiCalls.filter((call) => call.kind === 'chapter').length, 0);
+  assert.deepEqual(novel.chapters.map((chapter) => chapter.content), [first, second, draft]);
+  assert.equal(job.draft, '');
+});
+
+test('续写校验失败：明确返回原因，保留草稿并停止提交', async () => {
+  const novel = await seedNovel({ _id: 'literal-ban-novel', status: 'paused', chapterWordTarget: 3000,
+    chapterPlanData: { chapters: [{ chapterNumber: 1, wordTarget: 3000, forbiddenDrift: ['禁用词：董事会'] }] },
+  });
+  state.chapterQueue = [makeChapter('董事会命令林舟回收账本', '明确禁词')];
+  const { events } = await postSse(`/continue/${novel._id}`, { mode: 'chapter' });
+  assert.match(events.find((event) => event.type === 'error').message, /明确禁用词：董事会/);
+  assert.equal(novel.chapters.length, 0);
+  assert.ok([...state.jobs.values()][0].draft.includes('董事会'));
+});
+
 test('正文空输出：不保存空章，作品暂停并返回错误事件', async () => {
   state.chapterQueue = [''];
 

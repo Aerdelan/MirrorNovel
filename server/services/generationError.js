@@ -34,4 +34,11 @@ function describeGenerationFailure(error, phase, errorId) {
   };
 }
 
-module.exports = { describeGenerationFailure, redactError };
+function describeChapterFailure(error, fallback) {
+  if (error?.code === 'CHAPTER_CONTRACT_BLOCKED') {
+    return `章节校验未通过：${redactError((error.commitAudit?.blockers || []).join('；') || error.message)}。草稿已保留，可调整设置后继续`;
+  }
+  return error?.isApiError ? redactError(error.message || fallback) : fallback;
+}
+
+module.exports = { describeGenerationFailure, describeChapterFailure, redactError };

@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { describeGenerationFailure, redactError } = require('../services/generationError');
+const { describeGenerationFailure, describeChapterFailure, redactError } = require('../services/generationError');
 
 test('unexpected errors expose only phase and reference, not internal details', () => {
   const failure = describeGenerationFailure(new Error('private database details'), 'saving_novel', 'test-id');
@@ -25,4 +25,11 @@ test('API error messages and diagnostic logs redact credentials', () => {
   assert.equal(failure.status, 503);
   assert.match(failure.message, /额度不足/);
   assert.doesNotMatch(failure.message, /fake-secret/);
+});
+
+test('chapter validation failures expose blockers and explain draft preservation', () => {
+  const message = describeChapterFailure({ code: 'CHAPTER_CONTRACT_BLOCKED', commitAudit: { blockers: ['正文长度不足'] } }, '通用错误');
+  assert.match(message, /正文长度不足/);
+  assert.match(message, /草稿已保留/);
+  assert.equal(describeChapterFailure(new Error('private details'), '通用错误'), '通用错误');
 });

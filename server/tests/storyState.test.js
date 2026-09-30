@@ -21,6 +21,7 @@ const {
   normalizeProposedBlueprint,
   applyStoryBlueprint,
   renderStoryBlueprintForContext,
+  auditChapterForCommit,
 } = require('../services/storyState');
 
 function makeNovel(overrides = {}) {
@@ -45,6 +46,37 @@ function makeNovel(overrides = {}) {
     ...overrides,
   };
 }
+
+test('drift guards preserve quoted tag lists and full sentences in plans and contracts', () => {
+  const rule = '禁止把所选标签“日系校园、轻松日常、多女主/后宫”稀释成通用网文套路';
+  const plan = parseChapterPlan({ chapters: [{ chapterNumber: 3, coreEvent: '招募千鹤', forbiddenDrift: [rule] }] });
+  assert.deepEqual(plan.chapters[0].forbiddenDrift, [rule]);
+  const novel = makeNovel({ typeSku: { channel: 'male', category: 'acg', theme: 'acg_school', tones: ['richang'], cp: 'multi' } });
+  const contract = buildChapterContract({ novel, planData: plan, chapterNumber: 3, targetWordCount: 24000 });
+  assert.ok(contract.forbiddenDrift.includes(rule));
+  assert.equal(contract.forbiddenDrift.includes('轻松日常'), false);
+  assert.match(renderChapterContract(contract), /日系校园、轻松日常、多女主\/后宫/);
+});
+
+test('campus prose passes both intact and previously fragmented semantic drift guards', () => {
+  const content = '白井拓也走过校园，在教室门口等神代千鹤放下书包。'.repeat(50);
+  for (const rules of [
+    ['禁止把所选标签“日系校园、轻松日常、多女主/后宫”稀释成通用网文套路'],
+    ['禁止把所选标签“日系校园', '轻松日常', '多女主/后宫', '日系日常'],
+    ['禁止拓也突然变得热血或主动揽责。', '禁止出现校外黑帮或超自然力量介入。'],
+  ]) {
+    const audit = auditChapterForCommit(content, { wordTarget: 8000, forbiddenDrift: rules });
+    assert.equal(audit.passed, true, JSON.stringify(audit.blockers));
+  }
+});
+
+test('literal word bans and truncated chapter protection still block invalid commits', () => {
+  const contract = { wordTarget: 8000, forbiddenDrift: ['禁用词："霸总"、"董事会"'] };
+  const valid = '校园里的同学放下书包，走向教室准备值日。'.repeat(50);
+  assert.equal(auditChapterForCommit(valid, contract).passed, true);
+  assert.match(auditChapterForCommit(valid + '董事会', contract).blockers.join('；'), /明确禁用词：董事会/);
+  assert.equal(auditChapterForCommit('内容不足', contract).passed, false);
+});
 
 test('parseChapterPlan normalizes JSON plans and legacy line plans', () => {
   const jsonPlan = parseChapterPlan(`\`\`\`json

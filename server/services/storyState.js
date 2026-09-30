@@ -14,6 +14,14 @@ function splitItems(value) {
   return String(value || '').split(/[、,，；;]/).map((item) => item.trim()).filter(Boolean);
 }
 
+// A directive is a sentence, not a list of tags. Commas and enumeration marks
+// inside it must survive normalization (e.g. “日系校园、轻松日常” in one rule).
+function uniqueDriftRules(value, limit = 16) {
+  const items = Array.isArray(value) ? value : [value];
+  return Array.from(new Set(items.flatMap((item) => String(item || '').split(/[\r\n]/))
+    .map((item) => item.trim()).filter(Boolean))).slice(0, limit);
+}
+
 function normalizePlanChapter(chapter) {
   chapter = chapter || {};
   const rawTension = Number(chapter.tension);
@@ -32,7 +40,7 @@ function normalizePlanChapter(chapter) {
     tagCommitments: splitItems(chapter.tagCommitments || chapter.tags),
     characterBeat: String(chapter.characterBeat || chapter.characterVoice || '').trim(),
     requiredScenes: splitItems(chapter.requiredScenes || chapter.scenes),
-    forbiddenDrift: splitItems(chapter.forbiddenDrift || chapter.driftGuards),
+    forbiddenDrift: uniqueDriftRules(chapter.forbiddenDrift || chapter.driftGuards),
     // Keep an omitted tension as 0 so buildEmotionPlan can apply the story-level
     // rhythm instead of treating every incomplete legacy plan as low pressure.
     tension: Number.isFinite(rawTension) && rawTension > 0 ? Math.max(1, Math.min(10, rawTension)) : 0,
@@ -195,7 +203,7 @@ function buildFallbackChapterPlan(novel, options = {}) {
       tagCommitments: fallbackTags,
       characterBeat: blueprint.characterBeats.join('；') || '沿用人物声音表：不同角色必须保留各自目标、盲点、句式、礼貌程度与失控反应',
       requiredScenes: blueprint.requiredScenes,
-      forbiddenDrift: uniqueText([
+      forbiddenDrift: uniqueDriftRules([
         ...blueprint.forbiddenDrift,
         sku.all.length ? `禁止把所选标签“${sku.all.join('、')}”稀释成通用网文套路` : '',
         '禁止全员冷静、完整、讲逻辑；禁止人物共享同一种反应和对白句式',
@@ -405,9 +413,17 @@ function auditChapterForCommit(content, contract) {
   const target = Math.max(80, Math.min(800, Math.floor(Number(contract?.wordTarget || 0) * 0.15) || 80));
   if (text.length < target) blockers.push(`正文长度 ${text.length} 低于本章最低提交阈值 ${Math.round(target)}`);
   for (const rule of (contract?.forbiddenDrift || [])) {
-    const match = String(rule).match(/禁止(?:把所选标签“[^”]+”稀释成通用网文套路|[^：:]{0,8}[：:]?\s*[“「]?([^”」,，；;。]+))/);
-    const term = match && match[1] ? match[1].replace(/化$/, '').trim() : '';
-    if (term && term.length >= 2 && text.includes(term)) blockers.push(`正文触发禁止漂移：${term}`);
+    // Natural-language guards require semantic review. Finding a word such as
+    // “校园” says nothing about whether its genre has been diluted or changed.
+    // Only explicit literal word bans can be checked with substring matching.
+    // This also tolerates legacy plans whose generic tag guard was split up.
+    const match = String(rule).trim().match(/^(?:禁用词(?:语)?|禁用短语|禁止使用(?:词语|短语))\s*[：:]\s*(.+)$/);
+    if (!match) continue;
+    const terms = match[1].replace(/[。.]$/, '').split(/[、,，；;]/)
+      .map((term) => term.trim().replace(/^[“「"']|[”」"']$/g, '')).filter(Boolean);
+    for (const term of terms) {
+      if (text.includes(term)) blockers.push(`正文包含明确禁用词：${term}`);
+    }
   }
   if (contract?.coreEvent) {
     const terms = String(contract.coreEvent).split(/[，。；、：:（）()\s]/).filter((item) => item.length >= 2).slice(0, 4);
@@ -555,7 +571,7 @@ function mergeBlueprintPhases(left, right) {
     tagCommitments: uniqueText([...toArray(left.tagCommitments), ...toArray(right.tagCommitments)], 16),
     characterBeats: mergeCharacterBeats([...toArray(left.characterBeats), ...toArray(right.characterBeats)]),
     requiredScenes: uniqueText([...toArray(left.requiredScenes), ...toArray(right.requiredScenes)], 12),
-    forbiddenDrift: uniqueText([...toArray(left.forbiddenDrift), ...toArray(right.forbiddenDrift)], 12),
+    forbiddenDrift: uniqueDriftRules([...toArray(left.forbiddenDrift), ...toArray(right.forbiddenDrift)], 12),
     entryCondition: left.entryCondition || right.entryCondition || '',
     exitCondition: right.exitCondition || left.exitCondition || '',
     foreshadowing: mergeForeshadowing([...toArray(left.foreshadowing), ...toArray(right.foreshadowing)]),
@@ -594,7 +610,7 @@ function normalizeBlueprintStage(stage, fallbackStart, fallbackEnd, includeSubph
     characterBeats: toArray(firstPopulatedValue(stage.characterBeats, stage.characters, stage.characterProgress)).slice(0, 16).map(normalizeCharacterBeat)
       .filter((beat) => beat.character || beat.goal || beat.conflict || beat.change || beat.voiceGuard),
     requiredScenes: textList(firstPopulatedValue(stage.requiredScenes, stage.scenes), 12),
-    forbiddenDrift: textList(firstPopulatedValue(stage.forbiddenDrift, stage.driftGuards), 12),
+    forbiddenDrift: uniqueDriftRules(firstPopulatedValue(stage.forbiddenDrift, stage.driftGuards), 12),
     entryCondition: shortText(firstPopulatedValue(stage.entryCondition, stage.entry), 360),
     exitCondition: shortText(firstPopulatedValue(stage.exitCondition, stage.exit), 360),
     foreshadowing: toArray(firstPopulatedValue(stage.foreshadowing, stage.hooks, stage.foreshadowingPlan)).slice(0, 16).map(normalizeForeshadowing)
@@ -646,7 +662,7 @@ function normalizeRollingPlan(rawPlan, totalChapters) {
     calibratedAtChapter: Math.max(0, Math.round(Number(rawPlan.calibratedAtChapter || 0))),
     objective: shortText(rawPlan.objective || rawPlan.goal, 420),
     tagCommitments: textList(rawPlan.tagCommitments, 16),
-    forbiddenDrift: textList(rawPlan.forbiddenDrift, 12),
+    forbiddenDrift: uniqueDriftRules(rawPlan.forbiddenDrift, 12),
     // Filter the requested window before applying the 20-card cap. Review
     // proposals commonly carry the old window before the new one; slicing
     // first would discard every future card and silently shrink the plan.
@@ -703,7 +719,7 @@ function ensureRollingPlanCoverage(novel, currentChapter = 1, totalChapters, cha
     calibratedAtChapter: start - 1,
     objective: existing.objective || stage.stageGoal || '落实当前篇章与小阶段约束',
     tagCommitments: uniqueText([...(existing.tagCommitments || []), ...stage.tagCommitments], 16),
-    forbiddenDrift: uniqueText([...(existing.forbiddenDrift || []), ...stage.forbiddenDrift], 12),
+    forbiddenDrift: uniqueDriftRules([...(existing.forbiddenDrift || []), ...stage.forbiddenDrift], 12),
     chapters: cards,
   }, total);
   if (typeof novel.markModified === 'function') novel.markModified('storyBlueprint');
@@ -1035,7 +1051,7 @@ function collectBlueprintChapterRequirements(novel, chapterNumber) {
     ], 24),
     characterBeats: uniqueText(stages.flatMap((item) => toArray(item.characterBeats).map(renderCharacterBeat)), 20),
     requiredScenes: uniqueText(stages.flatMap((item) => toArray(item.requiredScenes)), 16),
-    forbiddenDrift: uniqueText(stages.flatMap((item) => toArray(item.forbiddenDrift)), 16),
+    forbiddenDrift: uniqueDriftRules(stages.flatMap((item) => toArray(item.forbiddenDrift)), 16),
     stageTitle: String(stage?.title || '').trim(),
     stageGoal: String(stage?.goal || '').trim(),
     stageObstacle: String(stage?.obstacle || '').trim(),
@@ -1052,7 +1068,7 @@ function collectBlueprintChapterRequirements(novel, chapterNumber) {
     relationshipChange: String(rollingChapter?.relationshipChange || '').trim(),
     exitHook: String(rollingChapter?.exitHook || '').trim(),
     rollingObjective: String(rollingActive ? rolling.objective || '' : '').trim(),
-    rollingForbiddenDrift: uniqueText(rollingActive ? toArray(rolling.forbiddenDrift) : [], 12),
+    rollingForbiddenDrift: uniqueDriftRules(rollingActive ? toArray(rolling.forbiddenDrift) : [], 12),
     lockedFacts: uniqueText(blueprint.lockedFacts, 16),
   };
 }
@@ -1325,7 +1341,7 @@ function buildChapterContract(options) {
     ], 20),
     characterBeat: characterBeats.join('；'),
     requiredScenes: uniqueText([...toArray(planChapter.requiredScenes), ...blueprintRequirements.requiredScenes], 16),
-    forbiddenDrift: uniqueText([
+    forbiddenDrift: uniqueDriftRules([
       ...toArray(planChapter.forbiddenDrift),
       ...blueprintRequirements.forbiddenDrift,
       ...blueprintRequirements.rollingForbiddenDrift,
