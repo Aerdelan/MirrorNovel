@@ -19,11 +19,18 @@
     </template>
 
     <template #chaptersFooter>
-      <button class="btn-primary-block" @click="goContinue">{{ $t('desktop.workbench.nextChapter') }}</button>
+      <div v-if="generationState.busy || novel?.status === 'generating'" class="generation-footer">
+        <p class="generation-progress" role="status">{{ generationState.label || $t('novelDetail.generationBackground') }}</p>
+        <button class="btn-primary-block" :disabled="generationState.pausing" @click="detailPage?.pauseGeneration()">{{ generationState.pausing ? $t('novelDetail.generationPausing') : $t('bookshelf.pause') }}</button>
+      </div>
+      <template v-else>
+        <p v-if="generationState.unavailable" class="generation-progress" role="status">{{ $t('novelDetail.generationUnavailable') }}</p>
+        <button class="btn-primary-block" :disabled="generationState.blocked || !novel" @click="goContinue">{{ $t('desktop.workbench.nextChapter') }}</button>
+      </template>
     </template>
 
     <!-- 中栏：复用 Web 端的作品详情页（生成、编辑、去AI味、导出等能力原样保留） -->
-    <NovelDetailPage @novel-updated="syncNovel" />
+    <NovelDetailPage ref="detailPage" @novel-updated="syncNovel" @generation-state="syncGeneration" />
 
     <!-- 右栏：上下文 / 用量 / 质量 -->
     <template #inspector="{ tab }">
@@ -108,9 +115,8 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import api from '@client/api'
 import { useI18n } from '@client/composables/useI18n'
 import NovelDetailPage from '@client/views/NovelDetailPage.vue'
 import WorkbenchLayout from '../layouts/WorkbenchLayout.vue'
@@ -121,6 +127,8 @@ const { $t } = useI18n()
 
 const novel = ref(null)
 const selectedChapter = ref(0)
+const detailPage = ref(null)
+const generationState = ref({ blocked: true, busy: false, pausing: false, unavailable: false, label: '' })
 
 const chapters = computed(() => {
   const list = Array.isArray(novel.value?.chapters) ? [...novel.value.chapters] : []
@@ -193,32 +201,31 @@ function focusChapter(chapter) {
 }
 
 function goContinue() {
-  router.push('/continue')
+  if (generationState.value.blocked || !novel.value || novel.value.status === 'generating') return
+  detailPage.value?.continueNextChapter()
 }
 
-async function loadNovel() {
-  try {
-    const response = await api.get(`/novel/${route.params.id}`)
-    novel.value = response.data
-    const queryChapter = Number(route.query.chapter)
-    selectedChapter.value = Number.isFinite(queryChapter) && queryChapter > 0
-      ? queryChapter
-      : (chapters.value[chapters.value.length - 1]?.chapterNumber || 0)
-  } catch {
-    novel.value = null
-  }
+function syncGeneration(value) {
+  if (value.novelId !== String(route.params.id || '')) return
+  generationState.value = value
 }
 
 function syncNovel(value) {
   if (!value || String(value._id || '') !== String(route.params.id || '')) return
   novel.value = value
   if (!chapters.value.some((chapter) => chapter.chapterNumber === selectedChapter.value)) {
-    selectedChapter.value = chapters.value[chapters.value.length - 1]?.chapterNumber || 0
+    const queryChapter = Number(route.query.chapter)
+    selectedChapter.value = chapters.value.some(chapter => Number(chapter.chapterNumber) === queryChapter)
+      ? queryChapter : (chapters.value[chapters.value.length - 1]?.chapterNumber || 0)
   }
 }
 
-onMounted(loadNovel)
-watch(() => route.params.id, loadNovel)
+watch(() => route.params.id, () => {
+  novel.value = null
+  selectedChapter.value = 0
+  generationState.value = { blocked: true, busy: false, pausing: false, unavailable: false, label: '' }
+}, { flush: 'sync' })
+watch(() => route.query.chapter, value => { if (Number(value) > 0) selectedChapter.value = Number(value) }, { immediate: true })
 </script>
 
 <style scoped>
@@ -243,6 +250,8 @@ watch(() => route.params.id, loadNovel)
   background: var(--primary); color: #fff; font-family: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer;
 }
 .btn-primary-block:hover { background: var(--primary-hover); }
+.btn-primary-block:disabled { opacity: .55; cursor: not-allowed; }
+.generation-progress { margin: 0 0 8px; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
 
 .block { margin-bottom: 16px; }
 .block h4 { font-size: 11.5px; color: var(--text-tertiary); letter-spacing: 0.04em; margin-bottom: 8px; }

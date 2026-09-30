@@ -1,6 +1,10 @@
 export default {
  // Novel detail page
  novelDetail: {
+  generationBackground: 'AI is generating in the background. Wait or pause before continuing.',
+  generationProgress: 'Generating chapter {n} · {words} characters written',
+  generationPausing: 'Pausing and saving the draft…',
+  generationUnavailable: 'Unable to confirm generation status. Reconnecting…',
   defaultTitle: "Novel details",
   status: "Status",
   tokenUsage: "Token usage",

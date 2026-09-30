@@ -71,6 +71,30 @@ function deriveChapterTitle(planChapter) {
   return normalizeChapterTitle(candidate) || '故事未尽';
 }
 
+function isPlaceholderChapterTitle(value) {
+  const title = normalizeChapterTitle(value);
+  return !title || /^(?:(?:开端|发展|转折|高潮|收束)之变|尘埃落定|故事未尽|第\d+章执行卡)$/.test(title)
+    || /·第\d+章$/.test(title);
+}
+
+function resolveChapterTitle({ novel, planChapter = {}, chapterNumber, content = '' } = {}) {
+  const explicit = normalizeChapterTitle(planChapter.title);
+  const localFallback = planChapter.raw === '本地兜底计划';
+  // Authored plan titles are authoritative. Only our own placeholders yield
+  // to a confirmed rolling card or to the chapter's actual prose.
+  if (explicit && (!localFallback || !isPlaceholderChapterTitle(explicit))) return explicit;
+  const blueprint = collectBlueprintChapterRequirements(novel, chapterNumber);
+  if (!isPlaceholderChapterTitle(blueprint.chapterTitle)) return normalizeChapterTitle(blueprint.chapterTitle);
+  const event = blueprint.purpose || (!localFallback ? planChapter.coreEvent : '');
+  if (event && !/（第\d+章，严格承接前章结果）|^依据大纲完成主线收束/.test(event)) {
+    const title = deriveChapterTitle({ coreEvent: event });
+    if (!isPlaceholderChapterTitle(title)) return title;
+  }
+  const firstEvent = String(content || '').replace(/^\s*第\s*\d+\s*章[^\n]*\n/, '')
+    .split(/[。！？!?\n]/).map((item) => item.trim()).find((item) => item.length >= 4);
+  return firstEvent ? normalizeChapterTitle(firstEvent) : '';
+}
+
 /** Parse both legacy one-line plans and a JSON-shaped plan object. */
 function parseChapterPlan(rawPlan) {
   if (!rawPlan) return { version: 1, chapters: [], phases: [] };
@@ -191,10 +215,10 @@ function buildFallbackChapterPlan(novel, options = {}) {
       chapterNumber: number,
       wordTarget: chapterWords,
       phase: phase.name,
-      coreEvent: finalChapter
+      coreEvent: blueprint.purpose || (finalChapter
         ? `依据大纲完成主线收束：${outline.slice(0, 120) || '给出主角目标的具体结果'}`
-        : `${phase.goal}（第${number}章，严格承接前章结果）`,
-      title: finalChapter ? '尘埃落定' : `${phase.name}之变`,
+        : `${phase.goal}（第${number}章，严格承接前章结果）`),
+      title: isPlaceholderChapterTitle(blueprint.chapterTitle) ? '' : blueprint.chapterTitle,
       setHooks: [],
       resolveHooks: [],
       characters: [],
@@ -688,6 +712,26 @@ function ensureRollingPlanCoverage(novel, currentChapter = 1, totalChapters, cha
     ? chapterPlan
     : parseChapterPlan(chapterPlan || novel.chapterPlanData || novel.chapterPlan || '');
   const planByNumber = new Map(toArray(sourcePlan.chapters).map((item) => [Number(item.chapterNumber), item]));
+  // Keep authored rolling titles in the durable per-chapter plan before the
+  // window advances and removes old cards. Otherwise old titles are lost.
+  let retainedTitles = false;
+  for (const card of existingCards) {
+    const planned = planByNumber.get(Number(card.chapterNumber));
+    if (planned?.raw === '本地兜底计划' && isPlaceholderChapterTitle(planned.title)
+        && !isPlaceholderChapterTitle(card.title)) {
+      planned.title = normalizeChapterTitle(card.title);
+      if (card.purpose) planned.coreEvent = card.purpose;
+      retainedTitles = true;
+    }
+  }
+  if (retainedTitles) {
+    novel.chapterPlanData = sourcePlan;
+    novel.chapterPlan = JSON.stringify(sourcePlan);
+    if (typeof novel.markModified === 'function') {
+      novel.markModified('chapterPlanData');
+      novel.markModified('chapterPlan');
+    }
+  }
   const cards = [];
   for (let chapterNumber = start; chapterNumber <= end; chapterNumber++) {
     const current = existingCards.find((item) => Number(item.chapterNumber) === chapterNumber);
@@ -1065,6 +1109,7 @@ function collectBlueprintChapterRequirements(novel, chapterNumber) {
     ], 20),
     unresolvedQuestions: uniqueText(stages.flatMap((item) => toArray(item.unresolvedQuestions)), 16),
     purpose: String(rollingChapter?.purpose || '').trim(),
+    chapterTitle: normalizeChapterTitle(rollingChapter?.title),
     relationshipChange: String(rollingChapter?.relationshipChange || '').trim(),
     exitHook: String(rollingChapter?.exitHook || '').trim(),
     rollingObjective: String(rollingActive ? rolling.objective || '' : '').trim(),
@@ -1308,7 +1353,7 @@ function buildChapterContract(options) {
     chapterNumber,
     totalChapters,
     wordTarget,
-    title: deriveChapterTitle(planChapter),
+    title: resolveChapterTitle({ novel, planChapter, chapterNumber }),
     coreEvent: planChapter.coreEvent || '承接上一章造成的新问题，做出一个不可逆的选择并留下下一步行动',
     phase: planChapter.phase || '',
     characters: planChapter.characters || [],
@@ -1655,6 +1700,8 @@ module.exports = {
   normalizePlanChapter,
   normalizeChapterTitle,
   deriveChapterTitle,
+  resolveChapterTitle,
+  isPlaceholderChapterTitle,
   parseChapterPlan,
   buildFallbackChapterPlan,
   renderPlanForContext,

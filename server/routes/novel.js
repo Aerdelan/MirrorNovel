@@ -172,6 +172,8 @@ const {
   buildChapterContract,
   renderChapterContract,
   deriveChapterTitle,
+  resolveChapterTitle,
+  isPlaceholderChapterTitle,
   checkChapterContinuity,
   extractEventSignature,
   updateCreativeState,
@@ -840,8 +842,8 @@ function summarizeChapterTokens(chapterStats) {
 }
 
 function formatChapterTitle(chapterNumber, shortTitle) {
-  const suffix = String(shortTitle || '').trim() || '故事未尽';
-  return `第${Number(chapterNumber)}章 ${suffix}`;
+  const suffix = String(shortTitle || '').trim();
+  return `第${Number(chapterNumber)}章${suffix ? ` ${suffix}` : ''}`;
 }
 
 function deriveLocalChapterTitle({ notes = '', content = '' } = {}) {
@@ -861,14 +863,16 @@ function ensureChapterTitles(novel) {
     : (novel.chapterPlan || ''));
   let changed = false;
   for (const chapter of novel.chapters || []) {
-    const fallback = deriveChapterTitle(planData.chapters.find((item) => Number(item.chapterNumber) === Number(chapter.chapterNumber)) || {});
+    const planChapter = planData.chapters.find((item) => Number(item.chapterNumber) === Number(chapter.chapterNumber)) || {};
     const current = String(chapter.title || '').trim();
-    if (!current || /^第\s*\d+\s*章\s*$/.test(current)) {
-      chapter.title = formatChapterTitle(chapter.chapterNumber, fallback);
-      changed = true;
+    const generatedPlaceholder = planChapter.raw === '本地兜底计划' && isPlaceholderChapterTitle(current);
+    if (!current || /^第\s*\d+\s*章\s*$/.test(current) || generatedPlaceholder) {
+      const fallback = resolveChapterTitle({ novel, planChapter, chapterNumber: chapter.chapterNumber, content: chapter.content });
+      const replacement = formatChapterTitle(chapter.chapterNumber, fallback);
+      if (replacement !== current) { chapter.title = replacement; changed = true; }
     }
   }
-  if (changed) novel.markModified('chapters');
+  if (changed && typeof novel.markModified === 'function') novel.markModified('chapters');
   return changed;
 }
 
@@ -1109,9 +1113,10 @@ function finalizeGeneratedChapter({ novel, chapterNumber, rawContent, contract, 
 
   const previousChapter = (novel.chapters || []).length ? novel.chapters[novel.chapters.length - 1] : null;
   const continuity = checkChapterContinuity(finalContent, previousChapter, contract);
+  const shortTitle = contract?.title || resolveChapterTitle({ novel, chapterNumber, content: finalContent });
   novel.chapters.push({
     chapterNumber,
-    title: formatChapterTitle(chapterNumber, contract?.title),
+    title: formatChapterTitle(chapterNumber, shortTitle),
     content: finalContent,
     wordCount: finalContent.length,
     qualityReport: {
@@ -1132,7 +1137,7 @@ function finalizeGeneratedChapter({ novel, chapterNumber, rawContent, contract, 
   novel.markModified('foreshadowingLedger');
   novel.markModified('emotionCurve');
   novel.markModified('recentEventSignatures');
-  return { content: finalContent, wordCount: finalContent.length, title: formatChapterTitle(chapterNumber, contract?.title), continuity, toolchainReport };
+  return { content: finalContent, wordCount: finalContent.length, title: formatChapterTitle(chapterNumber, shortTitle), continuity, toolchainReport };
 }
 
 /**
@@ -3066,9 +3071,14 @@ router.get('/:novelId', auth, async (req, res) => {
     if (!novel) {
       return res.status(404).json({ message: '小说不存在' });
     }
-    // Older works used a number-only chapter title. Fill those entries from
-    // their existing plan locally when the work is opened, without rewriting
-    // prose or invoking another model.
+    // Repair missing titles and our old fallback placeholders locally. During
+    // generation, return a repaired copy so a read cannot overwrite chapters
+    // that another worker is currently committing.
+    if (novel.status === 'generating' || activeStreams.has(String(novel._id))) {
+      const view = novel.toObject();
+      ensureChapterTitles(view);
+      return res.json(view);
+    }
     if (ensureChapterTitles(novel)) await saveNovelDoc(novel);
     res.json(novel);
   } catch (error) {

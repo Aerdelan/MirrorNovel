@@ -18,6 +18,12 @@
  <div v-if="bookTokenUsage" class="summary-row"><span class="summary-label">{{ $t('novelDetail.tokenUsage') }}</span><span class="token-total">{{ $t('novelDetail.input') }} {{ formatTokenCount(bookTokenUsage.inputTokens) }} / {{ $t('novelDetail.output') }} {{ formatTokenCount(bookTokenUsage.outputTokens) }}<span v-if="bookTokenUsage.cacheSavedTokens > 0" class="token-cache">（{{ $t('novelDetail.cacheHit') }} {{ formatTokenCount(bookTokenUsage.cacheSavedTokens) }}）</span><span v-if="novel?.outlineTokenUsage" class="token-sub">｜{{ $t('novelDetail.outlineLabel') }}：{{ $t('novelDetail.input') }} {{ formatTokenCount(novel.outlineTokenUsage.inputTokens) }} / {{ $t('novelDetail.output') }} {{ formatTokenCount(novel.outlineTokenUsage.outputTokens) }}</span></span></div>
  </div>
 
+ <div v-if="generationBusy && !isContinuing" class="card generation-status" role="status">
+  <div>{{ generationLabel }}</div>
+  <button class="btn btn-outline btn-sm" :disabled="pausePending || generationJob?.status === 'pause_requested'" @click="pauseGeneration">{{ pausePending || generationJob?.status === 'pause_requested' ? $t('novelDetail.generationPausing') : $t('bookshelf.pause') }}</button>
+ </div>
+ <div v-else-if="generationUnavailable" class="card" role="status">{{ $t('novelDetail.generationUnavailable') }}</div>
+
  <div v-if="novel" class="card pipeline-card">
   <div class="section-title">{{ $t('novelDetail.pipelineTitle') }}</div>
   <div class="pipeline-hint">{{ $t('novelDetail.pipelineHint') }}</div>
@@ -73,7 +79,7 @@
  </div>
  <div class="gf-acts">
  <button class="btn btn-outline" @click="showGenSettings=false">{{ $t('common.cancel') }}</button>
- <button class="btn btn-primary" :disabled="isContinuing" :aria-busy="isContinuing" @click="confirmGenSettings">{{ isContinuing ? $t('novelDetail.genStarting') : $t('novelDetail.genStart') }}</button>
+ <button class="btn btn-primary" :disabled="generationBlocked || !!chapterActionBusy" :aria-busy="generationActionPending" @click="confirmGenSettings">{{ generationActionPending ? $t('novelDetail.genStarting') : $t('novelDetail.genStart') }}</button>
  </div>
  </div>
  </div>
@@ -86,7 +92,7 @@
  <textarea v-model="editContent" class="textarea" rows="12"></textarea>
  <div class="gf-acts">
  <button class="btn btn-outline" @click="showEditModal=false">{{ $t('common.cancel') }}</button>
- <button class="btn btn-primary" :disabled="savingEdit || !editContent.trim()" :aria-busy="savingEdit" @click="saveEdit">{{ savingEdit ? $t('common.loading') : $t('common.save') }}</button>
+ <button class="btn btn-primary" :disabled="savingEdit || generationBlocked || !editContent.trim()" :aria-busy="savingEdit" @click="saveEdit">{{ savingEdit ? $t('common.loading') : $t('common.save') }}</button>
  </div>
  </div>
  </div>
@@ -116,7 +122,7 @@
  </Teleport>
 
  <div v-if="isLastChapterUnfinished" class="card action-card">
- <button class="btn btn-primary btn-block" @click="openGenSettings(lastChapterNum)">▶ {{ $t('novelDetail.continueChapter', { n: lastChapterNum }) }}</button>
+ <button class="btn btn-primary btn-block" :disabled="generationBlocked || !!chapterActionBusy" @click="openGenSettings(lastChapterNum)">▶ {{ $t('novelDetail.continueChapter', { n: lastChapterNum }) }}</button>
  </div>
 
  <div v-if="isContinuing" class="card streaming-card">
@@ -133,7 +139,7 @@
  <div class="content-text">{{ chapterStreamingText }}</div>
  <div class="cursor-blink">|</div>
  </div>
- <button class="btn btn-outline btn-sm" style="margin-top:8px;" @click="stopChapterGen">{{ $t('bookshelf.pause') }}</button>
+ <button class="btn btn-outline btn-sm" style="margin-top:8px;" :disabled="pausePending || generationJob?.status === 'pause_requested'" @click="pauseGeneration">{{ pausePending || generationJob?.status === 'pause_requested' ? $t('novelDetail.generationPausing') : $t('bookshelf.pause') }}</button>
  </div>
 
  <div v-if="novel" class="card">
@@ -155,22 +161,22 @@
  <span v-if="chapterTokenRoles(chapter).length" class="token-roles">{{ chapterTokenRoles(chapter) }}</span>
  </div>
  <div class="chapter-actions">
- <button class="btn-ch action-edit" :disabled="chapterActionBusy || isContinuing" @click="openEdit(chapter)">{{ $t('novelDetail.btnEdit') }}</button>
- <button class="btn-ch action-del" :disabled="chapterActionBusy || isContinuing" @click="confirmDeleteChapter(chapter)"> {{ chapterActionBusy === `delete:${chapter.chapterNumber}` ? $t('common.loading') : $t('common.delete') }}</button>
- <button class="btn-ch action-deslop" :disabled="chapterActionBusy || isContinuing" @click="deslopChapter(chapter)"> {{ chapterActionBusy === `deslop:${chapter.chapterNumber}` ? $t('common.loading') : $t('novelDetail.chapterActionDeslop') }}</button>
- <button class="btn-ch action-keywords" :disabled="chapterActionBusy || isContinuing" @click="generateKeywords(chapter)"> {{ chapterActionBusy === `keywords:${chapter.chapterNumber}` ? $t('novelDetail.chapterActionAnalyzing') : $t('novelDetail.chapterActionKeywords') }}</button>
- <button v-if="isLastUnfinished(index)" class="btn-ch action-gen" :disabled="chapterActionBusy || isContinuing" @click="openGenSettings(chapter.chapterNumber)">{{ $t('novelDetail.btnContinue') }}</button>
+ <button class="btn-ch action-edit" :disabled="chapterActionBusy || generationBlocked" @click="openEdit(chapter)">{{ $t('novelDetail.btnEdit') }}</button>
+ <button class="btn-ch action-del" :disabled="chapterActionBusy || generationBlocked" @click="confirmDeleteChapter(chapter)"> {{ chapterActionBusy === `delete:${chapter.chapterNumber}` ? $t('common.loading') : $t('common.delete') }}</button>
+ <button class="btn-ch action-deslop" :disabled="chapterActionBusy || generationBlocked" @click="deslopChapter(chapter)"> {{ chapterActionBusy === `deslop:${chapter.chapterNumber}` ? $t('common.loading') : $t('novelDetail.chapterActionDeslop') }}</button>
+ <button class="btn-ch action-keywords" :disabled="chapterActionBusy || generationBlocked" @click="generateKeywords(chapter)"> {{ chapterActionBusy === `keywords:${chapter.chapterNumber}` ? $t('novelDetail.chapterActionAnalyzing') : $t('novelDetail.chapterActionKeywords') }}</button>
+ <button v-if="isLastUnfinished(index)" class="btn-ch action-gen" :disabled="chapterActionBusy || generationBlocked" @click="openGenSettings(chapter.chapterNumber)">{{ $t('novelDetail.btnContinue') }}</button>
  </div>
  </div>
  </div>
  </div>
 
  <div v-if="allChaptersComplete" class="card">
- <button class="btn btn-primary btn-block" @click="openGenSettings(nextChapterNum)"> {{ $t('novelDetail.generateChapter', { n: nextChapterNum }) }}</button>
+ <button class="btn btn-primary btn-block" :disabled="generationBlocked || !!chapterActionBusy" @click="openGenSettings(nextChapterNum)"> {{ $t('novelDetail.generateChapter', { n: nextChapterNum }) }}</button>
  </div>
 
  <div v-if="novel" class="card" style="margin-top:8px;">
- <button class="btn btn-outline btn-block" :disabled="deslopAllBusy" @click="deslopAllChapters">
+ <button class="btn btn-outline btn-block" :disabled="deslopAllBusy || generationBlocked" @click="deslopAllChapters">
  {{ deslopAllBusy ? $t('novelDetail.deslopAllRunning') : $t('novelDetail.deslopAll') }}
  </button>
  <div v-if="deslopAllProgress" style="margin-top:6px;font-size:12px;color:var(--text-secondary);">
@@ -179,7 +185,7 @@
  </div>
 
  <div v-if="novel" class="card" style="margin-top:8px;">
- <button class="btn btn-warning btn-block" :disabled="optimizeBusy" @click="optimizeNovel">
+ <button class="btn btn-warning btn-block" :disabled="optimizeBusy || generationBlocked" @click="optimizeNovel">
  {{ optimizeBusy ? $t('novelDetail.optimizeAllRunning') : $t('novelDetail.optimizeAll') }}
  </button>
  <div v-if="optimizeProgress" style="margin-top:6px;font-size:12px;color:var(--text-secondary);">
@@ -192,13 +198,14 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, onActivated, watch, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useNovelStore } from '../stores/novel'
 import { useI18n } from '../composables/useI18n'
 import { formatBlueprintText } from '../utils/blueprintText'
+import { useNovelGeneration } from '../composables/useNovelGeneration'
 
-const emit = defineEmits(['novel-updated'])
+const emit = defineEmits(['novel-updated', 'generation-state'])
 import { useSSE } from '../composables/useSSE'
 import api from '../api'
 
@@ -311,6 +318,29 @@ function formatTokenCount(value) {
   return String(number)
 }
 const nextChapterNum = computed(() => lastChapterNum.value + 1)
+const generationActionPending = ref(false)
+const pausePending = ref(false)
+let detailVisible = true
+const generation = useNovelGeneration({
+ novel,
+ localRunning: isContinuing,
+ fetchJob: id => novelStore.fetchGenerationJob(id),
+ fetchNovel: id => novelStore.fetchNovelDetail(id, { timeout: 15000 }),
+ onNovel: data => emit('novel-updated', data),
+})
+const generationJob = generation.job
+const generationUnavailable = generation.unavailable
+const generationBusy = computed(() => generation.busy.value || pausePending.value)
+const generationBlocked = computed(() => loading.value || !novel.value || !generation.ready.value || generationBusy.value || generationActionPending.value)
+const generationLabel = computed(() => {
+ if (pausePending.value || generationJob.value?.status === 'pause_requested') return $t('novelDetail.generationPausing')
+ if (generationUnavailable.value) return $t('novelDetail.generationUnavailable')
+ const n = Number(generationJob.value?.chapterNumber || continuingChapter.value || 0)
+ return n > 0 ? $t('novelDetail.generationProgress', { n, words: Number(generationJob.value?.draftLength || chapterStreamingText.value.length || 0) }) : $t('novelDetail.generationBackground')
+})
+watch(() => ({ novelId: String(route.params.id || ''), busy: generationBusy.value, blocked: generationBlocked.value || !!chapterActionBusy.value, label: generationLabel.value, unavailable: generationUnavailable.value, pausing: pausePending.value || generationJob.value?.status === 'pause_requested' }), value => emit('generation-state', value), { immediate: true })
+watch(generationBusy, busy => { if (busy) showGenSettings.value = false })
+defineExpose({ continueNextChapter: () => openGenSettings(nextChapterNum.value), pauseGeneration })
 const isLastChapterUnfinished = computed(() => { if (!novel.value || novel.value.status !== 'paused') return false; return novel.value.chapters.length > 0 })
 const allChaptersComplete = computed(() => { if (!novel.value) return false; return novel.value.status === 'completed' || novel.value.status === 'paused' })
 function isLastUnfinished(index) { if (!novel.value || novel.value.status !== 'paused') return false; return index === novel.value.chapters.length - 1 }
@@ -322,6 +352,10 @@ async function loadNovel() {
  const run = ++loadRunId
  inflightId = id
  loading.value = true
+ generation.reset()
+ pausePending.value = false
+ generationActionPending.value = false
+ showGenSettings.value = false
  // 切换书籍时清空上一本的残留视图状态，避免内容/流式/蓝图串台
  novel.value = null
  blueprint.value = null
@@ -339,6 +373,7 @@ async function loadNovel() {
  if (run !== loadRunId) return
  novel.value = data
  emit('novel-updated', data)
+ if (detailVisible) generation.start()
  await syncChapterFromQuery()
  await loadBlueprint()
  // 检查是否有正在运行或刚完成的后台调优任务
@@ -380,19 +415,47 @@ async function syncChapterFromQuery() {
 onMounted(() => { loadNovel() })
 
 onActivated(() => {
+ detailVisible = true
  // 首次挂载后紧跟的 activated 与 onMounted 重复，跳过一次；此后从缓存返回时强制刷新，避免旧数据
  if (!firstActivated) { firstActivated = true; return }
  loadNovel()
 })
 
 onUnmounted(() => {
+ detailVisible = false
+ generation.stop()
+ loadRunId += 1
  stopPollingOptimize()
+ stopChapterThinkingTicker()
 })
+onDeactivated(() => { detailVisible = false; generation.stop(); stopPollingOptimize() })
 
 watch(chapterStreamingText, async () => { await nextTick(); if (streamingRef.value) streamingRef.value.scrollTop = streamingRef.value.scrollHeight })
 
 function toggleChapter(idx) { expandedChapter.value = expandedChapter.value === idx ? null : idx }
-function openGenSettings(chapterNum) { if (!isContinuing.value && !chapterActionBusy.value) { genTargetChapter.value = chapterNum; genWordCount.value = 2000; genNotes.value = ''; showGenSettings.value = true } }
+async function openGenSettings(chapterNum) {
+ if (generationBlocked.value || chapterActionBusy.value) return
+ const id = String(route.params.id)
+ const run = loadRunId
+ const next = chapterNum === nextChapterNum.value
+ generationActionPending.value = true
+ try {
+  if (!await generation.check(true) || run !== loadRunId || id !== String(route.params.id) || !detailVisible || generationBusy.value) return
+  genTargetChapter.value = next ? nextChapterNum.value : chapterNum; genWordCount.value = 2000; genNotes.value = ''; showGenSettings.value = true
+ } finally { if (run === loadRunId) generationActionPending.value = false }
+}
+
+async function pauseGeneration() {
+ if (!generationBusy.value || pausePending.value || generationJob.value?.status === 'pause_requested') return
+ const id = String(route.params.id)
+ const run = loadRunId
+ pausePending.value = true
+ try {
+  await novelStore.pauseNovel(id)
+  if (run === loadRunId && id === String(route.params.id) && detailVisible) await generation.check(true)
+ } catch (error) { if (run === loadRunId && detailVisible) alert(error.response?.data?.message || $t('bookshelf.alertPauseFailed')) }
+ finally { if (run === loadRunId) pausePending.value = false }
+}
 
 async function loadBlueprint() {
  blueprintLoading.value = true
@@ -454,33 +517,46 @@ async function decideBlueprint(decision) {
   blueprintError.value = e.response?.data?.message || $t('novelDetail.errBlueprintDecision')
  } finally { blueprintDecisionBusy.value = false }
 }
-async function confirmGenSettings() { if (isContinuing.value) return; showGenSettings.value = false; await startChapterGen(genTargetChapter.value, genWordCount.value, genNotes.value) }
+async function confirmGenSettings() {
+ if (generationBlocked.value || chapterActionBusy.value) return
+ const id = String(route.params.id)
+ const run = loadRunId
+ generationActionPending.value = true
+ try {
+  if (!await generation.check(true) || run !== loadRunId || id !== String(route.params.id) || !detailVisible || generationBusy.value) return
+  showGenSettings.value = false
+  await startChapterGen(genTargetChapter.value, genWordCount.value, genNotes.value)
+ } finally { if (run === loadRunId) generationActionPending.value = false }
+}
 
 async function startChapterGen(chapterNum, wc, notes) {
+ if (generationBusy.value || !generation.ready.value) return
+ const id = String(route.params.id)
+ const run = loadRunId
+ const current = () => run === loadRunId && id === String(route.params.id)
  isContinuing.value = true; continuingChapter.value = chapterNum; chapterStreamingText.value = ''; chapterThinkingLen.value = 0; chapterThinkingElapsed.value = 0
  startChapterThinkingTicker()
  const token = localStorage.getItem('token')
  const sse = useSSE()
- sse.openSSE(`/api/novel/${route.params.id}/continue-chapter/${chapterNum}`, { wordCount: wc, notes }, {
+ sse.openSSE(`/api/novel/${id}/continue-chapter/${chapterNum}`, { wordCount: wc, notes }, {
   token,
-  onContent: (content) => { chapterStreamingText.value += content },
+  onContent: (content) => { if (current()) chapterStreamingText.value += content },
   onEvent: (d) => {
+   if (!current()) return
    if (d.type === 'thinking') {
     chapterThinkingLen.value = d.length || 0
     if (d.elapsedMs) chapterThinkingElapsed.value = Math.round(d.elapsedMs / 1000)
    }
-   else if (d.type === 'completed' || d.type === 'chapter_continued' || d.type === 'paused') { isContinuing.value = false; refreshNovel() }
+   else if (d.type === 'completed' || d.type === 'chapter_continued' || d.type === 'paused') { generation.ready.value = false; isContinuing.value = false; refreshNovel() }
   },
-  onError: (message) => { isContinuing.value = false; stopChapterThinkingTicker(); alert($t('novelDetail.errGenFailed') + message) },
-  onLoadend: () => { isContinuing.value = false; stopChapterThinkingTicker(); refreshNovel() },
+  onError: (message) => { if (!current()) return; generation.ready.value = false; isContinuing.value = false; stopChapterThinkingTicker(); if (detailVisible) alert($t('novelDetail.errGenFailed') + message) },
+  onLoadend: () => { if (!current()) return; generation.ready.value = false; isContinuing.value = false; stopChapterThinkingTicker(); refreshNovel() },
  })
  window.__chapterGenSSE = sse
 }
-function stopChapterGen() { if (window.__chapterGenSSE) { window.__chapterGenSSE.abort(); window.__chapterGenSSE = null }; isContinuing.value = false }
-
-function openEdit(chapter) { if (!chapterActionBusy.value && !isContinuing.value) { editingChapter.value = chapter; editContent.value = chapter.content || ''; showEditModal.value = true } }
+function openEdit(chapter) { if (!chapterActionBusy.value && !generationBlocked.value) { editingChapter.value = chapter; editContent.value = chapter.content || ''; showEditModal.value = true } }
 async function saveEdit() {
- if (savingEdit.value || !editingChapter.value || !editContent.value.trim()) return
+ if (generationBlocked.value || savingEdit.value || !editingChapter.value || !editContent.value.trim()) return
  savingEdit.value = true
  try { await api.put(`/novel/${route.params.id}/chapter/${editingChapter.value.chapterNumber}`, { content: editContent.value }); showEditModal.value = false; await refreshNovel() }
  catch (e) { alert($t('novelDetail.errSaveFailed')+(e.response?.data?.message||e.message)) }
@@ -488,6 +564,7 @@ async function saveEdit() {
 }
 
 async function confirmDeleteChapter(ch) {
+ if (generationBlocked.value || chapterActionBusy.value) return
  if (!confirm($t('novelDetail.confirmDeleteChapter', { n: ch.chapterNumber }))) return
  chapterActionBusy.value = `delete:${ch.chapterNumber}`
  try {
@@ -499,6 +576,7 @@ async function confirmDeleteChapter(ch) {
 }
 
 async function deslopChapter(chapter) {
+ if (generationBlocked.value || chapterActionBusy.value) return
  if (!confirm($t('novelDetail.confirmDeslopChapter', { n: chapter.chapterNumber }))) return
  chapterActionBusy.value = `deslop:${chapter.chapterNumber}`
  try {
@@ -509,6 +587,7 @@ async function deslopChapter(chapter) {
 }
 
 async function generateKeywords(chapter) {
+ if (generationBlocked.value || chapterActionBusy.value) return
  keywordsChapterNum.value = chapter.chapterNumber
  keywordsData.value = { characterKeywords: '', sceneKeywords: '' }
  kwError.value = ''
@@ -550,6 +629,7 @@ const optimizeProgress = ref('')
 let optimizePollTimer = null
 
 async function optimizeNovel() {
+ if (generationBlocked.value || optimizeBusy.value) return
  if (!novel.value?.chapters?.length) return alert($t('novelDetail.errNoChaptersToOptimize'))
  if (!confirm($t('novelDetail.confirmOptimize', { title: novel.value.title }))) return
  optimizeBusy.value = true
@@ -601,6 +681,7 @@ function stopPollingOptimize() {
 }
 
 async function deslopAllChapters() {
+ if (generationBlocked.value || deslopAllBusy.value) return
  const chapters = novel.value?.chapters
  if (!chapters || chapters.length === 0) return alert($t('novelDetail.errNoChaptersToProcess'))
  if (!confirm($t('novelDetail.confirmDeslopAll', { n: chapters.length }))) return
@@ -627,9 +708,14 @@ async function deslopAllChapters() {
 }
 
 async function refreshNovel() {
+ const id = String(route.params.id)
+ const run = loadRunId
  try {
-  novel.value = await novelStore.fetchNovelDetail(route.params.id)
+  const data = await novelStore.fetchNovelDetail(id)
+  if (run !== loadRunId || id !== String(route.params.id)) return
+  novel.value = data
   emit('novel-updated', novel.value)
+  if (detailVisible) await generation.check()
   await loadBlueprint()
   await syncChapterFromQuery()
  } catch {}
@@ -639,6 +725,7 @@ function goBack() { router.push('/bookshelf') }
 
 <style scoped>
 .novel-detail-page { height:100%; display:flex; flex-direction:column; }
+.generation-status { display:flex; align-items:center; justify-content:space-between; gap:12px; }
 .detail-header { display:flex; align-items:center; gap:12px; padding:12px 16px; background:var(--card-bg); border-bottom:1px solid var(--border-color); flex-shrink:0; }
 .back-btn { background:none; border:none; font-size:16px; color:var(--primary-color); cursor:pointer; padding:4px 8px; }
 .detail-title { font-size:16px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

@@ -61,9 +61,9 @@ async function fetchTypes() {
  return res.data
  }
 
- async function fetchNovelDetail(novelId) {
+ async function fetchNovelDetail(novelId, options = {}) {
  const token = localStorage.getItem('token')
- const res = await api.get(`/novel/${novelId}`, { headers: { Authorization: `Bearer ${token}` } })
+ const res = await api.get(`/novel/${novelId}`, { ...options, headers: { Authorization: `Bearer ${token}` } })
  return res.data
  }
 
@@ -87,7 +87,7 @@ async function fetchFullTypes() {
 
  async function fetchGenerationJob(novelId, afterSeq) {
  const suffix = afterSeq == null ? '' : `/events?after=${encodeURIComponent(afterSeq)}`
- const res = await api.get(`/novel/generation-job/${novelId}${suffix}`)
+ const res = await api.get(`/novel/generation-job/${novelId}${suffix}`, { timeout: 15000 })
  return res.data
  }
 

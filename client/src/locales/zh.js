@@ -1,6 +1,10 @@
 export default {
  // 作品详情页（NovelDetailPage）
  novelDetail: {
+  generationBackground: 'AI 正在后台生成，请等待或暂停后再续写',
+  generationProgress: '正在生成第 {n} 章 · 已生成 {words} 字',
+  generationPausing: '正在暂停并保存草稿…',
+  generationUnavailable: '暂时无法确认生成状态，正在重新连接…',
   defaultTitle: "小说详情",
   status: "状态",
   tokenUsage: "Token 消耗",

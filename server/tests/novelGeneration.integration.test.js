@@ -526,7 +526,10 @@ test('新书单章：SSE、正文、质量状态和创作状态完整落库', as
   assert.equal(novel.currentChapterIndex, 1);
   assert.match(novel.chapters[0].title, /^第1章\s+/);
   assert.notEqual(novel.chapters[0].title, '第1章');
-  assert.equal(events.find((event) => event.type === 'chapter_start').title, novel.chapters[0].title);
+  // Without a plan title, the start event has only the chapter number; the
+  // finished event supplies the title derived from the actual prose.
+  assert.equal(events.find((event) => event.type === 'chapter_start').title, '第1章');
+  assert.equal(events.find((event) => event.type === 'chapter_end').title, novel.chapters[0].title);
   assert.equal(typeof novel.chapters[0].qualityReport.score, 'number');
   assert.deepEqual(novel.chapters[0].qualityReport.toolchain, { isolated: true });
   assert.equal(novel.emotionCurve.length, 1);
@@ -991,6 +994,42 @@ test('续写校验失败：明确返回原因，保留草稿并停止提交', as
   assert.match(events.find((event) => event.type === 'error').message, /明确禁用词：董事会/);
   assert.equal(novel.chapters.length, 0);
   assert.ok([...state.jobs.values()][0].draft.includes('董事会'));
+});
+
+test('打开旧作品：修正兜底占位标题，保留手动标题和正文', async () => {
+  const first = makeChapter('拓也收到班主任的社团通知', '第一章');
+  const second = makeChapter('拓也带着申请表走向A班', '第二章');
+  const third = makeChapter('拓也来到走廊，与千鹤商量报名', '第三章');
+  const novel = await seedNovel({ _id: 'legacy-fallback-titles', status: 'paused',
+    chapterPlanData: { chapters: [1, 2, 3].map((chapterNumber) => ({ chapterNumber, title: '开端之变', raw: '本地兜底计划' })) },
+    storyBlueprint: { rollingPlan: { startChapter: 1, endChapter: 20, chapters: [
+      { chapterNumber: 1, title: '我的灵魂已经在请假了', purpose: '引出社团新规' },
+      { chapterNumber: 2, title: '被迫营业的第一天', purpose: '接受部长任命' },
+    ] } },
+    chapters: [
+      { chapterNumber: 1, title: '第1章 开端之变', content: first, wordCount: first.length },
+      { chapterNumber: 2, title: '第2章 开端之变', content: second, wordCount: second.length },
+      { chapterNumber: 3, title: '第3章 我的手动标题', content: third, wordCount: third.length },
+    ],
+  });
+  const response = await fetch(`${baseUrl}/${novel._id}`);
+  const data = await response.json();
+  assert.equal(response.status, 200);
+  assert.deepEqual(data.chapters.map((chapter) => chapter.title), ['第1章 我的灵魂已经在请假了', '第2章 被迫营业的第一天', '第3章 我的手动标题']);
+  assert.deepEqual(novel.chapters.map((chapter) => chapter.content), [first, second, third]);
+  assert.equal(state.aiCalls.length, 0);
+  const saveCount = state.saveCount;
+  await fetch(`${baseUrl}/${novel._id}`);
+  assert.equal(state.saveCount, saveCount); // Repair is idempotent.
+  // Active works get only a repaired response, preventing a read-time save
+  // from racing the chapter generation worker.
+  novel.status = 'generating';
+  novel.chapters[0].title = '第1章 开端之变';
+  const activeResponse = await fetch(`${baseUrl}/${novel._id}`);
+  const activeData = await activeResponse.json();
+  assert.equal(activeData.chapters[0].title, '第1章 我的灵魂已经在请假了');
+  assert.equal(novel.chapters[0].title, '第1章 开端之变');
+  assert.equal(state.saveCount, saveCount);
 });
 
 test('正文空输出：不保存空章，作品暂停并返回错误事件', async () => {

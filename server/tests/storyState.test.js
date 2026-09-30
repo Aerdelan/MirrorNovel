@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   parseChapterPlan,
   deriveChapterTitle,
+  resolveChapterTitle,
   buildFallbackChapterPlan,
   buildEmotionPlan,
   buildChapterContract,
@@ -210,6 +211,48 @@ test('chapter plans retain authored short titles and safely derive legacy titles
   assert.equal(plan.chapters[0].title, '予地以花');
   assert.equal(deriveChapterTitle(plan.chapters[0]), '予地以花');
   assert.equal(deriveChapterTitle({ coreEvent: '林舟在旧花店收到无名钥匙，并决定追查寄件人' }), '林舟在旧花店收到无名钥匙');
+});
+
+test('fallback plans and contracts use the approved rolling chapter titles and events', () => {
+  const novel = makeNovel({ targetWordCount: 1800000, chapterWordTarget: 8000,
+    storyBlueprint: { rollingPlan: { startChapter: 1, endChapter: 20, chapters: [
+      { chapterNumber: 1, title: '我的灵魂已经在请假了', purpose: '介绍拓也的生活，引出社团新规' },
+      { chapterNumber: 2, title: '被迫营业的第一天', purpose: '拒绝任命失败，拓也接受部长任命' },
+    ] } },
+  });
+  const plan = buildFallbackChapterPlan(novel);
+  assert.equal(plan.chapters[0].title, '我的灵魂已经在请假了');
+  assert.equal(plan.chapters[1].title, '被迫营业的第一天');
+  assert.equal(plan.chapters[1].coreEvent, '拒绝任命失败，拓也接受部长任命');
+  assert.equal(plan.chapters.some((chapter) => chapter.title === '开端之变'), false);
+  const legacyPlan = { chapters: [{ chapterNumber: 2, title: '开端之变', raw: '本地兜底计划' }] };
+  const contract = buildChapterContract({ novel, planData: legacyPlan, chapterNumber: 2, totalChapters: 225 });
+  assert.equal(contract.title, '被迫营业的第一天');
+});
+
+test('titles preserve authored choices and use prose only when no specific title exists', () => {
+  const novel = makeNovel();
+  assert.equal(resolveChapterTitle({ novel, chapterNumber: 1, planChapter: { title: '开端之变' } }), '开端之变');
+  const planChapter = { title: '开端之变', raw: '本地兜底计划' };
+  assert.equal(resolveChapterTitle({ novel, chapterNumber: 1, planChapter, content: '林舟收到匿名包裹。里面放着一枚钥匙。' }), '林舟收到匿名包裹');
+  assert.equal(resolveChapterTitle({ novel, chapterNumber: 2, planChapter, content: '苏晚推开旧花店的门。门后有人。' }), '苏晚推开旧花店的门');
+  assert.equal(resolveChapterTitle({ novel, chapterNumber: 3, planChapter }), '');
+  const synthetic = makeNovel({ storyBlueprint: { rollingPlan: { startChapter: 1, endChapter: 20,
+    chapters: [{ chapterNumber: 1, title: '当前主线阶段·第1章', purpose: '建立人物处境（第1章，严格承接前章结果）' }] } } });
+  assert.equal(resolveChapterTitle({ novel: synthetic, chapterNumber: 1, planChapter }), '');
+});
+
+test('advancing the rolling window retains old authored titles in the durable chapter plan', () => {
+  const novel = makeNovel({ storyBlueprint: { rollingPlan: { startChapter: 1, endChapter: 20,
+    chapters: [{ chapterNumber: 1, title: '我的灵魂已经在请假了', purpose: '引出社团新规' }] } } });
+  const plan = parseChapterPlan({ chapters: [1, 2, 3].map((chapterNumber) => ({ chapterNumber,
+    title: chapterNumber === 2 ? '用户选择的标题' : '开端之变', raw: '本地兜底计划' })) });
+  ensureRollingPlanCoverage(novel, 3, 10, plan);
+  assert.equal(plan.chapters[0].title, '我的灵魂已经在请假了');
+  assert.equal(plan.chapters[0].coreEvent, '引出社团新规');
+  assert.equal(plan.chapters[1].title, '用户选择的标题');
+  assert.equal(resolveChapterTitle({ novel, planChapter: plan.chapters[0], chapterNumber: 1 }), '我的灵魂已经在请假了');
+  assert.equal(novel.storyBlueprint.rollingPlan.chapters.some((card) => card.chapterNumber === 1), false);
 });
 
 test('buildChapterContract selects the current plan and hides future hooks', () => {
