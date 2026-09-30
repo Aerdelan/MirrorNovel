@@ -14,11 +14,13 @@ concurrency:
 permissions:
   contents: read
 
+# 每个包一个独立任务：失败时在 Actions 列表里一眼看出是哪个包挂了，
+# 也不用再让一个 monolithic job 的早期失败掩盖其它包的真实状态。
 jobs:
-  test-and-build:
+  server:
+    name: server · test
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,34 +30,93 @@ jobs:
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: |
-            server/package-lock.json
-            client/package-lock.json
-            admin/package-lock.json
-            desktop/package-lock.json
+          cache-dependency-path: server/package-lock.json
 
-      - name: Test server
+      - name: Install
         working-directory: server
         run: |
+          npm config get registry
           npm ci --no-audit --no-fund
-          npm test
 
-      - name: Test and build client
+      - name: Test
+        working-directory: server
+        run: npm test
+
+  client:
+    name: client · test & build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install
         working-directory: client
         run: |
+          npm config get registry
           npm ci --no-audit --no-fund
-          npm test
-          npm run check:i18n
-          npm run build
 
-      - name: Build admin
+      - name: Test
+        working-directory: client
+        run: npm test
+
+      - name: Check i18n
+        working-directory: client
+        run: npm run check:i18n
+
+      - name: Build
+        working-directory: client
+        run: npm run build
+
+  admin:
+    name: admin · build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: admin/package-lock.json
+
+      - name: Install and build
         working-directory: admin
         run: |
           npm ci --no-audit --no-fund
           npm run build
 
-      - name: Build desktop renderer
+  desktop:
+    name: desktop · build renderer
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install
         working-directory: desktop
         run: |
+          npm config get registry
           npm ci --no-audit --no-fund
-          npm run build
+
+      - name: Build renderer
+        working-directory: desktop
+        run: npm run build

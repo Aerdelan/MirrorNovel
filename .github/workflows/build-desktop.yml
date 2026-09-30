@@ -2,9 +2,20 @@ name: Build Desktop App (Windows)
 
 on:
   push:
+    branches:
+      - main
+    paths:
+      - 'desktop/**'
+      - 'client/**'
+      - '.github/workflows/build-desktop.yml'
     tags:
       - 'v*'
   workflow_dispatch:
+
+# 同一次推送的新构建会取消还在跑的旧构建，避免排队
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -88,7 +99,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MirrorNovel-Windows
+          name: MirrorNovel-Windows-${{ github.run_number }}
           path: |
             desktop/release/*.exe
             desktop/release/*.blockmap
