@@ -1,6 +1,21 @@
 export default {
+ reference: {
+  webImport: '网页导入与下载（管理员）', webId: '番茄 Book ID 或书页链接', webChapters: '下载章节数（最多1000章）', preview: '预览书籍信息', download: '仅下载 TXT', webDistill: '下载并蒸馏', cookie: '可选：网页 Cookie', saveCookie: '保存 / 清空 Cookie', cookieSaved: 'Cookie 已更新', webDownloading: '正在获取章节正文，请等待…',
+  title: '参考上传与蒸馏', description: '上传自己的参考资料，提取文风与结构，保存为当前账号的参考库。', upload: '上传参考小说',
+  name: '参考名称', normal: '小说', light: '轻小说', category: '大类 / 题材', subcategory: '细分题材', paste: '也可以直接粘贴参考正文（至少200字）',
+  formats: '支持 TXT、Markdown、EPUB、ZIP（内含小说文件）。最多导入500万字；长篇会均匀选取首、中、末段分析。', start: '上传并开始蒸馏',
+  library: '我的参考库', refresh: '刷新', ready: '蒸馏完成', pending: '等待蒸馏', detail: '查看风格档案', redistill: '重新蒸馏', persona: '提炼写作风格',
+  characteristics: '写作特点', structure: '章节结构', empty: '尚无参考，上传后可用于生成小说和写作风格模板。', failed: '操作失败，请检查后端和模型线路后重试',
+  importFailed: '导入失败，请检查文件格式、内容和大小', started: '已上传，正在后台蒸馏。可以离开本页，稍后回来查看。',
+  personaCreated: '已创建写作风格“{name}”，可在小说或剧本中选择', deleteConfirm: '确认删除参考“{name}”？',
+  useTitle: '参考文风与结构（可选）', useHint: '最多选择三个已蒸馏的参考；自选写作风格优先于参考。', manage: '上传 / 管理参考',
+  analyze: '分析结构', structureHint: '结构分析提炼节奏、冲突和阶段组织方法；确认后才应用于新故事。也可直接导入文件分析。',
+  applyStructure: '确认使用此结构', structureApplied: '已应用结构参考', needsBackend: '参考功能尚未部署到后端，请先更新服务器',
+  personaReady: '写作风格已创建并选中', analyzing: '正在分析结构…', screenplay: '剧本',
+ },
  // 作品详情页（NovelDetailPage）
  novelDetail: {
+  versionsTitle: '历史版本', versionsHint: '保留最近8个历史版本；恢复后同步字数、摘要和续写上下文。', noVersions: '尚无历史版本，修改或 AI 修订后会记录原文。', restoreVersion: '恢复此版本', restoreConfirm: '确认恢复？当前正文也会保留为一个历史版本。', reviewDrift: '复检计划执行偏差', driftScope: '最近12章的计划执行复检（基于首、中、末段摘录，仅供审读参考）',
   generationBackground: 'AI 正在后台生成，请等待或暂停后再续写',
   generationProgress: '正在生成第 {n} 章 · 已生成 {words} 字',
   generationPausing: '正在暂停并保存草稿…',

@@ -1,6 +1,21 @@
 export default {
+ reference: {
+  webImport: 'Web import & download (admin)', webId: 'Fanqie book ID or book page URL', webChapters: 'Chapters to download (up to 1000)', preview: 'Preview book', download: 'Download TXT only', webDistill: 'Download & distill', cookie: 'Optional: website cookie', saveCookie: 'Save / clear cookie', cookieSaved: 'Cookie updated', webDownloading: 'Downloading chapter text…',
+  title: 'Reference & Distillation', description: 'Extract style and structure from your references and save them to your personal library.', upload: 'Upload a reference novel',
+  name: 'Reference name', normal: 'Novel', light: 'Light novel', category: 'Category / genre', subcategory: 'Subgenre', paste: 'Or paste reference text (at least 200 characters)',
+  formats: 'TXT, Markdown, EPUB and ZIP supported. Up to 5 million characters; long texts are sampled across the beginning, middle and ending.', start: 'Upload and distill',
+  library: 'My reference library', refresh: 'Refresh', ready: 'Distilled', pending: 'Pending', detail: 'Style profile', redistill: 'Distill again', persona: 'Create writing style',
+  characteristics: 'Writing characteristics', structure: 'Chapter structure', empty: 'Upload references to use them in novel generation and style templates.', failed: 'Request failed. Check your server and model route.',
+  importFailed: 'Import failed. Check the file format, content and size.', started: 'Uploaded. Distillation continues in the background; return later to check progress.',
+  personaCreated: 'Writing style “{name}” created and available for novels or screenplays.', deleteConfirm: 'Delete reference “{name}”?',
+  useTitle: 'Reference style & structure (optional)', useHint: 'Choose up to three distilled references. Your writing style takes priority.', manage: 'Upload / manage references',
+  analyze: 'Analyze structure', structureHint: 'Extract pacing, conflict and stage patterns. Apply them only after confirming. You can also import a file directly.',
+  applyStructure: 'Confirm structure', structureApplied: 'Structure reference applied', needsBackend: 'Deploy the reference feature to your server first.',
+  personaReady: 'Writing style created and selected', analyzing: 'Analyzing structure…', screenplay: 'Screenplay',
+ },
  // Novel detail page
  novelDetail: {
+  versionsTitle: 'Version history', versionsHint: 'Up to eight past versions. Restoring synchronizes word counts, summaries and continuation context.', noVersions: 'No history yet. Editing or AI revision records the original text.', restoreVersion: 'Restore version', restoreConfirm: 'Restore this version? The current text will also be archived.', reviewDrift: 'Review plan execution', driftScope: 'Review of the latest 12 chapters using beginning, middle and ending excerpts; for editorial reference.',
   generationBackground: 'AI is generating in the background. Wait or pause before continuing.',
   generationProgress: 'Generating chapter {n} · {words} characters written',
   generationPausing: 'Pausing and saving the draft…',

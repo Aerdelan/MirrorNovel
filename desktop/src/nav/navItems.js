@@ -33,6 +33,8 @@ export const navGroups = [
       { key: 'generate', labelKey: 'desktop.nav.generate', fallback: '生成小说', path: '/generate', icon: icon.generate, roles: ['user', 'admin', 'importer'] },
       { key: 'continue', labelKey: 'desktop.nav.continue', fallback: '小说续写', path: '/continue', icon: icon.continue, roles: ['user', 'admin', 'importer'] },
       { key: 'polish', labelKey: 'desktop.nav.polish', fallback: '润色文本', path: '/polish', icon: icon.polish, roles: ['user', 'admin', 'importer'] },
+      { key: 'screenplay', labelKey: 'desktop.nav.screenplay', fallback: '剧本工作台', path: '/screenplay', icon: icon.generate, roles: ['user', 'admin', 'importer'] },
+      { key: 'reference', labelKey: 'desktop.nav.reference', fallback: '参考上传与蒸馏', path: '/reference-upload', icon: icon.bookshelf, roles: ['user', 'admin', 'importer'] },
     ],
   },
   {

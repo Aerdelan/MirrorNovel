@@ -7,6 +7,7 @@
  */
 export default {
   nav: {
+    screenplay: '剧本工作台', reference: '参考上传与蒸馏',
     groupCreate: '创作',
     groupWorks: '作品',
     groupAccount: '账户',

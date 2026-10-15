@@ -69,6 +69,9 @@ const novelSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.Mixed,
     default: null,
   },
+  referenceStyleSnapshot: { type: mongoose.Schema.Types.Mixed, default: () => [] },
+  structureReference: { type: String, default: '' },
+  driftReview: { type: mongoose.Schema.Types.Mixed, default: null },
   currentWordCount: {
     type: Number,
     default: 0,

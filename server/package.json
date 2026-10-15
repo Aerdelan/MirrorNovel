@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "test:creative-integration": "node --test tests/creativeFeatures.integration.cjs"
   },
   "dependencies": {
     "archiver": "^8.0.0",
@@ -15,8 +16,10 @@
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "express-rate-limit": "^8.7.0",
+    "fflate": "^0.8.3",
     "fontkit": "^2.0.4",
     "helmet": "^8.3.0",
+    "htmlparser2": "^12.0.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.0.3",
     "multer": "^1.4.5-lts.1",

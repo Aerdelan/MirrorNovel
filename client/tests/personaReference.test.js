@@ -22,6 +22,8 @@ test('UTF-8 imports report original length and extract bounded samples', async (
   assert.equal(loaded.name, '参考小说.txt')
   assert.equal(loaded.totalChars, text.length)
   assert.ok(loaded.text.length <= MAX_REFERENCE_CHARS)
+  const full = await readReferenceNovelFile(file(new TextEncoder().encode(text)), { maxChars: 5000000 })
+  assert.equal(full.text, text, 'library distillation retains full text while persona input keeps its default sample limit')
 })
 
 test('imports decode Chinese GBK and UTF-16 BOM text', async () => {

@@ -96,7 +96,7 @@ async function readZipEntries(bytes, accept, budget) {
   return Object.fromEntries(Object.entries(entries).map(([name, data]) => [name.replace(/\\/g, '/').replace(/^\.\//, ''), data]))
 }
 
-async function readEpub(bytes, name, budget) {
+async function readEpub(bytes, name, budget, maxChars = MAX_REFERENCE_CHARS) {
   const entries = await readZipEntries(bytes, path => /\.(xml|opf|xhtml|html|htm)$/i.test(path), budget)
   let packagePath = ''
   if (entries['META-INF/container.xml']) {
@@ -123,13 +123,13 @@ async function readEpub(bytes, name, budget) {
   }
   const text = chapters.join('\n\n').trim()
   if (text.length < MIN_REFERENCE_CHARS) throw referenceError('epub')
-  return { name, totalChars: text.length, text: sampleReferenceNovel(text) }
+  return { name, totalChars: text.length, text: sampleReferenceNovel(text, maxChars) }
 }
 
-function combineBooks(books, name) {
+function combineBooks(books, name, maxChars = MAX_REFERENCE_CHARS) {
   if (books.length === 1) return { ...books[0], name, files: books.map(book => book.name) }
   const headers = books.map((book, index) => `【小说 ${index + 1}：${book.name.slice(-100)}】\n`)
-  const perBook = Math.floor((MAX_REFERENCE_CHARS - headers.join('').length - books.length * 2) / books.length)
+  const perBook = Math.floor((maxChars - headers.join('').length - books.length * 2) / books.length)
   return {
     name,
     files: books.map(book => book.name),
@@ -138,7 +138,7 @@ function combineBooks(books, name) {
   }
 }
 
-export async function readReferenceNovelFile(file) {
+export async function readReferenceNovelFile(file, { maxChars = MAX_REFERENCE_CHARS } = {}) {
   const name = file.name || ''
   if (!/\.(txt|md|epub|zip)$/i.test(name)) throw referenceError('type')
   const compressed = /\.(epub|zip)$/i.test(name)
@@ -146,7 +146,7 @@ export async function readReferenceNovelFile(file) {
   const bytes = new Uint8Array(await file.arrayBuffer())
   const budget = { bytes: 0, entries: 0 }
   if (/\.epub$/i.test(name)) {
-    const book = await readEpub(bytes, name, budget)
+    const book = await readEpub(bytes, name, budget, maxChars)
     return { ...book, files: [name] }
   }
   if (/\.zip$/i.test(name)) {
@@ -155,19 +155,19 @@ export async function readReferenceNovelFile(file) {
     if (!paths.length) throw referenceError('emptyArchive')
     const books = []
     for (const path of paths) {
-      if (/\.epub$/i.test(path)) books.push(await readEpub(entries[path], path, budget))
+      if (/\.epub$/i.test(path)) books.push(await readEpub(entries[path], path, budget, maxChars))
       else {
         const text = decodeNovelText(entries[path])
-        if (text.length >= MIN_REFERENCE_CHARS) books.push({ name: path, totalChars: text.length, text: sampleReferenceNovel(text) })
+        if (text.length >= MIN_REFERENCE_CHARS) books.push({ name: path, totalChars: text.length, text: sampleReferenceNovel(text, maxChars) })
       }
       if (books.length > MAX_REFERENCE_BOOKS) throw referenceError('archiveLimit')
     }
     if (!books.length) throw referenceError('emptyArchive')
-    return combineBooks(books, name)
+    return combineBooks(books, name, maxChars)
   }
   const text = decodeNovelText(bytes)
   if (text.length < MIN_REFERENCE_CHARS) throw referenceError('short')
-  return { name, totalChars: text.length, text: sampleReferenceNovel(text), files: [name] }
+  return { name, totalChars: text.length, text: sampleReferenceNovel(text, maxChars), files: [name] }
 }
 
 /** 使用现有 AI 生成人格接口的 hint 字段，让已部署的服务端也能分析参考小说。 */

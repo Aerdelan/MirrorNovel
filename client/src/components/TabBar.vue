@@ -25,6 +25,8 @@ const authStore = useAuthStore()
 const currentRoute = computed(() => route.path)
 
 const tabs = [
+ { name: 'screenplay', path: '/screenplay', labelKey: 'reference.screenplay', icon: '<span>▤</span>', roles: ['user', 'admin', 'importer'] },
+ { name: 'reference', path: '/reference-upload', labelKey: 'reference.title', icon: '<span>▧</span>', roles: ['user', 'admin', 'importer'] },
  {
  name: 'generate',
  path: '/generate',

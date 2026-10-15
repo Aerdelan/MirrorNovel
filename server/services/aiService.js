@@ -369,7 +369,7 @@ function buildPersonaPrompt(persona, options = {}) {
   const guide = options.includeDeslop === false ? '' : persona.overrideDeslop
     ? `\n${deslop.styleFloorPrompt}\n【去AI化策略】仅遵循上方写作规则与风格档案，不套用通用叙事工艺指南。`
     : `\n${deslop.craftGuidePrompt}\n${deslop.styleFloorPrompt}`;
-  return `\n\n【本书风格与写作人格：${persona.name || '自定义模板'}】\n${leading.join('\n\n')}${guide}`;
+  return `\n\n【本书风格与写作人格：${persona.name || '自定义模板'}】\n本人格是唯一作者声线。固定五项声线签名：视角与距离、句法与词汇、对话习惯、幽默尺度、情绪表达。与人格冲突的通用模板只补充事实与结构，不改变声线。声线稳定不等于章末套话稳定，章末必须由剧情变化自然形成。\n${leading.join('\n\n')}${guide}`;
 }
 
 /**

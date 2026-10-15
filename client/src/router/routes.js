@@ -9,6 +9,9 @@
  */
 
 export const routes = [
+ { path: '/reference-upload', name: 'ReferenceUpload', component: () => import('../views/ReferencePage.vue'), meta: { title: '参考上传与蒸馏', requiresAuth: true } },
+ { path: '/reference-list', name: 'ReferenceList', component: () => import('../views/ReferencePage.vue'), meta: { title: '参考风格库', requiresAuth: true } },
+ { path: '/screenplay', name: 'Screenplay', component: () => import('../views/ScreenplayPage.vue'), meta: { title: '剧本工作台', requiresAuth: true } },
  {
   path: '/',
   redirect: '/generate',

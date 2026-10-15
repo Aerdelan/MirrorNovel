@@ -24,6 +24,9 @@ const startApp = async () => {
   // not accept traffic until MongoDB confirms it exists; otherwise two server
   // instances could write the same novel concurrently during index startup.
   await GenerationJob.init();
+  await require('./models/ReferenceNovel').init();
+  await require('./models/GenerationTask').init();
+  await require('./services/generationTaskService').recoverInterruptedTasks();
 
   try {
     const SysConfig = require('./models/SysConfig');
@@ -118,6 +121,9 @@ const startApp = async () => {
   app.use('/api/novel', require('./routes/novel'));
   app.use('/api/admin', require('./routes/admin'));
   app.use('/api/persona', require('./routes/persona'));
+  app.use('/api/reference', require('./routes/referenceFanqie'));
+  app.use('/api/reference', require('./routes/reference'));
+  app.use('/api/screenplay', require('./routes/screenplay'));
 
   // 健康检查
   app.get('/api/health', (req, res) => {

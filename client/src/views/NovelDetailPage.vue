@@ -35,6 +35,8 @@
  </div>
 
  <div v-if="novel" class="card blueprint-card">
+ <button class="btn btn-outline btn-sm" :disabled="reviewingDrift" @click="reviewPlanDrift">{{ reviewingDrift ? $t('common.loading') : $t('novelDetail.reviewDrift') }}</button>
+ <div v-if="novel.driftReview" class="drift-review"><p>{{ $t('novelDetail.driftScope') }}</p><p v-for="item in novel.driftReview.verdicts" :key="item.chapterNumber">{{ $t('novelDetail.chapterTitle', { n: item.chapterNumber }) }} · {{ item.verdict }} · {{ item.evidence }}</p></div>
  <div class="blueprint-header">
   <div>
    <div class="section-title" style="margin-bottom:4px;"> {{ $t('novelDetail.blueprintTitle') }}</div>
@@ -67,6 +69,14 @@
  </div>
  </div>
 
+ <Teleport to="body">
+ <div v-if="showVersions" class="gen-overlay" @click.self="showVersions=false"><div class="gen-modal">
+ <h3>{{ $t('novelDetail.versionsTitle') }}</h3><p>{{ $t('novelDetail.versionsHint') }}</p>
+ <p v-if="!chapterVersions.length">{{ $t('novelDetail.noVersions') }}</p>
+ <div v-for="version in chapterVersions" :key="version.version" class="version-row"><span>{{ new Date(version.createdAt).toLocaleString() }} · {{ version.source }} · {{ version.length }}</span><button class="btn btn-outline btn-sm" :disabled="generationBlocked || restoringVersion" @click="restoreVersion(version)">{{ $t('novelDetail.restoreVersion') }}</button></div>
+ <button class="btn btn-outline" @click="showVersions=false">{{ $t('common.close') }}</button>
+ </div></div>
+ </Teleport>
  <Teleport to="body">
  <div v-if="showGenSettings" class="gen-overlay" @click.self="showGenSettings=false">
  <div class="gen-modal">
@@ -162,6 +172,7 @@
  </div>
  <div class="chapter-actions">
  <button class="btn-ch action-edit" :disabled="chapterActionBusy || generationBlocked" @click="openEdit(chapter)">{{ $t('novelDetail.btnEdit') }}</button>
+ <button class="btn-ch" @click="loadVersions(chapter)">{{ $t('novelDetail.versionsTitle') }}</button>
  <button class="btn-ch action-del" :disabled="chapterActionBusy || generationBlocked" @click="confirmDeleteChapter(chapter)"> {{ chapterActionBusy === `delete:${chapter.chapterNumber}` ? $t('common.loading') : $t('common.delete') }}</button>
  <button class="btn-ch action-deslop" :disabled="chapterActionBusy || generationBlocked" @click="deslopChapter(chapter)"> {{ chapterActionBusy === `deslop:${chapter.chapterNumber}` ? $t('common.loading') : $t('novelDetail.chapterActionDeslop') }}</button>
  <button class="btn-ch action-keywords" :disabled="chapterActionBusy || generationBlocked" @click="generateKeywords(chapter)"> {{ chapterActionBusy === `keywords:${chapter.chapterNumber}` ? $t('novelDetail.chapterActionAnalyzing') : $t('novelDetail.chapterActionKeywords') }}</button>
@@ -222,6 +233,15 @@ let inflightId = null
 let firstActivated = false
 const expandedChapter = ref(null)
 const isContinuing = ref(false)
+const showVersions = ref(false), chapterVersions = ref([]), versionChapter = ref(0), restoringVersion = ref(false), reviewingDrift = ref(false)
+async function loadVersions(chapter) { const id = String(route.params.id), run = loadRunId; try { const data = (await api.get(`/novel/${id}/chapter/${chapter.chapterNumber}/versions`)).data; if (run !== loadRunId || id !== String(route.params.id)) return; chapterVersions.value = data.versions || []; versionChapter.value = chapter.chapterNumber; showVersions.value = true } catch (error) { if (run === loadRunId) alert(error.response?.data?.message || $t('error.unknown')) } }
+async function restoreVersion(version) {
+ if (generationBlocked.value || restoringVersion.value || !confirm($t('novelDetail.restoreConfirm'))) return
+ const id = String(route.params.id), run = loadRunId, chapter = versionChapter.value
+ restoringVersion.value = true
+ try { await api.post(`/novel/${id}/chapter/${chapter}/versions/${version.version}/restore`); if (run !== loadRunId || id !== String(route.params.id)) return; showVersions.value = false; await refreshNovel() } catch (error) { if (run === loadRunId) alert(error.response?.data?.message || $t('error.unknown')) } finally { restoringVersion.value = false }
+}
+async function reviewPlanDrift() { if (reviewingDrift.value) return; const id = String(route.params.id), run = loadRunId; reviewingDrift.value = true; try { const data = (await api.post(`/novel/${id}/plan-drift-review`, {}, { timeout: 600000 })).data; if (run !== loadRunId || id !== String(route.params.id)) return; novel.value.driftReview = data.driftReview; emit('novel-updated', novel.value) } catch (error) { if (run === loadRunId) alert(error.response?.data?.message || $t('error.unknown')) } finally { if (run === loadRunId) reviewingDrift.value = false } }
 const continuingChapter = ref(0)
 const chapterStreamingText = ref('')
 const chapterThinkingLen = ref(0)
@@ -356,6 +376,8 @@ async function loadNovel() {
  pausePending.value = false
  generationActionPending.value = false
  showGenSettings.value = false
+ showVersions.value = false
+ reviewingDrift.value = false
  // 切换书籍时清空上一本的残留视图状态，避免内容/流式/蓝图串台
  novel.value = null
  blueprint.value = null
@@ -726,6 +748,7 @@ function goBack() { router.push('/bookshelf') }
 <style scoped>
 .novel-detail-page { height:100%; display:flex; flex-direction:column; }
 .generation-status { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.version-row { display:flex; gap:10px; justify-content:space-between; margin:10px 0; }
 .detail-header { display:flex; align-items:center; gap:12px; padding:12px 16px; background:var(--card-bg); border-bottom:1px solid var(--border-color); flex-shrink:0; }
 .back-btn { background:none; border:none; font-size:16px; color:var(--primary-color); cursor:pointer; padding:4px 8px; }
 .detail-title { font-size:16px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }

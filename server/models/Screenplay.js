@@ -1,0 +1,77 @@
+const mongoose = require('mongoose');
+
+const sceneSchema = new mongoose.Schema({
+  sceneNumber: { type: Number, required: true },
+  heading: { type: String, default: '' },
+  interiorExterior: { type: String, enum: ['INT', 'EXT', 'INT_EXT'], default: 'INT' },
+  timeOfDay: { type: String, default: '' },
+  location: { type: String, default: '' },
+  characters: { type: [String], default: [] },
+  action: { type: String, default: '' },
+  objective: { type: String, default: '' },
+  obstacle: { type: String, default: '' },
+  result: { type: String, default: '' },
+  dialogue: [{
+    character: { type: String, default: '' },
+    line: { type: String, default: '' },
+    delivery: { type: String, default: '' },
+    physicalAction: { type: String, default: '' },
+    position: { type: String, default: '' },
+    subtext: { type: String, default: '' },
+  }],
+  productionNotes: { type: String, default: '' },
+  shotPlan: { type: String, default: '' },
+  soundDesign: { type: String, default: '' },
+  imagePlan: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+}, { _id: false });
+
+const episodeSchema = new mongoose.Schema({
+  episodeNumber: { type: Number, required: true },
+  title: { type: String, default: '' },
+  durationSeconds: { type: Number, default: 120 },
+  premise: { type: String, default: '' },
+  conflict: { type: String, default: '' },
+  turn: { type: String, default: '' },
+  cliffhanger: { type: String, default: '' },
+  emotionalArc: { type: String, default: '' },
+  characterBeats: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  subplotBeats: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  setupPayoff: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  scenePlan: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  continuityState: { type: String, default: '' },
+  scenes: { type: [sceneSchema], default: [] },
+  generationReport: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+  generatedAt: { type: Date },
+}, { _id: false });
+
+const screenplaySchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  title: { type: String, required: true, trim: true, maxlength: 120 },
+  tokenUsage: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+  sourceType: { type: String, enum: ['adaptation', 'original'], required: true },
+  productionTarget: { type: String, enum: ['video', 'live_action'], required: true },
+  sourceNovelId: { type: mongoose.Schema.Types.ObjectId, ref: 'Novel', default: null },
+  writingPersonaId: { type: mongoose.Schema.Types.ObjectId, ref: 'WritingPersona', default: null },
+  writingPersonaSnapshot: { type: mongoose.Schema.Types.Mixed, default: null },
+  sourceSnapshot: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+  concept: { type: String, default: '', maxlength: 5000 },
+  conceptExpansion: { type: mongoose.Schema.Types.Mixed, default: null },
+  includeMainlinePlanning: { type: Boolean, default: false },
+  episodeCount: { type: Number, min: 1, max: 120, default: 12 },
+  episodeDurationSeconds: { type: Number, min: 30, max: 86400, default: 120 },
+  screenplayBible: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+  imageGeneration: { type: mongoose.Schema.Types.Mixed, default: () => ({
+    enabled: false,
+    modelId: 'image_1',
+    characterPortraits: false,
+    relationshipChart: false,
+    transitionBoards: false,
+    assets: [],
+    status: 'idle',
+    lastError: '',
+  }) },
+  episodes: { type: [episodeSchema], default: [] },
+  status: { type: String, enum: ['draft', 'developing', 'paused', 'developed'], default: 'draft' },
+}, { timestamps: true });
+
+module.exports = mongoose.model('Screenplay', screenplaySchema);

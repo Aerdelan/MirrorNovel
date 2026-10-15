@@ -47,6 +47,7 @@ async function saveNovelDoc(novel, options = {}) {
   // A metadata-only save must not start rewriting an old chapter snapshot
   // while another request commits a new chapter.
   if (novel.isModified?.('chapters')) repairDuplicateChapters(novel);
+  await require('./chapterVersions').persistPendingVersions(novel);
   try {
     return await novel.save();
   } catch (error) {

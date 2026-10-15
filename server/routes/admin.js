@@ -366,4 +366,27 @@ router.put('/models', async (req, res) => {
   }
 });
 
+router.get('/screenplay-generation', async (_req, res, next) => {
+  try { const doc = await SysConfig.findOne({ key: 'screenplay_generation' }); res.json(require('../config/screenplayGeneration').normalizeScreenplayGeneration(doc?.value)); } catch (error) { next(error); }
+});
+router.put('/screenplay-generation', async (req, res, next) => {
+  try { const value = require('../config/screenplayGeneration').normalizeScreenplayGeneration(req.body); await SysConfig.findOneAndUpdate({ key: 'screenplay_generation' }, { value }, { upsert: true }); res.json(value); } catch (error) { next(error); }
+});
+router.get('/image-generation', async (_req, res, next) => {
+  try { const doc = await SysConfig.findOne({ key: 'image_generation' }); res.json(require('../config/imageGeneration').toPublicImageGeneration(doc?.value)); } catch (error) { next(error); }
+});
+router.put('/image-generation', async (req, res, next) => {
+  try {
+    const { normalizeImageGeneration, toPublicImageGeneration } = require('../config/imageGeneration');
+    const { seal } = require('../services/secretBox');
+    const old = normalizeImageGeneration((await SysConfig.findOne({ key: 'image_generation' }))?.value);
+    const value = normalizeImageGeneration(req.body);
+    for (const model of value.models) {
+      if (model.baseUrl && !/^https?:\/\//i.test(model.baseUrl)) return res.status(400).json({ message: '生图接口地址需为 http(s)' });
+      model.apiKey = model.apiKey ? seal(model.apiKey) : (old.models.find(item => item.id === model.id)?.apiKey || '');
+    }
+    await SysConfig.findOneAndUpdate({ key: 'image_generation' }, { value }, { upsert: true });
+    res.json(toPublicImageGeneration(value));
+  } catch (error) { next(error); }
+});
 module.exports = router;

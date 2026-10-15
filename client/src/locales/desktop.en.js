@@ -4,6 +4,7 @@
  */
 export default {
   nav: {
+    screenplay: 'Screenplay', reference: 'Reference & Distillation',
     groupCreate: 'Create',
     groupWorks: 'Works',
     groupAccount: 'Account',

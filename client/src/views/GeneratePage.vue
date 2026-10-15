@@ -99,6 +99,7 @@
 </div>
 </div>
 
+<ReferenceSelector v-model:reference-ids="selectedReferenceIds" v-model:structure-pattern="structurePattern" :disabled="generationBusy" @persona-created="useReferencePersona" />
 <div class="card">
 <div class="section-title">③ {{ $t('generate.stepChar') }}</div>
 <input v-model="protagonistName" class="input" :disabled="generationBusy" :placeholder="$t('generate.placeholderName')" maxlength="20" />
@@ -312,6 +313,7 @@
  </div>
 
  <div class="card">
+ <ReferenceSelector v-model:reference-ids="selectedReferenceIds" v-model:structure-pattern="structurePattern" :disabled="lnGenerating" @persona-created="useReferencePersona" />
  <div class="section-title">② {{ $t('generate.lnStepChar') }}</div>
  <input v-model="lnCharName" class="input" :placeholder="$t('generate.lnPlaceholderName')" maxlength="20" />
  <div class="ln-trait-section" style="margin-top:10px;">
@@ -506,6 +508,7 @@ import { useSSE } from '../composables/useSSE'
 import { useI18n } from '../composables/useI18n'
 import { formatBlueprintText, parseBlueprintText } from '../utils/blueprintText'
 import api from '../api'
+import ReferenceSelector from '../components/ReferenceSelector.vue'
 
 const router = useRouter()
 const novelStore = useNovelStore()
@@ -614,7 +617,13 @@ const outlineWarn = ref('')
 const blueprintWarning = ref('')
 
 // ---- 写作人格 persona ----
+const selectedReferenceIds = ref([])
+const structurePattern = ref('')
 const personas = ref([])
+function useReferencePersona(persona) {
+ if (!personas.value.some(value => value._id === persona._id)) personas.value.push(persona)
+ selectedPersonaId.value = persona._id
+}
 const selectedPersonaId = ref('')
 const selectedPersona = computed(() => personas.value.find(p => p._id === selectedPersonaId.value) || null)
 const showPersonaModal = ref(false)
@@ -958,6 +967,8 @@ function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, per
  targetWordCount: wordCount,
  chapterWordTarget: perChapterWords || undefined,
  personaId: selectedPersonaId.value || undefined,
+ referenceIds: selectedReferenceIds.value,
+ structurePattern: structurePattern.value,
  }
 
  const token = localStorage.getItem('token')
@@ -1055,6 +1066,8 @@ function generateInitialBlueprint() {
   chapterWordTarget: chapterWordTarget.value,
   outline: outline.value,
   personaId: selectedPersonaId.value || undefined,
+ referenceIds: selectedReferenceIds.value,
+ structurePattern: structurePattern.value,
  }, {
   token,
   onThinking: (event) => {
@@ -1193,6 +1206,8 @@ async function startGen() {
  expertMode: expertMode.value,
  outline: outline.value,
  personaId: selectedPersonaId.value || undefined,
+ referenceIds: selectedReferenceIds.value,
+ structurePattern: structurePattern.value,
  storyBlueprint: genMode.value === 'book' ? initialBlueprint.value : undefined,
  enableResearch: enableResearch.value,
  researchLinks: researchLinksText.value.split('\n').map(s => s.trim()).filter(Boolean),
@@ -1511,6 +1526,9 @@ async function startLNGen() {
  mode: lnGenMode.value,
  expertMode: lnExpertMode.value,
  outline: lnOutline,
+ referenceIds: selectedReferenceIds.value,
+ structurePattern: structurePattern.value,
+ personaId: selectedPersonaId.value || undefined,
  }
 
  novelStore.startGeneration(params,

@@ -31,7 +31,9 @@ const writingPersonaSchema = new mongoose.Schema({
   axes: { type: mongoose.Schema.Types.Mixed, default: null },
 
   // 来源：system 系统预设 / user 手动 / ai-generated AI生成
-  source: { type: String, enum: ['system', 'user', 'ai-generated'], default: 'user' },
+  source: { type: String, enum: ['system', 'user', 'ai-generated', 'reference-extracted'], default: 'user' },
+  sourceRefId: { type: mongoose.Schema.Types.ObjectId, ref: 'ReferenceNovel', default: null },
+  scope: { type: String, enum: ['all', 'novel', 'screenplay'], default: 'all' },
 
   // 系统预设不可被用户删除/编辑核心字段
   isSystem: { type: Boolean, default: false, index: true },

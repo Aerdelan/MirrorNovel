@@ -50,6 +50,7 @@
     <label>模型名称<input v-model.trim="route.model" :disabled="saving" class="input" /></label>
     <label>API Key<input v-model.trim="route.apiKey" :disabled="saving" class="input" :placeholder="route.apiKeyConfigured ? '已配置，留空则保持不变' : '请输入 API Key'" /></label>
    </div>
+   <CreativeConfig />
    <p v-if="message" :class="{ error: errorMessage }">{{ message }}</p>
   </section>
 
@@ -152,6 +153,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import SidebarLayout from '../components/SidebarLayout.vue'
 import api from '../api'
+import CreativeConfig from '../components/CreativeConfig.vue'
 
 const route = useRoute()
 const activeTab = computed(() => route.path.slice(1) || 'dashboard')

@@ -33,6 +33,20 @@ test('HTML extraction preserves paragraphs and entities without including hidden
   assert.equal(chapterHtmlToText(html), '甲 乙&丙\n换行\n\n下一段')
 })
 
+test('library imports retain full EPUB and multi-book ZIP text with an explicit larger budget', async () => {
+  const longText = text('正文').repeat(15)
+  const bookBytes = epub('开篇', '结尾', { 'OEBPS/Text/第一章.xhtml': strToU8(`<html><body><p>${longText}</p></body></html>`) })
+  const full = await readReferenceNovelFile(file(bookBytes, '长篇.epub'), { maxChars: 5000000 })
+  assert.ok(full.text.length > MAX_REFERENCE_CHARS)
+  assert.ok(full.text.includes(longText))
+  const zip = zipSync({ '第一卷.epub': bookBytes, '第二卷.txt': strToU8(longText) })
+  const combined = await readReferenceNovelFile(file(zip, '多卷.zip'), { maxChars: 5000000 })
+  assert.ok(combined.text.length > MAX_REFERENCE_CHARS * 2)
+  assert.ok(combined.text.includes(longText))
+  const sampled = await readReferenceNovelFile(file(zip, '多卷.zip'))
+  assert.ok(sampled.text.length <= MAX_REFERENCE_CHARS)
+})
+
 test('ZIP imports EPUB and text novels from subfolders and ignores non-book entries', async () => {
   const archive = zipSync({
     '系列/第02卷.epub': epub('第二卷开篇', '第二卷结尾'),
