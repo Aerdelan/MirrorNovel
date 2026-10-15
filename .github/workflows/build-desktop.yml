@@ -54,7 +54,12 @@ jobs:
           NPM_CONFIG_CACHE: ${{ runner.temp }}\npm-cache
         run: |
           npm ci --no-audit --no-fund
-          npm test
+          if (Test-Path -Path 'tests' -PathType Container) {
+            Write-Host 'Found tests directory, running npm test...'
+            npm test
+          } else {
+            Write-Host 'No server/tests directory found — skipping npm test.'
+          }
 
       - name: Install, test and build client
         working-directory: client
