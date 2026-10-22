@@ -28,7 +28,9 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 与 build-desktop 保持一致：server 的测试脚本靠 Node 自己的 glob 找用例（>= 21 才支持），
+          # 而且 GitHub 已弃用 Node 20 runner。
+          node-version: 22
           cache: npm
           cache-dependency-path: server/package-lock.json
 
@@ -63,7 +65,9 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 与 build-desktop 保持一致：server 的测试脚本靠 Node 自己的 glob 找用例（>= 21 才支持），
+          # 而且 GitHub 已弃用 Node 20 runner。
+          node-version: 22
           cache: npm
           cache-dependency-path: client/package-lock.json
 
@@ -96,7 +100,9 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 与 build-desktop 保持一致：server 的测试脚本靠 Node 自己的 glob 找用例（>= 21 才支持），
+          # 而且 GitHub 已弃用 Node 20 runner。
+          node-version: 22
           cache: npm
           cache-dependency-path: admin/package-lock.json
 
@@ -117,7 +123,9 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 与 build-desktop 保持一致：server 的测试脚本靠 Node 自己的 glob 找用例（>= 21 才支持），
+          # 而且 GitHub 已弃用 Node 20 runner。
+          node-version: 22
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 

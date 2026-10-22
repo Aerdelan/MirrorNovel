@@ -32,7 +32,11 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 必须 >= 21：npm 在 Windows 上用 cmd.exe 执行 script，cmd 不展开 glob，
+          # 而测试运行器自身的 glob 支持是 Node 21 才加的（22 起对 Windows 又做了修正）。
+          # 留在 20 会让 server 的 `node --test tests/**/*.test.js` 一个测试也匹配不到；
+          # 另外 GitHub 已宣布 Node 20 runner 弃用，22 是长期支持版。
+          node-version: 22
           cache: 'npm'
           cache-dependency-path: |
             server/package-lock.json
