@@ -125,9 +125,12 @@ const startApp = async () => {
   app.use('/api/reference', require('./routes/reference'));
   app.use('/api/screenplay', require('./routes/screenplay'));
 
-  // 健康检查
+  // 健康检查：额外带上线邮箱状态，这样不用 SSH 登服务器、也不靠日志关键字，
+  // 一个 GET 就能判断“验证码收不到”是邮件服务挂了还是已恢复。
+  // 只暴露主机/端口/错误文本，不返回发件邮箱与密码。
+  const { getEmailStatus } = require('./services/emailService');
   app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', time: new Date().toISOString() });
+    res.json({ status: 'ok', time: new Date().toISOString(), email: getEmailStatus() });
   });
 
   // 全局错误处理：生产环境不向客户端暴露内部错误细节

@@ -75,10 +75,10 @@ async function sendCode() {
  if (!emailRegex.test(email.value)) { errorMsg.value = $t('auth.invalidEmail'); return }
  codeSending.value = true; errorMsg.value = ''
  try {
- await authStore.sendCode(email.value)
+ const res = await authStore.sendCode(email.value) // 需要看响应里的 emailSent 标志
  codeCountdown.value = 60
  const timer = setInterval(() => { codeCountdown.value--; if (codeCountdown.value <= 0) clearInterval(timer) }, 1000)
- alert($t('auth.codeSent'))
+ alert(res?.data?.emailSent === false ? $t('auth.codeEmailFailed') : $t('auth.codeSent')) // 没真的发出去时不能说“请注意查收”
  } catch (e) { errorMsg.value = e.response?.data?.message || $t('auth.codeFail') }
  finally { codeSending.value = false }
 }

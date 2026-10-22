@@ -84,8 +84,8 @@ async function sendCode() {
  if (!email.value) { errorMsg.value = $t('auth.invalidEmail'); return }
  sending.value = true; errorMsg.value = ''; message.value = ''
  try {
-  await api.post('/auth/send-reset-code', { email: email.value })
-  message.value = $t('auth.resetCodeSent')
+  const res = await api.post('/auth/send-reset-code', { email: email.value })
+  message.value = res?.data?.emailSent === false ? $t('auth.resetCodeEmailFailed') : $t('auth.resetCodeSent') // 服务端没发出去时不能叫“请注意查收”
   startCountdown()
  } catch (e) {
   errorMsg.value = e.response?.data?.message || $t('auth.codeFail')

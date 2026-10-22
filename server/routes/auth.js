@@ -2,7 +2,11 @@ const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
 const VerificationCode = require('../models/VerificationCode');
-const { sendVerificationCode, verifyTransporter } = require('../services/emailService');
+const {
+  sendVerificationCode,
+  startEmailHealthCheck,
+  isEmailReady,
+} = require('../services/emailService');
 const jwt = require('jsonwebtoken');
 const auth = require('../middleware/auth');
 const {
@@ -14,19 +18,39 @@ const {
 const { seal, open } = require('../services/secretBox');
 const { getFriendlyErrorMessage, normalizeBaseUrl } = require('../services/aiService');
 
-// 是否启用邮箱发送——如果连接不上就退化为控制台打印
-let emailEnabled = true;
+/**
+ * 邮箱不可用时，是否把明文验证码回写到 HTTP 响应。
+ * 默认关：开着它等于任何人调一次接口就能拿到验证码直接注册，甚至重置他人密码。
+ * 本地排查需要时再设 EMAIL_RETURN_CODE_ON_FAILURE=true。
+ */
+const RETURN_CODE_WHEN_EMAIL_DOWN = String(process.env.EMAIL_RETURN_CODE_ON_FAILURE || '').toLowerCase() === 'true';
 
-// 初始化时检查邮箱可用性（不阻塞启动）
-setTimeout(async () => {
-  const result = await verifyTransporter();
-  if (result.ok) {
-    console.log('✅ 邮箱服务连接正常');
-  } else {
-    emailEnabled = false;
-    console.warn(`⚠️  邮箱服务不可用 (${result.error})，验证码将打印到控制台`);
-  }
-}, 100);
+// 启动时探测一次邮箱可用性。失败后由 emailService 的退避定时器自动重探并自愈，
+// 不再像旧实现那样一次失败就闩死到进程重启。
+startEmailHealthCheck();
+
+/**
+ * 统一构造验证码接口的响应。
+ * emailSent 是给前端的硬标志：旧版不管服务端有没有真的发信都回一句“已发送”，
+ * 前端又固定弹“请注意查收”，把降级完全掩盖住了。
+ */
+function buildCodeResponse({ sent, code, label }) {
+  if (sent) return { message: `${label}验证码已发送到您的邮箱`, emailSent: true };
+  return {
+    message: `${label}验证码已生成，但邮件发送失败，请稍后重试或联系管理员`,
+    emailSent: false,
+    ...(RETURN_CODE_WHEN_EMAIL_DOWN ? { code } : {}),
+  };
+}
+
+/** 邮件没发出去时，验证码只存在于服务日志里，给运维留一条可查的记录 */
+function logOfflineCode(label, email, code) {
+  console.log(`\n═══════════════════════════════════════`);
+  console.log(`  📧 ${label}验证码（邮箱: ${email}）`);
+  console.log(`  🔑 ${code}`);
+  console.log(`  ⏰ 有效期 10 分钟`);
+  console.log(`═══════════════════════════════════════\n`);
+}
 
 // 生成6位随机验证码
 function generateCode() {
@@ -62,28 +86,19 @@ router.post('/send-code', async (req, res) => {
     });
     await verificationCode.save();
 
-    // 尝试发送邮件
-    if (emailEnabled) {
+    // 尝试发送邮件；失败只影响本次响应，健康状态由 emailService 统一维护
+    if (isEmailReady()) {
       try {
         await sendVerificationCode(email, code, 'register');
-        console.log(`验证码已发送至 ${email}`);
-        return res.json({ message: '验证码已发送到您的邮箱' });
+        return res.json(buildCodeResponse({ sent: true, label: '注册' }));
       } catch (emailError) {
-        console.error('邮件发送失败，转为控制台输出:', emailError.message);
-        emailEnabled = false;
+        console.error('注册验证码邮件发送失败:', emailError.message);
       }
     }
 
-    // 邮箱不可用时，打印到控制台并返回
-    console.log(`\n═══════════════════════════════════════`);
-    console.log(`  📧 验证码（邮箱: ${email}）`);
-    console.log(`  🔑 ${code}`);
-    console.log(`  ⏰ 有效期 10 分钟`);
-    console.log(`═══════════════════════════════════════\n`);
-    res.json({
-      message: '验证码已发送（邮箱服务暂不可用，请在控制台查看验证码）',
-      code, // 开发阶段返回验证码，方便调试
-    });
+    // 邮箱不可用：验证码只打在服务日志里，并明确告知前端邮件没发出去
+    logOfflineCode('注册', email, code);
+    res.json(buildCodeResponse({ sent: false, code, label: '注册' }));
   } catch (error) {
     console.error('发送验证码流程失败:', error);
     res.status(500).json({ message: '发送验证码失败，请稍后重试' });
@@ -109,22 +124,17 @@ router.post('/send-reset-code', async (req, res) => {
       expiresAt: new Date(Date.now() + 10 * 60 * 1000),
     });
 
-    if (emailEnabled) {
+    if (isEmailReady()) {
       try {
         await sendVerificationCode(email, code, 'reset');
-        return res.json({ message: '密码重置验证码已发送到您的邮箱' });
+        return res.json(buildCodeResponse({ sent: true, label: '密码重置' }));
       } catch (emailError) {
-        console.error('重置密码邮件发送失败，转为控制台输出:', emailError.message);
-        emailEnabled = false;
+        console.error('密码重置邮件发送失败:', emailError.message);
       }
     }
 
-    console.log(`\n═══════════════════════════════════════`);
-    console.log(`  📧 密码重置验证码（邮箱: ${email}）`);
-    console.log(`  🔑 ${code}`);
-    console.log(`  ⏰ 有效期 10 分钟`);
-    console.log(`═══════════════════════════════════════\n`);
-    res.json({ message: '验证码已生成（邮箱服务暂不可用，请在控制台查看验证码）', code });
+    logOfflineCode('密码重置', email, code);
+    res.json(buildCodeResponse({ sent: false, code, label: '密码重置' }));
   } catch (error) {
     console.error('发送密码重置验证码失败:', error);
     res.status(500).json({ message: '发送验证码失败，请稍后重试' });
