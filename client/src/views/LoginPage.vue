@@ -65,6 +65,7 @@ const loading = ref(false)
 const canLogin = computed(() => !loading.value && Boolean(email.value.trim() && password.value))
 
 async function handleLogin() {
+ if (loading.value) return
  if (!email.value || !password.value) {
  errorMsg.value = $t('auth.fillAll')
  return
@@ -73,8 +74,8 @@ async function handleLogin() {
  errorMsg.value = ''
  try {
  await authStore.login(email.value, password.value)
- const redirect = route.query.redirect || '/generate'
- router.push(redirect)
+ const redirect = route.query.redirect
+ await router.replace(typeof redirect === 'string' && redirect.startsWith('/') && !redirect.startsWith('//') && !/^\/(login|register|forgot-password)(?:[/?#]|$)/.test(redirect) ? redirect : '/generate')
  } catch (e) {
  errorMsg.value = e.response?.data?.message || $t('auth.loginFail')
  } finally { loading.value = false }
@@ -84,13 +85,18 @@ async function handleLogin() {
 <style scoped>
 .login-page {
  height: 100%;
+ min-height: 0;
+ overflow-y: auto;
+ flex-direction: column;
  display: flex;
  align-items: center;
- justify-content: center;
+ justify-content: flex-start;
  background: radial-gradient(circle at 18% 12%, #fff7e9 0%, transparent 32%), linear-gradient(135deg, #f3f7f2 0%, #e2efe3 50%, #f8f4ea 100%);
  padding: 24px;
 }
 .auth-container {
+ margin: auto 0;
+ flex-shrink: 0;
  width: 100%;
  max-width: 400px;
 }

@@ -104,6 +104,11 @@ page {
 /* ====== 输入框 ====== */
 .input {
   width: 100%;
+  /* uni-input has a short default height. With border-box and vertical
+     padding its real input collapsed to 0px, leaving no clickable text area. */
+  height: 52px;
+  min-height: 52px;
+  line-height: 22px;
   padding: 14px 16px;
   border: 1.5px solid var(--border-color);
   border-radius: 10px;

@@ -11,6 +11,10 @@ const verificationCodeSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
+  attempts: { type: Number, default: 0 },
+  // Sparse for compatibility with existing records; new sends reserve one slot
+  // per email and purpose across processes before talking to SMTP.
+  deliveryKey: { type: String, unique: true, sparse: true },
   type: {
     type: String,
     enum: ['register', 'reset'],

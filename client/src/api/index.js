@@ -1,4 +1,6 @@
 import axios from 'axios'
+import { getActivePinia } from 'pinia'
+import { useAuthStore } from '../stores/auth'
 import { toUserFacingMessage } from '../utils/userFacing'
 import { buildModelOverrideHeader, HEADER_NAME } from '../utils/modelOverride'
 
@@ -20,7 +22,7 @@ const api = axios.create({
 api.interceptors.request.use(
  (config) => {
  const token = localStorage.getItem('token')
- if (token) {
+ if (token && token !== 'undefined' && token !== 'null') {
  config.headers.Authorization = `Bearer ${token}`
  }
  // 桌面端「仅存本地」的模型线路：随请求头带上，服务端只在本次调用使用、不落库。
@@ -47,10 +49,14 @@ api.interceptors.response.use(
  },
  (error) => {
  if (error.response?.data) error.response.data = sanitizeMessage(error.response.data)
- if (error.response?.status === 401 && !_authRedirecting) {
+ const authFailure = error.response?.status === 401 || (error.response?.status === 403 && error.response?.data?.disabled)
+ const requestToken = error.config?.headers?.Authorization
+ const currentToken = localStorage.getItem('token')
+ // A delayed 401 from the previous account must not log out a new session.
+ if (authFailure && !_authRedirecting && requestToken === `Bearer ${currentToken}`) {
  _authRedirecting = true
- localStorage.removeItem('token')
- localStorage.removeItem('user')
+ if (getActivePinia()) useAuthStore().clearAuth()
+ else { localStorage.removeItem('token'); localStorage.removeItem('user') }
  // 桌面端走 hash 路由，直接改 hash 由已挂载的桌面路由处理。
  // 不能走下面的动态 import：'../router' 是 Web 版（createWebHistory）实例，
  // 在桌面端从未挂载，却会把地址栏改写成 /login，造成地址与真实路由不一致。

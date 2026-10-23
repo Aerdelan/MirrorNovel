@@ -50,6 +50,10 @@
       }
     },
     {
+      "path": "pages/forgot-password/forgot-password",
+      "style": { "navigationBarTitleText": "找回密码", "navigationStyle": "custom" }
+    },
+    {
       "path": "pages/continue/continue",
       "style": {
         "navigationBarTitleText": "续写",

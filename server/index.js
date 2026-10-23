@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
 const dotenv = require('dotenv');
 const path = require('path');
 const connectDB = require('./config/db');
@@ -24,6 +23,7 @@ const startApp = async () => {
   // not accept traffic until MongoDB confirms it exists; otherwise two server
   // instances could write the same novel concurrently during index startup.
   await GenerationJob.init();
+  await require('./models/VerificationCode').init();
   await require('./models/ReferenceNovel').init();
   await require('./models/GenerationTask').init();
   await require('./services/generationTaskService').recoverInterruptedTasks();
@@ -102,21 +102,12 @@ const startApp = async () => {
     .split(',').map(s => s.trim()).filter(Boolean);
   app.use(cors({ origin: corsOrigins.length ? corsOrigins : true, credentials: true }));
 
-  // 安全：登录/验证码/重置密码接口限流，防爆破与验证码滥用
-  const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false, message: { message: '请求过于频繁，请稍后再试' } });
-  const codeLimiter = rateLimit({ windowMs: 60 * 60 * 1000, limit: 10, standardHeaders: true, legacyHeaders: false, message: { message: '验证码请求过于频繁，请稍后再试' } });
-
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
   // 路由
   const authRouter = require('./routes/auth');
-  // 对验证码/重置相关接口施加更严限流
-  app.use('/api/auth/login', authLimiter);
-  app.use('/api/auth/send-code', codeLimiter);
-  app.use('/api/auth/send-reset-code', codeLimiter);
-  app.use('/api/auth/reset-password', codeLimiter);
-  app.use('/api/auth/register', authLimiter);
+  require('./middleware/authRateLimits').applyAuthRateLimits(app);
   app.use('/api/auth', authRouter);
   app.use('/api/novel', require('./routes/novel'));
   app.use('/api/admin', require('./routes/admin'));

@@ -50,23 +50,25 @@ export const useAuthStore = defineStore('auth', () => {
  }
 
  async function login(email, password) {
- const res = await api.post('/auth/login', { email, password })
+ const res = await api.post('/auth/login', { email, password }, { timeout: 30000 })
  setAuth(res.data.user, res.data.token)
  return res.data
  }
 
  async function register(email, password, code, nickname, inviteCode) {
- const res = await api.post('/auth/register', { email, password, code, nickname, inviteCode })
+ const res = await api.post('/auth/register', { email, password, code, nickname, inviteCode }, { timeout: 30000 })
  setAuth(res.data.user, res.data.token)
  return res.data
  }
 
  async function sendCode(email) {
- return api.post('/auth/send-code', { email })
+ return api.post('/auth/send-code', { email }, { timeout: 30000 })
  }
 
  async function getProfile() {
+ const requestedToken = token.value
  const res = await api.get('/auth/profile')
+ if (requestedToken !== token.value) return res.data
  user.value = sanitizeUserData(res.data.user)
  localStorage.setItem('user', JSON.stringify(user.value))
  return res.data

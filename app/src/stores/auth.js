@@ -79,7 +79,9 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function getProfile() {
+    const requestedToken = token.value
     const res = await api.get('/auth/profile')
+    if (requestedToken !== token.value) return res
     user.value = sanitizeUserData(res.user)
     safeSet('user', user.value)
     return { ...res, user: user.value }

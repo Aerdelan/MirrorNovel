@@ -21,8 +21,8 @@
     <div class="form-group code-group">
      <label class="label">{{ $t('auth.verifyCode') }}</label>
      <div class="code-row">
-      <input v-model.trim="code" class="input" inputmode="numeric" maxlength="6" :disabled="loading" :placeholder="$t('auth.placeholderCode')" />
-      <button class="btn btn-outline btn-sm code-btn" :disabled="!canSendCode" @click="sendCode">
+      <input ref="codeInput" v-model.trim="code" class="input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" :disabled="loading" :placeholder="$t('auth.placeholderCode')" />
+      <button type="button" class="btn btn-outline btn-sm code-btn" :disabled="!canSendCode" @click="sendCode">
        {{ countdown > 0 ? `${countdown}s` : (sending ? $t('auth.sending') : $t('auth.getCode')) }}
       </button>
      </div>
@@ -36,8 +36,8 @@
      <input v-model="confirmPassword" class="input" type="password" autocomplete="new-password" :disabled="loading" :placeholder="$t('auth.placeholderPwdConfirm')" @keyup.enter="resetPassword" />
     </div>
 
-    <div v-if="message" class="success-msg">{{ message }}</div>
-    <div v-if="errorMsg" class="error-msg">{{ errorMsg }}</div>
+    <div v-if="message" class="success-msg" role="status">{{ message }}</div>
+    <div v-if="errorMsg" class="error-msg" role="alert">{{ errorMsg }}</div>
     <button class="btn btn-primary btn-block btn-lg" style="margin-top: 20px;" :disabled="!canReset" :aria-busy="loading" @click="resetPassword">
      <span v-if="loading" class="spinner"></span>
      <span>{{ loading ? $t('common.loading') : $t('auth.resetButton') }}</span>
@@ -52,12 +52,15 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from '../composables/useI18n'
 import api from '../api'
+import { useAuthStore } from '../stores/auth'
+import { useVerificationCode } from '../composables/useVerificationCode'
 
 const router = useRouter()
+const authStore = useAuthStore()
 const { $t } = useI18n()
 const email = ref('')
 const code = ref('')
@@ -66,42 +69,51 @@ const confirmPassword = ref('')
 const errorMsg = ref('')
 const message = ref('')
 const loading = ref(false)
-const sending = ref(false)
-const countdown = ref(0)
+const codeInput = ref(null)
+const completed = ref(false)
+const { sending, countdown, available, startFromResponse, resetCountdown, active, handleRateLimit } = useVerificationCode()
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-const canSendCode = computed(() => !loading.value && !sending.value && countdown.value === 0 && emailRegex.test(email.value))
-const canReset = computed(() => !loading.value && Boolean(email.value && code.value && password.value && confirmPassword.value))
-
-function startCountdown() {
- countdown.value = 60
- const timer = setInterval(() => {
-  countdown.value -= 1
-  if (countdown.value <= 0) { clearInterval(timer); countdown.value = 0 }
- }, 1000)
-}
+const canSendCode = computed(() => !loading.value && !completed.value && available.value && emailRegex.test(email.value))
+const canReset = computed(() => !loading.value && !sending.value && !completed.value && Boolean(email.value && code.value && password.value && confirmPassword.value))
+watch(email, () => { code.value = ''; message.value = ''; errorMsg.value = ''; resetCountdown() })
 
 async function sendCode() {
- if (!email.value) { errorMsg.value = $t('auth.invalidEmail'); return }
+ if (loading.value || completed.value || !available.value) return
+ if (!emailRegex.test(email.value)) { errorMsg.value = $t('auth.invalidEmail'); return }
+ const requestedEmail = email.value
  sending.value = true; errorMsg.value = ''; message.value = ''
  try {
-  const res = await api.post('/auth/send-reset-code', { email: email.value })
-  message.value = res?.data?.emailSent === false ? $t('auth.resetCodeEmailFailed') : $t('auth.resetCodeSent') // 服务端没发出去时不能叫“请注意查收”
-  startCountdown()
+  const res = await api.post('/auth/send-reset-code', { email: requestedEmail }, { timeout: 30000 })
+  if (!active()) return
+  if (email.value !== requestedEmail) return
+  if (res?.data?.emailSent !== false) startFromResponse(res)
+  if (res?.data?.emailSent === false) errorMsg.value = $t('auth.resetCodeEmailFailed')
+  else {
+   message.value = $t(res?.data?.cooldown ? 'auth.codePending' : 'auth.resetCodeSent')
+   await nextTick()
+   if (active()) codeInput.value?.focus()
+  }
  } catch (e) {
-  errorMsg.value = e.response?.data?.message || $t('auth.codeFail')
+  if (email.value === requestedEmail) handleRateLimit(e)
+  if (active() && email.value === requestedEmail) errorMsg.value = e.response?.data?.message || $t('auth.codeFail')
  } finally { sending.value = false }
 }
 
 async function resetPassword() {
+ if (loading.value || sending.value || completed.value) return
  errorMsg.value = ''; message.value = ''
  if (!email.value || !code.value || !password.value || !confirmPassword.value) { errorMsg.value = $t('auth.fillAll'); return }
+ if (!emailRegex.test(email.value)) { errorMsg.value = $t('auth.invalidEmail'); return }
+ if (!/^\d{6}$/.test(code.value)) { errorMsg.value = $t('auth.invalidCode'); return }
  if (password.value.length < 6) { errorMsg.value = $t('auth.pwdMinLen'); return }
  if (password.value !== confirmPassword.value) { errorMsg.value = $t('auth.pwdMismatch'); return }
  loading.value = true
  try {
-  await api.post('/auth/reset-password', { email: email.value, code: code.value, password: password.value })
+  await api.post('/auth/reset-password', { email: email.value, code: code.value, password: password.value }, { timeout: 30000 })
+  authStore.clearAuth()
+  completed.value = true
   message.value = $t('auth.resetSuccess')
-  setTimeout(() => router.push('/login'), 900)
+  if (active()) await router.replace('/login')
  } catch (e) {
   errorMsg.value = e.response?.data?.message || $t('auth.resetFail')
  } finally { loading.value = false }
@@ -109,8 +121,8 @@ async function resetPassword() {
 </script>
 
 <style scoped>
-.login-page { height: 100%; display: flex; align-items: center; justify-content: center; background: radial-gradient(circle at 18% 12%, #fff7e9 0%, transparent 32%), linear-gradient(135deg, #f3f7f2 0%, #e2efe3 50%, #f8f4ea 100%); padding: 24px; }
-.auth-container { width: 100%; max-width: 400px; }
+.login-page { height: 100%; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; background: radial-gradient(circle at 18% 12%, #fff7e9 0%, transparent 32%), linear-gradient(135deg, #f3f7f2 0%, #e2efe3 50%, #f8f4ea 100%); padding: 24px; }
+.auth-container { width: 100%; max-width: 400px; margin: auto 0; flex-shrink: 0; }
 .auth-brand { text-align: center; margin-bottom: 28px; }
 .brand-icon { display: flex; justify-content: center; margin-bottom: 16px; }
 .brand-title { font-size: 26px; font-weight: 700; color: var(--text); margin-bottom: 6px; }

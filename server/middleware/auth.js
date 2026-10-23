@@ -30,6 +30,9 @@ const auth = async (req, res, next) => {
     if (!user) {
       return res.status(401).json({ message: '用户不存在' });
     }
+    if ((decoded.authVersion || 0) !== (user.authVersion || 0)) {
+      return res.status(401).json({ message: '密码已修改，请重新登录' });
+    }
     // 禁用拦截必须放在每次鉴权里：只拦登录的话，已签发的 token 在有效期内
     // 仍能调用所有受保护接口，禁用形同虚设。
     if (user.disabled) {

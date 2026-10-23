@@ -8,6 +8,9 @@ const {
   isEmailReady,
 } = require('../services/emailService');
 const jwt = require('jsonwebtoken');
+const { randomInt } = require('crypto');
+const { codeResendSeconds } = require('../config/authPolicy');
+const { text, normalizeEmail, validEmail, passwordError, consumeCode } = require('../services/authValidation');
 const auth = require('../middleware/auth');
 const {
   getPublicRoutes,
@@ -21,9 +24,10 @@ const { getFriendlyErrorMessage, normalizeBaseUrl } = require('../services/aiSer
 /**
  * 邮箱不可用时，是否把明文验证码回写到 HTTP 响应。
  * 默认关：开着它等于任何人调一次接口就能拿到验证码直接注册，甚至重置他人密码。
- * 本地排查需要时再设 EMAIL_RETURN_CODE_ON_FAILURE=true。
+ * 本地排查需同时设 NODE_ENV=development 和 EMAIL_RETURN_CODE_ON_FAILURE=true。
  */
-const RETURN_CODE_WHEN_EMAIL_DOWN = String(process.env.EMAIL_RETURN_CODE_ON_FAILURE || '').toLowerCase() === 'true';
+const RETURN_CODE_WHEN_EMAIL_DOWN = process.env.NODE_ENV === 'development' &&
+  String(process.env.EMAIL_RETURN_CODE_ON_FAILURE || '').toLowerCase() === 'true';
 
 // 启动时探测一次邮箱可用性。失败后由 emailService 的退避定时器自动重探并自愈，
 // 不再像旧实现那样一次失败就闩死到进程重启。
@@ -35,15 +39,15 @@ startEmailHealthCheck();
  * 前端又固定弹“请注意查收”，把降级完全掩盖住了。
  */
 function buildCodeResponse({ sent, code, label }) {
-  if (sent) return { message: `${label}验证码已发送到您的邮箱`, emailSent: true };
+  if (sent) return { message: `${label}验证码已发送到您的邮箱`, emailSent: true, retryAfter: codeResendSeconds };
   return {
-    message: `${label}验证码已生成，但邮件发送失败，请稍后重试或联系管理员`,
+    message: `${label}验证码邮件发送失败，请稍后重试或联系管理员`,
     emailSent: false,
     ...(RETURN_CODE_WHEN_EMAIL_DOWN ? { code } : {}),
   };
 }
 
-/** 邮件没发出去时，验证码只存在于服务日志里，给运维留一条可查的记录 */
+/** 明文离线验证码仅用于显式开启的本地开发模式。 */
 function logOfflineCode(label, email, code) {
   console.log(`\n═══════════════════════════════════════`);
   console.log(`  📧 ${label}验证码（邮箱: ${email}）`);
@@ -53,38 +57,56 @@ function logOfflineCode(label, email, code) {
 }
 
 // 生成6位随机验证码
-function generateCode() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
+async function reserveCode(email, type) {
+  const now = new Date();
+  const verification = await VerificationCode.findOneAndUpdate({
+    deliveryKey: `${type}:${email}`,
+    createdAt: { $lte: new Date(now.getTime() - codeResendSeconds * 1000) },
+  }, { $set: {
+    email, type, code: randomInt(100000, 1000000).toString(), attempts: 0,
+    createdAt: now, expiresAt: new Date(now.getTime() + 10 * 60 * 1000),
+  } }, { upsert: true, new: true });
+  // Remove pre-upgrade records only after reserving the unique delivery slot.
+  await VerificationCode.deleteMany({ email, type, _id: { $ne: verification._id } });
+  return verification;
+}
+
+async function respondCodeCooldown(email, type, res, recent) {
+  const verification = recent || await VerificationCode.findOne({ email, type });
+  const retryAfter = verification
+    ? Math.max(1, Math.ceil((new Date(verification.createdAt).getTime() + codeResendSeconds * 1000 - Date.now()) / 1000))
+    : 1;
+  return res.set('Retry-After', String(retryAfter)).json({
+    cooldown: true, retryAfter,
+    message: '验证码正在发送或已发送，请稍候查收，无需重复获取',
+  });
+}
+
+async function checkCodeCooldown(email, type, res) {
+  const recent = await VerificationCode.findOne({ email, type, createdAt: { $gt: new Date(Date.now() - codeResendSeconds * 1000) } });
+  if (!recent) return false;
+  await respondCodeCooldown(email, type, res, recent);
+  return true;
 }
 
 // 发送验证码
 router.post('/send-code', async (req, res) => {
   try {
-    const { email } = req.body;
+    const email = normalizeEmail(req.body?.email);
     if (!email) {
       return res.status(400).json({ message: '请输入邮箱地址' });
     }
+    if (!validEmail(email)) return res.status(400).json({ message: '请输入有效的邮箱地址' });
 
     // 检查邮箱是否已注册
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res.status(400).json({ message: '该邮箱已注册' });
     }
+    if (await checkCodeCooldown(email, 'register', res)) return;
 
-    // 生成验证码
-    const code = generateCode();
-    
-    // 删除该邮箱旧的验证码
-    await VerificationCode.deleteMany({ email, type: 'register' });
-    
-    // 保存新验证码（10分钟有效期）
-    const verificationCode = new VerificationCode({
-      email,
-      code,
-      type: 'register',
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
-    });
-    await verificationCode.save();
+    const verificationCode = await reserveCode(email, 'register');
+    const { code } = verificationCode;
 
     // 尝试发送邮件；失败只影响本次响应，健康状态由 emailService 统一维护
     if (isEmailReady()) {
@@ -96,10 +118,11 @@ router.post('/send-code', async (req, res) => {
       }
     }
 
-    // 邮箱不可用：验证码只打在服务日志里，并明确告知前端邮件没发出去
-    logOfflineCode('注册', email, code);
+    if (RETURN_CODE_WHEN_EMAIL_DOWN) logOfflineCode('注册', email, code);
+    if (!RETURN_CODE_WHEN_EMAIL_DOWN) await VerificationCode.deleteOne({ _id: verificationCode._id });
     res.json(buildCodeResponse({ sent: false, code, label: '注册' }));
   } catch (error) {
+    if (error.code === 11000) return respondCodeCooldown(normalizeEmail(req.body?.email), 'register', res);
     console.error('发送验证码流程失败:', error);
     res.status(500).json({ message: '发送验证码失败，请稍后重试' });
   }
@@ -108,21 +131,17 @@ router.post('/send-code', async (req, res) => {
 // 发送密码重置验证码
 router.post('/send-reset-code', async (req, res) => {
   try {
-    const email = String(req.body?.email || '').trim().toLowerCase();
+    const email = normalizeEmail(req.body?.email);
     if (!email) return res.status(400).json({ message: '请输入邮箱地址' });
+    if (!validEmail(email)) return res.status(400).json({ message: '请输入有效的邮箱地址' });
 
     const existingUser = await User.findOne({ email });
     // 不泄露邮箱是否存在；对不存在的邮箱返回与成功相同的提示。
     if (!existingUser) return res.json({ message: '如果该邮箱已注册，验证码将发送到您的邮箱' });
+    if (await checkCodeCooldown(email, 'reset', res)) return;
 
-    const code = generateCode();
-    await VerificationCode.deleteMany({ email, type: 'reset' });
-    await VerificationCode.create({
-      email,
-      code,
-      type: 'reset',
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000),
-    });
+    const verificationCode = await reserveCode(email, 'reset');
+    const { code } = verificationCode;
 
     if (isEmailReady()) {
       try {
@@ -133,9 +152,11 @@ router.post('/send-reset-code', async (req, res) => {
       }
     }
 
-    logOfflineCode('密码重置', email, code);
+    if (RETURN_CODE_WHEN_EMAIL_DOWN) logOfflineCode('密码重置', email, code);
+    if (!RETURN_CODE_WHEN_EMAIL_DOWN) await VerificationCode.deleteOne({ _id: verificationCode._id });
     res.json(buildCodeResponse({ sent: false, code, label: '密码重置' }));
   } catch (error) {
+    if (error.code === 11000) return respondCodeCooldown(normalizeEmail(req.body?.email), 'reset', res);
     console.error('发送密码重置验证码失败:', error);
     res.status(500).json({ message: '发送验证码失败，请稍后重试' });
   }
@@ -144,25 +165,22 @@ router.post('/send-reset-code', async (req, res) => {
 // 使用邮箱验证码设置新密码
 router.post('/reset-password', async (req, res) => {
   try {
-    const email = String(req.body?.email || '').trim().toLowerCase();
-    const code = String(req.body?.code || '').trim();
-    const password = String(req.body?.password || '');
+    const email = normalizeEmail(req.body?.email);
+    const code = text(req.body?.code);
+    const password = req.body?.password;
     if (!email || !code || !password) return res.status(400).json({ message: '请填写完整信息' });
-    if (password.length < 6) return res.status(400).json({ message: '密码至少6位' });
+    if (!validEmail(email)) return res.status(400).json({ message: '请输入有效的邮箱地址' });
+    if (!/^\d{6}$/.test(code)) return res.status(400).json({ message: '请输入6位数字验证码' });
+    const invalidPassword = passwordError(password);
+    if (invalidPassword) return res.status(400).json({ message: invalidPassword });
 
-    const verification = await VerificationCode.findOne({
-      email,
-      code,
-      type: 'reset',
-      expiresAt: { $gt: new Date() },
-    });
-    if (!verification) return res.status(400).json({ message: '验证码无效或已过期' });
+    if (!await consumeCode(email, 'reset', code)) return res.status(400).json({ message: '验证码无效、已过期或尝试次数过多，请重新获取' });
 
     const user = await User.findOne({ email });
     if (!user) return res.status(400).json({ message: '验证码无效或已过期' });
     user.password = password;
+    user.authVersion = (user.authVersion || 0) + 1;
     await user.save();
-    await VerificationCode.deleteMany({ email, type: 'reset' });
     res.json({ message: '密码重置成功' });
   } catch (error) {
     console.error('密码重置失败:', error);
@@ -173,33 +191,28 @@ router.post('/reset-password', async (req, res) => {
 // 注册
 router.post('/register', async (req, res) => {
   try {
-    const { email, password, code, nickname, inviteCode } = req.body;
+    const email = normalizeEmail(req.body?.email);
+    const code = text(req.body?.code);
+    const password = req.body?.password;
+    const nickname = text(req.body?.nickname);
+    const inviteCode = text(req.body?.inviteCode);
 
     if (!email || !password || !code) {
       return res.status(400).json({ message: '请填写完整信息' });
     }
 
-    if (password.length < 6) {
-      return res.status(400).json({ message: '密码至少6位' });
-    }
-
-    // 验证验证码
-    const verification = await VerificationCode.findOne({
-      email,
-      code,
-      type: 'register',
-      expiresAt: { $gt: new Date() },
-    });
-
-    if (!verification) {
-      return res.status(400).json({ message: '验证码无效或已过期' });
-    }
+    if (!validEmail(email)) return res.status(400).json({ message: '请输入有效的邮箱地址' });
+    if (!/^\d{6}$/.test(code)) return res.status(400).json({ message: '请输入6位数字验证码' });
+    const invalidPassword = passwordError(password);
+    if (invalidPassword) return res.status(400).json({ message: invalidPassword });
+    if (nickname.length > 20) return res.status(400).json({ message: '昵称不能超过20个字符' });
 
     // 检查邮箱是否已注册
     const existingUser = await User.findOne({ email });
     if (existingUser) {
       return res.status(400).json({ message: '该邮箱已注册' });
     }
+    if (!await consumeCode(email, 'register', code)) return res.status(400).json({ message: '验证码无效、已过期或尝试次数过多，请重新获取' });
 
     // 创建用户
     let user = new User({
@@ -223,14 +236,11 @@ router.post('/register', async (req, res) => {
       } catch (e) { console.error('[邀请] 处理失败:', e.message) }
     }
 
-    // 删除已使用的验证码
-    await VerificationCode.deleteMany({ email, type: 'register' });
-
     // 生成JWT
     const token = jwt.sign(
-      { userId: user._id },
+      { userId: user._id, authVersion: user.authVersion || 0 },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN }
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
 
     res.status(201).json({
@@ -246,6 +256,7 @@ router.post('/register', async (req, res) => {
     });
   } catch (error) {
     console.error('注册失败:', error);
+    if (error.code === 11000 && error.keyPattern?.email) return res.status(400).json({ message: '该邮箱已注册' });
     res.status(500).json({ message: '注册失败' });
   }
 });
@@ -253,11 +264,13 @@ router.post('/register', async (req, res) => {
 // 登录
 router.post('/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const email = normalizeEmail(req.body?.email);
+    const password = req.body?.password;
 
     if (!email || !password) {
       return res.status(400).json({ message: '请输入邮箱和密码' });
     }
+    if (!validEmail(email) || typeof password !== 'string') return res.status(400).json({ message: '邮箱或密码错误' });
 
     let user = await User.findOne({ email });
     if (!user) {
@@ -279,9 +292,9 @@ router.post('/login', async (req, res) => {
 
     // 生成JWT
     const token = jwt.sign(
-      { userId: user._id },
+      { userId: user._id, authVersion: user.authVersion || 0 },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN }
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
     );
 
     res.json({

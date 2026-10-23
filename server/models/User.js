@@ -6,6 +6,7 @@ const { toPublicModelConfig } = require('../config/modelCatalog');
 const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true, lowercase: true, trim: true },
   password: { type: String, required: true, minlength: 6 },
+  authVersion: { type: Number, default: 0 },
   nickname: { type: String, default: '书友' },
   avatar: { type: String, default: '' },
   role: { type: String, enum: ['user', 'admin', 'importer'], default: 'user' },
@@ -73,6 +74,7 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
 
 function sanitizeUserOutput(_doc, ret) {
   delete ret.password;
+  delete ret.authVersion;
   ret.modelConfig = toPublicModelConfig(ret.modelConfig);
   return ret;
 }

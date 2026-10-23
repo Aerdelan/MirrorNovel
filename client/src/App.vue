@@ -1,7 +1,7 @@
 <template>
  <div class="app">
  <router-view v-slot="{ Component }">
- <keep-alive :key="accountKey">
+ <keep-alive :key="accountKey" :exclude="['LoginPage', 'RegisterPage', 'ForgotPasswordPage']">
  <component :is="Component" />
  </keep-alive>
  </router-view>
@@ -88,19 +88,21 @@ const showAnnouncement = ref(false)
 const DISCLAIMER_KEY = 'mn_disclaimer_agreed'
 const showDisclaimer = ref(false)
 watchEffect(() => {
-  if (authStore.isLoggedIn) {
-    showDisclaimer.value = !localStorage.getItem(DISCLAIMER_KEY)
-  }
+  showDisclaimer.value = authStore.isLoggedIn && !localStorage.getItem(DISCLAIMER_KEY)
 })
 function agreeDisclaimer() {
   localStorage.setItem(DISCLAIMER_KEY, '1')
   showDisclaimer.value = false
 }
 
-watchEffect(async () => {
+watchEffect(async (onCleanup) => {
+ let cancelled = false
+ onCleanup(() => { cancelled = true })
+ showAnnouncement.value = false
  if (authStore.isLoggedIn) {
+ const account = accountKey.value
  const shouldShow = await authStore.checkAnnouncement()
- showAnnouncement.value = shouldShow
+ if (!cancelled && account === accountKey.value && authStore.isLoggedIn) showAnnouncement.value = shouldShow
  }
 })
 
@@ -118,7 +120,7 @@ onUnmounted(() => {
 
 function closeAnnouncement() {
  showAnnouncement.value = false
- try { authStore.dismissAnnouncement() } catch {}
+ authStore.dismissAnnouncement().catch(() => {})
 }
 
 function switchLang() {

@@ -11,6 +11,7 @@ const adminAuth = async (req, res, next) => {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     const user = await User.findById(decoded.userId).select('-password');
     if (!user) return res.status(401).json({ message: '用户不存在' });
+    if ((decoded.authVersion || 0) !== (user.authVersion || 0)) return res.status(401).json({ message: '密码已修改，请重新登录' });
     if (user.role !== 'admin') return res.status(403).json({ message: '权限不足，需要管理员账号' });
     if (user.disabled) return res.status(403).json({ message: '账号已被禁用' });
     req.user = user;

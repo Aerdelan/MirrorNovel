@@ -7,12 +7,12 @@
 
       <view class="form-group">
         <text class="label">邮箱</text>
-        <input v-model="email" class="input" type="text" placeholder="输入邮箱地址" />
+        <input v-model.trim="email" class="input" type="text" placeholder="输入邮箱地址" :disabled="logging" />
       </view>
 
       <view class="form-group">
         <text class="label">密码</text>
-        <input v-model="password" class="input" password placeholder="输入密码" />
+        <input v-model="password" class="input" password placeholder="输入密码" :disabled="logging" @confirm="handleLogin" />
       </view>
 
       <button class="btn btn-primary btn-block btn-lg" hover-class="btn-hover" :disabled="logging" @click="handleLogin">
@@ -22,6 +22,7 @@
       <view class="links">
         <text class="link" @click="goRegister">没有账号？去注册</text>
       </view>
+      <view class="links"><text class="link" @click="goReset">忘记密码？</text></view>
     </view>
   </view>
 </template>
@@ -36,6 +37,7 @@ const password = ref('')
 const logging = ref(false)
 
 async function handleLogin() {
+  if (logging.value) return
   if (!email.value || !password.value) {
     uni.showToast({ title: '请填写邮箱和密码', icon: 'none' })
     return
@@ -52,6 +54,7 @@ async function handleLogin() {
 }
 
 function goRegister() { uni.navigateTo({ url: '/pages/register/register' }) }
+function goReset() { uni.navigateTo({ url: '/pages/forgot-password/forgot-password' }) }
 </script>
 
 <style scoped>

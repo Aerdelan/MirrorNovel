@@ -43,7 +43,7 @@ const useShell = computed(() => !SHELL_LESS_ROUTES.includes(route.name))
 const DISCLAIMER_KEY = 'mn_disclaimer_agreed'
 const showDisclaimer = ref(false)
 watchEffect(() => {
-  if (authStore.isLoggedIn) showDisclaimer.value = !localStorage.getItem(DISCLAIMER_KEY)
+  showDisclaimer.value = authStore.isLoggedIn && !localStorage.getItem(DISCLAIMER_KEY)
 })
 function agreeDisclaimer() {
   localStorage.setItem(DISCLAIMER_KEY, '1')
