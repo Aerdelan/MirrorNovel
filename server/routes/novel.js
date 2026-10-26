@@ -9,6 +9,7 @@ const { hasAcceptableRewriteLength, buildRewriteReviewPrompt } = require('../ser
 const { createStyleRevision, buildRevisionSampleBlock, freezeRevisionSnapshot } = require('../services/styleRevisions');
 const { loadActivePreferences } = require('../services/writingStyle');
 const { buildStyleContext } = require('../services/styleContext');
+const { captureGenerationInput, readGenerationInput } = require('../services/generationInput');
 const WritingStyleRevision = require('../models/WritingStyleRevision');
 const { queueChapterVersion, archiveChapterVersion } = require('../services/chapterVersions');
 const ChapterVersion = require('../models/ChapterVersion');
@@ -1574,6 +1575,14 @@ router.post('/generate', auth, async (req, res) => {
   const errorId = randomUUID().slice(0, 12);
   try {
 
+    const generationRequestId = req.body.clientRequestId;
+    if (generationRequestId !== undefined && (typeof generationRequestId !== 'string' || !/^[\w-]{16,80}$/.test(generationRequestId))) {
+      return res.status(400).json({ message: '生成请求标识无效，请刷新后重试' });
+    }
+    if (generationRequestId) {
+      const existing = await Novel.findOne({ userId: req.userId, generationRequestId });
+      if (existing) return res.status(409).json({ message: '该生成请求已创建作品，请先检测任务状态或从书架打开', novelId: existing._id });
+    }
     let { novelTypeId, protagonistName, worldSetting, targetWordCount, personaId, storyBlueprint, typeSku } = req.body;
     if (!novelTypeId && !typeSku) return res.status(400).json({ message: '请选择小说类型' });
     targetWordCount = Number(targetWordCount) || 50000;
@@ -1606,6 +1615,7 @@ router.post('/generate', auth, async (req, res) => {
       targetWordCount,
       chapterWordTarget,
       expertMode,
+      generationRequestId,
       status: 'generating', batchIndex: 0,
     });
     if (storyBlueprint && typeof storyBlueprint === 'object') {
@@ -1701,10 +1711,18 @@ ${tmpl.dynamicPrompt}
     } catch (e) {
       console.warn('冻结风格版本失败（已跳过，正文生成不受影响）:', e.message);
     }
+    novel.generationInput = captureGenerationInput({ ...req.body, targetWordCount, chapterWordTarget, mode, expertMode, enableResearch, researchLinks,
+      storyBlueprint: storyBlueprint ? novel.storyBlueprint : null });
     novel.generationContext = systemPrompt;
     generationPhase = 'saving_novel';
+    if (req.aborted || res.destroyed) return;
     await saveNovelDoc(novel);
     novelPersisted = true;
+    if (req.aborted || res.destroyed) {
+      novel.status = 'paused';
+      await saveNovelDoc(novel);
+      return;
+    }
 
     generationPhase = 'starting_job';
     generationRun = reserveGenerationRun(novel._id, 'novel');
@@ -2933,7 +2951,7 @@ router.post('/continue-import', auth, async (req, res) => {
 router.get('/bookshelf', auth, async (req, res) => {
   try {
     const novels = await Novel.find({ userId: req.userId })
-      .select('-chapters')
+      .select('-chapters -generationInput')
       .sort({ updatedAt: -1 });
     res.json(novels);
   } catch (error) {
@@ -3092,17 +3110,41 @@ router.post('/:novelId/blueprint/proposals/:proposalId/decision', auth, async (r
 
 // 查询持久化生成任务。连接断开后客户端可用它区分“仍在后台运行”与
 // “已经暂停且存在可恢复草稿”，不再把 HTTP/SSE 断开误判成完成。
+async function readRecoveryStatus(novel) {
+  const recovered = await recoverExpiredLeases({ novelId: novel._id });
+  const active = await getActiveJob(novel._id);
+  const job = active || await findLatestResumableJob(novel._id);
+  const local = activeStreams.has(String(novel._id));
+  if (recovered > 0 && !active && !local && novel.status === 'generating') {
+    novel.status = 'paused';
+    await saveNovelDoc(novel);
+  }
+  // The local reservation also covers the small window before lease creation.
+  return { novelId: String(novel._id), active: Boolean(active || local), job: serializeGenerationJob(job), novelStatus: novel.status };
+}
+
+// Works even when novel_created never reached the client before a disconnect.
+router.get('/generation-request/:requestId', auth, async (req, res) => {
+  try {
+    const novel = await Novel.findOne({ userId: req.userId, generationRequestId: req.params.requestId });
+    if (!novel) return res.json({ novelId: null, active: false, job: null });
+    res.json(await readRecoveryStatus(novel));
+  } catch { res.status(500).json({ message: '无法确认生成状态，请稍后重试' }); }
+});
+
+router.get('/:novelId/generation-input', auth, async (req, res) => {
+  try {
+    const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
+    if (!novel) return res.status(404).json({ message: '小说不存在' });
+    res.json({ ...readGenerationInput(novel), novelId: String(novel._id), title: novel.title });
+  } catch { res.status(500).json({ message: '读取初始信息失败' }); }
+});
+
 router.get('/generation-job/:novelId', auth, async (req, res) => {
   try {
     const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
     if (!novel) return res.status(404).json({ message: '小说不存在' });
-    const recovered = await recoverExpiredLeases({ novelId: novel._id });
-    if (recovered > 0 && novel.status === 'generating') {
-      novel.status = 'paused';
-      await saveNovelDoc(novel);
-    }
-    const job = await getActiveJob(novel._id) || await findLatestResumableJob(novel._id);
-    res.json({ job: serializeGenerationJob(job) });
+    res.json(await readRecoveryStatus(novel));
   } catch (error) {
     res.status(500).json({ message: '获取生成任务状态失败' });
   }

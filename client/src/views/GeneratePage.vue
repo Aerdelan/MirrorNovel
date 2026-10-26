@@ -6,6 +6,14 @@
  <button class="tab" :class="{ active: activeTab === 'lightnovel' }" :disabled="generationBusy || lnGenerating" @click="activeTab='lightnovel'">{{ $t('generate.tabLN') }}</button>
  </div>
 
+ <div v-if="generationBusy || lnGenerating || blueprintGenerating || pendingAttempt || recoveryMessage" class="card recovery-panel" role="status">
+  <button class="btn btn-outline btn-sm" :disabled="recoveryChecking || restoringInput" @click="checkGenerationStall">{{ recoveryChecking ? $t('recovery.checking') : $t('recovery.check') }}</button>
+  <button v-if="recoveryActive && generatedNovelId" class="btn btn-outline btn-sm" :disabled="recoveryChecking" @click="pauseAndRecover">{{ $t('recovery.pauseReset') }}</button>
+  <button v-if="recoveryUnknown" class="btn btn-outline btn-sm" @click="resetGenerationView(false)">{{ $t('recovery.localReset') }}</button>
+  <router-link v-if="generatedNovelId" :to="`/novel/${generatedNovelId}`">{{ $t('recovery.openBook') }}</router-link>
+  <p v-if="recoveryMessage">{{ recoveryMessage }}</p>
+ </div>
+
  <!-- ==================== 生成 Tab ==================== -->
  <template v-if="activeTab === 'generate'">
  <div class="card">
@@ -205,9 +213,12 @@
  </div>
  </div>
 
- <button class="btn btn-primary btn-block btn-lg" :disabled="generationBusy || blueprintGenerating || !selectedType" :aria-busy="generationBusy" @click="startGen">
+ <button class="btn btn-primary btn-block btn-lg" :disabled="generationBusy || blueprintGenerating || pendingAttempt || recoveryChecking || !selectedType" :aria-busy="generationBusy" @click="startGen">
  {{ generationBusy ? $t('generate.btnGenerating') : $t('generate.btnGenerate') }}
  </button>
+ <div v-if="generationBusy || pendingAttempt || blueprintGenerating" class="recovery-near-submit">
+  <button class="btn btn-outline btn-sm" :disabled="recoveryChecking" @click="checkGenerationStall">{{ recoveryChecking ? $t('recovery.checking') : $t('recovery.check') }}</button>
+ </div>
 
  <div v-if="generating && outlineStreamingText" class="card outline-stream-card">
  <div class="section-title">{{ $t('generate.statusGenerating') }}</div>
@@ -225,6 +236,7 @@
  <div class="gen-modal">
  <div class="gen-modal-header">
  <span class="gen-modal-title">{{ genModalTitle }}</span>
+ <button v-if="generating || pendingAttempt" class="btn btn-outline btn-sm" :disabled="recoveryChecking" @click="showGenModal = false; checkGenerationStall()">{{ $t('recovery.check') }}</button>
  <button class="gen-modal-close" @click="showGenModal = false">&times;</button>
  </div>
  <div class="gen-modal-body">
@@ -354,7 +366,7 @@
  </label>
  </div>
 
- <button class="btn btn-primary btn-block btn-lg" :disabled="lnGenerating || !lnSelectedType" @click="startLNGen">
+ <button class="btn btn-primary btn-block btn-lg" :disabled="lnGenerating || pendingAttempt || recoveryChecking || restoringInput || !lnSelectedType" @click="startLNGen">
  {{ lnGenerating ? $t('generate.btnGenerating') : $t('generate.lnBtnGenerate') }}
  </button>
 
@@ -486,6 +498,7 @@
  <textarea ref="outlineModalTextarea" v-model="outlineModalText" class="outline-modal-textarea" rows="12" @input="onOutlineInput"></textarea>
  <div v-if="outlineTokenUsage" class="outline-modal-token">{{ tokenUsageText(outlineTokenUsage) }}</div>
  <div class="outline-modal-actions">
+ <button v-if="outlineStreaming" class="btn btn-outline" @click="outlineModal = false; checkGenerationStall()">{{ $t('recovery.check') }}</button>
  <button class="btn btn-secondary" @click="outlineReject()">{{ $t('common.cancel') }}</button>
  <button class="btn btn-primary" :disabled="outlineStreaming" @click="outlineConfirm()">{{ outlineStreaming ? $t('generate.outlineGenerating') : $t('generate.outlineConfirm') }}</button>
  </div>
@@ -497,7 +510,7 @@
 
 <script setup>
 import { ref, computed, watch, onMounted, nextTick } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useNovelStore } from '../stores/novel'
 import { useAuthStore } from '../stores/auth'
 import { usePersonaStore } from '../stores/persona'
@@ -510,8 +523,10 @@ import { formatBlueprintText, parseBlueprintText } from '../utils/blueprintText'
 import { normalizeChapterWordTargetInput } from '../utils/chapterWordTarget'
 import api from '../api'
 import ReferenceSelector from '../components/ReferenceSelector.vue'
+import { GENERATION_IDLE_MS, backendGenerationActive, readGenerationAttempt, saveGenerationAttempt } from '../utils/generationRecovery'
 
 const router = useRouter()
+const route = useRoute()
 const novelStore = useNovelStore()
 const authStore = useAuthStore()
 const personaStore = usePersonaStore()
@@ -795,7 +810,7 @@ async function aiGeneratePersona() {
 
 const generating = ref(false)
 const preparingGeneration = ref(false)
-const generationBusy = computed(() => generating.value || preparingGeneration.value)
+const generationBusy = computed(() => generating.value || preparingGeneration.value || restoringInput.value)
 const genStatus = ref('')
 const genOk = ref(false)
 const streamingText = ref('')
@@ -810,6 +825,133 @@ const generatedNovelId = ref('')
 const generatedChapterNumber = ref(0)
 const generatedApplyBusy = ref(false)
 const generatedApplyMessage = ref('')
+
+const pendingAttempt = ref(null)
+const recoveryChecking = ref(false)
+const recoveryActive = ref(false)
+const recoveryUnknown = ref(false)
+const recoveryMessage = ref('')
+const restoringInput = ref(false)
+let lastGenerationActivity = Date.now()
+let generationEpoch = 0
+let ownGenerationRequest = null
+const ownerId = () => authStore.user?._id || authStore.user?.id || ''
+function persistAttempt() { return saveGenerationAttempt(ownerId(), pendingAttempt.value) }
+function rememberAttempt(params) {
+ const requestId = globalThis.crypto?.randomUUID?.() || `generation-${Date.now()}-${Math.random().toString(36).slice(2)}`
+ params.clientRequestId = requestId
+ pendingAttempt.value = { requestId, novelId: '', input: JSON.parse(JSON.stringify(params)), startedAt: Date.now() }
+ lastGenerationActivity = Date.now()
+ recoveryMessage.value = persistAttempt() ? '' : $t('recovery.storageFailed')
+ recoveryUnknown.value = false; recoveryActive.value = false
+ return ++generationEpoch
+}
+function finishAttempt() { pendingAttempt.value = null; persistAttempt() }
+function resetGenerationView(confirmed = true) {
+ generationEpoch++
+ if (ownGenerationRequest) { ownGenerationRequest._aborted = true; ownGenerationRequest.abort(); ownGenerationRequest = null }
+ outlineRejectCallback?.()
+ outlineXhr?.abort(); outlineXhr = null
+ cancelBlueprint()
+ generating.value = false; lnGenerating.value = false; preparingGeneration.value = false
+ showGenModal.value = false; outlineModal.value = false; outlineStreaming.value = false
+ stopThinkingTicker()
+ genStatus.value = ''; genOk.value = false
+ if (confirmed) { finishAttempt(); recoveryActive.value = false; recoveryUnknown.value = false }
+ recoveryMessage.value = $t(confirmed ? 'recovery.resetDone' : 'recovery.resetUnknown')
+}
+async function checkGenerationStall() {
+ if (recoveryChecking.value) return
+ recoveryChecking.value = true
+ const epoch = generationEpoch, owner = ownerId()
+ recoveryUnknown.value = false
+ try {
+  if (!pendingAttempt.value && !generatedNovelId.value) {
+   if (Date.now() - lastGenerationActivity < GENERATION_IDLE_MS) {
+    recoveryActive.value = false; recoveryMessage.value = $t('recovery.preparing'); return
+   }
+   resetGenerationView(); return
+  }
+  const data = generatedNovelId.value
+   ? await novelStore.fetchGenerationJob(generatedNovelId.value)
+   : await novelStore.checkGenerationRequest(pendingAttempt.value.requestId)
+  if (epoch !== generationEpoch || owner !== ownerId()) return
+  if (data.novelId) {
+   generatedNovelId.value = data.novelId
+   if (pendingAttempt.value) { pendingAttempt.value.novelId = data.novelId; persistAttempt() }
+  }
+  recoveryActive.value = backendGenerationActive(data)
+  if (recoveryActive.value) { recoveryMessage.value = $t('recovery.running'); return }
+  // If creation is still awaiting its first response, absence of a record is
+  // not proof of failure. Keep the request guarded for the full idle window.
+  if (!generatedNovelId.value && Date.now() - lastGenerationActivity < GENERATION_IDLE_MS) {
+   recoveryMessage.value = $t('recovery.preparing'); return
+  }
+  resetGenerationView()
+ } catch {
+  recoveryUnknown.value = true
+  recoveryMessage.value = $t('recovery.unknown')
+ } finally {
+  recoveryChecking.value = false
+  nextTick(() => document.querySelector('.recovery-panel')?.scrollIntoView({ block: 'center', behavior: 'smooth' }))
+ }
+}
+async function pauseAndRecover() {
+ if (recoveryChecking.value || !generatedNovelId.value) return
+ recoveryChecking.value = true
+ const epoch = generationEpoch, owner = ownerId()
+ try {
+  await novelStore.pauseNovel(generatedNovelId.value)
+  const data = await novelStore.fetchGenerationJob(generatedNovelId.value)
+  if (epoch !== generationEpoch || owner !== ownerId()) return
+  if (backendGenerationActive(data)) { recoveryMessage.value = $t('recovery.pausing'); return }
+  resetGenerationView()
+ } catch { recoveryUnknown.value = true; recoveryMessage.value = $t('recovery.unknown') }
+ finally { recoveryChecking.value = false }
+}
+
+async function applyInitialInput(input) {
+ activeTab.value = 'generate'
+ gender.value = input.gender || input.typeSku?.channel || 'male'
+ await nextTick() // gender's watcher clears SKU selections before restoring them.
+ const sku = input.typeSku || {}
+ skuCategory.value = sku.category || ''; skuTheme.value = sku.theme || ''
+ skuElements.value = [...(sku.elements || [])]; skuCharTags.value = [...(sku.personas || [])]
+ skuTones.value = [...(sku.tones || [])]; skuCp.value = sku.cp || ''
+ selectedType.value = input.novelTypeId || ''
+ protagonistName.value = input.protagonistName || ''; worldSetting.value = input.worldSetting || ''
+ genMode.value = input.mode === 'chapter' ? 'chapter' : 'book'
+ targetWordCount.value = input.targetWordCount || 50000; chapterWordTarget.value = input.chapterWordTarget || 3000
+ expertMode.value = input.expertMode === true; outline.value = input.outline || ''
+ selectedPersonaId.value = input.personaId || ''
+ selectedReferenceIds.value = [...(input.referenceIds || [])]; referenceExamplesEnabled.value = input.referenceExamplesEnabled === true
+ structurePattern.value = input.structurePattern || ''
+ enableResearch.value = input.enableResearch !== false; researchLinksText.value = (input.researchLinks || []).join('\n')
+ initialBlueprint.value = input.storyBlueprint || null
+ initialBlueprintText.value = input.storyBlueprint ? formatBlueprintText(input.storyBlueprint, $t) : ''
+ initialBlueprintConfirmed.value = Boolean(input.storyBlueprint)
+}
+let restoreEpoch = 0
+async function loadReeditInput(id) {
+ if (!id) return
+ if (generationBusy.value || lnGenerating.value || pendingAttempt.value) {
+  recoveryMessage.value = $t('recovery.resolveFirst'); return
+ }
+ const epoch = ++restoreEpoch
+ const owner = ownerId()
+ restoringInput.value = true
+ try {
+  const data = await novelStore.fetchGenerationInput(id)
+  if (epoch !== restoreEpoch || owner !== ownerId() || String(route.query.editNovel || '') !== String(id)) return
+  await applyInitialInput(data.input)
+  generatedNovelId.value = ''
+  genOk.value = false; showGenModal.value = false
+  streamingText.value = ''; rawStreamingText.value = ''; genStatus.value = ''
+  recoveryMessage.value = $t(data.exact ? 'recovery.prefilled' : 'recovery.legacy')
+ } catch { if (epoch === restoreEpoch) recoveryMessage.value = $t('recovery.loadFailed') }
+ finally { if (epoch === restoreEpoch) restoringInput.value = false }
+}
+watch(() => route.query.editNovel, id => { if (id) loadReeditInput(String(id)) })
 
 // ---- 去AI化 ----
 const deslopRunning = ref(false)
@@ -947,6 +1089,7 @@ function tokenUsageText(usage) {
 // 大纲生成改为 SSE 流式：弹窗立即打开，实时展示思考/正文内容并自动滚动到最新位置，
 // 不再等待整个响应（思考模型耗时可达数十分钟，XHR 无超时限制）。
 function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, perChapterWords) {
+ lastGenerationActivity = Date.now()
  return new Promise((resolve) => {
  outlineModalText.value = ''
  outlineTokenUsage.value = null
@@ -980,14 +1123,17 @@ function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, per
  sse.openSSE('/api/novel/generate-outline', payload, {
   token,
   onThinking: (event) => {
+   lastGenerationActivity = Date.now()
    outlineThinkingChars.value = event.length || 0
    outlineThinkingElapsed.value = Math.round((event.elapsedMs || 0) / 1000)
   },
   onReasoning: (content) => {
+   lastGenerationActivity = Date.now()
    appendReasoning(outlineReasoningText, content)
    scrollReasoningBox(outlineReasoningRef)
   },
   onContent: (content) => {
+   lastGenerationActivity = Date.now()
    outlineModalText.value += content
    scrollOutlineToBottom()
   },
@@ -1042,6 +1188,7 @@ function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, per
 
 // 蓝图生成改为 SSE 流式：实时展示模型输出并自动滚动到最新位置（推理模型耗时长，无超时限制）
 function generateInitialBlueprint() {
+ lastGenerationActivity = Date.now()
  validateChapterWordTarget()
  if (!selectedType.value || !outline.value.trim()) {
   blueprintSetupError.value = $t('generate.errNeedTypeOutline')
@@ -1076,10 +1223,12 @@ function generateInitialBlueprint() {
  }, {
   token,
   onThinking: (event) => {
+   lastGenerationActivity = Date.now()
    blueprintThinkingChars.value = event.length || 0
    blueprintThinkingElapsed.value = Math.round((event.elapsedMs || 0) / 1000)
   },
   onReasoning: (content) => {
+   lastGenerationActivity = Date.now()
    appendReasoning(blueprintReasoningText, content)
    scrollReasoningBox(blueprintReasoningRef)
   },
@@ -1164,7 +1313,10 @@ const activePresets = computed(() => {
 })
 
 async function startGen() {
- if (!selectedType.value || generationBusy.value) return
+ if (!selectedType.value || generationBusy.value || pendingAttempt.value || recoveryChecking.value) return
+ lastGenerationActivity = Date.now()
+ generatedNovelId.value = ''
+ recoveryMessage.value = ''; recoveryActive.value = false; recoveryUnknown.value = false
  validateChapterWordTarget()
  preparingGeneration.value = true
 
@@ -1199,6 +1351,7 @@ async function startGen() {
 
  const params = {
  novelTypeId: selectedType.value,
+ gender: gender.value,
  typeSku: buildTypeSku(),
  protagonistName: protagonistName.value,
  worldSetting: worldSetting.value,
@@ -1216,15 +1369,20 @@ async function startGen() {
  researchLinks: researchLinksText.value.split('\n').map(s => s.trim()).filter(Boolean),
  }
 
- novelStore.startGeneration(params,
- (chunk) => { rawStreamingText.value += chunk; streamingText.value += chunk; scrollToBottom() },
+ const epoch = rememberAttempt(params)
+ ownGenerationRequest = novelStore.startGeneration(params,
+ (chunk) => { if (epoch !== generationEpoch) return; lastGenerationActivity = Date.now(); rawStreamingText.value += chunk; streamingText.value += chunk; scrollToBottom() },
  (event) => {
+ if (epoch !== generationEpoch) return
+ lastGenerationActivity = Date.now()
+ if (['completed', 'paused', 'cancelled', 'token_exhausted', 'plan_needs_extension', 'error'].includes(event.type)) finishAttempt()
  if (event.type === 'outline') {
  outlineStreamingText.value = event.content
  if (event.tokenUsage) outlineTokenUsage.value = event.tokenUsage
  } else if (event.type === 'novel_created') {
  genStatus.value = $t('generate.statusOutline')
  generatedNovelId.value = event.novelId || generatedNovelId.value
+ if (pendingAttempt.value) { pendingAttempt.value.novelId = generatedNovelId.value; persistAttempt() }
  } else if (event.type === 'chapter_end') {
  generatedChapterNumber.value = Number(event.chapterNumber || generatedChapterNumber.value)
  } else if (event.type === 'token_usage') {
@@ -1500,6 +1658,9 @@ const lnActivePresets = computed(() => {
 })
 
 async function startLNGen() {
+ if (lnGenerating.value || pendingAttempt.value || restoringInput.value || recoveryChecking.value) return
+ lastGenerationActivity = Date.now()
+ generatedNovelId.value = ''
  if (!lnSelectedType.value) return alert($t('generate.errNeedLNType'))
 
  // 轻小说整本模式：先生成大纲
@@ -1535,13 +1696,19 @@ async function startLNGen() {
  personaId: selectedPersonaId.value || undefined,
  }
 
- novelStore.startGeneration(params,
- (chunk) => { lnStreamingText.value += chunk; lnScrollToBottom() },
+ const epoch = rememberAttempt(params)
+ ownGenerationRequest = novelStore.startGeneration(params,
+ (chunk) => { if (epoch !== generationEpoch) return; lastGenerationActivity = Date.now(); lnStreamingText.value += chunk; lnScrollToBottom() },
  (event) => {
+ if (epoch !== generationEpoch) return
+ lastGenerationActivity = Date.now()
+ if (['completed', 'paused', 'cancelled', 'token_exhausted', 'plan_needs_extension', 'error'].includes(event.type)) finishAttempt()
  if (event.type === 'outline') {
  lnStatus.value = $t('generate.statusOutline')
  } else if (event.type === 'novel_created') {
  lnStatus.value = $t('generate.statusOutline')
+ generatedNovelId.value = event.novelId || ''
+ if (pendingAttempt.value) { pendingAttempt.value.novelId = generatedNovelId.value; persistAttempt() }
  } else if (event.type === 'status') {
  lnStatus.value = event.message
  } else if (event.type === 'chapter_start') {
@@ -1581,6 +1748,14 @@ function lnScrollToBottom() {
 
 onMounted(async () => {
  if (!authStore.isLoggedIn) { router.push('/login'); return }
+ const savedAttempt = readGenerationAttempt(ownerId())
+ if (savedAttempt) {
+  pendingAttempt.value = savedAttempt
+  await applyInitialInput(savedAttempt.input)
+  generatedNovelId.value = savedAttempt.novelId || ''
+  lastGenerationActivity = savedAttempt.startedAt || Date.now()
+  recoveryMessage.value = $t('recovery.restoredAttempt')
+ }
  try {
    const data = await novelStore.fetchFullTypes()
    fullTypes.value = data
@@ -1595,10 +1770,14 @@ onMounted(async () => {
    // 默认不静默套用“经典网文风”；让精确题材与 Tag 决定声线。
    // 用户主动选择人格时，它才作为额外的作者声线覆盖层生效。
  } catch {}
+ if (route.query.editNovel) await loadReeditInput(String(route.query.editNovel))
 })
 </script>
 
 <style scoped>
+.recovery-panel { display:flex; flex-wrap:wrap; align-items:center; gap:10px; border:1px solid var(--primary-color); }
+.recovery-panel p { flex-basis:100%; margin:0; color:var(--text-secondary); font-size:13px; line-height:1.7; }
+.recovery-near-submit { display:flex; justify-content:center; margin:12px 0; }
 .locked { opacity: 0.55; pointer-events: none; cursor: not-allowed; }
 .generate-page {
  padding-top: var(--header-height);

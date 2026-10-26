@@ -83,13 +83,23 @@ async function fetchFullTypes() {
  }
 
  async function pauseNovel(novelId) {
- await api.post(`/novel/pause/${novelId}`)
+ return (await api.post(`/novel/pause/${novelId}`, {}, { timeout: 20000 })).data
  }
 
  async function fetchGenerationJob(novelId, afterSeq) {
  const suffix = afterSeq == null ? '' : `/events?after=${encodeURIComponent(afterSeq)}`
  const res = await api.get(`/novel/generation-job/${novelId}${suffix}`, { timeout: 15000 })
  return res.data
+ }
+
+ async function fetchGenerationInput(novelId) {
+ const { data } = await api.get(`/novel/${encodeURIComponent(novelId)}/generation-input`, { timeout: 15000 })
+ return data
+ }
+
+ async function checkGenerationRequest(requestId) {
+ const { data } = await api.get(`/novel/generation-request/${encodeURIComponent(requestId)}`, { timeout: 15000 })
+ return data
  }
 
  async function deleteNovel(novelId) {
@@ -267,7 +277,7 @@ async function fetchFullTypes() {
  return {
  novelTypes, bookshelf, streamingText, generatedOutline, prefillContinue, skuCatalog,
  fetchTypes, fetchNovelTypes, fetchBookshelf, fetchNovelDetail, fetchFullTypes, fetchSkuCatalog,
- pauseNovel, fetchGenerationJob, deleteNovel,
+ pauseNovel, fetchGenerationJob, fetchGenerationInput, checkGenerationRequest, deleteNovel,
  setPrefillContinue, clearPrefillContinue,
  startGeneration, continueGeneration, startImportContinue, stopGeneration,
  startPolish,

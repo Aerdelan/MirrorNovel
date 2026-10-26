@@ -67,6 +67,7 @@
  <span> {{ formatTime(novel.updatedAt) }}</span>
  </div>
  <div class="novel-actions" @click.stop>
+ <button class="btn btn-sm btn-outline action-reedit" :disabled="!!novelActionBusy" @click="reeditNovel(novel)">{{ $t('recovery.reedit') }}</button>
  <button v-if="novel.status === 'generating'" class="btn btn-sm btn-outline" :disabled="isNovelActionBusy(novel, 'pause')" :aria-busy="isNovelActionBusy(novel, 'pause')" @click="pauseNovel(novel)">{{ isNovelActionBusy(novel, 'pause') ? $t('common.loading') : $t('bookshelf.pause') }}</button>
  <button v-if="novel.status === 'paused'" class="btn btn-sm btn-primary" :disabled="isContinuing" @click="showContinueDialog(novel)">{{ $t('bookshelf.resume') }}</button>
  <button v-if="novel.status === 'completed' || novel.status === 'paused'" class="btn btn-sm btn-outline action-warm" :disabled="isContinuing" @click="showContinueDialog(novel)">{{ $t('bookshelf.write') }}</button>
@@ -138,7 +139,7 @@
  <button class="continue-progress-close" type="button" :aria-label="$t('bookshelf.hideProgress')" :title="$t('bookshelf.hideProgress')" @click="hideContinueProgress">×</button>
  <div class="progress-title">{{ $t('bookshelf.aiWriting') }}</div>
  <div v-if="currentContinueChapter" class="progress-chapter">{{ $t('bookshelf.currentChapter', { num: currentContinueChapter }) }}</div>
- <div v-if="continueWordCount === 0 && continueThinkingCount > 0" class="progress-word">{{ $t('bookshelf.thinking', { words: continueThinkingCount }) }}</div>
+ <div v-if="continueWordCount === 0 && continueThinkingCount > 0" class="progress-word">{{ $t('bookshelf.thinking', { words: continueThinkingCount, seconds: continueThinkingSeconds }) }}</div>
  <div v-else class="progress-word">{{ $t('bookshelf.generated', { words: continueWordCount }) }}</div>
  <div class="progress-indicator"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
  <div class="continue-background-hint">{{ $t('bookshelf.backgroundHint') }}</div>
@@ -185,6 +186,7 @@ const continueProgressVisible = ref(false)
 const currentContinueChapter = ref(0)
 const continueWordCount = ref(0)
 const continueThinkingCount = ref(0)
+const continueThinkingSeconds = ref(0)
 const novelActionBusy = ref('')
 const continuingNovelId = ref('')
 let continueJobPollTimer = null
@@ -253,6 +255,7 @@ function formatTime(dateStr) {
 }
 
 function openNovel(novel) { router.push(`/novel/${novel._id}`) }
+function reeditNovel(novel) { router.push({ path: '/generate', query: { editNovel: novel._id } }) }
 function showContinueDialog(novel) { if (!isContinuing.value) continueDialogNovel.value = novel }
 function isNovelActionBusy(novel, action) { return novelActionBusy.value === `${action}:${novel._id}` }
 
@@ -267,12 +270,16 @@ function isTokenExhaustedError(message) {
 async function startBookContinue(novel) {
  continueDialogNovel.value = null; isContinuing.value = true; isBookContinuing.value = true; continueProgressVisible.value = true
  continuingNovelId.value = novel._id
- currentContinueChapter.value = 0; continueWordCount.value = 0; continueThinkingCount.value = 0
+ currentContinueChapter.value = 0; continueWordCount.value = 0; continueThinkingCount.value = 0; continueThinkingSeconds.value = 0
  try {
  await novelStore.continueGeneration(novel._id, (chunk, fullText) => { continueWordCount.value = fullText.length }, (status) => {
- if (status.type === 'chapter_start') { currentContinueChapter.value = status.chapterNumber || 0; continueThinkingCount.value = 0; novelStore.fetchBookshelf().catch(() => {}) }
+ if (status.type === 'chapter_start') { currentContinueChapter.value = status.chapterNumber || 0; continueThinkingCount.value = 0; continueThinkingSeconds.value = 0; novelStore.fetchBookshelf().catch(() => {}) }
  if (status.type === 'chapter_end') novelStore.fetchBookshelf().catch(() => {})
- if (status.type === 'thinking') { continueThinkingCount.value = status.length || 0 }
+ if (status.type === 'thinking') {
+  continueThinkingCount.value = status.length || 0
+  const elapsedMs = Number(status.elapsedMs)
+  if (Number.isFinite(elapsedMs)) continueThinkingSeconds.value = Math.max(0, Math.floor(elapsedMs / 1000))
+ }
  if (status.type === 'token_exhausted') { stopContinueTracking(); novelStore.fetchBookshelf() }
  else if (status.type === 'plan_needs_extension') { stopContinueTracking(); alert(status.message || $t('bookshelf.alertPlanMissing')); novelStore.fetchBookshelf() }
  else if (status.type === 'disconnected') { continueProgressVisible.value = false; reconcileContinueJob(novel._id) }

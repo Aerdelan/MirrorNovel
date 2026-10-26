@@ -1,4 +1,20 @@
 export default {
+ recovery: {
+  check: 'Check stalled generation', checking: 'Checking background task…', reedit: 'Edit and generate again',
+  pauseReset: 'Pause task and restore form', localReset: 'Restore form, keep task pending', openBook: 'Open saved book',
+  running: 'The background task is still running. Extended reasoning does not mean it is stuck. Open the book to view progress, or pause the task and restore this form.',
+  preparing: 'The request may still be preparing or reasoning. Check again later; the form can be restored after three minutes without a response.',
+  unknown: 'The server is unavailable, so the task status is unknown. You can restore the form to edit; another generation stays blocked until the status is confirmed.',
+  pausing: 'Pause requested. The server is saving its draft. Check again before starting another generation.',
+  resetDone: 'The editable form is restored and your inputs are kept. The original book and saved chapters remain on the bookshelf; use Edit and generate again to retry.',
+  resetUnknown: 'The form and its inputs are restored. Check the background task again when connected before generating another book.',
+  prefilled: 'All original creation inputs are restored. Generating again creates a new book and preserves the original book and chapters.',
+  legacy: 'Available settings from this older book are restored. It has no complete creation snapshot; check the mode and research settings before generating again. The original book is preserved.',
+  loadFailed: 'Could not load the original settings. Check your connection and server version, then select Edit and generate again on the bookshelf.',
+  resolveFirst: 'A previous generation still needs checking. Check its status before loading another book.',
+  restoredAttempt: 'Inputs from the previous generation have been recovered. Check the background task first, or open its book from the bookshelf.',
+  storageFailed: 'The browser could not save a recovery draft. Back up your inputs before refreshing.',
+ },
  reference: {
   useExamples: 'Include short reference excerpts to guide writing style (optional)',
   examplesHint: 'Off by default. Sends up to one 240-character excerpt per selected reference, three in total, with prose requests. Examples guide expression, not characters or plots. Adds a small input cost without extra model calls.',

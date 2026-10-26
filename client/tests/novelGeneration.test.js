@@ -16,6 +16,7 @@ function fixture({ status = 'paused', fetchJob, fetchNovel } = {}) {
 }
 
 test('background status, active job and local stream each block duplicate generation', () => {
+ assert.equal(isGenerationActive({ status: 'generating' }, { status: 'queued', active: false }), false, 'an expired, recoverable queue is not a running worker')
  for (const status of ['queued', 'running', 'pause_requested']) assert.equal(isGenerationActive({ status: 'paused' }, { status }), true)
  assert.equal(isGenerationActive({ status: 'generating' }, null), true)
  assert.equal(isGenerationActive({ status: 'paused' }, null, true), true)

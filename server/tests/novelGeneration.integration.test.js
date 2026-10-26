@@ -93,7 +93,8 @@ class InMemoryNovel {
   }
 
   static async findOne(query = {}) {
-    const novel = state.novels.get(String(query._id));
+    const novel = query._id != null ? state.novels.get(String(query._id))
+      : [...state.novels.values()].find(item => String(item.userId) === String(query.userId) && item.generationRequestId === query.generationRequestId);
     if (!novel) return null;
     if (query.userId != null && String(novel.userId) !== String(query.userId)) return null;
     return novel;
@@ -458,6 +459,25 @@ test('streaming rewrite keeps the original without a second call when the first 
   assert.equal(result.response.status, 200);
   assert.equal(state.aiCalls.length, 1);
   assert.equal(result.events.find(event => event.type === 'completed').content, original);
+});
+
+test('generation stores the original controls and recovers a request even without receiving novel_created', async () => {
+  state.chapterQueue = [makeChapter('林舟找到旧信', '初始快照测试')];
+  const input = { clientRequestId: 'recovery-request-123456', novelTypeId: 'xianxia', gender: 'female', mode: 'chapter',
+    protagonistName: '林舟', worldSetting: '雪后的旧城', targetWordCount: 2000, outline: '最初填写的大纲', expertMode: false, enableResearch: false, researchLinks: ['https://example.test/source'] };
+  const result = await postSse('/generate', input);
+  const novel = getCreatedNovel(result.events);
+  const request = await fetch(`${baseUrl}/generation-request/${input.clientRequestId}`);
+  assert.equal((await request.json()).novelId, novel._id);
+  novel.outline = '后来生成或修改的大纲';
+  const response = await fetch(`${baseUrl}/${novel._id}/generation-input`);
+  const restored = await response.json();
+  assert.equal(restored.exact, true); assert.equal(restored.input.outline, input.outline);
+  assert.equal(restored.input.enableResearch, false); assert.equal(restored.input.gender, 'female');
+  assert.deepEqual(restored.input.researchLinks, input.researchLinks);
+  const repeated = await postSse('/generate', input);
+  assert.equal(repeated.response.status, 409);
+  assert.equal(state.novels.size, 1, 'retrying the same creation request must not create another book');
 });
 
 test('non-streaming rewrite also keeps the original when the model returns an incomplete candidate', async () => {

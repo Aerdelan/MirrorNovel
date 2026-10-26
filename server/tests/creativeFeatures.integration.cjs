@@ -40,7 +40,7 @@ async function request(path, { method = 'GET', body, user = 0 } = {}) {
 }
 test.before(async () => {
   await mongoose.connect(`mongodb://127.0.0.1:27017/${dbName}`, { serverSelectionTimeoutMS: 3000 });
-  await Promise.all([GenerationJob.init(), ReferenceNovel.init(), GenerationTask.init(), WritingSample.init(), WritingStyleRevision.init(), WritingFeedback.init(), WritingPreference.init()]);
+  await Promise.all([Novel.init(), GenerationJob.init(), ReferenceNovel.init(), GenerationTask.init(), WritingSample.init(), WritingStyleRevision.init(), WritingFeedback.init(), WritingPreference.init()]);
   users = await User.create([0, 1].map(n => ({ email: `creative-test-${n}@example.test`, nickname: `测试${n}`, password: 'test-password-only' })));
   const { encodeOverrideHeader } = require('../services/localModelConfig');
   headers = users.map((user, i) => ({ Authorization: `Bearer ${jwt.sign({ userId: String(user._id) }, process.env.JWT_SECRET)}`, 'Content-Type': 'application/json', 'x-mn-model-config': encodeOverrideHeader({ baseUrl: 'https://mock-provider.example.test/v1', apiKey: 'mock-key-' + i, models: { writing: 'mock-writing-' + i, outline: 'mock-outline-' + i, reasoning: 'mock-reasoning-' + i } }) }));
@@ -675,4 +675,36 @@ test('whole-book optimization and editorial failures preserve chapter text byte-
     const completed = result.data.split('\n').find(line => line.startsWith('data:') && line.includes('"completed"'));
     assert.equal(JSON.parse(completed.slice(5)).content, original, 'preview must also skip mechanical replacements after rejecting every model output');
   } finally { dsl.interStageDelay = delay; }
+});
+
+test('recovery looks up lost creation responses by account and preserves expired-job drafts and initial inputs', async () => {
+  const { captureGenerationInput } = require('../services/generationInput');
+  const { resumeGenerationJob, finalizeGenerationJob } = require('../services/generationJob');
+  const requestId = 'isolated-recovery-request-123456';
+  const snapshot = captureGenerationInput({ novelTypeId: 'test', mode: 'chapter', worldSetting: '建书时的设定', outline: '建书时的大纲', enableResearch: false });
+  const novel = await Novel.create({ userId: users[0]._id, title: '卡顿恢复测试', novelTypeId: 'test', novelTypeName: '测试', status: 'generating', generationRequestId: requestId,
+    generationInput: snapshot, outline: '后来改过的大纲', chapters: [{ chapterNumber: 1, content: '已提交的正文。' }] });
+  const foreign = await request(`/api/novel/generation-request/${requestId}`, { user: 1 });
+  assert.equal(foreign.data.novelId, null);
+  assert.equal((await request(`/api/novel/${novel._id}/generation-input`, { user: 1 })).response.status, 404);
+  const restored = await request(`/api/novel/${novel._id}/generation-input`);
+  assert.equal(restored.data.exact, true); assert.equal(restored.data.input.outline, '建书时的大纲');
+  assert.equal(restored.data.input.enableResearch, false);
+  const job = await resumeGenerationJob({ novelId: novel._id, kind: 'novel', leaseOwner: 'recovery-test', leaseMs: 60000 });
+  try {
+    const active = await request(`/api/novel/generation-request/${requestId}`);
+    assert.equal(active.data.active, true);
+    assert.equal(active.data.novelId, String(novel._id));
+    await GenerationJob.updateOne({ jobId: job.jobId }, { $set: { leaseUntil: new Date(Date.now() - 1000), draft: '中断前的草稿。' } });
+    const expired = await request(`/api/novel/generation-request/${requestId}`);
+    assert.equal(expired.data.active, false);
+    assert.equal(expired.data.job.draftLength, '中断前的草稿。'.length);
+    const saved = await Novel.findById(novel._id);
+    assert.equal(saved.chapters[0].content, '已提交的正文。');
+    assert.equal(saved.status, 'paused');
+    assert.equal(saved.generationInput.outline, '建书时的大纲');
+    await assert.rejects(Novel.create({ userId: users[0]._id, novelTypeId: 'test', novelTypeName: '测试', generationRequestId: requestId }), { code: 11000 });
+  } finally {
+    await finalizeGenerationJob({ jobId: job.jobId, leaseOwner: 'recovery-test', fencingToken: job.fencingToken, status: 'completed' }).catch(() => {});
+  }
 });

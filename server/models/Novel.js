@@ -43,6 +43,10 @@ const novelSchema = new mongoose.Schema({
     type: String,
     default: '',
   },
+  // Immutable initial controls for "edit and generate again"; live outline and
+  // blueprint evolve during writing and must not replace the creation inputs.
+  generationInput: { type: mongoose.Schema.Types.Mixed, default: null },
+  generationRequestId: { type: String, default: undefined },
   outline: {
     type: String,
     default: '',
@@ -311,6 +315,8 @@ const novelSchema = new mongoose.Schema({
     default: Date.now,
   },
 });
+
+novelSchema.index({ userId: 1, generationRequestId: 1 }, { unique: true, partialFilterExpression: { generationRequestId: { $type: 'string' } } });
 
 // 更新时自动修改 updatedAt
 novelSchema.pre('save', function (next) {

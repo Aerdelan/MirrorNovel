@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 const ACTIVE_JOB_STATUSES = new Set(['queued', 'running', 'pause_requested'])
 
 export function isGenerationActive(novel, job, localRunning = false) {
+  if (!localRunning && job?.active === false) return false
   return localRunning || novel?.status === 'generating' || ACTIVE_JOB_STATUSES.has(job?.status)
 }
 
@@ -46,8 +47,8 @@ export function useNovelGeneration({ novel, localRunning, fetchJob, fetchNovel, 
       try {
         const result = await fetchJob(id)
         if (!current()) return false
-        const next = result?.job || null
-        const changed = job.value?.jobId !== next?.jobId || job.value?.status !== next?.status
+        const next = result?.job ? { ...result.job, ...(typeof result.active === 'boolean' ? { active: result.active } : {}) } : null
+        const changed = job.value?.jobId !== next?.jobId || job.value?.status !== next?.status || job.value?.active !== next?.active
         const committed = Number(next?.lastCommittedChapter || 0)
         // Draft progress uses the small job response; reload the full book only
         // when a chapter commits, a job changes state, or an action needs a fresh snapshot.
