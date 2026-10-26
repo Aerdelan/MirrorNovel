@@ -7,7 +7,8 @@
     "start": "node index.js",
     "dev": "nodemon index.js",
     "test": "node -e \"const fs=require('fs'),path=require('path');const cwd=process.cwd();const d=path.join(cwd,'tests');const testsExist=fs.existsSync(d)&&fs.readdirSync(d).filter(f=>/\\.test\\.(js|cjs|mjs)$/.test(f)).length>0;if(!testsExist){console.log('No tests found in server/tests - skipping');process.exit(0);}const r=require('child_process').spawnSync(process.execPath,['--test','tests/**/*.test.js'],{stdio:'inherit'});if(r.error)throw r.error;process.exit(r.status==null?1:r.status);\"",
-    "test:creative-integration": "node --test tests/creativeFeatures.integration.cjs"
+    "test:creative-integration": "node --test tests/creativeFeatures.integration.cjs",
+    "quality:ab": "node scripts/qualityAB.mjs"
   },
   "dependencies": {
     "archiver": "^8.0.0",

@@ -5,6 +5,11 @@ const auth = require('../middleware/auth');
 const Novel = require('../models/Novel');
 const { distinctChapters, repairDuplicateChapters } = require('../services/novelChapters');
 const { prepareReferenceContext, buildReferencePrompt } = require('../services/referenceContext');
+const { hasAcceptableRewriteLength, buildRewriteReviewPrompt } = require('../services/rewriteReview');
+const { createStyleRevision, buildRevisionSampleBlock, freezeRevisionSnapshot } = require('../services/styleRevisions');
+const { loadActivePreferences } = require('../services/writingStyle');
+const { buildStyleContext } = require('../services/styleContext');
+const WritingStyleRevision = require('../models/WritingStyleRevision');
 const { queueChapterVersion, archiveChapterVersion } = require('../services/chapterVersions');
 const ChapterVersion = require('../models/ChapterVersion');
 const User = require('../models/User');
@@ -43,6 +48,7 @@ const buildLongFormStyleAnchor = typeof importedBuildLongFormStyleAnchor === 'fu
   : () => '';
 
 async function resolveNovelPersona(userId, novel, personaId) {
+  if (novel?.styleRevisionSnapshot?.personaSnapshot) return novel.styleRevisionSnapshot.personaSnapshot;
   if (novel?.writingPersonaSnapshot) return novel.writingPersonaSnapshot;
   const id = personaId || novel?.writingPersonaId;
   if (!id) return null;
@@ -983,7 +989,9 @@ function applyChapterRevision(novel, chapterNumber, content, { source = 'manual'
   return { chapter, continuity, originalLength: originalContent.length, finalLength: finalContent.length };
 }
 
-async function runExpertReview({ user, modelConfig, content, contract, signal, onStatus, persona, styleAnchor, onUsage }) {
+async function runExpertReview({ user, modelConfig, content, contract, signal, onStatus, persona, styleAnchor, onUsage, novel = null }) {
+  // A4：定点修订与审稿共用作品冻结快照的修订上下文（偏好 + 修订边界样稿）。
+  const expertStyleContext = buildStyleContext(novel?.styleRevisionSnapshot, 'revise');
   const original = String(content || '').trim();
   if (original.length < 500) return { content: original, review: null };
 
@@ -1061,7 +1069,7 @@ ${original}
   onStatus && onStatus(`润色专家正在修订第${contract?.chapterNumber || ''}章...`);
   try {
     const revised = await streamGenerate(
-      `你是一位谨慎的小说润色修订专家。保留事实、剧情和作者声线，只修复审稿意见指出的问题。${buildPersonaPrompt(persona)}\n\n${styleAnchor || ''}`,
+      `你是一位谨慎的小说润色修订专家。保留事实、剧情和作者声线，只修复审稿意见指出的问题。${buildPersonaPrompt(persona)}\n\n${styleAnchor || ''}${expertStyleContext.block}`,
       revisePrompt,
       null,
       signal,
@@ -1671,7 +1679,28 @@ ${tmpl.dynamicPrompt}
     const styleContinuityAnchor = buildLongFormStyleAnchor(type, withSkuAxes(persona, skuAxes));
 
     Object.assign(novel, await prepareReferenceContext(req.userId, req.body));
-    systemPrompt += buildReferencePrompt(novel);
+    systemPrompt += buildReferencePrompt(novel, { includeExamples: true });
+    // A2：建书时冻结本书风格版本（§3"创建或显式切换时固定快照"）。
+    // 已认可样稿池非空时自动创建 v1（人格快照一并冻结）；池为空的老账号
+    // 不建版本、走旧路径。失败只降级，不阻断建书。
+    try {
+      const initialPreferences = await loadActivePreferences(String(req.userId), null);
+      const initialRevision = await createStyleRevision({
+        userId: req.userId,
+        name: `初始版本${persona ? ` · ${persona.name}` : ''}`,
+        personaId: persona ? persona._id : null,
+        skipEmpty: !initialPreferences.length,
+      });
+      // 新书此时还没有本书偏好，只带入账号范围的生效偏好。
+      if (initialRevision && ((initialRevision.samples || []).length || initialPreferences.length)) {
+        novel.styleRevisionId = initialRevision._id;
+        novel.styleRevisionSnapshot = freezeRevisionSnapshot(initialRevision, 1, initialPreferences);
+        novel.styleRevisionAdoptedAtChapter = 1;
+        console.log(`[生成] 已冻结风格版本 v${initialRevision.version}（样稿 ${(initialRevision.samples || []).length} 段，偏好 ${initialPreferences.length} 条）`);
+      }
+    } catch (e) {
+      console.warn('冻结风格版本失败（已跳过，正文生成不受影响）:', e.message);
+    }
     novel.generationContext = systemPrompt;
     generationPhase = 'saving_novel';
     await saveNovelDoc(novel);
@@ -1912,11 +1941,14 @@ ${tmpl.dynamicPrompt}
 
       // 温度随章节压力稳定变化，避免每章随机切换作者声线。
       const chapterTemp = getChapterTemperature(contract);
+      // A2：按章号从本书版本快照做确定性轮换选择；块追加在系统提示末尾，
+      // 保持前缀缓存友好。旧作品无快照时 block 为空串，走旧路径。
+      const styleSelection = buildRevisionSampleBlock(novel.styleRevisionSnapshot, chNum);
 
       let genResult = null;
       if (!(buffer && ['reviewing', 'draft_complete'].includes(resumedPhase))) {
         try {
-          genResult = await streamGenerate(systemPrompt, appendResumeInstruction(prompt, buffer), (chunk) => {
+          genResult = await streamGenerate(systemPrompt + styleSelection.block, appendResumeInstruction(prompt, buffer), (chunk) => {
             buffer += chunk;
             checkpoint.schedule('writing');
             try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
@@ -1963,6 +1995,10 @@ ${tmpl.dynamicPrompt}
         contract,
         protagonistName,
       });
+      if (styleSelection.record) {
+        const savedChapter = novel.chapters[novel.chapters.length - 1];
+        if (savedChapter) savedChapter.styleSamples = styleSelection.record;
+      }
       if (expertReview) {
         const savedChapter = novel.chapters[novel.chapters.length - 1];
         savedChapter.qualityReport.expert = expertReview;
@@ -2248,7 +2284,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
     const styleContinuityAnchor = buildLongFormStyleAnchor(contType, continuationPersona);
     // SKU 的标签合同会持续演进；续写时重算，避免旧 generationContext 把新标签规则
     // 永久冻结在建书时的版本。联网取材块位于缓存尾部，单独带回，不能因刷新合同而丢失。
-    const referencePrompt = buildReferencePrompt(novel);
+    const referencePrompt = buildReferencePrompt(novel, { includeExamples: true });
     const cachedSystemPrompt = novel.generationContext || currentSystemPrompt;
     const researchMarker = '【联网取材参考';
     const researchIndex = cachedSystemPrompt.indexOf(researchMarker);
@@ -2319,11 +2355,13 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       }
 
       const chapterTemp = getChapterTemperature(contract);
+      // A2：按章号从本书版本快照做确定性轮换（同 /generate，块在系统提示末尾）。
+      const styleSelection = buildRevisionSampleBlock(novel.styleRevisionSnapshot, chNum);
 
       let contResult = null;
       if (!(buffer && ['reviewing', 'draft_complete'].includes(resumedPhase))) {
         try {
-          contResult = await streamGenerate(systemPrompt, appendResumeInstruction(prompt, buffer), (chunk) => {
+          contResult = await streamGenerate(systemPrompt + styleSelection.block, appendResumeInstruction(prompt, buffer), (chunk) => {
             buffer += chunk;
             checkpoint.schedule('writing');
             try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
@@ -2369,6 +2407,10 @@ router.post('/continue/:novelId', auth, async (req, res) => {
         contract,
         protagonistName,
       });
+      if (styleSelection.record) {
+        const savedChapter = novel.chapters[novel.chapters.length - 1];
+        if (savedChapter) savedChapter.styleSamples = styleSelection.record;
+      }
       if (expertReview) {
         const savedChapter = novel.chapters[novel.chapters.length - 1];
         savedChapter.qualityReport.expert = expertReview;
@@ -2733,6 +2775,9 @@ router.post('/continue-import', auth, async (req, res) => {
     const { type: importType, skuAxes: importAxes } = resolveTypeContextFromNovel(isAppend ? novel : null);
     const importPersona = withSkuAxes(persona, importAxes);
     const styleContinuityAnchor = buildLongFormStyleAnchor(importType || { name: typeName }, importPersona);
+    // A4：导入续写刻意不注入账号风格上下文（样稿/偏好）——导入正文已建立的
+    // 声线优先，不能直接套账号默认风格（规划书 A4 入口表）。此处的 persona
+    // 仅当作品显式绑定时生效。
     const systemPrompt = `你是一位专业的小说续写专家，必须延续原文已经建立的叙事声线、人物差异和因果关系。${buildGenreContract(typeName, importType || null)}${buildPersonaPrompt(importPersona)}\n\n${styleContinuityAnchor}`;
     const mode = req.body.mode || 'book';
     const userPrompt = buildImportContinuePrompt(importedText, continuationRequest, typeName, req.body.targetWordCount || 50000, mode, importPersona);
@@ -3199,6 +3244,45 @@ router.put('/:novelId/outline', auth, async (req, res) => {
   }
 });
 
+// A2：作品采用（或停用）风格版本。版本内容在采用时冻结进 styleRevisionSnapshot，
+// 生成链路只读快照；正在生成的任务继续使用启动时的快照，采用新版本必须等
+// 任务暂停或结束（忙碌守卫 409）。回退 = 再次采用旧版本，历史版本从不改写。
+router.put('/:novelId/style-revision', auth, async (req, res) => {
+  try {
+    const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
+    if (!novel) return res.status(404).json({ message: '小说不存在' });
+    if (await rejectBusyNovelMutation(res, novel._id)) return;
+    const revisionId = req.body?.revisionId;
+    if (revisionId === null || revisionId === '') {
+      novel.styleRevisionId = null;
+      novel.styleRevisionSnapshot = null;
+      novel.styleRevisionAdoptedAtChapter = 0;
+      await saveNovelDoc(novel);
+      return res.json({ message: '已停用风格版本，后续章节不再注入样稿', styleRevision: null });
+    }
+    if (!revisionId || !require('mongoose').isValidObjectId(revisionId)) {
+      return res.status(400).json({ message: '请提供要采用的风格版本' });
+    }
+    const revision = await WritingStyleRevision.findOne({ _id: revisionId, userId: req.userId, scope: 'novel' }).lean();
+    if (!revision) return res.status(404).json({ message: '未找到该风格版本或它不属于当前账号' });
+    // 采用时冻结生效偏好：账号范围 + 本书范围（其他书的偏好绝不进入）。
+    const activePreferences = await loadActivePreferences(String(req.userId), String(novel._id));
+    novel.styleRevisionId = revision._id;
+    novel.styleRevisionSnapshot = freezeRevisionSnapshot(revision, getHighestChapterNumber(novel) + 1, activePreferences);
+    novel.styleRevisionAdoptedAtChapter = novel.styleRevisionSnapshot.adoptedAtChapter;
+    await saveNovelDoc(novel);
+    res.json({
+      message: `已采用风格版本「${revision.name}」，自第${novel.styleRevisionAdoptedAtChapter}章起的生成使用该版本`,
+      styleRevision: {
+        revisionId: String(revision._id), name: revision.name, version: revision.version,
+        sampleCount: (revision.samples || []).length, adoptedAtChapter: novel.styleRevisionAdoptedAtChapter,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ message: '切换风格版本失败' });
+  }
+});
+
 // ---- 章节操作 ----
 
 // 删除章节
@@ -3322,7 +3406,11 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
       userPrompt = `以下是上一章的结尾部分：\n\n${lastContent}\n\n请接着上面的内容创作第${chNum}章。\n${notes ? '写作方向/备注：' + notes : '保持原有风格继续推进剧情。'}\n目标字数：约${wordCount || 2000}字。\n请直接输出章节内容。`;
     }
 
-    systemPrompt += buildReferencePrompt(novel);
+    systemPrompt += buildReferencePrompt(novel, { includeExamples: true });
+    // A2：单章续写同样是独立任务，按章号从本书版本快照做确定性轮换。
+    // 快照在采用/建书时冻结；任务期间不回查版本集合。
+    const styleSelection = buildRevisionSampleBlock(novel.styleRevisionSnapshot, chNum);
+    systemPrompt += styleSelection.block;
     novel.status = 'generating';
     await saveNovelDoc(novel);
 
@@ -3351,8 +3439,11 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
         if (addition.length < 10) throw new Error('续写内容过短，未写入章节');
         let target = novel.chapters.find(c => Number(c.chapterNumber) === chNum);
         if (!target) {
-          target = { chapterNumber: chNum, title: formatChapterTitle(chNum, deriveLocalChapterTitle({ notes, content: addition })), content: '', wordCount: 0 };
-          novel.chapters.push(target);
+          // mongoose 的 DocumentArray.push 会克隆传入的普通对象：push 之后
+          // 再对原对象赋值不会进入子文档（历史上这里导致新建章节存成空章）。
+          // 必须在 push 后取回真正的子文档再继续赋值。
+          novel.chapters.push({ chapterNumber: chNum, title: formatChapterTitle(chNum, deriveLocalChapterTitle({ notes, content: addition })), content: '', wordCount: 0 });
+          target = novel.chapters[novel.chapters.length - 1];
         }
         queueChapterVersion(novel, target, 'continue-chapter');
         target.content = processChapter(`${originalContent}${addition}`).text;
@@ -3362,6 +3453,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
         }
         const tokens = summarizeChapterTokens(chapterTokenStats);
         if (tokens) target.qualityReport = { ...(target.qualityReport || {}), tokens };
+        if (styleSelection.record) target.styleSamples = styleSelection.record;
         novel.currentWordCount = getCompletedWordCount(novel);
         novel.currentChapterIndex = Math.max(getHighestChapterNumber(novel), Number(novel.currentChapterIndex || 0));
         novel.status = 'paused';
@@ -3559,9 +3651,11 @@ router.post('/deslop', auth, async (req, res) => {
     // 契约按作品的 typeSku 解析（旧作品回落 novelTypeId），不再只靠类型名字符串猜题材
     const { type: deslopType } = resolveTypeContextFromNovel(styleNovel);
     const genreContract = buildGenreContract(styleNovel?.novelTypeId || styleNovel?.novelTypeName, deslopType);
-    const systemPrompt = persona?.overrideDeslop
+    // A4：修订入口使用作品冻结快照的同一份风格上下文（偏好 + 修订边界样稿）。
+    const styleContext = buildStyleContext(styleNovel?.styleRevisionSnapshot, 'revise');
+    const systemPrompt = (persona?.overrideDeslop
       ? `你是一位资深小说文字编辑。请严格遵循用户指定的人格规则完成去AI化。${genreContract}${buildPersonaPrompt(persona, { includeDeslop: false })}`
-      : `${deslop.deslopSystemPrompt}${genreContract}${buildPersonaPrompt(persona, { includeDeslop: false })}`;
+      : `${deslop.deslopSystemPrompt}${genreContract}${buildPersonaPrompt(persona, { includeDeslop: false })}`) + styleContext.block;
     const userPrompt = `请对以下文本进行去AI味处理：\n\n${text}`;
 
     const result = await streamGenerate(
@@ -3574,7 +3668,8 @@ router.post('/deslop', auth, async (req, res) => {
       { taskType: 'deslop_rewrite' }
     );
 
-    res.json({ original: text, processed: processChapter(result.content).text });
+    const processed = processChapter(result?.content || '', { doDeAI: false, doHumanize: false }).text;
+    res.json({ original: text, processed: hasAcceptableRewriteLength(processed, text) ? processed : text });
   } catch (error) {
     res.status(500).json({ message: '去AI味处理失败' });
   }
@@ -3601,13 +3696,15 @@ router.post('/deslop-stream', auth, async (req, res) => {
     // 契约按作品的 typeSku 解析（旧作品回落 novelTypeId）
     const { type: deslopType } = resolveTypeContextFromNovel(styleNovel);
     const genreContract = buildGenreContract(styleNovel?.novelTypeId || styleNovel?.novelTypeName, deslopType);
-    const personaPrompt = persona?.overrideDeslop
+    // A4：与 /deslop 相同的修订边界上下文，两轮改写共用同一系统提示。
+    const styleContext = buildStyleContext(styleNovel?.styleRevisionSnapshot, 'revise');
+    const personaPrompt = (persona?.overrideDeslop
       ? `你是一位专业小说编辑。${genreContract}${buildPersonaPrompt(persona, { includeDeslop: false })}`
-      : `${deslop.deslopSystemPrompt}${genreContract}${buildPersonaPrompt(persona, { includeDeslop: false })}`;
+      : `${deslop.deslopSystemPrompt}${genreContract}${buildPersonaPrompt(persona, { includeDeslop: false })}`) + styleContext.block;
     let fullContent = '';
 
-    // 第一遍：打碎段落结构
-    res.write(`data: ${JSON.stringify({ type: 'status', message: '正在改写第1遍：打碎段落结构...' })}\n\n`);
+    // Keep the same facts and author voice; do not manufacture stylistic noise.
+    res.write(`data: ${JSON.stringify({ type: 'status', message: '正在改写第1遍：保留声线，修正重复与模板表达...' })}\n\n`);
     try {
       const result1 = await streamGenerate(
         personaPrompt,
@@ -3616,13 +3713,14 @@ router.post('/deslop-stream', auth, async (req, res) => {
           fullContent += chunk;
           res.write(`data: ${JSON.stringify({ type: 'content', content: chunk, pass: 1 })}\n\n`);
         },
-        null, apiConfig, 2, 0.92, undefined, 600000, null,
+        null, apiConfig, 2, 0.72, undefined, 600000, null,
         { taskType: 'deslop_rewrite_pass_1' }
       );
-      if (result1 && result1.content && result1.content.length > text.length * 0.3) {
+      if (result1 && hasAcceptableRewriteLength(result1.content, text)) {
         fullContent = result1.content;
       } else {
-        res.write(`data: ${JSON.stringify({ type: 'error', message: '改写结果异常，使用原文' })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'status', message: '候选稿篇幅偏离原文，已保留原文。' })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'completed', content: text })}\n\n`);
         res.end();
         return;
       }
@@ -3632,29 +3730,11 @@ router.post('/deslop-stream', auth, async (req, res) => {
       return;
     }
 
-    // 第二遍：注入人味特征
-    res.write(`data: ${JSON.stringify({ type: 'status', message: '正在改写第2遍：注入人味特征...' })}\n\n`);
+    // Original-backed review shared with the non-streaming rewrite helper.
+    res.write(`data: ${JSON.stringify({ type: 'status', message: '正在改写第2遍：核对原文事实与作者声线...' })}\n\n`);
     let finalContent = '';
     try {
-      const pass2Prompt = `${buildPersonaPrompt(persona, { includeDeslop: false })}\n你是同一个作者，现在对刚才的改写稿做最后一轮打磨。这次的重点不是结构，而是"人味"：
-
-1. 把所有书面化的词换成口语——"然而"→"不过"，"因此"→"所以"，"逐渐"→"慢慢"
-2. 在叙述中随机插入角色的走神或吐槽，用括号或破折号
-3. 把一些完整的句子改成碎片
-4. 对话中加一些口语填充词
-5. 删掉所有段尾的总结句、感悟句
-6. 长描写用口语重写，但不要删减内容——字数要和原文差不多
-7. 加入一些不完美的过渡——"话说回来""对了""哦对"
-8. 叙述者偶尔插入括号吐槽
-9. 同一段落内要有情绪变化
-
-【重要】改写后的字数必须与原文相差不超过 20%。这是打磨，不是缩写。
-
-直接输出打磨后的完整文本，不要解释。保留剧情和对话内容。
-
-以下是需要打磨的文本：
-
-${fullContent}`;
+      const pass2Prompt = buildRewriteReviewPrompt(text, fullContent, buildPersonaPrompt(persona, { includeDeslop: false }));
 
       await streamGenerate(
         personaPrompt,
@@ -3663,20 +3743,20 @@ ${fullContent}`;
           finalContent += chunk;
           res.write(`data: ${JSON.stringify({ type: 'content', content: chunk, pass: 2 })}\n\n`);
         },
-        null, apiConfig, 2, 0.95, undefined, 600000, null,
+        null, apiConfig, 2, 0.55, undefined, 600000, null,
         { taskType: 'deslop_rewrite_pass_2' }
       );
 
-      if (finalContent && finalContent.length > fullContent.length * 0.3) {
+      if (hasAcceptableRewriteLength(finalContent, text)) {
         // 后处理
-        const { text: processedText } = processChapter(finalContent, { doHumanize: true });
+        const { text: processedText } = processChapter(finalContent, { doDeAI: false, doHumanize: false });
         res.write(`data: ${JSON.stringify({ type: 'completed', content: processedText })}\n\n`);
       } else {
-        const { text: processedText } = processChapter(fullContent, { doHumanize: true });
+        const { text: processedText } = processChapter(fullContent, { doDeAI: false, doHumanize: false });
         res.write(`data: ${JSON.stringify({ type: 'completed', content: processedText })}\n\n`);
       }
     } catch (e) {
-      const { text: processedText } = processChapter(fullContent, { doHumanize: true });
+      const { text: processedText } = processChapter(fullContent, { doDeAI: false, doHumanize: false });
       res.write(`data: ${JSON.stringify({ type: 'completed', content: processedText })}\n\n`);
     }
 
@@ -3706,6 +3786,8 @@ router.post('/polish', auth, async (req, res) => {
     const textLength = text.trim().length;
     const styleNovel = novelId ? await Novel.findOne({ _id: novelId, userId: req.userId }) : null;
     const persona = await resolveNovelPersona(req.userId, styleNovel, personaId);
+    // A4：润色是修订入口，注入作品冻结快照的风格上下文（偏好 + 修订边界样稿）。
+    const polishStyleContext = buildStyleContext(styleNovel?.styleRevisionSnapshot, 'revise');
     const genreName = genre || styleNovel?.novelTypeId || styleNovel?.novelTypeName;
     const genreHint = genreName ? `\n【文风参考】这是一篇"${genreName}"类型的小说，请保留该类型常见的叙事节奏和用词习惯。` : '';
     // 有作品时按 typeSku 解析契约；只传了自由文本 genre 时才走登记表/正则兜底
@@ -3723,7 +3805,7 @@ router.post('/polish', auth, async (req, res) => {
    - "眼中闪过一丝XX"、"嘴角勾起一抹XX"、"眉头微蹙"等陈词滥调
    - "空气中弥漫着XX"、"时间仿佛凝固了"等过度使用的比喻
 5. 句式要有长短变化：动作戏短句密集，心理戏允许长句绵延；避免全文同一节奏。
-6. 对话要口语化、带人物性格；叙述要克制，不靠堆砌形容词撑场面。
+6. 对话服从人物身份、关系和当前目的；叙述沿用原文与写作人格的语言气质，不统一改成克制腔或口语腔。
 7. 直接输出润色后的完整文本，不加标题、不加说明、不加【】标签。
 ${genreHint}\n${genreContract}${buildPersonaPrompt(persona)}`;
 
@@ -3804,7 +3886,7 @@ ${text.slice(0, 8000)}`,
     res.write(`data: ${JSON.stringify({ type: 'status', message: '正在润色正文…' })}\n\n`);
     try {
       await streamGenerate(
-        `你是一位资深小说文字编辑，擅长在保真前提下精修叙事，绝不添加空泛总结或模板修辞。${buildPersonaPrompt(persona)}`,
+        `你是一位资深小说文字编辑，擅长在保真前提下精修叙事，绝不添加空泛总结或模板修辞。${buildPersonaPrompt(persona)}${polishStyleContext.block}`,
         userPrompt,
         wrappedOnChunk,
         abortController.signal,
@@ -3818,6 +3900,11 @@ ${text.slice(0, 8000)}`,
       );
     } catch (e) {
       if (e.name !== 'AbortError') throw e;
+    }
+
+    if (!hasAcceptableRewriteLength(polished, text)) {
+      polished = text;
+      res.write(`data: ${JSON.stringify({ type: 'status', message: '润色候选稿篇幅异常，已保留原文。' })}\n\n`);
     }
 
     // 如果用户选择了去AI味
@@ -3834,7 +3921,7 @@ ${text.slice(0, 8000)}`,
 
         try {
           await streamGenerate(
-            '你是一位专业的小说润色专家。',
+            `你是一位专业的小说润色专家。${polishStyleContext.block}`,
             deslopPrompt,
             deslopOnChunk,
             abortController.signal,
@@ -3850,7 +3937,7 @@ ${text.slice(0, 8000)}`,
           if (e.name !== 'AbortError') throw e;
         }
 
-        if (desloped.trim().length > 10) polished = desloped;
+        if (hasAcceptableRewriteLength(desloped, text)) polished = desloped;
     }
 
     // 润色后处理：标点规范化 + 轻量去AI味
@@ -3868,6 +3955,8 @@ ${text.slice(0, 8000)}`,
         console.warn('[Polish] 后处理失败，使用原稿:', e.message);
       }
     }
+
+    if (!hasAcceptableRewriteLength(postProcessed, text)) postProcessed = polished;
 
     // 发送后处理的完整结果，前端可据此替换流式拼接的内容
     res.write(`data: ${JSON.stringify({ type: 'final_content', content: postProcessed })}\n\n`);
@@ -4184,7 +4273,7 @@ async function runOptimizeTask(novelId, userId, apiConfig) {
 
     // 1. 分析全文问题
     const analysisPrompt = buildOptimizeAnalysisPrompt(
-      novel.chapters, novel.outline, novel.protagonistName, novel.worldSetting, novel.writingPersonaSnapshot,
+      novel.chapters, novel.outline, novel.protagonistName, novel.worldSetting, await resolveNovelPersona(userId, novel),
       novel.novelTypeId || novel.novelTypeName
     );
     const analysisResult = await streamGenerate(
@@ -4198,6 +4287,10 @@ async function runOptimizeTask(novelId, userId, apiConfig) {
     let optimizedCount = 0;
     let polishedCount = 0;
     let failedCount = 0;
+    // A4：全任务固定一个版本——上下文在任务开始时从加载的 novel 文档构建一次，
+    // 逐章复用；章节失败保留原文，不静默切换版本。
+    const optimizeStyleContext = buildStyleContext(novel.styleRevisionSnapshot, 'revise');
+    const optimizePersona = await resolveNovelPersona(userId, novel);
 
     for (let i = 0; i < totalCh; i++) {
       // 每次 start 后重新读取 novel（防止多任务覆盖）
@@ -4224,20 +4317,19 @@ async function runOptimizeTask(novelId, userId, apiConfig) {
         continue;
       }
       const chPrompt = buildOptimizeChapterPrompt(
-        ch, ch.chapterNumber, analysis, novel.outline, novel.writingPersonaSnapshot,
+        ch, ch.chapterNumber, analysis, novel.outline, optimizePersona,
         novel.novelTypeId || novel.novelTypeName
       );
       const chResult = await streamGenerate(
-        '你是一位专业的小说编辑。请根据分析报告优化指定章节。',
+        '你是一位专业的小说编辑。请根据分析报告优化指定章节。' + optimizeStyleContext.block,
         chPrompt, null, null, apiConfig, 2, 0.75, undefined, 600000, null,
         { taskType: 'full_book_chapter_repair' }
       );
       let newContent = chResult?.content || '';
-      const minRetainedLength = Math.max(120, Math.floor(sourceContent.length * 0.45));
-      if (newContent.length >= minRetainedLength) {
+      if (hasAcceptableRewriteLength(newContent, sourceContent)) {
         try {
-          const { text } = processChapter(newContent);
-          newContent = text;
+          const { text } = processChapter(newContent, { doDeAI: false, doHumanize: false });
+          if (hasAcceptableRewriteLength(text, sourceContent)) newContent = text;
         } catch {}
         await Novel.updateOne(
           { _id: novelId, 'chapters.chapterNumber': ch.chapterNumber },
@@ -4245,16 +4337,10 @@ async function runOptimizeTask(novelId, userId, apiConfig) {
         );
         optimizedCount++;
       } else {
-        try {
-          const { text } = processChapter(ch.content || '');
-          if (text !== sourceContent) {
-            await Novel.updateOne(
-              { _id: novelId, 'chapters.chapterNumber': ch.chapterNumber },
-              { $set: { 'chapters.$.content': text, 'chapters.$.wordCount': text.length, 'chapters.$.qualityReport.optimize': { applied: true, source: 'local-toolchain', originalLength: sourceContent.length, finalLength: text.length, appliedAt: new Date() } }, $push: { 'chapters.$.qualityReport.revisions': { source: 'optimize-local', originalLength: sourceContent.length, finalLength: text.length, appliedAt: new Date() } } }
-            );
-            polishedCount++;
-          } else failedCount++;
-        } catch { failedCount++; }
+        failedCount++;
+        await Novel.updateOne({ _id: novelId, 'chapters.chapterNumber': ch.chapterNumber }, {
+          $set: { 'chapters.$.qualityReport.optimize': { applied: false, reason: '候选稿篇幅超出保真范围，已保留原文', originalLength: sourceContent.length, finalLength: sourceContent.length, appliedAt: new Date() } }
+        });
       }
     }
 
@@ -4365,7 +4451,10 @@ router.post('/editorial-stream', auth, async (req, res) => {
     });
 
     const apiConfig = resolveApiConfig(req.userModelConfig, 'polish');
-    const persona = await resolveNovelPersona(req.userId, novelId ? await Novel.findOne({ _id: novelId, userId: req.userId }) : null, personaId);
+    const editorialNovel = novelId ? await Novel.findOne({ _id: novelId, userId: req.userId }) : null;
+    const persona = await resolveNovelPersona(req.userId, editorialNovel, personaId);
+    // A4：编辑引擎使用作品冻结快照的修订风格上下文；真实人格优先，无人格不随机编造作者。
+    const editorialStyleContext = buildStyleContext(editorialNovel?.styleRevisionSnapshot, 'revise');
 
     // 心跳
     const heartbeat = setInterval(() => {
@@ -4378,6 +4467,7 @@ router.post('/editorial-stream', auth, async (req, res) => {
       const result = await runEditorialPipeline(text, {
         apiConfig,
         persona,
+        styleContext: editorialStyleContext.block,
         onChunk: (chunk, stageId) => {
           if (stageId !== 'persona') {
             // persona 阶段本地生成，不输出文本
@@ -4395,8 +4485,8 @@ router.post('/editorial-stream', auth, async (req, res) => {
       // 后处理
       let processedContent = result.content;
       try {
-        const { text: cleanText } = processChapter(processedContent, { doDeAI: true, doHumanize: true });
-        if (cleanText && cleanText.length > processedContent.length * 0.3) {
+        const { text: cleanText } = processChapter(processedContent, { doDeAI: false, doHumanize: false });
+        if (processedContent !== text && hasAcceptableRewriteLength(cleanText, text)) {
           processedContent = cleanText;
         }
       } catch {}
@@ -4437,6 +4527,9 @@ async function runEditorialBookTask(novelId, userId, apiConfig) {
     let processedCount = 0;
     let failedCount = 0;
     const originalTotalWords = novel.chapters.reduce((sum, chapter) => sum + Number(chapter.wordCount || String(chapter.content || '').length), 0);
+    // A4：任务固定的修订风格上下文（快照随加载的 novel 文档冻结）。
+    const editorialBookStyleContext = buildStyleContext(novel.styleRevisionSnapshot, 'revise');
+    const editorialBookPersona = await resolveNovelPersona(userId, novel);
 
     await Novel.updateOne({ _id: novelId }, {
       $set: {
@@ -4470,7 +4563,10 @@ async function runEditorialBookTask(novelId, userId, apiConfig) {
         await archiveChapterVersion(novel, ch, 'before-editorial');
         const result = await runEditorialPipeline(sourceContent, {
           apiConfig,
-          persona: novel.writingPersonaSnapshot,
+          persona: editorialBookPersona,
+          // A4：整本编辑全任务固定一个版本——上下文在任务开始时从加载的
+          // novel 文档构建一次，逐章复用；章节失败可恢复，不静默切换。
+          styleContext: editorialBookStyleContext.block,
           onStatus: async (stageId, stageName, message) => {
             // 更新当前阶段状态
             await Novel.updateOne({ _id: novelId }, {
@@ -4486,12 +4582,12 @@ async function runEditorialBookTask(novelId, userId, apiConfig) {
         let finalContent = String(result.content || '').trim();
         // Never replace a chapter with a truncated/empty model response. The
         // editorial engine is a revision layer, not a second generator.
-        const minRetainedLength = Math.max(120, Math.floor(sourceContent.length * 0.45));
-        if (finalContent.length >= minRetainedLength && !result.skipped) {
+        const hasSuccessfulStage = result.stageResults?.some(stage => stage.stage !== 'persona' && stage.success);
+        if (hasAcceptableRewriteLength(finalContent, sourceContent) && !result.skipped && hasSuccessfulStage) {
           // 后处理
           try {
-            const { text: cleanText } = processChapter(finalContent, { doDeAI: true, doHumanize: true });
-            if (cleanText && cleanText.length > finalContent.length * 0.3) {
+            const { text: cleanText } = processChapter(finalContent, { doDeAI: false, doHumanize: false });
+            if (hasAcceptableRewriteLength(cleanText, sourceContent)) {
               finalContent = cleanText;
             }
           } catch {}
@@ -4517,13 +4613,13 @@ async function runEditorialBookTask(novelId, userId, apiConfig) {
           processedCount++;
         } else {
           failedCount++;
-          console.warn(`[编辑引擎] 第${chNum}章结果过短(${finalContent.length}/${sourceContent.length})，保留原文`);
+          console.warn(`[编辑引擎] 第${chNum}章无可用修订(${finalContent.length}/${sourceContent.length})，保留原文`);
           await Novel.updateOne(
             { _id: novelId, 'chapters.chapterNumber': chNum },
             { $set: {
               'chapters.$.qualityReport.editorial': {
                 applied: false,
-                reason: result.skipped ? (result.stageResults?.[0]?.reason || '超过安全处理长度，已保留原文') : '编辑结果过短，已保留原文',
+                reason: result.skipped ? (result.stageResults?.[0]?.reason || '超过安全处理长度，已保留原文') : '没有通过保真校验的修订，已保留原文',
                 originalLength: sourceContent.length,
                 finalLength: finalContent.length,
                 stageResults: result.stageResults || [],
@@ -4684,5 +4780,7 @@ router.post('/:novelId/plan-drift-review', auth, async (req, res) => {
 });
 router.post('/analyze-structure', auth, require('../routes/reference').analyzeStructure);
 module.exports = router;
+// 导出供质量回归测试直接验证重复写入守卫与章节提交行为（A5）。
+module.exports.finalizeGeneratedChapter = finalizeGeneratedChapter;
 module.exports.parseJsonObject = parseJsonObject;
 module.exports.parseBlueprintPayload = parseBlueprintPayload;

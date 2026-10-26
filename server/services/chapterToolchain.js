@@ -82,7 +82,6 @@ const CONTEXT_AWARE_REPLACEMENTS = [
   { pattern: /小结/g, candidates: ['（删除）', '简单说'], preferDelete: true },
   { pattern: /一股/g, candidates: ['一阵', '一种', '（删除）'], preferDelete: false,
     genreOverrides: { xianxia: ['一阵', '（删除）'], wuxia: ['一阵', '（删除）'], gufeng: ['一阵', '（删除）'] } },
-  { pattern: /愣住/g, candidates: ['一怔', '一呆', '僵住', '呆了呆'], preferDelete: false },
   // v3 连接词仙侠加强：仙侠体裁下所有连接词优先删除
   { pattern: /总而言之/g, candidates: ['说白了', '反正', '一句话', '要说就是'], preferDelete: false,
     genreOverrides: { xianxia: ['（删除）'], wuxia: ['（删除）'], gufeng: ['（删除）'] } },
@@ -215,7 +214,6 @@ function cleanupArtifacts(text) {
   result = result.replace(/说实话地说/g, '说实话，')
   result = result.replace(/众人皆知/g, '天下皆知')
   result = result.replace(/人人都知道/g, '谁都清楚')
-  result = result.replace(/愣住/g, '一呆')
   // 这一瞬间→瞬间被替换成"一眨眼"后产生"这一一眨眼"
   result = result.replace(/这一一眨眼/g, '转瞬间')
   result = result.replace(/这一转眼/g, '转瞬间')

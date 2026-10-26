@@ -99,7 +99,7 @@
 </div>
 </div>
 
-<ReferenceSelector v-model:reference-ids="selectedReferenceIds" v-model:structure-pattern="structurePattern" :disabled="generationBusy" @persona-created="useReferencePersona" />
+<ReferenceSelector v-model:reference-ids="selectedReferenceIds" v-model:structure-pattern="structurePattern" v-model:use-examples="referenceExamplesEnabled" show-examples-option :disabled="generationBusy" @persona-created="useReferencePersona" />
 <div class="card">
 <div class="section-title">③ {{ $t('generate.stepChar') }}</div>
 <input v-model="protagonistName" class="input" :disabled="generationBusy" :placeholder="$t('generate.placeholderName')" maxlength="20" />
@@ -183,7 +183,7 @@
  <div v-if="genMode === 'book'" class="chapter-words-input">
  <label class="chapter-words-label">
  <span class="chapter-words-title">{{ $t('generate.chapterWordsTitle') }}</span>
- <input v-model.number="chapterWordTarget" class="input" :disabled="generationBusy" type="number" min="2000" max="20000" step="500" />
+ <input v-model.number="chapterWordTarget" class="input" :disabled="generationBusy" type="number" min="2000" max="20000" step="500" @blur="validateChapterWordTarget" />
  <span class="unit">{{ $t('generate.unitPerChapter') }}</span>
  </label>
  <div class="word-count-presets">
@@ -313,7 +313,7 @@
  </div>
 
  <div class="card">
- <ReferenceSelector v-model:reference-ids="selectedReferenceIds" v-model:structure-pattern="structurePattern" :disabled="lnGenerating" @persona-created="useReferencePersona" />
+ <ReferenceSelector v-model:reference-ids="selectedReferenceIds" v-model:structure-pattern="structurePattern" v-model:use-examples="referenceExamplesEnabled" show-examples-option :disabled="lnGenerating" @persona-created="useReferencePersona" />
  <div class="section-title">② {{ $t('generate.lnStepChar') }}</div>
  <input v-model="lnCharName" class="input" :placeholder="$t('generate.lnPlaceholderName')" maxlength="20" />
  <div class="ln-trait-section" style="margin-top:10px;">
@@ -507,6 +507,7 @@ import { notifyModelError } from '../utils/notify'
 import { useSSE } from '../composables/useSSE'
 import { useI18n } from '../composables/useI18n'
 import { formatBlueprintText, parseBlueprintText } from '../utils/blueprintText'
+import { normalizeChapterWordTargetInput } from '../utils/chapterWordTarget'
 import api from '../api'
 import ReferenceSelector from '../components/ReferenceSelector.vue'
 
@@ -618,6 +619,7 @@ const blueprintWarning = ref('')
 
 // ---- 写作人格 persona ----
 const selectedReferenceIds = ref([])
+const referenceExamplesEnabled = ref(false)
 const structurePattern = ref('')
 const personas = ref([])
 function useReferencePersona(persona) {
@@ -968,6 +970,7 @@ function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, per
  chapterWordTarget: perChapterWords || undefined,
  personaId: selectedPersonaId.value || undefined,
  referenceIds: selectedReferenceIds.value,
+ referenceExamplesEnabled: referenceExamplesEnabled.value,
  structurePattern: structurePattern.value,
  }
 
@@ -1039,6 +1042,7 @@ function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, per
 
 // 蓝图生成改为 SSE 流式：实时展示模型输出并自动滚动到最新位置（推理模型耗时长，无超时限制）
 function generateInitialBlueprint() {
+ validateChapterWordTarget()
  if (!selectedType.value || !outline.value.trim()) {
   blueprintSetupError.value = $t('generate.errNeedTypeOutline')
   return
@@ -1067,6 +1071,7 @@ function generateInitialBlueprint() {
   outline: outline.value,
   personaId: selectedPersonaId.value || undefined,
  referenceIds: selectedReferenceIds.value,
+ referenceExamplesEnabled: referenceExamplesEnabled.value,
  structurePattern: structurePattern.value,
  }, {
   token,
@@ -1142,13 +1147,9 @@ function wordCountLabel(value, unit) {
 const chapterWordPresets = computed(() => [3000, 5000, 8000, 10000]
  .map((value) => ({ label: wordCountLabel(value, 'chapter'), value })))
 
-// 输入越界时夹回 [2000, 20000]，与后端 normalizeChapterWordTarget 同口径。
-watch(chapterWordTarget, (value) => {
- const num = Number(value)
- if (!Number.isFinite(num)) return
- const clamped = Math.max(2000, Math.min(20000, Math.round(num)))
- if (clamped !== value) chapterWordTarget.value = clamped
-})
+function validateChapterWordTarget() {
+ chapterWordTarget.value = normalizeChapterWordTargetInput(chapterWordTarget.value)
+}
 
 const estimatedChapters = computed(() => {
  const total = Number(targetWordCount.value) || 50000
@@ -1164,6 +1165,7 @@ const activePresets = computed(() => {
 
 async function startGen() {
  if (!selectedType.value || generationBusy.value) return
+ validateChapterWordTarget()
  preparingGeneration.value = true
 
  // 如果没有填写大纲且是整本模式，先生成大纲让用户确认
@@ -1207,6 +1209,7 @@ async function startGen() {
  outline: outline.value,
  personaId: selectedPersonaId.value || undefined,
  referenceIds: selectedReferenceIds.value,
+ referenceExamplesEnabled: referenceExamplesEnabled.value,
  structurePattern: structurePattern.value,
  storyBlueprint: genMode.value === 'book' ? initialBlueprint.value : undefined,
  enableResearch: enableResearch.value,
@@ -1527,6 +1530,7 @@ async function startLNGen() {
  expertMode: lnExpertMode.value,
  outline: lnOutline,
  referenceIds: selectedReferenceIds.value,
+ referenceExamplesEnabled: referenceExamplesEnabled.value,
  structurePattern: structurePattern.value,
  personaId: selectedPersonaId.value || undefined,
  }

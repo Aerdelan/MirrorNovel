@@ -26,6 +26,7 @@ const {
 const SysConfig = require('../models/SysConfig');
 const { normalizeImageGeneration } = require('../config/imageGeneration');
 const { chooseImageModel, generateImage } = require('../services/imageService');
+const { sceneEditSnapshot, validateSceneEdit } = require('../services/screenplaySceneEdit');
 
 const MAX_SCREENPLAY_DURATION_SECONDS = 86400;
 const SCREENPLAY_GENERATION_CONFIG_KEY = 'screenplay_generation';
@@ -1700,6 +1701,43 @@ router.post('/projects/:id/develop-stream', auth, creativeOperation('screenplay_
     }
   } finally {
     if (project) activeBatchWorkers.delete(`develop:${project._id}`);
+  }
+}));
+
+// Use the very same episode lease as AI generation. Only replace this scene;
+// images and other episodes may be saved independently while an editor is open.
+router.put('/projects/:id/episodes/:episodeNumber/scenes/:sceneNumber', auth, creativeOperation('screenplay_episode', async (req, res) => {
+  try {
+    const project = await Screenplay.findOne({ _id: req.params.id, userId: req.userId });
+    if (!project) return res.status(404).json({ message: '剧本项目不存在' });
+    if (await isCreativeBusy(`screenplay:${project._id}:development`) || await isCreativeBusy(`screenplay:${project._id}:batch`)) {
+      return res.status(409).json({ message: '剧本正在生成，请先暂停并等待保存完成后再编辑' });
+    }
+    const batch = await getLatestTask({ userId: req.userId, resourceId: project._id, kind: 'screenplay_batch' });
+    if (batch && ['queued', 'running'].includes(batch.status)) return res.status(409).json({ message: '请先暂停批量生成，再保存手工修改' });
+    const episode = project.episodes.find(item => item.episodeNumber === Number(req.params.episodeNumber));
+    const scene = episode?.scenes.find(item => item.sceneNumber === Number(req.params.sceneNumber));
+    if (!scene) return res.status(404).json({ message: '场景不存在，请重新加载项目' });
+    const expected = req.body?.expectedScene;
+    if (!expected || !Array.isArray(expected.dialogue)) return res.status(400).json({ message: '缺少原场景版本，请重新打开编辑器' });
+    if (JSON.stringify(sceneEditSnapshot(scene)) !== JSON.stringify(sceneEditSnapshot(expected))) {
+      return res.status(409).json({ message: '场景正文已被更新，未覆盖最新内容。请保留草稿，重新打开项目后核对修改' });
+    }
+    const edit = validateSceneEdit(req.body?.scene);
+    const characters = [...new Set([...(scene.characters || []), ...edit.dialogue.map(line => line.character.trim()).filter(Boolean)])];
+    scene.set({ ...edit, characters, editedAt: new Date() });
+    await scene.validate();
+    await assertCreativeLease();
+    const result = await Screenplay.updateOne(
+      { _id: project._id, userId: req.userId },
+      { $set: { 'episodes.$[episode].scenes.$[scene]': scene.toObject() } },
+      { arrayFilters: [{ 'episode.episodeNumber': episode.episodeNumber }, { 'scene.sceneNumber': scene.sceneNumber }] },
+    );
+    if (!result.matchedCount) return res.status(404).json({ message: '剧本项目已不存在' });
+    res.json({ scene: scene.toObject(), message: '场景已保存，未调用 AI，也未修改其他场景' });
+  } catch (error) {
+    if (error.status === 400 || error.name === 'ValidationError') return res.status(400).json({ message: error.message });
+    throw error;
   }
 }));
 

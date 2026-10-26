@@ -36,9 +36,17 @@
     <button class="btn btn-primary btn-sm" :disabled="busy || !reference.aiProcessed" @click="extractPersona(reference._id)">{{ $t('reference.persona') }}</button>
     <button class="btn btn-danger btn-sm" :disabled="busy || reference.status === 'processing'" @click="remove(reference)">{{ $t('common.delete') }}</button>
    </div>
-   <template v-if="detail?._id === reference._id"><pre>{{ detail.styleProfile }}</pre><h4>{{ $t('reference.characteristics') }}</h4><pre>{{ detail.writingCharacteristics }}</pre><h4>{{ $t('reference.structure') }}</h4><pre>{{ detail.chapterStructure }}</pre><p>{{ detail.vocabularyBank?.join('、') }}</p></template>
+   <template v-if="detail?._id === reference._id"><pre>{{ detail.styleProfile }}</pre><h4>{{ $t('reference.characteristics') }}</h4><pre>{{ detail.writingCharacteristics }}</pre><h4>{{ $t('reference.structure') }}</h4><pre>{{ detail.chapterStructure }}</pre><p>{{ detail.vocabularyBank?.join('、') }}</p>
+    <h4>{{ $t('reference.excerpts') }}</h4>
+    <p v-if="!(detail.keyExcerpts || []).length" class="excerpt-empty">{{ $t('reference.excerptsEmpty') }}</p>
+    <div v-for="(excerpt, index) in detail.keyExcerpts || []" :key="index" class="excerpt-row">
+     <pre class="excerpt-text">{{ excerpt }}</pre>
+     <button class="btn btn-outline btn-sm" :disabled="busy" @click="saveExcerptAsSample(reference, excerpt)">{{ $t('reference.saveAsSample') }}</button>
+    </div>
+   </template>
   </div>
   <p v-if="!references.length">{{ $t('reference.empty') }}</p>
+  <WritingSampleEditor :open="excerptDialogOpen" :preset="excerptPreset" @close="excerptDialogOpen = false" @saved="onExcerptSaved" />
  </div>
 </template>
 <script setup>
@@ -47,14 +55,18 @@ import api from '../api'
 import { readReferenceNovelFile } from '../utils/personaReference'
 import { usePersonaStore } from '../stores/persona'
 import { useAuthStore } from '../stores/auth'
+import { useWritingSamplesStore } from '../stores/writingSamples'
 import { saveBlob } from '../utils/download'
 import { useI18n } from '../composables/useI18n'
+import WritingSampleEditor from '../components/WritingSampleEditor.vue'
 const { $t } = useI18n()
 const personaStore = usePersonaStore()
 const authStore = useAuthStore()
+const samplesStore = useWritingSamplesStore()
 const webBookId = ref(''), webChapters = ref(20), webCookie = ref('')
 const form = ref({ title: '', mainCategory: '', subCategory: '', content: '', novelType: 'normal', gender: 'unisex' })
 const references = ref([]), detail = ref(null), busy = ref(false), message = ref(''), fileName = ref('')
+const excerptDialogOpen = ref(false), excerptPreset = ref(null)
 let active = true, timer = null
 const errorMessage = error => error.response?.data?.message || $t('reference.failed')
 async function loadList() {
@@ -91,6 +103,15 @@ async function previewWeb() { busy.value = true; try { const data = (await api.g
 async function downloadWeb() { busy.value = true; try { const response = await api.get('/reference/fanqie-download', { params: { bookId: webBookId.value, chapters: webChapters.value }, responseType: 'blob', timeout: 0 }); await saveBlob(response.data, (form.value.title || 'reference') + '.txt') } catch (error) { message.value = errorMessage(error) } finally { busy.value = false } }
 async function importWeb() { busy.value = true; message.value = $t('reference.webDownloading'); try { await api.post('/reference/fanqie-import', { ...form.value, bookId: webBookId.value, chapters: webChapters.value }, { timeout: 0 }); await loadList(); message.value = $t('reference.started') } catch (error) { message.value = errorMessage(error) } finally { busy.value = false } }
 async function saveCookie() { busy.value = true; try { await api.post('/reference/fanqie-cookie', { cookie: webCookie.value }); webCookie.value = ''; message.value = $t('reference.cookieSaved') } catch (error) { message.value = errorMessage(error) } finally { busy.value = false } }
+// 参考片段只能作为"待认可候选"进入样稿库：弹窗里确认范围与用途标签后，
+// 由服务端强制保存为草稿，认可动作仍在样稿库中完成。
+function saveExcerptAsSample(reference, excerpt) {
+ excerptPreset.value = { content: excerpt, sourceKind: 'authorized_reference', scope: 'novel', sourceReferenceId: reference._id, sourceReferenceTitle: reference.title }
+ excerptDialogOpen.value = true
+}
+function onExcerptSaved(_sample, meta = {}) {
+ message.value = $t(meta.duplicate ? 'writingSamples.duplicateSaved' : 'writingSamples.excerptSaved')
+}
 onMounted(loadList)
 onActivated(() => { active = true; loadList() })
 onDeactivated(() => { active = false; clearTimeout(timer) })
@@ -105,4 +126,7 @@ onUnmounted(() => { active = false; clearTimeout(timer) })
 .reference-page .input, .reference-page textarea { margin:6px 0; }
 pre { white-space:pre-wrap; line-height:1.8; margin:12px 0; }
 .error { color:var(--error); }
+.excerpt-row { display:flex; gap:10px; align-items:flex-start; margin:8px 0; }
+.excerpt-row .excerpt-text { flex:1; min-width:0; margin:0; font-size:13px; }
+.excerpt-empty { color:var(--text-secondary); font-size:13px; }
 </style>

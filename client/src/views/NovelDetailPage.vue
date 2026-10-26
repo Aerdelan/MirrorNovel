@@ -96,13 +96,19 @@
  </Teleport>
 
  <Teleport to="body">
- <div v-if="showEditModal" class="gen-overlay" @click.self="showEditModal=false">
+ <div v-if="showEditModal" class="gen-overlay" @click.self="chapterEditor.close()">
  <div class="gen-modal edit-modal">
  <h3>{{ $t('novelDetail.editChapter', { num: editingChapter?.chapterNumber }) }}</h3>
- <textarea v-model="editContent" class="textarea" rows="12"></textarea>
+ <p v-if="editDraftMessage" role="status">{{ editDraftMessage }}</p>
+ <div v-if="editNeedsChoice">
+ <button class="btn btn-outline" @click="chapterEditor.restore()">{{ $t('editing.restoreDraft') }}</button>
+ <button class="btn btn-outline" @click="chapterEditor.discard()">{{ $t('editing.discardDraft') }}</button>
+ </div>
+ <textarea v-model="editContent" class="textarea" rows="12" :disabled="savingEdit || editNeedsChoice"></textarea>
  <div class="gf-acts">
- <button class="btn btn-outline" @click="showEditModal=false">{{ $t('common.cancel') }}</button>
- <button class="btn btn-primary" :disabled="savingEdit || generationBlocked || !editContent.trim()" :aria-busy="savingEdit" @click="saveEdit">{{ savingEdit ? $t('common.loading') : $t('common.save') }}</button>
+ <button class="btn btn-outline" :disabled="savingEdit" @click="chapterEditor.close()">{{ $t('common.cancel') }}</button>
+ <button v-if="!editNeedsChoice" class="btn btn-outline" :disabled="savingEdit" @click="chapterEditor.discard()">{{ $t('editing.discardDraft') }}</button>
+ <button class="btn btn-primary" :disabled="savingEdit || editNeedsChoice || generationBlocked || !editContent?.trim()" :aria-busy="savingEdit" @click="saveEdit">{{ savingEdit ? $t('common.loading') : $t('common.save') }}</button>
  </div>
  </div>
  </div>
@@ -153,7 +159,33 @@
  </div>
 
  <div v-if="novel" class="card">
+ <div class="section-title"> {{ $t('novelDetail.styleRevisionTitle') }}</div>
+ <p class="revision-current">
+  <template v-if="novel.styleRevisionSnapshot">
+   {{ $t('novelDetail.styleRevisionCurrent', { name: novel.styleRevisionSnapshot.name || '', n: novel.styleRevisionSnapshot.version || 1, count: $t('styleRevisions.sampleCount', { n: (novel.styleRevisionSnapshot.samples || []).length }), chapter: novel.styleRevisionSnapshot.adoptedAtChapter || 1 }) }}
+  </template>
+  <template v-else>{{ $t('novelDetail.styleRevisionNone') }}</template>
+ </p>
+ <div class="revision-switch">
+  <select v-model="selectedRevisionId" class="input" :disabled="revisionBusy || !revisionChoices.length">
+   <option value="">{{ revisionChoices.length ? $t('novelDetail.styleRevisionPick') : $t('novelDetail.styleRevisionNoChoices') }}</option>
+   <option v-for="revision in revisionChoices" :key="revision._id" :value="revision._id">{{ revision.name }} · v{{ revision.version }}（{{ $t('styleRevisions.sampleCount', { n: revision.sampleCount }) }}）</option>
+  </select>
+  <button class="btn btn-primary btn-sm" :disabled="revisionBusy || !selectedRevisionId" @click="adoptRevision">{{ $t('novelDetail.styleRevisionAdopt') }}</button>
+  <button v-if="novel.styleRevisionId" class="btn btn-outline btn-sm" :disabled="revisionBusy" @click="deactivateRevision">{{ $t('novelDetail.styleRevisionDeactivate') }}</button>
+  <router-link class="revision-link" to="/writing-samples">{{ $t('styleRevisions.manage') }}</router-link>
+ </div>
+ <p v-if="revisionMessage" role="status" class="revision-status">{{ revisionMessage }}</p>
+ </div>
+
+ <div v-if="novel" class="card">
  <div class="section-title"> {{ $t('novelDetail.chapterListTitle') }}</div>
+ <p v-if="sampleMessage" role="status" class="sample-status">{{ sampleMessage }} <router-link to="/writing-samples">{{ $t('writingSamples.title') }}</router-link></p>
+ <div v-if="showFeedbackOffer && feedbackDraft" class="feedback-offer">
+  <span>{{ $t('writingStyle.offerText') }}</span>
+  <button class="btn btn-primary btn-sm" @click="openFeedbackDialog">{{ $t('writingStyle.record') }}</button>
+  <button class="btn btn-ghost btn-sm" @click="dismissFeedbackOffer">{{ $t('writingStyle.skip') }}</button>
+ </div>
  <div v-if="!novel?.chapters?.length" class="empty-chapters">{{ $t('novelDetail.chapterListEmpty') }}</div>
  <div v-for="(chapter, index) in novel?.chapters" :key="`${chapter.chapterNumber}:${chapter._id || ''}:${index}`" class="chapter-item">
  <div class="chapter-header" @click="toggleChapter(index)">
@@ -163,7 +195,11 @@
  <span class="expand-icon">{{ expandedChapter===index?'▼':'▶' }}</span>
  </div>
  <div v-show="expandedChapter===index" class="chapter-body">
- <div class="chapter-content">{{ chapter.content||$t('novelDetail.chapterContentGenerating') }}</div>
+ <div class="chapter-content" @mouseup="onChapterTextSelect($event, chapter)">{{ chapter.content||$t('novelDetail.chapterContentGenerating') }}</div>
+ <div v-if="chapterSample.chapterNumber === chapter.chapterNumber && chapterSample.text" class="sample-select-bar">
+  <span :class="{ 'select-warn': !chapterSample.valid }">{{ chapterSample.valid ? $t('writingSamples.selectedChars', { n: chapterSample.length }) : (chapterSample.length > SAMPLE_MAX_CHARS ? $t('writingSamples.selectTooLong') : $t('writingSamples.selectTooShort')) }}</span>
+  <button class="btn btn-primary btn-sm" :disabled="!chapterSample.valid" @click="openSampleDialog(chapter)">{{ $t('writingSamples.selectSave') }}</button>
+ </div>
  <div v-if="chapterTokens(chapter)" class="chapter-token-detail">
  <span>{{ $t('novelDetail.chapterTokensLabel') }}{{ $t('novelDetail.input') }} {{ formatTokenCount(chapterTokens(chapter).inputTokens) }}</span>
  <span>{{ $t('novelDetail.output') }} {{ formatTokenCount(chapterTokens(chapter).outputTokens) }}</span>
@@ -205,6 +241,16 @@
  </div>
  </div>
  <div style="height:20px;"></div>
+ <WritingSampleEditor :open="sampleDialogOpen" :preset="samplePreset" @close="sampleDialogOpen = false" @saved="onSampleSaved" />
+ <WritingFeedbackDialog
+  :open="showFeedbackDialog"
+  :novel-id="String(route.params.id)"
+  :chapter-number="feedbackDraft?.chapterNumber || 0"
+  :original-text="feedbackDraft?.originalText || ''"
+  :revised-text="feedbackDraft?.revisedText || ''"
+  @close="showFeedbackDialog = false"
+  @saved="onFeedbackSaved"
+ />
  </div>
 </template>
 
@@ -212,13 +258,18 @@
 import { ref, computed, onMounted, onUnmounted, onActivated, onDeactivated, watch, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useNovelStore } from '../stores/novel'
+import { useStyleRevisionsStore } from '../stores/styleRevisions'
 import { useI18n } from '../composables/useI18n'
 import { formatBlueprintText } from '../utils/blueprintText'
 import { useNovelGeneration } from '../composables/useNovelGeneration'
+import { useEditDraft } from '../composables/useEditDraft'
 
 const emit = defineEmits(['novel-updated', 'generation-state'])
 import { useSSE } from '../composables/useSSE'
 import api from '../api'
+import WritingSampleEditor from '../components/WritingSampleEditor.vue'
+import WritingFeedbackDialog from '../components/WritingFeedbackDialog.vue'
+import { validateSampleContent, SAMPLE_MAX_CHARS } from '../utils/writingSampleInput'
 
 const route = useRoute()
 const router = useRouter()
@@ -264,10 +315,9 @@ const showGenSettings = ref(false)
 const genWordCount = ref(2000)
 const genNotes = ref('')
 const genTargetChapter = ref(0)
-const showEditModal = ref(false)
+const chapterEditor = useEditDraft()
+const { visible: showEditModal, value: editContent, saving: savingEdit, message: editDraftMessage, needsChoice: editNeedsChoice } = chapterEditor
 const editingChapter = ref(null)
-const editContent = ref('')
-const savingEdit = ref(false)
 const chapterActionBusy = ref('')
 
 const statusMap = { generating: $t('novelDetail.generating'), paused: $t('novelDetail.paused'), completed: $t('novelDetail.completed'), error: $t('bookshelf.statusError') }
@@ -434,13 +484,14 @@ async function syncChapterFromQuery() {
  node?.scrollIntoView?.({ behavior: 'smooth', block: 'center' })
 }
 
-onMounted(() => { loadNovel() })
+onMounted(() => { loadNovel(); loadRevisionChoices() })
 
 onActivated(() => {
  detailVisible = true
  // 首次挂载后紧跟的 activated 与 onMounted 重复，跳过一次；此后从缓存返回时强制刷新，避免旧数据
  if (!firstActivated) { firstActivated = true; return }
  loadNovel()
+ loadRevisionChoices()
 })
 
 onUnmounted(() => {
@@ -454,7 +505,90 @@ onDeactivated(() => { detailVisible = false; generation.stop(); stopPollingOptim
 
 watch(chapterStreamingText, async () => { await nextTick(); if (streamingRef.value) streamingRef.value.scrollTop = streamingRef.value.scrollHeight })
 
-function toggleChapter(idx) { expandedChapter.value = expandedChapter.value === idx ? null : idx }
+function toggleChapter(idx) {
+ if (expandedChapter.value === idx) {
+  chapterSample.value = { chapterNumber: 0, text: '', valid: false, length: 0 }
+  expandedChapter.value = null
+ } else {
+  expandedChapter.value = idx
+ }
+}
+
+// 章节正文划选文字 → 存为写作样稿（A1）。只在本章节正文元素内的选区生效，
+// 不干扰编辑弹窗与流式展示区。
+const chapterSample = ref({ chapterNumber: 0, text: '', valid: false, length: 0 })
+const sampleDialogOpen = ref(false)
+const samplePreset = ref(null)
+const sampleMessage = ref('')
+
+function onChapterTextSelect(event, chapter) {
+ const selection = window.getSelection()
+ const text = selection ? String(selection).trim() : ''
+ if (!text || !selection || !event.currentTarget.contains(selection.anchorNode)) {
+  if (chapterSample.value.chapterNumber === chapter.chapterNumber) chapterSample.value = { chapterNumber: 0, text: '', valid: false, length: 0 }
+  return
+ }
+ const check = validateSampleContent(text)
+ chapterSample.value = { chapterNumber: chapter.chapterNumber, text, valid: check.ok, length: check.length }
+}
+
+function openSampleDialog(chapter) {
+ if (!chapterSample.value.valid || !chapterSample.value.text) return
+ samplePreset.value = {
+  content: chapterSample.value.text.slice(0, SAMPLE_MAX_CHARS),
+  sourceKind: 'own_text',
+  scope: 'novel',
+  sourceNovelId: String(route.params.id),
+  sourceNovelTitle: novel.value?.title || '',
+  sourceChapterNumber: chapter.chapterNumber,
+ }
+ sampleDialogOpen.value = true
+ chapterSample.value = { chapterNumber: 0, text: '', valid: false, length: 0 }
+ window.getSelection()?.removeAllRanges()
+}
+
+function onSampleSaved(_sample, meta = {}) {
+ sampleMessage.value = meta.duplicate ? $t('writingSamples.duplicateSaved') : $t('writingSamples.saved')
+ setTimeout(() => { sampleMessage.value = '' }, 8000)
+}
+
+// A2 风格版本：本书当前版本展示与切换。采用/停用是显式操作，
+// 生成任务运行中由服务端 409 拒绝（忙碌守卫），前端只展示错误信息。
+const styleRevisionsStore = useStyleRevisionsStore()
+const revisionChoices = computed(() => styleRevisionsStore.items)
+const selectedRevisionId = ref('')
+const revisionBusy = ref(false)
+const revisionMessage = ref('')
+
+async function loadRevisionChoices() {
+ try { await styleRevisionsStore.fetchList() } catch { /* 版本列表加载失败不阻塞详情页 */ }
+}
+
+async function adoptRevision() {
+ if (revisionBusy.value || !selectedRevisionId.value) return
+ revisionBusy.value = true
+ revisionMessage.value = ''
+ try {
+  const { data } = await api.put(`/novel/${route.params.id}/style-revision`, { revisionId: selectedRevisionId.value })
+  revisionMessage.value = data.message
+  await refreshNovel()
+ } catch (error) {
+  revisionMessage.value = error.response?.data?.message || $t('novelDetail.styleRevisionFailed')
+ } finally { revisionBusy.value = false }
+}
+
+async function deactivateRevision() {
+ if (revisionBusy.value) return
+ revisionBusy.value = true
+ revisionMessage.value = ''
+ try {
+  const { data } = await api.put(`/novel/${route.params.id}/style-revision`, { revisionId: null })
+  revisionMessage.value = data.message
+  await refreshNovel()
+ } catch (error) {
+  revisionMessage.value = error.response?.data?.message || $t('novelDetail.styleRevisionFailed')
+ } finally { revisionBusy.value = false }
+}
 async function openGenSettings(chapterNum) {
  if (generationBlocked.value || chapterActionBusy.value) return
  const id = String(route.params.id)
@@ -576,13 +710,54 @@ async function startChapterGen(chapterNum, wc, notes) {
  })
  window.__chapterGenSSE = sse
 }
-function openEdit(chapter) { if (!chapterActionBusy.value && !generationBlocked.value) { editingChapter.value = chapter; editContent.value = chapter.content || ''; showEditModal.value = true } }
+function openEdit(chapter) {
+ if (chapterActionBusy.value || generationBlocked.value) return
+ if (chapterEditor.open({ resourceId: String(route.params.id), unit: `chapter:${chapter.chapterNumber}`, value: chapter.content || '' })) editingChapter.value = chapter
+}
 async function saveEdit() {
- if (generationBlocked.value || savingEdit.value || !editingChapter.value || !editContent.value.trim()) return
+ if (generationBlocked.value || savingEdit.value || editNeedsChoice.value || !editingChapter.value || !editContent.value?.trim()) return
  savingEdit.value = true
- try { await api.put(`/novel/${route.params.id}/chapter/${editingChapter.value.chapterNumber}`, { content: editContent.value }); showEditModal.value = false; await refreshNovel() }
+ try {
+  await api.put(`/novel/${route.params.id}/chapter/${editingChapter.value.chapterNumber}`, { content: editContent.value })
+  // A3：保存成功后提供可选的"记为写作偏好"。用行内提示条而非弹窗，不打断保存流程；
+  // 原文取本次编辑的起点；不点就什么都不保存。
+  const preEditContent = String(editingChapter.value.content || '')
+  chapterEditor.saved()
+  await refreshNovel()
+  if (editContent.value.trim() !== preEditContent.trim()) {
+    feedbackDraft.value = {
+      chapterNumber: editingChapter.value.chapterNumber,
+      originalText: preEditContent,
+      revisedText: editContent.value,
+    }
+    showFeedbackOffer.value = true
+    clearTimeout(feedbackOfferTimer)
+    feedbackOfferTimer = setTimeout(dismissFeedbackOffer, 15000)
+  }
+ }
  catch (e) { alert($t('novelDetail.errSaveFailed')+(e.response?.data?.message||e.message)) }
  finally { savingEdit.value = false }
+}
+
+// A3 写作反馈：行内提示条 + 点击后才打开的弹窗
+const showFeedbackOffer = ref(false)
+const showFeedbackDialog = ref(false)
+const feedbackDraft = ref(null)
+let feedbackOfferTimer = null
+function openFeedbackDialog() {
+ clearTimeout(feedbackOfferTimer)
+ showFeedbackOffer.value = false
+ showFeedbackDialog.value = true
+}
+function dismissFeedbackOffer() {
+ clearTimeout(feedbackOfferTimer)
+ showFeedbackOffer.value = false
+ feedbackDraft.value = null
+}
+function onFeedbackSaved() {
+ feedbackDraft.value = null
+ sampleMessage.value = $t('writingStyle.recordedNotice')
+ setTimeout(() => { sampleMessage.value = '' }, 8000)
 }
 
 async function confirmDeleteChapter(ch) {
@@ -832,4 +1007,14 @@ function goBack() { router.push('/bookshelf') }
 .proposal-before { color:var(--text-light); }
 .proposal-after { color:#0958d9; }
 .proposal-actions { justify-content:flex-end; }
+.sample-select-bar { display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:space-between; margin:8px 0; padding:8px 10px; border:1px dashed var(--card-border); border-radius:8px; background:var(--card-bg); font-size:13px; color:var(--text-secondary); }
+.sample-select-bar .select-warn { color:#cf1322; }
+.sample-status { margin:4px 0 8px; color:var(--success, #2f6546); font-size:13px; }
+.sample-status a { color:var(--primary); margin-left:4px; }
+.revision-current { color:var(--text-secondary); font-size:13px; margin:6px 0; }
+.revision-switch { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.revision-switch .input { flex:1; min-width:200px; max-width:360px; }
+.revision-link { font-size:13px; color:var(--primary); }
+.revision-status { color:var(--success, #2f6546); font-size:13px; margin:6px 0 0; }
+.feedback-offer { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin:4px 0 10px; padding:8px 10px; border:1px dashed var(--card-border); border-radius:8px; background:var(--card-bg); font-size:13px; color:var(--text-secondary); }
 </style>

@@ -40,3 +40,6 @@ desktop/release/
 desktop/node_modules/
 # vite 异常退出留下的临时配置
 desktop/*.timestamp-*.mjs
+
+# A5 写作质量盲选报告（含未发布正文，不入库）
+server/quality-reports/

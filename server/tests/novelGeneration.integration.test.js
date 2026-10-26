@@ -16,6 +16,7 @@ const state = {
   outlineContent: '隔离测试大纲',
   aiHandler: null,
   aiCalls: [],
+  useRealPersonaPrompt: false,
   lastSystemPromptArgs: null,
   saveFailureAt: 0,
   saveCount: 0,
@@ -37,6 +38,7 @@ function resetState() {
   state.outlineContent = '隔离测试大纲';
   state.aiHandler = null;
   state.aiCalls = [];
+  state.useRealPersonaPrompt = false;
   state.lastSystemPromptArgs = null;
   state.saveFailureAt = 0;
   state.saveCount = 0;
@@ -180,6 +182,7 @@ const aiServiceMock = {
     return `SYSTEM:${typeId}`;
   },
   buildInitialPrompt: () => 'INITIAL_PROMPT',
+  buildPersonaPrompt: (persona, options) => state.useRealPersonaPrompt ? realAiService.buildPersonaPrompt(persona, options) : '',
   buildContinuePrompt: () => 'CONTINUE_PROMPT',
   buildImportContinuePrompt: () => 'IMPORT_CONTINUE_PROMPT',
   buildOutlinePrompt: () => 'OUTLINE_PROMPT',
@@ -423,6 +426,66 @@ async function postSse(pathname, body) {
 function eventIndex(events, type, predicate = () => true) {
   return events.findIndex((event) => event.type === type && predicate(event));
 }
+
+test('streaming de-AI rewrite reviews against the original, preserves persona and rejects length drift', async () => {
+  state.useRealPersonaPrompt = true;
+  const persona = { name: '温暖的叙述者', voice: '允许善意插话，保留书面表达', rules: '事实与人物选择不能改动' };
+  const novel = await seedNovel({ status: 'paused', writingPersonaSnapshot: persona });
+  const original = '原文：她没有拆开信封，只把它放回了抽屉。'.repeat(8);
+  const first = '初稿：她没有拆开信封，只把它放回了抽屉。'.repeat(8);
+  state.aiHandler = async call => {
+    const result = state.aiCalls.length === 1 ? first : '过短的终稿';
+    call.onChunk?.(result);
+    return { content: result };
+  };
+  const result = await postSse('/deslop-stream', { novelId: novel._id, text: original });
+  assert.equal(result.response.status, 200);
+  assert.equal(state.aiCalls.length, 2);
+  assert.equal(state.aiCalls[0].temperature, 0.72);
+  assert.equal(state.aiCalls[1].temperature, 0.55);
+  assert.ok(state.aiCalls[1].userPrompt.includes(original));
+  assert.ok(state.aiCalls[1].userPrompt.includes(first));
+  assert.match(state.aiCalls[1].userPrompt, /允许善意插话/);
+  assert.doesNotMatch(state.aiCalls[1].userPrompt, /随机插入角色的走神或吐槽|把所有书面化的词换成口语/);
+  assert.equal(result.events.find(event => event.type === 'completed').content, first);
+  assert.equal(state.novels.get(novel._id).chapters.length, 0, 'preview must not modify the saved work');
+});
+
+test('streaming rewrite keeps the original without a second call when the first candidate is truncated', async () => {
+  const original = '她没有拆开信封，只把它放回了抽屉。'.repeat(8);
+  state.aiHandler = async call => { call.onChunk?.('截断'); return { content: '截断' }; };
+  const result = await postSse('/deslop-stream', { text: original });
+  assert.equal(result.response.status, 200);
+  assert.equal(state.aiCalls.length, 1);
+  assert.equal(result.events.find(event => event.type === 'completed').content, original);
+});
+
+test('non-streaming rewrite also keeps the original when the model returns an incomplete candidate', async () => {
+  const original = '她没有拆开信封，只把它放回了抽屉。'.repeat(8);
+  state.aiHandler = async () => ({ content: '截断' });
+  const response = await fetch(`${baseUrl}/deslop`, {
+    method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer isolated' },
+    body: JSON.stringify({ text: original }),
+  });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).processed, original);
+  assert.equal(state.aiCalls.length, 1);
+});
+
+test('polish rejects an incomplete second pass and preserves its accepted first pass', async () => {
+  const original = '她没有拆开信封，只把它放回了抽屉。'.repeat(15);
+  const accepted = original.replace('她没有拆开', '她仍未拆开');
+  const novel = await seedNovel({ status: 'paused', styleRevisionSnapshot: { preferences: [{ statement: '修订时保留人物对白原有的留白与试探。' }] } });
+  state.aiHandler = async call => {
+    const content = state.aiCalls.length === 1 ? accepted : '不完整的去AI味稿';
+    call.onChunk?.(content);
+    return { content };
+  };
+  const result = await postSse('/polish', { novelId: novel._id, text: original, doDeslop: true });
+  assert.equal(state.aiCalls.length, 2);
+  assert.match(state.aiCalls[1].systemPrompt, /保留人物对白原有的留白/);
+  assert.equal(result.events.find(event => event.type === 'final_content').content, accepted);
+});
 
 function getCreatedNovel(events) {
   const created = events.find((event) => event.type === 'novel_created');
@@ -911,6 +974,21 @@ test('指定章节续写：创建下一章并保持连续章节号和可续写�
   assert.equal(novel.chapters[1].wordCount, second.length);
   assert.equal(novel.status, 'paused');
   assert.ok(novel.currentWordCount < novel.targetWordCount);
+});
+
+test('chapter continuation reuses opted-in reference examples from the saved snapshot without extra model calls', async () => {
+  const first = makeChapter('林舟决定带着账本离开旧邮局', '上一章正文');
+  const second = makeChapter('林舟进入车站档案室并找到值班记录', '新建第二章');
+  const example = '样稿标记雪松：' + '关门之前，她回头望了一眼，灯已经熄了。'.repeat(5);
+  const novel = await seedNovel({ _id: 'style-example-continuation', status: 'paused', targetWordCount: 10000,
+    referenceStyleSnapshot: [{ title: '已选择参考', styleProfile: '观察与动作留白', keyExcerpts: [example] }],
+    chapters: [{ chapterNumber: 1, title: '第1章', content: first, wordCount: first.length }] });
+  state.chapterQueue = [second];
+  const { events } = await postSse(`/${novel._id}/continue-chapter/2`, { wordCount: 600 });
+  assert.equal(events.at(-1).type, 'completed');
+  assert.equal(state.aiCalls.filter(call => call.kind === 'chapter').length, 1);
+  assert.ok(state.aiCalls.some(call => call.systemPrompt.includes('样稿标记雪松')));
+  assert.equal(novel.referenceStyleSnapshot[0].keyExcerpts[0], example);
 });
 
 test('断点恢复：已完成的持久化草稿直接提交，不重复调用模型续写', async () => {

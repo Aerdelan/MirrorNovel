@@ -6,6 +6,9 @@ const chapterSchema = new mongoose.Schema({
   content: { type: String, default: '' },
   wordCount: { type: Number, default: 0 },
   qualityReport: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+  // A2：本章生成时实际注入的样稿抽样记录（revisionId/version/sampleIds/reasons）。
+  // 旧章节没有该字段时按 null 处理，不影响任何读取路径。
+  styleSamples: { type: mongoose.Schema.Types.Mixed, default: null },
   generatedAt: { type: Date, default: Date.now },
 });
 
@@ -72,6 +75,13 @@ const novelSchema = new mongoose.Schema({
   referenceStyleSnapshot: { type: mongoose.Schema.Types.Mixed, default: () => [] },
   structureReference: { type: String, default: '' },
   driftReview: { type: mongoose.Schema.Types.Mixed, default: null },
+  // A2 风格版本：作品显式采用（或建书时自动冻结）的版本快照。
+  // 生成链路只读 styleRevisionSnapshot，不回查版本集合——任务期间版本固定；
+  // 旧作品三个字段均为空时走旧路径（writingPersonaSnapshot），完全兼容。
+  styleRevisionId: { type: mongoose.Schema.Types.ObjectId, ref: 'WritingStyleRevision', default: null },
+  styleRevisionSnapshot: { type: mongoose.Schema.Types.Mixed, default: null },
+  // 该版本从第几章起生效（采用时 = 最高章节号 + 1）。
+  styleRevisionAdoptedAtChapter: { type: Number, default: 0 },
   currentWordCount: {
     type: Number,
     default: 0,

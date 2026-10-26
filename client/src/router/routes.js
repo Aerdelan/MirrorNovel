@@ -70,6 +70,12 @@ export const routes = [
   component: () => import('../views/PolishPage.vue'),
   meta: { title: '润色文本', requiresAuth: true },
  },
+ {
+  path: '/writing-samples',
+  name: 'WritingSamples',
+  component: () => import('../views/WritingSamplesPage.vue'),
+  meta: { title: '写作样稿库', requiresAuth: true },
+ },
 ]
 
 export default routes

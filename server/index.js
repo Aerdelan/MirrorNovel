@@ -115,6 +115,10 @@ const startApp = async () => {
   app.use('/api/reference', require('./routes/referenceFanqie'));
   app.use('/api/reference', require('./routes/reference'));
   app.use('/api/screenplay', require('./routes/screenplay'));
+  app.use('/api/writing-samples', require('./routes/writingSamples'));
+  app.use('/api/style-revisions', require('./routes/styleRevisions').router);
+  app.use('/api/writing-feedback', require('./routes/writingFeedback'));
+  app.use('/api/writing-preferences', require('./routes/writingPreferences'));
 
   // 健康检查：额外带上线邮箱状态，这样不用 SSH 登服务器、也不靠日志关键字，
   // 一个 GET 就能判断“验证码收不到”是邮件服务挂了还是已恢复。

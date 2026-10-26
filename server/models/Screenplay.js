@@ -23,6 +23,7 @@ const sceneSchema = new mongoose.Schema({
   shotPlan: { type: String, default: '' },
   soundDesign: { type: String, default: '' },
   imagePlan: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+  editedAt: { type: Date },
 }, { _id: false });
 
 const episodeSchema = new mongoose.Schema({

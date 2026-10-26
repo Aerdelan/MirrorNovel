@@ -15,6 +15,7 @@
 
 const { streamGenerate, resolveApiConfig } = require('./aiService');
 const dsl = require('../config/editorialRules');
+const { hasAcceptableRewriteLength, buildRewriteReviewPrompt } = require('./rewriteReview');
 
 // 阶段定义（v4：仅 3 次 LLM 调用 + 1 次本地生成）
 const STAGES = [
@@ -25,6 +26,7 @@ const STAGES = [
 ];
 
 // ====== 作者人格本地生成器 ======
+// A4 起流水线不再调用本函数（不随机决定本书作者）；保留导出仅供旧脚本兼容。
 
 const PERSONA_POOL = {
   education: ['初中', '高中', '大专', '本科', '硕士'],
@@ -78,6 +80,7 @@ function personaConstraint(persona) {
   if (persona.voice || persona.tone || persona.rules || persona.vocab) {
     return `\n\n【用户指定作者人格 — 必须保持】\n${persona.voice ? `声线：${persona.voice}\n` : ''}${persona.tone ? `语气与节奏：${persona.tone}\n` : ''}${persona.rules ? `写作规则：${persona.rules}\n` : ''}${persona.vocab ? `用词表：${persona.vocab}` : ''}`;
   }
+  if (!persona.education && !persona.favorite && !persona.habit && !persona.flaws) return '';
   const habits = (persona.habit || []).join('、');
   const flaws = (persona.flaws || []).join('、');
   return `
@@ -105,30 +108,25 @@ function personaConstraint(persona) {
  * 一次性完成结构层面的所有调整，不改表达风格（留给去AI阶段）
  */
 function buildStructuralPrompt(text, _analysis, originalLen, persona) {
-  const targetLength = Math.round(originalLen * (dsl.compression?.ratio || 0.7));
-
   return {
     system: `你是资深网文编辑，负责结构性改稿。${personaConstraint(persona)}`,
-    user: `对以下文本进行结构性重构（压缩+节奏+人物），保留剧情/伏笔/人物关系不变。
+    user: `请检查以下文本的结构、节奏和人物表达，只修复确有问题之处。
 
-【压缩】目标约${targetLength}字（原文${originalLen}字）
-- 删：重复描写、重复心理、冗余过渡、作者解释
-- 留：剧情、人物、设定、伏笔、冲突、高潮
+【保真边界】
+- 原文是唯一的事实基准，保留人物、关系、事件、因果、线索、伏笔及结尾落点。
+- 保持原文的叙事人称、视角、距离、时态和作者声线；不增加原文没有的事件或设定。
+- 原文${originalLen}字，终稿保持原文的80%-120%；不为凑压缩比例删除场戏、对白意图或信息。
 
-【节奏】
-- 句长随机化：3字→50字→5字，禁止连续两句长度相近
-- 每200字一句极短句（2-5字）
-- 段落极端化：短段（1-2句）和长段（6句+）交替
-- 允许硬切过渡，不需要"与此同时""紧接着"
+【结构与节奏】
+- 删除重复说明和冗余过渡，保留必要的空间、时间与行动衔接。
+- 句长、段落与停顿服从当前场景和作者声线，不按字数插句或机械交替长短段。
+- 每场戏的目标、阻碍、选择和后果应清楚；已经自然成立的表达保持原样。
 
 【人物】
-- 每个角色独特语言风格：口头禅、说话速度、文化水平
-- 对白要有打断、答非所问、不完整句
-- 微动作替代抽象情绪（握拳、咬牙替代"心中一惊"）
+- 人物声音来自身份、关系、目标和情绪，不统一添加口头禅、打断或碎片句。
+- 对白保留核心意图和信息量；动作与情绪必须符合已有情境，不靠固定微动作替换词表。
 
-注意：这一步只改结构和内容，不需要刻意去AI痕迹，后续阶段专门处理。
-
-直接输出重构后的完整文本。
+直接输出完整文本，不附解释或修改说明。
 
 ${text}`,
   };
@@ -148,13 +146,13 @@ function buildPolishPrompt(text, _analysis, _origLen, persona) {
 2. 人物称呼前后是否统一
 3. 时间线是否连贯
 4. 伏笔是否被意外删除（如有则恢复）
-5. 世界观设定是否有矛盾（保留更合理的）
+5. 世界观设定是否有矛盾（以原文明确建立的事实为准，不自行选择或新增设定）
 
 【风格检查】
-1. 口语过渡词优先用：话说回来、对了、算了、反正
-2. 禁止"与此同时""紧接着""值得注意的是"等AI连接词
-3. 禁止段尾升华/总结/感悟
-4. 叙述口语化，不用书面语
+1. 沿用作者的词汇密度、叙述温度和幽默尺度，保留书面语或口语的既定选择。
+2. 只修复空泛、重复或妨碍理解的连接与解释，不按禁词表机械替换。
+3. 结尾保留原文落点，不额外补写情绪总结或升华；保留有意的叙述者介入。
+4. 原文是唯一的事实基准；保留每场戏和对白意图，终稿保持原稿的80%-120%。
 
 注意：不要大幅改写，只修复不一致和明显问题。去AI痕迹由下一阶段处理。
 
@@ -170,44 +168,8 @@ ${text}`,
  */
 function buildDeAIPrompt(text, _analysis, _origLen, persona) {
   return {
-    system: `你是番茄小说签约编辑。这是终稿去AI化处理，你的任务是让文本看起来完全像人写的。${personaConstraint(persona)}`,
-    user: `对以下文本进行终稿去AI化。保留剧情/伏笔/人物不变，只改表达方式。
-
-【核心 — 重建语言分布】
-
-1. 打破标准开头
-   禁止"环境→人物→动作→能力"
-   改用：冲突开头 / 对话开头 / 奇怪的话开头 / 错误后纠正
-
-2. 注入废信息（每500字至少一处）
-   - 角色注意到无关细节（"墙上有个钉子，不知道谁钉的"）
-   - 角色走神（"他想起昨天那碗面，挺咸的"）
-   - 环境噪音（"远处什么东西倒了，咣当一声"）
-   - 口误废话（"这个嘛……怎么说呢"）
-   - 叙述者吐槽（"——话说回来，这人怎么还不来"）
-
-3. 对白人格化
-   - 不同角色说话方式完全不同
-   - 要有打断（"我说——""行了行了我知道了"）
-   - 要有答非所问
-   - 要有不完整句（"那个……算了"）
-   - 要有重复改口（"我觉得——不对，应该说是"）
-
-4. 句长极端化（对抗 Entropy 检测）
-   - 3字→50字→5字，完全随机
-   - 允许"完了。""不对。""行。"独立成段
-   - 允许五十多字的长句（中间破折号插入）
-   - 禁止连续两句长度相近
-
-5. 禁用词（必须替换或删除）
-   ${dsl.forbidden.slice(0, 15).join('、')}
-
-6. 禁止段尾升华/总结/感悟
-7. 叙述口语化，不用书面语
-
-直接输出终稿。这是最后一次处理，请确保文本看起来完全是真人写的。
-
-${text}`,
+    system: `你是小说终稿编辑，负责保真校稿，保留作者声线并修复重复与模板表达。${personaConstraint(persona)}`,
+    user: buildRewriteReviewPrompt(text, text),
   };
 }
 
@@ -230,6 +192,8 @@ async function runEditorialPipeline(text, options = {}) {
     onChunk = null,
     onStatus = null,
     persona = null,
+    // A4：作品冻结快照的修订风格上下文（偏好 + 修订边界样稿），由调用方构建一次。
+    styleContext = '',
   } = options;
 
   if (!text || text.length < 100) {
@@ -256,7 +220,7 @@ async function runEditorialPipeline(text, options = {}) {
   let currentText = text;
   let authorPersona = null;
   const stageResults = [];
-  const delay = dsl.interStageDelay || 5000;
+  const delay = dsl.interStageDelay ?? 5000;
 
   for (let i = 0; i < STAGES.length; i++) {
     const stage = STAGES[i];
@@ -270,10 +234,11 @@ async function runEditorialPipeline(text, options = {}) {
       onStatus(stage.id, stage.name, `正在执行第${i + 1}阶段：${stage.name}...`, false, 'running');
     }
 
-    // persona 阶段：本地生成，不调 LLM
+    // persona 阶段：只使用真实人格（作品/账号绑定），不再随机编造"本书作者"。
+    // 没有人格时 personaConstraint 返回空串，编辑引擎按通用编辑行为工作。
     if (stage.local || stage.id === 'persona') {
-      authorPersona = persona || generateAuthorPersonaLocal();
-      console.log(`[编辑引擎] 作者人格生成(本地):`, JSON.stringify(authorPersona));
+      authorPersona = persona || null;
+      if (!authorPersona) console.log('[编辑引擎] 未绑定写作人格，跳过作者人格注入（A4：不随机决定本书作者）');
       stageResults.push({ stage: stage.id, name: stage.name, persona: authorPersona, success: true });
       if (onStatus) {
         onStatus(stage.id, stage.name, `第${i + 1}阶段完成：${stage.name}（本地生成）`, false);
@@ -288,17 +253,19 @@ async function runEditorialPipeline(text, options = {}) {
 
     try {
       const builder = PROMPT_BUILDERS[stage.id];
-      const safeText = truncateForStage(currentText);
+      const safeText = currentText;
       const { system, user } = builder(safeText, null, originalLength, authorPersona);
+      // A4：阶段系统提示统一追加作品冻结快照的风格上下文（修订边界）。
+      const stageSystem = system + styleContext;
 
       let result = await streamGenerate(
-        system,
-        user,
+        stageSystem,
+        stage.id === 'deAI' ? buildRewriteReviewPrompt(text, currentText) : user,
         onChunk ? (chunk) => { onChunk(chunk, stage.id); } : null,
         null,
         apiConfig,
         3,           // 3 次重试
-        0.85 + Math.random() * 0.15,
+        stage.id === 'structural' ? 0.65 : 0.55,
         undefined,
         300000
       );
@@ -313,16 +280,20 @@ async function runEditorialPipeline(text, options = {}) {
         }
         await new Promise(r => setTimeout(r, 2000));
 
-        const simplifiedUser = `请对以下文本进行${stage.name}处理。保留剧情/伏笔/人物不变，只改表达方式。\n\n【核心】\n- 句子忽长忽短，完全随机\n- 加入废信息和角色走神\n- 对白人格化\n- 禁止AI连接词\n- 禁止段尾升华\n- 叙述口语化\n${personaConstraint(authorPersona)}\n\n直接输出完整文本。\n\n${truncateForStage(currentText, 8000)}`;
+        // A4：精简重试不再注入"加废信息/角色走神"之类的噪声指令，
+        // 句式与口语度服从原文与作者声线（规划书 A4 任务 4）。
+        const simplifiedUser = stage.id === 'deAI'
+          ? buildRewriteReviewPrompt(text, currentText)
+          : `请对以下文本进行${stage.name}处理。原文是唯一的事实基准，保留剧情、伏笔、人物、视角和作者声线，只改明确有问题的表达。最终篇幅保持原稿的80%-120%，不扩写或缩写。直接输出完整文本。\n\n${currentText}`;
 
         result = await streamGenerate(
-          `你是网文编辑，擅长${stage.name}。`,
+          stageSystem,
           simplifiedUser,
           onChunk ? (chunk) => { onChunk(chunk, stage.id); } : null,
           null,
           apiConfig,
           3,
-          0.9 + Math.random() * 0.1,
+          0.55,
           undefined,
           300000
         );
@@ -330,15 +301,20 @@ async function runEditorialPipeline(text, options = {}) {
       }
 
       // 检查输出并更新文本
-      if (stageOutput.length > currentText.length * 0.15) {
+      // Check against the original, so successive stages cannot compound
+      // shrinkage. Also keep every accepted draft inside the next stage's
+      // complete-input window rather than silently cutting off its ending.
+      const accepted = hasAcceptableRewriteLength(stageOutput, text) && stageOutput.length <= MAX_INPUT_CHARS;
+      if (accepted) {
         currentText = stageOutput;
       } else {
-        console.warn(`[编辑引擎] 第${i + 1}阶段输出过短(${stageOutput.length}字)，使用上一阶段结果`);
+        console.warn(`[编辑引擎] 第${i + 1}阶段篇幅异常(${stageOutput.length}字)，保留上一阶段结果`);
       }
       stageResults.push({
         stage: stage.id, name: stage.name,
         output: currentText.length,
-        success: stageOutput.length > currentText.length * 0.15,
+        success: accepted,
+        ...(!accepted ? { reason: '候选稿篇幅超出保真范围，已保留上一阶段文本' } : {}),
       });
 
       if (onStatus) {
@@ -372,4 +348,5 @@ module.exports = {
   PROMPT_BUILDERS,
   truncateForStage,
   MAX_INPUT_CHARS,
+  personaConstraint,
 };

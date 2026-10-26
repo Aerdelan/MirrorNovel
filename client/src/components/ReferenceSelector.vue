@@ -9,6 +9,10 @@
    <button class="btn btn-outline btn-sm" :disabled="disabled || busy" @click.prevent="makePersona(reference._id)">{{ $t('reference.persona') }}</button>
    <button class="btn btn-outline btn-sm" :disabled="disabled || busy" @click.prevent="analyze({ referenceId: reference._id })">{{ $t('reference.analyze') }}</button>
   </label>
+  <label v-if="showExamplesOption && referenceIds.length" class="reference-option">
+   <input type="checkbox" :checked="useExamples" :disabled="disabled || busy" @change="$emit('update:useExamples', $event.target.checked)" /> {{ $t('reference.useExamples') }}
+  </label>
+  <p v-if="showExamplesOption && referenceIds.length">{{ $t('reference.examplesHint') }}</p>
   <p>{{ $t('reference.structureHint') }}</p>
   <input type="file" accept=".txt,.md,.epub,.zip" :disabled="disabled || busy" @change="analyzeFile" />
   <textarea v-if="analysis" v-model="analysis" class="textarea" rows="5"></textarea>
@@ -22,8 +26,8 @@ import api from '../api'
 import { readReferenceNovelFile } from '../utils/personaReference'
 import { usePersonaStore } from '../stores/persona'
 import { useI18n } from '../composables/useI18n'
-const props = defineProps({ referenceIds: { type: Array, default: () => [] }, structurePattern: { type: String, default: '' }, disabled: Boolean })
-const emit = defineEmits(['update:referenceIds', 'update:structurePattern', 'persona-created'])
+const props = defineProps({ referenceIds: { type: Array, default: () => [] }, structurePattern: { type: String, default: '' }, useExamples: Boolean, showExamplesOption: Boolean, disabled: Boolean })
+const emit = defineEmits(['update:referenceIds', 'update:structurePattern', 'update:useExamples', 'persona-created'])
 const { $t } = useI18n()
 const personaStore = usePersonaStore()
 const references = ref([]), busy = ref(false), message = ref(''), analysis = ref('')

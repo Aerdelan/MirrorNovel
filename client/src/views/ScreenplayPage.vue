@@ -293,6 +293,8 @@
       <div v-if="episode.scenes?.length" class="scenes">
        <article v-for="scene in episode.scenes" :key="scene.sceneNumber" class="scene">
         <div class="scene-heading">{{ scene.sceneNumber }}. {{ scene.interiorExterior }} · {{ scene.timeOfDay }} · {{ scene.location }}</div>
+        <button type="button" class="btn btn-sm btn-secondary" :disabled="sceneEditingBlocked" @click="openSceneEdit(episode, scene)">编辑本场</button>
+        <p v-if="scene.editedAt" class="field-hint">此场已手工修改；原生成质量统计和配图不会自动更新。</p>
         <div class="scene-characters">{{ scene.characters?.join('、') }}</div>
         <div v-if="scene.objective || scene.obstacle || scene.result" class="scene-facts">
          <div v-if="scene.objective"><label>目标</label><span>{{ scene.objective }}</span></div>
@@ -321,6 +323,7 @@
      </div>
     </section>
    </template>
+   <ScreenplaySceneEditor v-if="editingScene" :project-id="activeProject._id" :episode-number="editingScene.episodeNumber" :scene="editingScene.scene" :busy="sceneEditingBlocked" @saved="applySceneEdit" @close="editingScene = null" />
    <p v-if="error" class="error-text">{{ error }}</p>
    <p v-if="notice" class="notice-text">{{ notice }}</p>
   </div>
@@ -331,6 +334,7 @@
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from 'vue'
 import api from '../api'
 import ReferenceSelector from '../components/ReferenceSelector.vue'
+import ScreenplaySceneEditor from '../components/ScreenplaySceneEditor.vue'
 import { buildModelOverrideHeader, HEADER_NAME } from '../utils/modelOverride'
 import { saveBlob } from '../utils/download'
 import { usePersonaStore } from '../stores/persona'
@@ -344,6 +348,17 @@ function useReferencePersona(persona) { if (!personas.value.some(value => value.
 const imageModels = ref([{ id: 'image_1', alias: '生图模型一', configured: false }, { id: 'image_2', alias: '生图模型二', configured: false }])
 const novels = ref([]), projects = ref([]), activeProject = ref(null), creating = ref(false), developing = ref(false), developingStartedAt = ref(0), developingElapsedSeconds = ref(0), developProgress = ref(''), generatingEpisode = ref(0), generatingStartedAt = ref(0), generatingElapsedSeconds = ref(0), autoGenerating = ref(false), autoGenerateProgress = ref(''), exporting = ref(false), exportMenuOpen = ref(false), bibleCollapsed = ref(false), episodesCollapsed = ref(false), collapsedEpisodes = ref(new Set()), error = ref('')
 const batchTask = ref(null), batchCancelling = ref(false), batchMode = ref('generate'), notice = ref(''), retryingAsset = ref(-1)
+const editingScene = ref(null)
+const sceneEditingBlocked = computed(() => developing.value || autoGenerating.value || Boolean(generatingEpisode.value) || ['queued', 'running'].includes(batchTask.value?.status))
+function openSceneEdit(episode, scene) {
+ if (!sceneEditingBlocked.value) editingScene.value = { episodeNumber: episode.episodeNumber, scene }
+}
+function applySceneEdit(scene) {
+ const episode = activeProject.value?.episodes?.find(item => item.episodeNumber === editingScene.value?.episodeNumber)
+ if (!episode) return
+ episode.scenes = episode.scenes.map(item => item.sceneNumber === scene.sceneNumber ? scene : item)
+ notice.value = '场景修改已保存。后续导出和续集生成将使用已保存的正文。'
+}
 const expandingConcept = ref(false), conceptExpansion = ref(null)
 const personaModalOpen = ref(false), personaBusy = ref(false), personaStatus = ref('')
 const personaForm = ref({ _id: '', name: '', description: '', voice: '', tone: '', rules: '', vocab: '', overrideDeslop: false })
@@ -434,6 +449,7 @@ function applyConceptExpansion() {
 async function createProject() { resetError(); if (!form.value.title) { error.value = '请填写剧本名称'; return } if (form.value.sourceType === 'adaptation' && !form.value.sourceNovelId) { error.value = '请选择要改编的小说'; return } creating.value = true; try { activeProject.value = (await api.post('/screenplay/projects', form.value)).data; await loadProjects() } catch (e) { error.value = e.response?.data?.message || '创建剧本项目失败' } finally { creating.value = false } }
 async function developProject() {
  if (!activeProject.value || developing.value) return
+ if (activeProject.value.episodes?.some(episode => episode.scenes?.some(scene => scene.editedAt)) && !window.confirm('本项目含手工修改。重新规划剧本可能替换分集与正文，确认继续？')) return
  resetError()
  if (!await ensureBillingReady()) return
  developing.value = true
@@ -500,6 +516,7 @@ async function developProject() {
 }
 async function generateEpisode(number) {
  if (!activeProject.value || generatingEpisode.value) return
+ if (activeProject.value.episodes.find(item => item.episodeNumber === number)?.scenes?.some(scene => scene.editedAt) && !window.confirm('本集含手工修改。重生成将替换本集已有正文，确认继续？')) return
  resetError()
  if (!await ensureBillingReady()) return
  generatingEpisode.value = number
@@ -540,7 +557,9 @@ async function generateAllEpisodes(mode = 'generate') {
  const queue = (activeProject.value.episodes || []).filter(mode === 'quality_repair' ? needsRepair : needsGeneration)
  if (!queue.length) { notice.value = '所有分集都已生成且通过质量检查'; return }
  resetError()
- if (!await ensureBillingReady({ requireConfirm: true, costHint: `本次将排队生成 ${queue.length} 集。` })) return
+ const editedEpisodes = queue.filter(episode => episode.scenes?.some(scene => scene.editedAt)).map(episode => episode.episodeNumber)
+ const editWarning = editedEpisodes.length ? `\n第 ${editedEpisodes.join('、')} 集含手工修改，生成会替换这些集的已有正文。` : ''
+ if (!await ensureBillingReady({ requireConfirm: true, costHint: `本次将排队生成 ${queue.length} 集。${editWarning}` })) return
  autoGenerating.value = true
  batchMode.value = mode
  try {
@@ -559,6 +578,7 @@ async function resumeBatchGeneration() {
  const episodeNumbers = batchTask.value.metadata?.episodeNumbers || []
  const queue = episodeNumbers.map((number) => activeProject.value.episodes.find((episode) => episode.episodeNumber === number)).filter(Boolean)
  if (!queue.length) return
+ if (queue.some(episode => episode.scenes?.some(scene => scene.editedAt)) && !window.confirm('待生成的分集中含手工修改。继续批量生成将替换相应集的已有正文，确认继续？')) return
  autoGenerating.value = true
  try {
   if (batchTask.value.status === 'paused') {

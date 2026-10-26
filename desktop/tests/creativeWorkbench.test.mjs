@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 const require = createRequire(new URL('../../server/package.json', import.meta.url))
 const { chromium } = require('playwright')
+const { buildSkuCatalog } = require('./config/novelTypeSku.js')
 const dist = fileURLToPath(new URL('../dist/', import.meta.url))
 
 test('desktop connects reference upload, style selection, structure confirmation and screenplay generation with local model headers', { timeout: 90000 }, async () => {
@@ -40,6 +41,11 @@ test('desktop connects reference upload, style selection, structure confirmation
  const reference = { _id: '0123456789abcdef01234567', title: '测试参考', status: 'ready', aiProcessed: true, styleProfile: '短句、克制、具体动作推进', mainCategory: '悬疑' }
  const persona = { _id: '1123456789abcdef01234567', name: '参考风格', voice: '近距离视角', tone: '短句', scope: 'all' }
  const project = { _id: '2123456789abcdef01234567', title: '桌面剧本测试', sourceType: 'original', productionTarget: 'video', concept: '旧城来信', status: 'draft', episodeCount: 1, episodeDurationSeconds: 30, screenplayBible: {}, episodes: [], imageGeneration: { enabled: false } }
+ const samples = [
+  { _id: 'sample-draft', title: '待认可草稿', status: 'draft', scope: 'novel', allowedForModelInput: false },
+  { _id: 'sample-approved', title: '可用小说样稿', status: 'approved', scope: 'novel', allowedForModelInput: true },
+  { _id: 'sample-script', title: '剧本专用样稿', status: 'approved', scope: 'screenplay', allowedForModelInput: true },
+ ].map(sample => ({ ...sample, sceneType: 'other', content: '样稿正文。'.repeat(20), updatedAt: '2026-10-26T00:00:00Z' }))
  try {
   await page.route('**/*', async route => {
    const request = route.request(), url = new URL(request.url())
@@ -48,14 +54,21 @@ test('desktop connects reference upload, style selection, structure confirmation
    const body = request.postData() ? JSON.parse(request.postData()) : null
    if (request.method() !== 'GET') writes.push({ path: url.pathname, body, headers: request.headers() })
    let data = {}
-   if (url.pathname === '/api/reference/list' || url.pathname === '/api/reference/list-by-type') data = [reference]
+   if (url.pathname === '/api/writing-samples') {
+    const items = samples.filter(sample => (!url.searchParams.get('status') || sample.status === url.searchParams.get('status')) && (!url.searchParams.get('scope') || sample.scope === url.searchParams.get('scope')))
+    data = { items, total: items.length, page: 1, statusCounts: { draft: 1, approved: 2 } }
+   }
+   else if (url.pathname === '/api/reference/list' || url.pathname === '/api/reference/list-by-type') data = [reference]
    else if (url.pathname === '/api/reference/upload') data = { novel: reference, message: '已上传' }
    else if (url.pathname === '/api/reference/analyze-structure') data = { analysis: '【整体结构】困境、选择、代价' }
    else if (url.pathname.startsWith('/api/persona/from-reference/')) data = persona
    else if (url.pathname === '/api/persona') data = [persona]
    else if (url.pathname === '/api/novel/bookshelf') data = []
    else if (url.pathname === '/api/novel/types') data = []
-   else if (url.pathname === '/api/novel/types/sku') data = { channels: [], categories: [] }
+   else if (url.pathname === '/api/novel/types/sku') data = buildSkuCatalog()
+   else if (url.pathname === '/api/novel/generate') {
+    return route.fulfill({ contentType: 'text/event-stream', body: 'data: {"type":"novel_created","novelId":"style-preview"}\n\ndata: {"type":"content","content":"试写正文"}\n\ndata: {"type":"completed","wordCount":4}\n\n' })
+   }
    else if (url.pathname === '/api/screenplay/projects' && request.method() === 'GET') data = [project]
    else if (url.pathname === '/api/screenplay/projects') { Object.assign(project, body); data = project }
    else if (url.pathname.endsWith('/develop-stream')) {
@@ -88,6 +101,18 @@ test('desktop connects reference upload, style selection, structure confirmation
   await selector.getByText('已应用结构参考').waitFor()
   await selector.getByRole('button', { name: '提炼写作风格', exact: true }).click()
   await selector.getByText('写作风格已创建并选中').waitFor()
+  const examples = selector.getByRole('checkbox', { name: '带入少量参考原文，辅助稳定文风（可选）' })
+  assert.equal(await examples.isChecked(), false, 'reference excerpts are off by default')
+  await examples.check()
+  await page.locator('.sku-layer .sku-chip').first().click()
+  await page.locator('.mode-radio:has(input[value="chapter"])').first().click()
+  await page.locator('.generate-page > button.btn-lg').first().click()
+  await page.waitForFunction(() => document.querySelector('.gen-modal .btn-editorial'))
+  const generated = writes.find(write => write.path === '/api/novel/generate')
+  assert.equal(generated.body.referenceExamplesEnabled, true)
+  assert.deepEqual(generated.body.referenceIds, [reference._id])
+  assert.ok(generated.headers['x-mn-model-config'])
+  await page.locator('.gen-modal-close').click()
   await page.evaluate(() => { location.hash = '#/screenplay' })
   await page.getByRole('button', { name: '原创短剧', exact: true }).click()
   await page.locator('#screenplay-title').fill('桌面剧本测试')
@@ -98,6 +123,18 @@ test('desktop connects reference upload, style selection, structure confirmation
   await screenshot('screenplay-workbench')
   const develop = writes.find(write => write.path.endsWith('/develop-stream'))
   assert.ok(develop.headers['x-mn-model-config'], 'native fetch SSE must carry the local model route')
+  await page.evaluate(() => { location.hash = '#/writing-samples' })
+  await page.locator('.revision-sample').first().waitFor()
+  assert.equal(await page.locator('.samples-tabs [aria-selected="true"]').textContent().then(text => text.trim()), '全部 (3)')
+  assert.equal(await page.locator('.sample-card').count(), 3)
+  assert.equal(await page.locator('.revision-sample').count(), 1, 'only consented novel samples enter the picker')
+  await page.getByRole('tab', { name: '草稿 (1)', exact: true }).click()
+  await page.getByText('待认可草稿', { exact: true }).waitFor()
+  const candidatesLoaded = page.waitForResponse(response => response.url().includes('/api/writing-samples') && response.url().includes('scope=novel'))
+  await page.locator('.revision-head').getByRole('button').click()
+  await candidatesLoaded
+  assert.equal(await page.locator('.samples-tabs [aria-selected="true"]').textContent().then(text => text.trim()), '草稿 (1)')
+  assert.equal(await page.locator('.sample-card').count(), 1, 'refreshing revision candidates must not replace the main sample list')
   assert.equal(writes.some(write => write.path.includes('/billing')), false)
   assert.deepEqual(errors, [])
  } finally { await browser.close(); await new Promise(resolve => server.close(resolve)) }
