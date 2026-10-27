@@ -203,8 +203,8 @@ const aiServiceMock = {
   // 联网取材浓缩用的非流式封装：隔离测试下直接回空，不触网。
   completeOnce: async () => '',
   getFriendlyErrorMessage: (error) => error?.message || 'mock error',
-  streamGenerate: async (systemPrompt, userPrompt, onChunk, signal, apiConfig, retries, temperature, maxTokens, timeoutMs) => {
-    const call = { systemPrompt, userPrompt, onChunk, signal, apiConfig, retries, temperature, maxTokens, timeoutMs };
+  streamGenerate: async (systemPrompt, userPrompt, onChunk, signal, apiConfig, retries, temperature, maxTokens, timeoutMs, onReasoning, options) => {
+    const call = { systemPrompt, userPrompt, onChunk, signal, apiConfig, retries, temperature, maxTokens, timeoutMs, onReasoning, options };
     call.kind = onChunk ? 'chapter' : (systemPrompt.includes('章节规划师') ? 'plan' : (systemPrompt.includes('大纲策划师') ? 'outline' : (systemPrompt.includes('连载审读员') ? 'hookAudit' : 'other')));
     state.aiCalls.push(call);
     return (state.aiHandler || defaultAiHandler)(call);
@@ -857,6 +857,97 @@ test('续写单章：每次只追加连续一章，并保持作品可再次续�
   assert.equal(novel.status, 'paused');
   assert.equal(novel.currentChapterIndex, 3);
   assert.equal(new Set(novel.chapters.map((chapter) => chapter.chapterNumber)).size, 3);
+});
+
+test('书架继续生成：用户报告的日报结尾被定点修订，专家模式关闭时仍生效', async () => {
+  const ending = require('./fixtures/repeatedWorkplaceEnding');
+  const first = makeChapter('刘海柱在仓库收好货损证据', '昨天的仓库') + '\n' + ending;
+  const prefix = makeChapter('刘海柱和司机核对卸货车号', '今天的新调查') + '车号最后一位是乙。\n\n';
+  const replacement = makeChapter('刘海柱把卸货签名单交给韩晓梅并指出责任人', '新的卸货签名单');
+  const novel = await seedNovel({ _id: 'workplace-ending-repair', status: 'paused', expertMode: false,
+    title: '现实·行业职场：刘海柱的传奇', protagonistName: '刘海柱',
+    chapters: [{ chapterNumber: 1, content: first, wordCount: first.length }],
+    chapterPlanData: { chapters: [{ chapterNumber: 2, wordTarget: 600, coreEvent: '核对卸货车号' }] },
+  });
+  state.chapterQueue = [prefix + ending];
+  state.aiHandler = call => call.options?.taskType === 'targeted_repair'
+    ? emitText(replacement, null, call.signal) : defaultAiHandler(call);
+  const { events } = await postSse(`/continue/${novel._id}`, { mode: 'chapter' });
+  assert.equal(events.some(event => event.type === 'error'), false);
+  assert.equal(novel.chapters.length, 2);
+  assert.equal(novel.chapters[0].content, first);
+  assert.equal(novel.chapters[1].content, (prefix + replacement).trim());
+  assert.equal(novel.chapters[1].qualityReport.endingRepetition.sourceChapter, 1);
+  assert.ok(events.some(event => event.type === 'status' && event.message.includes('结尾与第1章重复')));
+  assert.ok(events.some(event => event.type === 'expert_revision' && event.content === prefix + replacement));
+  assert.equal(state.aiCalls.filter(call => call.options?.taskType === 'targeted_repair').length, 1);
+  assert.equal(novel.chapters[1].qualityReport.tokens.calls, 2, 'repair usage must be included in chapter cost');
+  assert.ok(state.aiCalls.find(call => call.kind === 'chapter').userPrompt.includes('章末防重复'));
+});
+
+test('书架整本续写：修订仍重复时暂停，保留草稿、不写入坏章、不生成后续章节', async () => {
+  const ending = require('./fixtures/repeatedWorkplaceEnding');
+  const first = makeChapter('刘海柱检查货损', '前一章现场') + '\n' + ending;
+  const draft = makeChapter('刘海柱核对责任人', '下一章现场') + '\n\n' + ending;
+  const novel = await seedNovel({ _id: 'workplace-ending-blocked', status: 'paused', expertMode: false,
+    chapters: [{ chapterNumber: 1, content: first, wordCount: first.length }],
+    chapterPlanData: { chapters: [2, 3].map(chapterNumber => ({ chapterNumber, wordTarget: 600, coreEvent: '核对责任人' })) },
+  });
+  state.chapterQueue = [draft];
+  state.aiHandler = call => call.options?.taskType === 'targeted_repair'
+    ? emitText(ending, null, call.signal) : defaultAiHandler(call);
+  const { events } = await postSse(`/continue/${novel._id}`, { mode: 'book' });
+  assert.match(events.find(event => event.type === 'error').message, /与第1章大段重复/);
+  assert.equal(novel.status, 'paused');
+  assert.deepEqual(novel.chapters.map(chapter => chapter.content), [first]);
+  assert.equal([...state.jobs.values()][0].draft, draft);
+  assert.equal(state.aiCalls.filter(call => call.kind === 'chapter').length, 1);
+  assert.equal(state.aiCalls.filter(call => call.options?.taskType === 'targeted_repair').length, 1);
+});
+
+test('新建整本生成：提交前同样修订重复结尾', async () => {
+  const ending = require('./fixtures/repeatedWorkplaceEnding');
+  const prefix = makeChapter('刘海柱核对货损的赔付金额', '赔付金额新证据') + '数额签名丙。\n\n';
+  const replacement = makeChapter('刘海柱当面交出照片要求重核金额', '金额核验落点');
+  state.planContent = makePlan([1, 2].map(chapterNumber => ({ chapterNumber, wordTarget: 600, coreEvent: '核对货损金额' })));
+  state.chapterQueue = [makeChapter('刘海柱记录仓库现场', '首章现场') + '\n' + ending, prefix + ending];
+  state.aiHandler = call => call.options?.taskType === 'targeted_repair'
+    ? emitText(replacement, null, call.signal) : defaultAiHandler(call);
+  const { events } = await postSse('/generate', { mode: 'book', novelTypeId: 'xianxia',
+    protagonistName: '刘海柱', targetWordCount: 1300, outline: '核对货损金额与责任人', expertMode: false });
+  assert.equal(events.some(event => event.type === 'error'), false);
+  const novel = [...state.novels.values()][0];
+  assert.equal(novel.chapters.length, 2);
+  assert.equal(novel.chapters[1].content, (prefix + replacement).trim());
+  assert.equal(state.aiCalls.filter(call => call.options?.taskType === 'targeted_repair').length, 1);
+});
+
+test('导入续写及指定章节续写：共同拦截重复结尾并保存修订结果', async t => {
+  for (const operation of ['import', 'new-chapter', 'append']) {
+    await t.test(operation, async () => {
+      resetState();
+      const ending = require('./fixtures/repeatedWorkplaceEnding');
+      const first = makeChapter('刘海柱记录仓库现场', '仓库旧现场') + '\n' + ending;
+      const prefix = makeChapter('刘海柱核对新的车号', '新车号调查') + '司机编号丁。\n\n';
+      const replacement = makeChapter('刘海柱把车号记入值班表交回', '值班表上的车号');
+      const published = makeChapter('刘海柱来到调度室', '已发表第二章');
+      const novel = await seedNovel({ _id: `ending-${operation}`, status: 'paused',
+        chapters: [{ chapterNumber: 1, content: first, wordCount: first.length },
+          ...(operation === 'append' ? [{ chapterNumber: 2, content: published, wordCount: published.length }] : [])] });
+      state.chapterQueue = [prefix + ending];
+      state.aiHandler = call => call.options?.taskType === 'targeted_repair'
+        ? emitText(replacement, null, call.signal) : defaultAiHandler(call);
+      const { events } = operation === 'import'
+        ? await postSse('/continue-import', { novelId: novel._id, importedText: first, mode: 'chapter', targetWordCount: 600 })
+        : await postSse(`/${novel._id}/continue-chapter/2`, { wordCount: 600 });
+      assert.equal(events.some(event => event.type === 'error'), false);
+      assert.equal(novel.chapters.length, 2);
+      assert.equal(novel.chapters[0].content, first);
+      assert.equal(novel.chapters[1].content, (operation === 'append' ? published : '') + (prefix + replacement).trim());
+      assert.equal(state.aiCalls.filter(call => call.options?.taskType === 'targeted_repair').length, 1);
+      assert.equal([...state.jobs.values()][0].draft, '');
+    });
+  }
 });
 
 test('续写整本：从最高章节号继续，按剩余计划完成全书', async () => {

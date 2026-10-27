@@ -45,6 +45,41 @@ const MIME = {
 let mainWindow = null
 let tray = null
 let localServer = null
+const quitForUpdate = process.argv.includes('--quit-for-update')
+// A window can be closed while a tray-only process still holds installed files.
+// Let the installer request a real quit without opening another app instance.
+const primaryInstance = !app.isPackaged || app.requestSingleInstanceLock({
+  executable: process.execPath,
+  quitForUpdate,
+})
+const shouldStart = primaryInstance && !quitForUpdate
+if (!shouldStart) app.quit()
+if (shouldStart) {
+  app.on('second-instance', (_event, _argv, _cwd, data) => {
+    if (data?.quitForUpdate && data.executable === process.execPath) {
+      app.quit()
+      return
+    }
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.show()
+      mainWindow.focus()
+    } else if (app.isReady()) {
+      createWindow()
+    }
+  })
+}
+app.on('before-quit', saveState)
+// beforeunload may still cancel a quit; keep the server and tray alive until
+// Electron confirms that all windows have actually closed.
+app.on('will-quit', () => {
+  if (tray) { tray.destroy(); tray = null }
+  if (localServer) {
+    localServer.closeAllConnections?.()
+    localServer.close()
+    localServer = null
+  }
+})
 
 // ===== 窗口尺寸记忆（桌面端基本体验） =====
 function stateFile() {
@@ -122,6 +157,8 @@ function listenOn(server, port) {
 }
 
 function startLocalServer() {
+  // Reopening a tray-only instance must reuse the same origin and service.
+  if (localServer?.listening) return Promise.resolve(localServer.address().port)
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
       if (req.url.startsWith('/api')) return proxyApi(req, res)
@@ -159,6 +196,7 @@ function startLocalServer() {
         // eslint-disable-next-line no-await-in-loop
         const result = await listenOn(server, port)
         if (result.ok) {
+          localServer = server
           console.log(`[desktop] 本地服务已就绪：http://127.0.0.1:${port}`)
           resolve(port)
           return
@@ -166,7 +204,7 @@ function startLocalServer() {
       }
       // 固定端口全被占用（少见）：退回随机端口，功能不受影响，但存储源会变化
       const fallback = await listenOn(server, 0)
-      if (fallback.ok) resolve(server.address().port)
+      if (fallback.ok) { localServer = server; resolve(server.address().port) }
       else reject(fallback.error)
     })()
   })
@@ -203,7 +241,6 @@ async function createWindow() {
     mainWindow.webContents.openDevTools({ mode: 'detach' })
   } else {
     const port = await startLocalServer()
-    localServer = true
     await mainWindow.loadURL(`http://127.0.0.1:${port}/index.html`)
   }
 
@@ -322,7 +359,7 @@ function createTray() {
   tray.on('click', () => { if (mainWindow) mainWindow.show() })
 }
 
-app.whenReady().then(async () => {
+if (shouldStart) app.whenReady().then(async () => {
   app.setAppUserModelId('top.blockstory.mirrornovel')
   registerIpc()
   buildMenu()

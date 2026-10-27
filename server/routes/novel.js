@@ -168,6 +168,7 @@ const { localExpertGate, shouldAuditChapterHooks } = require('../services/genera
 const { saveNovelDoc } = require('../services/novelPersist');
 const { describeGenerationFailure, describeChapterFailure, redactError } = require('../services/generationError');
 const { processChapter } = require('../services/chapterToolchain');
+const { assertDistinctEnding, repairRepeatedEnding, buildEndingHistory } = require('../services/chapterRepetition');
 const { runEditorialPipeline, STAGES } = require('../services/editorialEngine');
 const {
   parseChapterPlan,
@@ -1093,6 +1094,30 @@ ${original}
   return { content: original, review: report };
 }
 
+async function checkGeneratedEnding({ req, res, novel, chapterNumber, content, systemPrompt, signal, chapterTokenStats, minRewriteStart = 0 }) {
+  return repairRepeatedEnding({
+    content, chapters: novel.chapters || [], chapterNumber, minRewriteStart, signal,
+    onStatus: message => { try { res.write(`data: ${JSON.stringify({ type: 'status', message })}\n\n`); } catch {} },
+    generate: async (prompt, wordTarget) => {
+      let result;
+      const thinking = createThinkingEmitter(res);
+      try {
+        result = await streamGenerate(systemPrompt, prompt, null, signal,
+          resolveApiConfig(req.userModelConfig, 'writing'), 0, 0.7,
+          getChapterOutputTokenLimit(wordTarget), 300000, thinking,
+          { taskType: 'targeted_repair', stitchOnTruncation: false });
+      } catch (error) {
+        if (error?.attempts || error?.usage) emitTokenUsage(res, novel, 'writing', error, chapterTokenStats);
+        throw error;
+      } finally {
+        thinking.stop();
+      }
+      emitTokenUsage(res, novel, 'writing', result, chapterTokenStats);
+      return result;
+    },
+  });
+}
+
 function finalizeGeneratedChapter({ novel, chapterNumber, rawContent, contract, protagonistName, status = 'generating' }) {
   let finalContent = String(rawContent || '').trim();
   let toolchainReport = {};
@@ -1118,6 +1143,9 @@ function finalizeGeneratedChapter({ novel, chapterNumber, rawContent, contract, 
   if ((novel.chapters || []).some((chapter) => Number(chapter.chapterNumber) === Number(chapterNumber))) {
     throw new Error(`第${chapterNumber}章已存在，已阻止重复写入`);
   }
+
+  // Always run, independently of expert mode or the whole-chapter quality score.
+  assertDistinctEnding(finalContent, novel.chapters || [], chapterNumber);
 
   const commitAudit = auditChapterForCommit(finalContent, contract);
   if (!commitAudit.passed) {
@@ -1966,7 +1994,7 @@ ${tmpl.dynamicPrompt}
       let genResult = null;
       if (!(buffer && ['reviewing', 'draft_complete'].includes(resumedPhase))) {
         try {
-          genResult = await streamGenerate(systemPrompt + styleSelection.block, appendResumeInstruction(prompt, buffer), (chunk) => {
+          genResult = await streamGenerate(systemPrompt + styleSelection.block, appendResumeInstruction(prompt + buildEndingHistory(novel.chapters, chNum), buffer), (chunk) => {
             buffer += chunk;
             checkpoint.schedule('writing');
             try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
@@ -2006,6 +2034,16 @@ ${tmpl.dynamicPrompt}
         }
       }
 
+      const endingCheck = await checkGeneratedEnding({
+        req, res, novel, chapterNumber: chNum, content: chapterContent,
+        systemPrompt: systemPrompt + styleSelection.block, signal: abortController.signal, chapterTokenStats,
+      });
+      chapterContent = endingCheck.content;
+      if (endingCheck.report) {
+        buffer = chapterContent;
+        await checkpoint.flush('draft_complete');
+        try { res.write(`data: ${JSON.stringify({ type: 'expert_revision', chapterNumber: chNum, content: chapterContent })}\n\n`); } catch {}
+      }
       const chapterResult = finalizeGeneratedChapter({
         novel,
         chapterNumber: chNum,
@@ -2013,6 +2051,7 @@ ${tmpl.dynamicPrompt}
         contract,
         protagonistName,
       });
+      if (endingCheck.report) novel.chapters[novel.chapters.length - 1].qualityReport.endingRepetition = endingCheck.report;
       if (styleSelection.record) {
         const savedChapter = novel.chapters[novel.chapters.length - 1];
         if (savedChapter) savedChapter.styleSamples = styleSelection.record;
@@ -2379,7 +2418,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       let contResult = null;
       if (!(buffer && ['reviewing', 'draft_complete'].includes(resumedPhase))) {
         try {
-          contResult = await streamGenerate(systemPrompt + styleSelection.block, appendResumeInstruction(prompt, buffer), (chunk) => {
+          contResult = await streamGenerate(systemPrompt + styleSelection.block, appendResumeInstruction(prompt + buildEndingHistory(novel.chapters, chNum), buffer), (chunk) => {
             buffer += chunk;
             checkpoint.schedule('writing');
             try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
@@ -2418,6 +2457,16 @@ router.post('/continue/:novelId', auth, async (req, res) => {
         }
       }
 
+      const endingCheck = await checkGeneratedEnding({
+        req, res, novel, chapterNumber: chNum, content: chapterContent,
+        systemPrompt: systemPrompt + styleSelection.block, signal: abortController.signal, chapterTokenStats,
+      });
+      chapterContent = endingCheck.content;
+      if (endingCheck.report) {
+        buffer = chapterContent;
+        await checkpoint.flush('draft_complete');
+        try { res.write(`data: ${JSON.stringify({ type: 'expert_revision', chapterNumber: chNum, content: chapterContent })}\n\n`); } catch {}
+      }
       const chapterResult = finalizeGeneratedChapter({
         novel,
         chapterNumber: chNum,
@@ -2425,6 +2474,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
         contract,
         protagonistName,
       });
+      if (endingCheck.report) novel.chapters[novel.chapters.length - 1].qualityReport.endingRepetition = endingCheck.report;
       if (styleSelection.record) {
         const savedChapter = novel.chapters[novel.chapters.length - 1];
         if (savedChapter) savedChapter.styleSamples = styleSelection.record;
@@ -2798,7 +2848,8 @@ router.post('/continue-import', auth, async (req, res) => {
     // 仅当作品显式绑定时生效。
     const systemPrompt = `你是一位专业的小说续写专家，必须延续原文已经建立的叙事声线、人物差异和因果关系。${buildGenreContract(typeName, importType || null)}${buildPersonaPrompt(importPersona)}\n\n${styleContinuityAnchor}`;
     const mode = req.body.mode || 'book';
-    const userPrompt = buildImportContinuePrompt(importedText, continuationRequest, typeName, req.body.targetWordCount || 50000, mode, importPersona);
+    const userPrompt = buildImportContinuePrompt(importedText, continuationRequest, typeName, req.body.targetWordCount || 50000, mode, importPersona)
+      + buildEndingHistory(novel.chapters, highestChapter + 1);
 
     novel.lastPrompt = userPrompt;
     novel.generationContext = systemPrompt;
@@ -2833,7 +2884,17 @@ router.post('/continue-import', auth, async (req, res) => {
       if (finalSavePromise) return finalSavePromise;
       finalSavePromise = (async () => {
         await checkpoint.flush('commit_ready');
+        const endingCheck = await checkGeneratedEnding({
+          req, res, novel, chapterNumber, content: chapterBuffer, systemPrompt,
+          signal: abortController.signal, chapterTokenStats,
+        });
+        if (endingCheck.report) {
+          chapterBuffer = endingCheck.content;
+          await checkpoint.flush('commit_ready');
+          try { res.write(`data: ${JSON.stringify({ type: 'expert_revision', chapterNumber, content: chapterBuffer })}\n\n`); } catch {}
+        }
         const processed = processChapter(String(chapterBuffer || '').trim()).text;
+        assertDistinctEnding(processed, novel.chapters || [], chapterNumber);
         if (processed.length < 20) throw new Error('本章生成内容过短，未保存为正式章节');
         if ((novel.chapters || []).some((item) => Number(item.chapterNumber) === chapterNumber)) {
           throw new Error(`第${chapterNumber}章已存在，已阻止重复写入`);
@@ -2927,7 +2988,7 @@ router.post('/continue-import', auth, async (req, res) => {
       try {
         const event = resumable
           ? { type: 'paused', message: '生成已中断，断点草稿已保存，可继续恢复' }
-          : { type: 'error', message: streamError.isApiError ? streamError.message : '续写失败，断点草稿已保存' };
+          : { type: 'error', message: describeChapterFailure(streamError, '续写失败，断点草稿已保存') };
         res.write(`data: ${JSON.stringify(event)}\n\n`);
         res.end();
       } catch {}
@@ -3448,6 +3509,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
       userPrompt = `以下是上一章的结尾部分：\n\n${lastContent}\n\n请接着上面的内容创作第${chNum}章。\n${notes ? '写作方向/备注：' + notes : '保持原有风格继续推进剧情。'}\n目标字数：约${wordCount || 2000}字。\n请直接输出章节内容。`;
     }
 
+    userPrompt += buildEndingHistory(novel.chapters, chNum);
     systemPrompt += buildReferencePrompt(novel, { includeExamples: true });
     // A2：单章续写同样是独立任务，按章号从本书版本快照做确定性轮换。
     // 快照在采用/建书时冻结；任务期间不回查版本集合。
@@ -3477,8 +3539,19 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
       if (commitPromise) return commitPromise;
       commitPromise = (async () => {
         await checkpoint.flush('commit_ready');
+        const endingCheck = await checkGeneratedEnding({
+          req, res, novel, chapterNumber: chNum, content: originalContent + appendBuffer,
+          systemPrompt, signal: abortController.signal, chapterTokenStats, minRewriteStart: originalContent.length,
+        });
+        if (endingCheck.report) {
+          appendBuffer = endingCheck.content.slice(originalContent.length);
+          await checkpoint.flush('commit_ready');
+          try { res.write(`data: ${JSON.stringify({ type: 'expert_revision', chapterNumber: chNum, content: appendBuffer })}\n\n`); } catch {}
+        }
         const addition = processChapter(String(appendBuffer || '').trim()).text;
         if (addition.length < 10) throw new Error('续写内容过短，未写入章节');
+        const finalContent = processChapter(`${originalContent}${addition}`).text;
+        assertDistinctEnding(finalContent, novel.chapters || [], chNum, processChapter(originalContent).text.length);
         let target = novel.chapters.find(c => Number(c.chapterNumber) === chNum);
         if (!target) {
           // mongoose 的 DocumentArray.push 会克隆传入的普通对象：push 之后
@@ -3488,13 +3561,16 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
           target = novel.chapters[novel.chapters.length - 1];
         }
         queueChapterVersion(novel, target, 'continue-chapter');
-        target.content = processChapter(`${originalContent}${addition}`).text;
+        target.content = finalContent;
         target.wordCount = target.content.length;
         if (/^第\s*\d+\s*章\s*(?:故事未尽)?\s*$/.test(String(target.title || ''))) {
           target.title = formatChapterTitle(chNum, deriveLocalChapterTitle({ notes, content: target.content }));
         }
         const tokens = summarizeChapterTokens(chapterTokenStats);
-        if (tokens) target.qualityReport = { ...(target.qualityReport || {}), tokens };
+        if (tokens || endingCheck.report) target.qualityReport = {
+          ...(target.qualityReport || {}), ...(tokens ? { tokens } : {}),
+          ...(endingCheck.report ? { endingRepetition: endingCheck.report } : {}),
+        };
         if (styleSelection.record) target.styleSamples = styleSelection.record;
         novel.currentWordCount = getCompletedWordCount(novel);
         novel.currentChapterIndex = Math.max(getHighestChapterNumber(novel), Number(novel.currentChapterIndex || 0));
@@ -3564,7 +3640,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
       try {
         const event = resumable
           ? { type: 'paused', message: '生成已中断，断点草稿已保存，可继续恢复' }
-          : { type: 'error', message: streamError.isApiError ? streamError.message : '续写出错，断点草稿已保存' };
+          : { type: 'error', message: describeChapterFailure(streamError, '续写出错，断点草稿已保存') };
         res.write(`data: ${JSON.stringify(event)}\n\n`);
         res.end();
       } catch {}

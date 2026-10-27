@@ -32,6 +32,15 @@ test('duplicate chapter writes are blocked and leave the committed chapter untou
   assert.equal(novel.chapters[0].content, committed, 'the committed chapter must stay byte-identical');
 });
 
+test('copied endings cannot bypass the commit guard even without expert review', () => {
+  const content = require('./fixtures/repeatedWorkplaceEnding');
+  const novel = { novelTypeId: 'test', chapters: [{ chapterNumber: 1, content }], markModified() {} };
+  assert.throws(() => finalizeGeneratedChapter({ novel, chapterNumber: 2, rawContent: '本章新的剧情。'.repeat(80) + content,
+    contract: { chapterNumber: 2 }, protagonistName: '刘海柱' }), { code: 'CHAPTER_ENDING_REPEATED' });
+  assert.equal(novel.chapters.length, 1);
+  assert.equal(novel.chapters[0].content, content);
+});
+
 test('persona, samples and preferences compose into one prompt with consistent priority statements (A5 checklist)', () => {
   const persona = { name: '冷峻声线', voice: '贴身视角的冷叙述', tone: '短句', rules: '动作先于情绪出现', vocab: '' };
   const prose = buildStyleContext(snapshot(), 'prose', { chapterNumber: 2 });

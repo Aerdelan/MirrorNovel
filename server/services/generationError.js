@@ -35,6 +35,9 @@ function describeGenerationFailure(error, phase, errorId) {
 }
 
 function describeChapterFailure(error, fallback) {
+  if (error?.code === 'CHAPTER_ENDING_REPEATED') {
+    return `检测到章末与第${Number(error.repetition?.chapterNumber) || '?'}章大段重复，自动修订未通过，已暂停生成。已完成章节保持不变，草稿已保留，可重新编辑或继续生成重试`;
+  }
   if (error?.code === 'CHAPTER_CONTRACT_BLOCKED') {
     return `章节校验未通过：${redactError((error.commitAudit?.blockers || []).join('；') || error.message)}。草稿已保留，可调整设置后继续`;
   }

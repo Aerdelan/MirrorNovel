@@ -1,6 +1,6 @@
 {
   "name": "mirrornovel-desktop",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "private": true,
   "description": "MirrorNovel 桌面端（Electron 外壳 + 复用 client 渲染层）",
   "author": "MirrorNovel",
@@ -50,12 +50,15 @@
       "signAndEditExecutable": false
     },
     "nsis": {
+      "include": "build/installer.nsh",
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "MirrorNovel"
+      "shortcutName": "MirrorNovel",
+      "runAfterFinish": false,
+      "deleteAppDataOnUninstall": false
     },
     "mac": {
       "target": [
