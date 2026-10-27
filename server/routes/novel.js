@@ -165,6 +165,8 @@ const {
 } = require('../services/novelContext');
 const { recordTokenUsage, usageSnapshot, callUsageStats } = require('../services/tokenUsage');
 const { localExpertGate, shouldAuditChapterHooks } = require('../services/generationGates');
+const { ensureDetailedLongFormPlan, planningWindow, adoptConfirmedChapterPlans } = require('../services/longFormPlanning');
+const { ensureSemanticMemory, invalidateSemanticMemory, buildSemanticContext, renderSemanticContext } = require('../services/semanticMemory');
 const { saveNovelDoc } = require('../services/novelPersist');
 const { describeGenerationFailure, describeChapterFailure, redactError } = require('../services/generationError');
 const { processChapter } = require('../services/chapterToolchain');
@@ -906,7 +908,7 @@ function appendChapterContextDocs(novel, content, chapterNumber, protagonistName
   }
 
   // Build a cheap local checkpoint every six chapters for older records.
-  if (Number(chapterNumber) % 6 === 0 || !novel.contextMemory?.checkpointChapter) {
+  if (novel.contextMemory?.version !== 2 && (Number(chapterNumber) % 6 === 0 || !novel.contextMemory?.checkpointChapter)) {
     try {
       novel.contextMemory = buildContextMemoryCheckpoint({
         chapters: novel.chapters,
@@ -930,14 +932,16 @@ function appendChapterContextDocs(novel, content, chapterNumber, protagonistName
 // generation context. Rebuild the compact documents from the saved text so a
 // later continuation never follows an obsolete summary or unresolved hook.
 function rebuildNovelContextDocs(novel) {
+  const semanticMemory = novel.contextMemory?.version === 2 ? novel.contextMemory : null;
   novel.chapterSummaryDoc = '';
   novel.foreshadowingDoc = '';
-  novel.contextMemory = { version: 1, checkpointChapter: 0, checkpointSummary: '', facts: [], openLoops: [] };
+  novel.contextMemory = semanticMemory || { version: 1, checkpointChapter: 0, checkpointSummary: '', facts: [], openLoops: [] };
   for (const chapter of novel.chapters || []) {
     appendChapterContextDocs(novel, chapter.content || '', chapter.chapterNumber, novel.protagonistName);
   }
   const lastChapter = getHighestChapterNumber(novel);
-  if (lastChapter > 0) {
+  if (semanticMemory) invalidateSemanticMemory(novel);
+  if (lastChapter > 0 && !semanticMemory) {
     novel.contextMemory = buildContextMemoryCheckpoint({
       chapters: novel.chapters,
       chapterSummaryDoc: novel.chapterSummaryDoc,
@@ -1263,6 +1267,107 @@ function prepareCreativeState(novel) {  initializeCreativeState(novel);
   novel.markModified('chapterPlanData');
   novel.markModified('recentEventSignatures');
   return planData;
+}
+
+async function refreshSemanticMemory({ req, res, novel, signal, throughChapter = Infinity, chapterTokenStats = null, accountChapter = throughChapter }) {
+  if (!novel.chapters?.length) return;
+  const heartbeat = setInterval(() => {
+    if (!res.writableEnded && !res.destroyed) { try { res.write(': memory-heartbeat\n\n'); } catch {} }
+  }, 10000);
+  heartbeat.unref?.();
+  try {
+    await ensureSemanticMemory({
+      novel, throughChapter,
+      request: async (task, prompt) => {
+        try {
+          return await streamGenerate(
+            task.startsWith('chapter_memory') ? '你是小说逐章语义记忆整理员，只处理已经写出的事实。' : '你是小说累计阶段记忆编辑，只合并已有事实记忆。',
+            prompt, null, signal, resolveApiConfig(req.userModelConfig, 'reasoning'),
+            1, 0.2, task.startsWith('chapter_memory') ? 5000 : 6500, 180000, null, { taskType: task }
+          );
+        } catch (error) {
+          if (error?.attempts || error?.usage) emitTokenUsage(res, novel, 'reasoning', error, chapterTokenStats);
+          throw error;
+        }
+      },
+      onUsage: result => emitTokenUsage(res, novel, 'reasoning', result, chapterTokenStats),
+      persist: () => saveNovelDoc(novel),
+      onProgress: message => { try { res.write(`data: ${JSON.stringify({ type: 'status', message })}\n\n`); } catch {} },
+    });
+  } catch (error) {
+    if (signal?.aborted || isAbortError(error)) throw error;
+    console.warn('[Memory] 更新失败:', error?.name || 'Error', /^[A-Za-z0-9_.-]{1,80}$/.test(String(error?.code || '')) ? error.code : 'MEMORY_UPDATE_FAILED');
+    const failure = new Error('剧情语义记忆更新未成功，已保留已写章节和上一版记忆，请稍后继续重试');
+    failure.code = 'SEMANTIC_MEMORY_REQUIRED';
+    failure.resumable = true;
+    throw failure;
+  } finally {
+    clearInterval(heartbeat);
+    if (chapterTokenStats && Number.isFinite(accountChapter)) {
+      const chapter = novel.chapters.find(item => Number(item.chapterNumber) === accountChapter);
+      if (chapter) {
+        chapter.qualityReport = { ...(chapter.qualityReport || {}), tokens: summarizeChapterTokens(chapterTokenStats) };
+        novel.markModified(`chapters.${novel.chapters.indexOf(chapter)}.qualityReport`);
+      }
+    }
+  }
+  await saveNovelDoc(novel);
+}
+
+function semanticMemoryPrompt(novel, currentChapter, query = '') {
+  const memory = buildSemanticContext({ chapters: novel.chapters || [], contextMemory: novel.contextMemory || {}, currentChapter, query });
+  return renderSemanticContext(memory, { maxChars: 10000 });
+}
+
+// One-off append/import operations have already committed their requested
+// prose. A memory failure must not turn that success into an append retry;
+// the next operation strictly repairs memory before any new writing call.
+async function refreshCommittedMemory(options) {
+  try { await refreshSemanticMemory(options); }
+  catch (error) {
+    if (error?.code !== 'SEMANTIC_MEMORY_REQUIRED' && !isAbortError(error) && !options.signal?.aborted) throw error;
+    await saveNovelDoc(options.novel);
+    try { options.res.write(`data: ${JSON.stringify({ type: 'status', message: '正文已保存，语义记忆暂未更新；下次续写前会自动补齐。' })}\n\n`); } catch {}
+  }
+}
+
+async function prepareDetailedChapterPlan({ req, res, novel, planData, ch, totalPlannedChapters, signal, generationRun }) {
+  if (adoptConfirmedChapterPlans(novel, planData, ch)) await saveNovelDoc(novel);
+  const missing = planningWindow(novel, planData, ch, totalPlannedChapters);
+  if (!missing.length) return true;
+  try { res.write(`data: ${JSON.stringify({ type: 'status', message: `正在细化第${missing[0]}-${missing.at(-1)}章的具体剧情计划...` })}\n\n`); } catch {}
+  const heartbeat = setInterval(() => {
+    if (!res.writableEnded && !res.destroyed) { try { res.write(': planning-heartbeat\n\n'); } catch {} }
+  }, 10000);
+  heartbeat.unref?.();
+  try {
+    await ensureDetailedLongFormPlan({
+      novel, planData, chapterNumber: ch, totalChapters: totalPlannedChapters,
+      draft: resumeDraftFor(generationRun, ch),
+      requestPlan: (prompt) => streamGenerate(
+        '你是一位专业的小说章节规划师。你只负责细化已确认蓝图下的后续章节，不改变原有故事方向。',
+        prompt, null, signal, resolveApiConfig(req.userModelConfig, 'reasoning'),
+        1, 0.65, 8192, 180000, null, { taskType: 'rolling_plan' }
+      ),
+      onUsage: (result) => emitTokenUsage(res, novel, 'reasoning', result),
+    });
+  } catch (error) {
+    if (signal?.aborted || error?.name === 'AbortError') throw error;
+    novel.status = 'paused';
+    await saveNovelDoc(novel);
+    await settleGenerationRun(generationRun, 'paused', { phase: 'plan_required', lastCommittedChapter: getHighestChapterNumber(novel) });
+    try {
+      res.write(`data: ${JSON.stringify({ type: 'plan_needs_extension', message: `第${ch}章缺少有效的具体剧情计划，自动细化未成功，已暂停。已生成章节保留；请检查模型线路或修订计划后继续。` })}\n\n`);
+      res.end();
+    } catch {}
+    return false;
+  } finally {
+    clearInterval(heartbeat);
+  }
+  // Commit the plan before any prose request, so interruption/resume reuses
+  // this exact batch instead of planning a different continuation.
+  await saveNovelDoc(novel);
+  return true;
 }
 
 function ensureExecutableChapterPlan(novel, targetWordCount) {
@@ -2092,11 +2197,13 @@ ${tmpl.dynamicPrompt}
       }
 
       try { res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber: chNum, title: chapterResult.title, wordCount: chapterResult.wordCount })}\n\n`); } catch {}
+      await refreshSemanticMemory({ req, res, novel, signal: abortController.signal, throughChapter: chNum, chapterTokenStats });
       return chapterResult;
     }
 
     console.log('开始正文循环生成，outline长度:', outline?.length || 0, 'aborted:', abortController.signal.aborted, '当前章节数:', novel.chapters.length);
     try {
+      await refreshSemanticMemory({ req, res, novel, signal: abortController.signal });
       if (isBook) {
         // ====== 整本模式：严格按结构化章节计划创作 ======
         const totalPlannedChapters = getTotalPlannedChapters(planData, targetWordCount);
@@ -2104,6 +2211,11 @@ ${tmpl.dynamicPrompt}
 
         for (let ch = 1; ch <= totalPlannedChapters; ch++) {
           if (abortController.signal.aborted) break;
+
+          if (!await prepareDetailedChapterPlan({ req, res, novel, planData, ch, totalPlannedChapters, signal: abortController.signal, generationRun })) {
+            generationDone = true;
+            return;
+          }
 
           // 每章开始前发心跳，保持 SSE 连接不超时
           try { res.write(': chapter-heartbeat\n\n'); } catch {}
@@ -2127,6 +2239,8 @@ ${tmpl.dynamicPrompt}
             currentChapter: ch,
             lastChapterSummary: lastChapterContent ? extractChapterSummary(lastChapterContent) : '',
             contextMemory: novel.contextMemory,
+            chapters: novel.chapters,
+            memoryQuery: [contract.coreEvent, ...(contract.characters || []), ...(contract.resolveHooks || [])].join(' '),
             relevantHistory: selectRelevantHistory(
               novel.chapters,
               [contract.coreEvent, ...(contract.characters || []), ...(contract.setHooks || []), ...(contract.resolveHooks || [])].join(' '),
@@ -2513,10 +2627,12 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       }
 
       try { res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber: chNum, title: chapterResult.title, wordCount: chapterResult.wordCount })}\n\n`); } catch {}
+      await refreshSemanticMemory({ req, res, novel, signal: abortController.signal, throughChapter: chNum, chapterTokenStats });
       return chapterResult;
     }
 
     try {
+      await refreshSemanticMemory({ req, res, novel, signal: abortController.signal });
       if (mode === 'book') {
         // ====== 整本模式：循环生成多章直到目标字数 ======
         if (!planData.chapters.length) {
@@ -2572,6 +2688,11 @@ router.post('/continue/:novelId', auth, async (req, res) => {
         for (let ch = startCh; ch <= totalPlannedChapters; ch++) {
           if (abortController.signal.aborted) break;
 
+          if (!await prepareDetailedChapterPlan({ req, res, novel, planData, ch, totalPlannedChapters, signal: abortController.signal, generationRun })) {
+            generationDone = true;
+            return;
+          }
+
           const curTotal = getCompletedWordCount(novel);
           const contract = buildChapterContract({
             novel,
@@ -2588,6 +2709,8 @@ router.post('/continue/:novelId', auth, async (req, res) => {
             outline: renderOutlineForContext(outline, ch, totalPlannedChapters),
             currentChapter: ch,
             contextMemory: novel.contextMemory,
+            chapters: novel.chapters,
+            memoryQuery: [contract.coreEvent, ...(contract.characters || []), ...(contract.resolveHooks || [])].join(' '),
             relevantHistory: selectRelevantHistory(
               novel.chapters,
               [contract.coreEvent, ...(contract.characters || []), ...(contract.setHooks || []), ...(contract.resolveHooks || [])].join(' '),
@@ -2848,7 +2971,7 @@ router.post('/continue-import', auth, async (req, res) => {
     // 仅当作品显式绑定时生效。
     const systemPrompt = `你是一位专业的小说续写专家，必须延续原文已经建立的叙事声线、人物差异和因果关系。${buildGenreContract(typeName, importType || null)}${buildPersonaPrompt(importPersona)}\n\n${styleContinuityAnchor}`;
     const mode = req.body.mode || 'book';
-    const userPrompt = buildImportContinuePrompt(importedText, continuationRequest, typeName, req.body.targetWordCount || 50000, mode, importPersona)
+    let userPrompt = buildImportContinuePrompt(importedText, continuationRequest, typeName, req.body.targetWordCount || 50000, mode, importPersona)
       + buildEndingHistory(novel.chapters, highestChapter + 1);
 
     novel.lastPrompt = userPrompt;
@@ -2933,6 +3056,8 @@ router.post('/continue-import', auth, async (req, res) => {
     }
 
     try {
+      await refreshSemanticMemory({ req, res, novel, signal: abortController.signal });
+      userPrompt += '\n\n' + semanticMemoryPrompt(novel, chapterNumber, continuationRequest);
       let result;
       if (!(chapterBuffer && ['draft_complete', 'commit_ready'].includes(resumedDraftPhase))) {
         try {
@@ -2969,6 +3094,7 @@ router.post('/continue-import', auth, async (req, res) => {
 
       generationDone = true;
       const savedChapter = await finalSave('completed');
+      await refreshCommittedMemory({ req, res, novel, signal: abortController.signal, throughChapter: chapterNumber, chapterTokenStats });
       await settleGenerationRun(generationRun, 'completed', { lastCommittedChapter: chapterNumber, draft: '' });
 
       res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber, title: savedChapter?.title, wordCount: savedChapter?.wordCount || 0 })}\n\n`);
@@ -2987,7 +3113,7 @@ router.post('/continue-import', auth, async (req, res) => {
       });
       try {
         const event = resumable
-          ? { type: 'paused', message: '生成已中断，断点草稿已保存，可继续恢复' }
+          ? { type: 'paused', message: describeChapterFailure(streamError, '生成已中断，断点草稿已保存，可继续恢复') }
           : { type: 'error', message: describeChapterFailure(streamError, '续写失败，断点草稿已保存') };
         res.write(`data: ${JSON.stringify(event)}\n\n`);
         res.end();
@@ -3404,6 +3530,7 @@ router.delete('/:novelId/chapter/:chapterNumber', auth, async (req, res) => {
     // 重排章节号
     novel.chapters.forEach((c, i) => { c.chapterNumber = i + 1; });
     novel.currentChapterIndex = novel.chapters.length;
+    rebuildNovelContextDocs(novel);
     await saveNovelDoc(novel);
     res.json({ message: '章节已删除', chapters: novel.chapters, currentWordCount: novel.currentWordCount, currentChapterIndex: novel.currentChapterIndex });
   } catch (error) {
@@ -3592,6 +3719,8 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
     });
 
     try {
+      await refreshSemanticMemory({ req, res, novel, signal: abortController.signal, throughChapter: chNum });
+      userPrompt += '\n\n' + semanticMemoryPrompt(novel, chNum + 1, notes);
       let result;
       if (!(appendBuffer && ['draft_complete', 'commit_ready'].includes(resumedDraftPhase))) {
         try {
@@ -3620,6 +3749,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
 
       generationDone = true;
       const committed = await commitChapterContent();
+      await refreshCommittedMemory({ req, res, novel, signal: abortController.signal, chapterTokenStats, accountChapter: chNum });
       await settleGenerationRun(generationRun, 'completed', { lastCommittedChapter: getHighestChapterNumber(novel), draft: '' });
 
       try {
@@ -3639,7 +3769,7 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
       });
       try {
         const event = resumable
-          ? { type: 'paused', message: '生成已中断，断点草稿已保存，可继续恢复' }
+          ? { type: 'paused', message: describeChapterFailure(streamError, '生成已中断，断点草稿已保存，可继续恢复') }
           : { type: 'error', message: describeChapterFailure(streamError, '续写出错，断点草稿已保存') };
         res.write(`data: ${JSON.stringify(event)}\n\n`);
         res.end();

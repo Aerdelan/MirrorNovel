@@ -4,6 +4,7 @@ const { hasAcceptableRewriteLength, buildRewriteReviewPrompt } = require('./rewr
 const { resolveGenreContract } = require('../config/genreContracts');
 const { getServerRoute } = require('../config/modelCatalog');
 const { getRequestModelConfig } = require('./requestContext');
+const { buildSemanticContext, validChapterMemory, renderSemanticContext } = require('./semanticMemory');
 const {
   resolveThinkingPolicy,
   thinkingFieldCandidates,
@@ -560,8 +561,13 @@ ${buildOutlineSpec(targetWordCount, chapterWordTarget)}
 }
 
 /** Build a bounded chapter context for continuation prompts. */
-function buildChapterContext(chapters) {
+function buildChapterContext(chapters, contextMemory = {}) {
   if (!chapters || chapters.length === 0) return '';
+
+  if (contextMemory?.version === 2 || chapters.some(validChapterMemory)) {
+    const semantic = buildSemanticContext({ chapters, contextMemory });
+    return renderSemanticContext(semantic, { maxChars: 10000 });
+  }
 
   const totalChars = chapters.reduce((s, c) => s + (c.content || '').length, 0);
   const threshold = 8000; // 超过此阈值触发压缩
@@ -620,7 +626,7 @@ ${continuityNote}
 }
 
 function buildContinuePrompt(novelId, novel, persona = novel?.writingPersonaSnapshot, outlineOverride) {
-  const chapterContext = buildChapterContext(novel.chapters);
+  const chapterContext = buildChapterContext(novel.chapters, novel.contextMemory);
   // outlineOverride：调用方按写作进度渲染的分层大纲（见 renderOutlineForContext），
   // 避免单章续写把整份长篇大纲逐字重发。未传入时保持旧行为。
   const outlineText = outlineOverride || novel.outline || '';
@@ -632,7 +638,7 @@ function buildContinuePrompt(novelId, novel, persona = novel?.writingPersonaSnap
 主角：${novel.protagonistName || '未设定'}
 ${outlineNote}
 
-以下是从已有章节中提取的完整剧情脉络（包含所有伏笔和人物线）：
+以下是本次续写使用的已写剧情记忆与上下文；未收录的信息不代表未发生，不确定的事实不要自行补造：
 
 ${'='.repeat(40)}
 ${chapterContext}

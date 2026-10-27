@@ -12,6 +12,19 @@ function chapter(chapterNumber, content) {
   return { chapterNumber, content: `${content}。${'现场细节推动人物判断并留下后果。'.repeat(18)}` };
 }
 
+test('long-book compression retains developments and resulting facts beyond decorative openings', () => {
+  const summary = number => `第${number}章：开篇：${'周四上午九点，雨后空气潮湿，大家来到办公室。'.repeat(6)}关键发展：刘海柱找到伪造签名的责任人。章末：外包负责人签署赔偿协议。`;
+  const document = Array.from({ length: 21 }, (_, index) => summary(index + 1)).join('\n');
+  const context = buildContextFromDocs(document, '', '', '', 22, '', { maxChars: 12000 });
+  const early = context.split('【近期剧情详情】')[0];
+  assert.match(early, /找到伪造签名的责任人/);
+  assert.match(early, /签署赔偿协议/);
+  assert.doesNotMatch(early, /周四上午九点/);
+  const checkpoint = buildContextMemoryCheckpoint({ chapterSummaryDoc: summary(21), chapterNumber: 21 });
+  assert.match(checkpoint.checkpointSummary, /伪造签名/);
+  assert.match(checkpoint.checkpointSummary, /赔偿协议/);
+});
+
 test('context checkpoints preserve facts and open loops without model calls', () => {
   const memory = buildContextMemoryCheckpoint({
     chapters: [chapter(1, '林舟在旧邮局找到铜钥匙'), chapter(2, '苏晚发现钥匙对应地下室')],

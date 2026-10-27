@@ -16,6 +16,8 @@ const state = {
   outlineContent: '隔离测试大纲',
   aiHandler: null,
   aiCalls: [],
+  memoryCalls: [],
+  memoryHandler: null,
   useRealPersonaPrompt: false,
   lastSystemPromptArgs: null,
   saveFailureAt: 0,
@@ -38,6 +40,8 @@ function resetState() {
   state.outlineContent = '隔离测试大纲';
   state.aiHandler = null;
   state.aiCalls = [];
+  state.memoryCalls = [];
+  state.memoryHandler = null;
   state.useRealPersonaPrompt = false;
   state.lastSystemPromptArgs = null;
   state.saveFailureAt = 0;
@@ -205,6 +209,18 @@ const aiServiceMock = {
   getFriendlyErrorMessage: (error) => error?.message || 'mock error',
   streamGenerate: async (systemPrompt, userPrompt, onChunk, signal, apiConfig, retries, temperature, maxTokens, timeoutMs, onReasoning, options) => {
     const call = { systemPrompt, userPrompt, onChunk, signal, apiConfig, retries, temperature, maxTokens, timeoutMs, onReasoning, options };
+    // Keep legacy creative-call assertions separate from the newly added
+    // memory calls; both still return real-shaped usage into the same ledger.
+    if (['chapter_memory', 'chapter_memory_compaction', 'stage_memory'].includes(options?.taskType)) {
+      state.memoryCalls.push(call);
+      if (state.memoryHandler) return state.memoryHandler(call);
+      if (options.taskType === 'chapter_memory_compaction') return emitText(JSON.stringify({ summary: '合并后的本章实际事件：人物采取行动后取得了线索，局面随其选择发生变化，并承接新的后果。' }), null, signal);
+      if (options.taskType === 'stage_memory') return emitText(JSON.stringify({ summary: '阶段语义总结：' + userPrompt.split('【新增章节总结】')[1].split('【重要事实索引】')[0].slice(0, 1500), focusFactIds: [], focusLoopIds: [] }), null, signal);
+      const source = userPrompt.split('【正文开始】\n')[1].split('\n【正文结束】')[0];
+      return emitText(JSON.stringify({ summary: '本章实际发生事件及结果：' + source.slice(0, 100),
+        events: [{ text: '本章已发生事件：' + source.slice(0, 60), evidence: source.slice(0, 120) }],
+        facts: [], characters: [], openLoops: [], resolvedLoops: [] }), null, signal);
+    }
     call.kind = onChunk ? 'chapter' : (systemPrompt.includes('章节规划师') ? 'plan' : (systemPrompt.includes('大纲策划师') ? 'outline' : (systemPrompt.includes('连载审读员') ? 'hookAudit' : 'other')));
     state.aiCalls.push(call);
     return (state.aiHandler || defaultAiHandler)(call);
@@ -564,6 +580,10 @@ test('创建失败：SSE 建立后保存大纲失败也会暂停作品并返回�
 test('180万字、每章8000字及联网取材、专家团可完成创建并进入正文', async () => {
   state.aiHandler = async (call) => {
     if (call.kind === 'chapter') throw abortError(); // Stop before producing a whole book.
+    if (call.kind === 'plan' && call.userPrompt.includes('细化未来第1-8章')) {
+      return emitText(makePlan(Array.from({ length: 8 }, (_, index) => ({ chapterNumber: index + 1,
+        title: `线索${index + 1}`, coreEvent: `林舟找到编号${index + 1}的值班记录并确认相关证人所在位置。` }))), null, call.signal);
+    }
     return defaultAiHandler(call);
   };
   const { response, events } = await postSse('/generate', {
@@ -771,7 +791,7 @@ test('新书整本：已确认蓝图且计划请求被取消时直接使用兜�
   assert.equal(getCreatedNovel(events).chapters.length, 1);
 });
 
-test('新书长篇：大纲存在但计划不可解析时自动补全执行计划', async () => {
+test('新书长篇：详细计划持续不可解析时暂停，不使用通用卡生成正文', async () => {
   const content = makeChapter('林舟根据旧案线索进入废弃邮局', '长篇兜底计划');
   state.planContent = '';
   state.chapterQueue = [content];
@@ -790,7 +810,11 @@ test('新书长篇：大纲存在但计划不可解析时自动补全执行计�
   assert.ok(novel.chapterPlanData.chapters.length > 0);
   assert.equal(novel.chapterPlanData.fallback, true);
   assert.ok(eventIndex(events, 'status', (event) => event.message.includes('自动补全')) > -1);
-  assert.ok(state.aiCalls.some((call) => call.kind === 'chapter'));
+  assert.equal(state.aiCalls.some((call) => call.kind === 'chapter'), false);
+  assert.equal(novel.status, 'paused');
+  assert.equal(novel.chapters.length, 0);
+  assert.ok(eventIndex(events, 'plan_needs_extension') > -1);
+  assert.equal(state.aiCalls.filter(call => call.kind === 'plan').length, 3);
 });
 
 test('新书整本：字数提前达到时仍执行后续计划章节，并为每章传入输出上限', async () => {
@@ -881,7 +905,7 @@ test('书架继续生成：用户报告的日报结尾被定点修订，专家�
   assert.ok(events.some(event => event.type === 'status' && event.message.includes('结尾与第1章重复')));
   assert.ok(events.some(event => event.type === 'expert_revision' && event.content === prefix + replacement));
   assert.equal(state.aiCalls.filter(call => call.options?.taskType === 'targeted_repair').length, 1);
-  assert.equal(novel.chapters[1].qualityReport.tokens.calls, 2, 'repair usage must be included in chapter cost');
+  assert.equal(novel.chapters[1].qualityReport.tokens.calls, 3, 'writing, repair and semantic memory usage must all be included');
   assert.ok(state.aiCalls.find(call => call.kind === 'chapter').userPrompt.includes('章末防重复'));
 });
 
@@ -1032,6 +1056,56 @@ test('续写整本：缺少计划时暂停，计划耗尽但未达字数时自�
     assert.ok(novel.chapterPlanData.chapters.some((chapter) => chapter.chapterNumber === 5));
     assert.equal(state.aiCalls.filter((call) => call.kind === 'chapter').length, 4);
   });
+});
+
+test('十万字边界：续写第21章前先生成并保存具体计划，不拿开场句当标题', async () => {
+  const chapters = Array.from({ length: 20 }, (_, index) => ({ chapterNumber: index + 1,
+    title: `第${index + 1}章 已定事件${index + 1}`, content: '已经完成的仓库事件记录。'.repeat(500).slice(0, 4968), wordCount: 4968 }));
+  const planData = JSON.parse(makePlan(chapters.map(chapter => ({ chapterNumber: chapter.chapterNumber,
+    title: `已定事件${chapter.chapterNumber}`, coreEvent: `完成既定仓库事件${chapter.chapterNumber}`, wordTarget: 1200 }))));
+  const novel = await seedNovel({ _id: 'long-book-boundary', status: 'paused', targetWordCount: 100000,
+    chapterWordTarget: 1200, outline: '刘海柱拿到签收凭证，厘清货损责任并保住仓库。',
+    protagonistName: '刘海柱', chapterPlanData: planData, chapterPlan: JSON.stringify(planData), chapters });
+  const previousChapters = clone(novel.chapters);
+  let savedPlanBeforeProse = false;
+  const save = novel.save.bind(novel);
+  novel.save = async () => {
+    if (novel.chapterPlanData.chapters.some(chapter => chapter.chapterNumber === 21 && chapter.raw === '模型分批细化计划')) savedPlanBeforeProse = true;
+    return save();
+  };
+  state.chapterQueue = [makeChapter('周四，上午九点，刘海柱拿到外包签收原件，厘清货损责任', '分批规划21')];
+  state.aiHandler = async call => {
+    if (call.kind === 'plan') return emitText(makePlan([{ chapterNumber: 21, title: '签收原件',
+      coreEvent: '刘海柱取得外包签收原件，当面对质后明确货损责任。' }]), null, call.signal);
+    if (call.kind === 'chapter') {
+      assert.equal(savedPlanBeforeProse, true);
+      assert.match(call.userPrompt, /取得外包签收原件/);
+    }
+    return defaultAiHandler(call);
+  };
+  const { events } = await postSse(`/continue/${novel._id}`, { mode: 'book' });
+  assert.equal(events.at(-1).type, 'completed');
+  assert.deepEqual(novel.chapters.slice(0, 20).map(({ memorySummary, ...chapter }) => chapter), previousChapters);
+  assert.equal(novel.chapters[20].title, '第21章 签收原件');
+  assert.equal(state.aiCalls.filter(call => call.kind === 'plan').length, 1);
+  assert.equal(state.aiCalls.filter(call => call.kind === 'chapter').length, 1);
+});
+
+test('十万字边界：后续计划无效时暂停并保留前20章，不请求第21章正文', async () => {
+  const chapters = Array.from({ length: 20 }, (_, index) => ({ chapterNumber: index + 1,
+    title: `第${index + 1}章 原标题`, content: '已经确认的既有情节。'.repeat(500), wordCount: 5000 }));
+  const planData = JSON.parse(makePlan(chapters.map(chapter => ({ chapterNumber: chapter.chapterNumber,
+    title: `原标题${chapter.chapterNumber}`, coreEvent: `已完成事件${chapter.chapterNumber}`, wordTarget: 5000 }))));
+  const novel = await seedNovel({ _id: 'long-book-invalid-plan', status: 'paused', targetWordCount: 900000,
+    chapterWordTarget: 5000, outline: '核对签收凭证，厘清货损责任。',
+    chapterPlanData: planData, chapterPlan: JSON.stringify(planData), chapters });
+  const original = clone(novel.chapters);
+  const { events } = await postSse(`/continue/${novel._id}`, { mode: 'book' });
+  assert.equal(events.at(-1).type, 'plan_needs_extension');
+  assert.equal(novel.status, 'paused');
+  assert.deepEqual(novel.chapters.map(({ memorySummary, ...chapter }) => chapter), original);
+  assert.equal(state.aiCalls.filter(call => call.kind === 'chapter').length, 0);
+  assert.equal(state.aiCalls.filter(call => call.kind === 'plan').length, 2);
 });
 
 test('指定章节续写：追加已有章节内容后不误标整本完成', async () => {
@@ -1388,12 +1462,13 @@ test('token 账本：每章把服务商口径用量写进 qualityReport.tokens�
   for (const chapter of novel.chapters) {
     const tokens = chapter.qualityReport?.tokens;
     assert.ok(tokens, `第${chapter.chapterNumber}章缺少 qualityReport.tokens`);
-    assert.equal(tokens.inputTokens, chapter.content.length * 2 + 100);
-    assert.equal(tokens.outputTokens, chapter.content.length);
-    assert.equal(tokens.cacheSavedTokens, chapter.content.length);
+    assert.equal(tokens.byRole.writing.inputTokens, chapter.content.length * 2 + 100);
+    assert.equal(tokens.byRole.writing.outputTokens, chapter.content.length);
+    assert.equal(tokens.byRole.writing.cacheSavedTokens, chapter.content.length);
     assert.equal(tokens.byRole.writing.calls, 1);
     // 合计 = 各角色之和
-    assert.equal(tokens.inputTokens, tokens.byRole.writing.inputTokens);
+    assert.equal(tokens.byRole.reasoning.calls, 1);
+    assert.equal(tokens.inputTokens, tokens.byRole.writing.inputTokens + tokens.byRole.reasoning.inputTokens);
   }
 
   // 整本累计：两章 writing 调用 + 计划/大纲等其它角色调用都计入 novel.tokenUsage。
@@ -1410,6 +1485,84 @@ test('token 账本：每章把服务商口径用量写进 qualityReport.tokens�
   const tokenEvents = events.filter((event) => event.type === 'token_usage');
   assert.ok(tokenEvents.length >= 2);
   assert.ok(tokenEvents.every((event) => event.usage && event.usage.inputTokens > 0));
+});
+
+test('语义记忆失败后暂停：正文已提交，继续只补记忆，不重复生成已完成章节', async () => {
+  state.planContent = makePlan([{ chapterNumber: 1, title: '取得原件', coreEvent: '林舟取得原始签收单并交给苏晚保管。', wordTarget: 600 }]);
+  state.chapterQueue = [makeChapter('林舟取得原始签收单并交给苏晚保管', '语义记忆断点')];
+  state.memoryHandler = async call => emitText('{"summary":"无证据的错误输出"}', null, call.signal);
+  const { events } = await postSse('/generate', { novelTypeId: 'xianxia', outline: '林舟核对签收原件，明确责任。', protagonistName: '林舟', targetWordCount: 600, mode: 'book' });
+  const book = getCreatedNovel(events);
+  assert.equal(book.status, 'paused');
+  assert.equal(book.chapters.length, 1);
+  assert.ok(events.some(event => event.type === 'chapter_end'));
+  assert.match(events.at(-1).message, /语义记忆/);
+  assert.equal(state.aiCalls.filter(call => call.kind === 'chapter').length, 1);
+  assert.equal(state.memoryCalls.length, 2);
+  const text = book.chapters[0].content;
+  state.memoryHandler = null;
+  const resumed = await postSse(`/continue/${book._id}`, { mode: 'book' });
+  assert.equal(resumed.events.at(-1).type, 'completed');
+  assert.equal(book.chapters.length, 1);
+  assert.equal(book.chapters[0].content, text);
+  assert.equal(book.chapters[0].memorySummary.sourceHash, require('../services/semanticMemory').hash(text));
+  assert.equal(state.aiCalls.filter(call => call.kind === 'chapter').length, 1);
+});
+
+test('旧书继续前补齐逐章总结与阶段记忆，正文提示词使用两层记忆', async () => {
+  const chapters = Array.from({ length: 7 }, (_, index) => ({ chapterNumber: index + 1, title: `第${index + 1}章 旧章`, content: makeChapter(`林舟核对第${index + 1}份签收证据`, `旧章${index + 1}`), wordCount: 680 }));
+  const planData = JSON.parse(makePlan([...chapters.map(chapter => ({ chapterNumber: chapter.chapterNumber, title: chapter.title, coreEvent: `核对证据${chapter.chapterNumber}`, wordTarget: 600 })), { chapterNumber: 8, title: '对质', coreEvent: '林舟拿到签收单与外包负责人当面对质。', wordTarget: 600 }]));
+  const book = await seedNovel({ _id: 'semantic-legacy-upgrade', status: 'paused', targetWordCount: 5400, chapters, outline: '查明签收责任。', chapterPlanData: planData, chapterPlan: JSON.stringify(planData) });
+  state.chapterQueue = [makeChapter('林舟拿签收单与负责人当面对质', '新章8')];
+  const { events } = await postSse(`/continue/${book._id}`, { mode: 'chapter' });
+  assert.equal(events.at(-1).type, 'completed');
+  assert.ok(book.chapters.every(chapter => chapter.memorySummary?.version === 2));
+  assert.equal(book.contextMemory.checkpointChapter, 6);
+  assert.equal(state.memoryCalls.filter(call => call.options.taskType === 'stage_memory').length, 1);
+  // The fixture's legacy buildContinuePrompt is deliberately a stub; direct
+  // context compilation below exercises the actual two-layer prompt builder.
+  const execution = require('../services/novelContext').compileChapterExecutionPackage({ chapters: book.chapters, contextMemory: book.contextMemory, currentChapter: 9 });
+  assert.match(execution.stableContext, /截至第6章/);
+  assert.match(execution.dynamicContext, /第7章/);
+  assert.match(execution.dynamicContext, /第8章/);
+  assert.ok(book.tokenUsage.byRole.reasoning.calls >= 9);
+});
+
+test('指定章节正文已提交后总结失败不伪报追加失败，下次写正文前先补记忆', async () => {
+  const original = makeChapter('林舟找到签收单', '单章追加原文');
+  const book = await seedNovel({ _id: 'append-memory-pending', status: 'paused', targetWordCount: 20000,
+    chapters: [{ chapterNumber: 1, title: '第1章 原件', content: original, wordCount: original.length }] });
+  state.chapterQueue = [makeChapter('林舟找到原件背面的签名', '本次追加')];
+  state.memoryHandler = async call => {
+    if (book.chapters[0].content !== original) return emitText('not json', null, call.signal);
+    const source = call.userPrompt.split('【正文开始】\n')[1].split('\n【正文结束】')[0];
+    return emitText(JSON.stringify({ summary: '林舟在原件核对过程中取得签收单，决定继续查验其真实性及关联责任人。', events: [{ text: '林舟取得签收单', evidence: source.slice(0, 100) }], facts: [], characters: [], openLoops: [], resolvedLoops: [] }), null, call.signal);
+  };
+  const result = await postSse(`/${book._id}/continue-chapter/1`, { wordCount: 600, notes: '核对签名' });
+  assert.equal(result.events.at(-1).type, 'completed');
+  assert.ok(result.events.some(event => event.type === 'status' && event.message.includes('下次续写前会自动补齐')));
+  assert.ok(book.chapters[0].content.length > original.length);
+  const before = book.chapters[0].content;
+  state.chapterQueue = [makeChapter('签名对应的负责人到场对质', '第二次追加')];
+  state.memoryHandler = async () => ({ content: 'invalid' });
+  const blocked = await postSse(`/${book._id}/continue-chapter/1`, { wordCount: 600, notes: '负责人到场' });
+  assert.equal(blocked.events.at(-1).type, 'paused');
+  assert.equal(book.chapters[0].content, before);
+  assert.equal(state.aiCalls.filter(call => call.kind === 'chapter').length, 1);
+});
+
+test('记忆接口失败时已返回的服务商用量仍记入整本账本', async () => {
+  state.planContent = makePlan([{ chapterNumber: 1, title: '取得原件', coreEvent: '林舟取得原始签收单并保留证据。', wordTarget: 600 }]);
+  state.chapterQueue = [makeChapter('林舟取得原始签收单并保留证据', '失败用量')];
+  state.memoryHandler = async () => {
+    throw Object.assign(new Error('isolated memory provider failure'), { usage: { prompt_tokens: 137, completion_tokens: 19 } });
+  };
+  const { events } = await postSse('/generate', { novelTypeId: 'xianxia', outline: '查明签收责任。', targetWordCount: 600, mode: 'book' });
+  const book = getCreatedNovel(events);
+  assert.equal(book.status, 'paused');
+  assert.equal(book.chapters.length, 1);
+  assert.ok(book.tokenUsage.byRole.reasoning.inputTokens >= 137);
+  assert.equal(book.chapters[0].qualityReport.tokens.byRole.reasoning.inputTokens, 137);
 });
 
 test('整本生成：每章字数设置贯穿大纲/计划提示词并落库', async () => {
@@ -1473,7 +1626,8 @@ test('续写单章：新章节同样落库 token 标注', async () => {
 
   const tokens = novel.chapters[1].qualityReport?.tokens;
   assert.ok(tokens, '续写章节缺少 qualityReport.tokens');
-  assert.equal(tokens.inputTokens, second.length * 2 + 100);
+  assert.equal(tokens.byRole.writing.inputTokens, second.length * 2 + 100);
+  assert.equal(tokens.byRole.reasoning.calls, 1);
   assert.equal(tokens.byRole.writing.calls, 1);
 });
 

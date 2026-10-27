@@ -35,6 +35,9 @@ function describeGenerationFailure(error, phase, errorId) {
 }
 
 function describeChapterFailure(error, fallback) {
+  if (error?.code === 'SEMANTIC_MEMORY_REQUIRED') {
+    return '剧情语义记忆更新未成功，生成已暂停。已写章节与上一版记忆已保留，稍后继续会从记忆更新处重试。';
+  }
   if (error?.code === 'CHAPTER_ENDING_REPEATED') {
     return `检测到章末与第${Number(error.repetition?.chapterNumber) || '?'}章大段重复，自动修订未通过，已暂停生成。已完成章节保持不变，草稿已保留，可重新编辑或继续生成重试`;
   }

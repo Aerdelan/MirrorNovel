@@ -1,3 +1,5 @@
+const { validChapterMemory, buildSemanticContext, renderSemanticContext } = require('./semanticMemory');
+
 /**
  * Novel Context Service — RAG 风格上下文构建器
  *
@@ -13,6 +15,12 @@
  */
 function extractChapterSnapshot(chapter) {
   const content = chapter.content || ''
+  const semantic = validChapterMemory(chapter)
+  if (semantic) return {
+    chapterNumber: chapter.chapterNumber, summary: semantic.summary,
+    conflictLines: semantic.events.map(event => event.text),
+    endState: semantic.characters.map(character => `${character.name}：${character.state}`).join('；') || semantic.events.at(-1).text,
+  }
   if (!content || content.length < 50) return { summary: '', keyLines: [], endState: '' }
 
   // 取前10%的文本作为"开篇场景"
@@ -383,6 +391,23 @@ function compactLine(value, maxLength = 180) {
   return String(value || '').replace(/\s+/g, ' ').trim().slice(0, maxLength)
 }
 
+// Long books must remember what changed, not just the weather in the opening.
+// Older summaries put scene setting first; a head-only cut discarded both
+// the key development and the chapter's resulting state after chapter 15.
+function compactChapterSummary(value, maxLength = 180) {
+  const line = String(value || '').replace(/\s+/g, ' ').trim()
+  const prefix = (line.match(/^第\d+章：/) || [''])[0]
+  const development = (line.match(/关键发展：([\s\S]*?)(?=章末：|$)/) || [])[1] || ''
+  const ending = (line.match(/章末：([\s\S]*)$/) || [])[1] || ''
+  if (!development && !ending) return compactHeadTail(line, maxLength, Math.floor(maxLength / 2))
+  const available = Math.max(0, maxLength - prefix.length - 10)
+  const changeBudget = development && ending ? Math.floor(available / 2) : available
+  return (prefix + [
+    development ? '进展：' + compactLine(development, changeBudget) : '',
+    ending ? '结果：' + compactHeadTail(ending, available - (development ? changeBudget : 0), 20) : '',
+  ].filter(Boolean).join('；')).slice(0, maxLength)
+}
+
 // Checkpoint summaries grow over the life of a book. Keeping only the head
 // makes the summary silently stop changing once the limit is reached, so a
 // later chapter can never replace stale state in the stable prompt prefix.
@@ -419,7 +444,7 @@ function buildContextMemoryCheckpoint({
   })
   const priorSummary = compactHeadTail(previousMemory.checkpointSummary || '', 5400)
   const checkpointSummary = compactHeadTail(
-    [priorSummary, ...delta.map((line) => compactLine(line, 220))].filter(Boolean).join('\n'),
+    [priorSummary, ...delta.map((line) => compactChapterSummary(line, 220))].filter(Boolean).join('\n'),
     6000,
   )
   const activeThreads = (Array.isArray(plotThreads) ? plotThreads : [])
@@ -553,7 +578,7 @@ function buildContextFromDocs(chapterSummaryDoc, foreshadowingDoc, outline, chap
       const earlyCount = summaries.length - recentCount
       const early = summaries.slice(0, earlyCount)
       const recent = summaries.slice(-recentCount)
-      parts.push(`【前期剧情概览（共${earlyCount}章）】\n${early.map(s => s.slice(0, 60) + '…').join('\n')}`)
+      parts.push(`【前期剧情概览（共${earlyCount}章）】\n${early.map(s => compactChapterSummary(s, 120)).join('\n')}`)
       parts.push(`【近期剧情详情】\n${recent.join('\n')}`)
     } else {
       parts.push(`【已有章节剧情脉络】\n${chapterSummaryDoc}`)
@@ -574,6 +599,9 @@ function buildContextFromDocs(chapterSummaryDoc, foreshadowingDoc, outline, chap
   }
   if (Array.isArray(memory.openLoops) && memory.openLoops.length) {
     parts.push(`【当前开放剧情线】\n${memory.openLoops.slice(0, 16).join('\n')}`)
+  }
+  if (Array.isArray(memory.characters) && memory.characters.length) {
+    parts.push(`【正文确认的人物状态】\n${memory.characters.join('\n')}`)
   }
   if (Array.isArray(options.relevantHistory) && options.relevantHistory.length) {
     parts.push(`【相关历史片段（仅供核对，不得改变已发生事实）】\n${options.relevantHistory.join('\n')}`)
@@ -603,14 +631,28 @@ function compileChapterExecutionPackage({
   relevantHistory = [],
   maxStableChars = 9000,
   maxDynamicChars = 7000,
+  chapters = null,
+  memoryQuery = '',
 } = {}) {
+  const semantic = Array.isArray(chapters) && (contextMemory?.version === 2 || chapters.some(validChapterMemory))
+    ? buildSemanticContext({ chapters, contextMemory, currentChapter, query: memoryQuery }) : null;
+  if (semantic) {
+    const checkpointBlock = semantic.checkpointSummary
+      ? `【阶段记忆检查点｜截至第${semantic.checkpointChapter}章】\n${semantic.checkpointSummary}` : '';
+    const outlineBudget = Math.max(0, maxStableChars - checkpointBlock.length - 30);
+    const outlineBlock = outline ? `【创作大纲】\n${compactHeadTail(outline, outlineBudget, Math.floor(outlineBudget * 0.6))}` : '';
+    const stableContext = [outlineBlock, checkpointBlock].filter(Boolean).join('\n\n');
+    const dynamicContext = renderSemanticContext(semantic, { maxChars: maxDynamicChars, checkpoint: false });
+    return { stableContext, dynamicContext, stableChars: stableContext.length, dynamicChars: dynamicContext.length, inputChars: stableContext.length + dynamicContext.length };
+  }
   const memory = contextMemory || {};
   const stableMemory = memory.checkpointSummary
-    ? { checkpointSummary: memory.checkpointSummary }
+    ? { checkpointSummary: memory.checkpointSummary, checkpointChapter: memory.checkpointChapter }
     : {};
   const dynamicMemory = {
     facts: Array.isArray(memory.facts) ? memory.facts : [],
     openLoops: Array.isArray(memory.openLoops) ? memory.openLoops : [],
+    characters: Array.isArray(memory.characters) ? memory.characters : [],
   };
   const stableContext = buildContextFromDocs(
     '', '', outline, '', currentChapter, '',

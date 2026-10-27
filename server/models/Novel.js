@@ -6,6 +6,9 @@ const chapterSchema = new mongoose.Schema({
   content: { type: String, default: '' },
   wordCount: { type: Number, default: 0 },
   qualityReport: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
+  // L1 semantic memory is tied to the exact saved prose hash. Old chapters
+  // are summarized lazily on continuation; no collection migration needed.
+  memorySummary: { type: mongoose.Schema.Types.Mixed, default: null },
   // A2：本章生成时实际注入的样稿抽样记录（revisionId/version/sampleIds/reasons）。
   // 旧章节没有该字段时按 null 处理，不影响任何读取路径。
   styleSamples: { type: mongoose.Schema.Types.Mixed, default: null },
