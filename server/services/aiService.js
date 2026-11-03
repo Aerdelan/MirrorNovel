@@ -1244,53 +1244,37 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
       // 旧实现只能等模型把思考写完（实测可达数万字、数百秒）才知道正文没了。
       let watchdogTripped = false;
 
+      const consumeProviderLine = (line) => {
+        const trimmed = String(line || '').trim();
+        if (!trimmed || trimmed.startsWith(':')) return;
+        if (!isOllama && !trimmed.startsWith('data:')) return;
+        const data = isOllama ? trimmed : trimmed.slice(5).trimStart();
+        if (data === '[DONE]') return;
+        let parsed;
+        try { parsed = JSON.parse(data); } catch { return; }
+        const content = isOllama ? parsed.message?.content || '' : parsed.choices?.[0]?.delta?.content || '';
+        if (content) { fullContent += content; if (onChunk) onChunk(content); }
+        const reasoning = !isOllama && parsed.choices?.[0]?.delta?.reasoning_content || '';
+        if (reasoning) {
+          reasoningChars += reasoning.length;
+          reasoningTokenEstimate += countTokens(reasoning);
+          if (onReasoning) onReasoning(reasoning);
+        }
+        const reason = isOllama ? parsed.done_reason : parsed.choices?.[0]?.finish_reason;
+        if (reason) finishReason = reason;
+        if (isOllama && parsed.done && (parsed.prompt_eval_count || parsed.eval_count)) {
+          providerUsage = { prompt_tokens: parsed.prompt_eval_count, completion_tokens: parsed.eval_count };
+        } else if (parsed.usage && typeof parsed.usage === 'object') providerUsage = parsed.usage;
+      };
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
 
-        if (isOllama) {
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-          for (const line of lines) {
-            if (!line.trim()) continue;
-            try {
-              const parsed = JSON.parse(line);
-              const content = parsed.message?.content || '';
-              if (content) { fullContent += content; if (onChunk) onChunk(content); }
-              if (parsed.done_reason) finishReason = parsed.done_reason;
-              if (parsed.done && (parsed.prompt_eval_count || parsed.eval_count)) {
-                providerUsage = { prompt_tokens: parsed.prompt_eval_count, completion_tokens: parsed.eval_count };
-              }
-            } catch (e) { /* skip malformed provider line */ }
-          }
-        } else {
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed || trimmed.startsWith(':')) continue;
-            if (trimmed.startsWith('data: ')) {
-              const data = trimmed.slice(6);
-              if (data === '[DONE]') continue;
-              try {
-                const parsed = JSON.parse(data);
-                const content = parsed.choices?.[0]?.delta?.content || '';
-                if (content) { fullContent += content; if (onChunk) onChunk(content); }
-                // 思考阶段只有 reasoning_content，不转发会导致前端长时间停在 0 字
-                const reasoning = parsed.choices?.[0]?.delta?.reasoning_content || '';
-                if (reasoning) {
-                  reasoningChars += reasoning.length;
-                  reasoningTokenEstimate += countTokens(reasoning);
-                  if (onReasoning) onReasoning(reasoning);
-                }
-                const reason = parsed.choices?.[0]?.finish_reason;
-                if (reason) finishReason = reason;
-                if (parsed.usage && typeof parsed.usage === 'object') providerUsage = parsed.usage;
-              } catch (e) { /* skip malformed provider line */ }
-            }
-          }
-        }
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) consumeProviderLine(line);
 
         // 看门狗判定：思考已经超出预算且正文仍未开始输出，继续等下去只会烧时间与 token。
         // 阈值由 thinkingPolicy 给出（按思考预算换算为字数）。
@@ -1312,6 +1296,10 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
 
       // 冲刷 TextDecoder 内部可能保留的尾字节；不完整 UTF-8 会被替换为 �，不中止生成。
       buffer += decoder.decode();
+      // Some gateways close the last data line without a newline. Its JSON
+      // closers, finish_reason and usage are just as important as earlier lines.
+      if (!watchdogTripped && buffer.trim()) consumeProviderLine(buffer);
+      buffer = '';
 
       // 超时需覆盖整个流式读取过程：头部到达即停表会让慢速流（思考模型
       // 长推理）在无超时保护下无限挂起。到这里流已结束，停表。
@@ -1388,7 +1376,13 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         stitchedRounds += 1;
         const overlapLimit = 300;
         const tail = fullContent.slice(-1200);
-        const continuationPrompt = `你的上一次输出因为长度限制被截断了。请**只输出尚未写完的剩余部分**，严格从中断处接续，不要重复已经写过的内容，不要重新开头，不要输出任何解释或标记。\n\n【已输出内容的结尾片段（仅供衔接参考，切勿重复）】\n${tail}`;
+        const jsonOutput = options.outputFormat === 'json';
+        const continuationPrompt = jsonOutput
+          ? `【原始结构化任务，仍须完整执行】\n${userPrompt}\n\n上一次JSON因输出上限中断。只输出紧接中断位置的剩余字符，补齐尚未完成的字段、数组和根对象；不重新输出整个对象，不加代码围栏或说明，不能把嵌套对象当成完整蓝图。\n【已输出JSON的开头】\n${fullContent.slice(0, 1800)}\n【已输出JSON的末端，严格从此后继续】\n${fullContent.slice(-6000)}`
+          : `你的上一次输出因为长度限制被截断了。请**只输出尚未写完的剩余部分**，严格从中断处接续，不要重复已经写过的内容，不要重新开头，不要输出任何解释或标记。\n\n【已输出内容的结尾片段（仅供衔接参考，切勿重复）】\n${tail}`;
+        // A repeated brace or quote is often required JSON syntax, not prose
+        // overlap. Never drop structural characters at the stitch boundary.
+        const continuationOverlap = held => jsonOutput ? 0 : countOverlapSuffix(fullContent, held.slice(0, overlapLimit));
         // 续写内容先缓冲前 300 字用于去掉与既有内容的重复前缀，其余实时透传，
         // 避免前端出现"重复了一段"的观感。emitted 记录"已发给前端的新增部分"，
         // 保证服务端累加值与前端所见完全一致。
@@ -1399,7 +1393,7 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
           if (flushing) { emitted += chunk; if (onChunk) onChunk(chunk); return; }
           held += chunk;
           if (held.length >= overlapLimit) {
-            const overlap = countOverlapSuffix(fullContent, held.slice(0, overlapLimit));
+            const overlap = continuationOverlap(held);
             const rest = held.slice(overlap);
             held = '';
             flushing = true;
@@ -1414,7 +1408,7 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
           );
           // 流已结束但缓冲未满 300 字：此时才能判定重复前缀并补发。
           if (!flushing) {
-            const overlap = countOverlapSuffix(fullContent, held.slice(0, overlapLimit));
+            const overlap = continuationOverlap(held);
             const rest = held.slice(overlap);
             held = '';
             if (rest) { emitted += rest; if (onChunk) onChunk(rest); }
@@ -1439,7 +1433,7 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
           // forward 已完成去重与透传，这里也把同一份 emitted 合并进返回值，
           // 保证调用方保存的内容与用户实际看到的内容一致。
           if (!flushing && held) {
-            const overlap = countOverlapSuffix(fullContent, held.slice(0, overlapLimit));
+            const overlap = continuationOverlap(held);
             const rest = held.slice(overlap);
             held = '';
             if (rest) { emitted += rest; if (onChunk) onChunk(rest); }

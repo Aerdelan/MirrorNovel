@@ -3,6 +3,47 @@ const assert = require('node:assert/strict');
 
 const { streamGenerate, resolveApiConfig, MAX_GENERATION_TOKENS, extractProviderMaxTokens, getOutlineRequirements, buildOutlinePrompt, buildChapterPlan, getChapterPlanOutputTokens, buildGenreStyleContract, buildOptimizeAnalysisPrompt, buildOptimizeChapterPrompt, normalizeChapterWordTarget, getFriendlyErrorMessage, buildSystemPrompt, mergeAxes, normalizeAxes, buildStyleProfileBlock, completeOnce } = require('../services/aiService');
 
+function providerStream(frames) {
+  let index = 0;
+  return { ok: true, body: { getReader: () => ({ read: async () => index < frames.length
+    ? { done: false, value: new TextEncoder().encode(frames[index++]) } : { done: true } }) } };
+}
+
+test('an unterminated final SSE line preserves closing JSON, usage and finish reason', async () => {
+  const original = global.fetch;
+  try {
+    global.fetch = async () => providerStream([
+      `data:${JSON.stringify({ choices: [{ delta: { content: '{"mainArc":"夜班账"' } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: '}' }, finish_reason: 'stop' }], usage: { prompt_tokens: 31, completion_tokens: 17 } })}`,
+    ]);
+    const result = await streamGenerate('system', 'JSON任务', null, null,
+      { baseUrl: 'https://blueprint-tail.test/v1', model: 'test', disableThinking: true }, 0);
+    assert.deepEqual(JSON.parse(result.content), { mainArc: '夜班账' });
+    assert.equal(result.finishReason, 'stop');
+    assert.equal(result.usage.completion_tokens, 17);
+  } finally { global.fetch = original; }
+});
+
+test('JSON continuation retains structural braces and the original schema/task', async () => {
+  const original = global.fetch;
+  const blueprint = { mainArc: '夜班账的事实和人物关系。'.repeat(30), phases: [{ title: '第一部' }], rollingPlan: { chapters: [] } };
+  const text = JSON.stringify(blueprint);
+  const bodies = [];
+  try {
+    global.fetch = async (_url, options) => {
+      bodies.push(JSON.parse(options.body));
+      const first = bodies.length === 1;
+      return providerStream([`data: ${JSON.stringify({ choices: [{ delta: { content: first ? text.slice(0, -1) : '}' }, finish_reason: first ? 'length' : 'stop' }] })}`]);
+    };
+    const result = await streamGenerate('system', '原始蓝图任务：周行舟；schema=mainArc,phases,rollingPlan', null, null,
+      { baseUrl: 'https://blueprint-json.test/v1', model: 'test', disableThinking: true }, 0, 0.3, 2048, 60000, null,
+      { outputFormat: 'json', stitchOnTruncation: true, maxStitchRounds: 1 });
+    assert.equal(bodies.length, 2);
+    assert.deepEqual(JSON.parse(result.content), blueprint);
+    assert.match(bodies[1].messages.map(message => message.content).join('\n'), /原始蓝图任务：周行舟/);
+  } finally { global.fetch = original; }
+});
+
 test('思考/推理参数被上游拒绝时给出可读提示（覆盖各家措辞），且不误判无关 400', () => {
   for (const message of [
     '当前模型不支持该能力：reasoning', // DeepSeek 实际措辞

@@ -226,6 +226,7 @@ export default {
  blueprintTitle: '三级故事蓝图',
  blueprintDesc: '先确认全书大篇章、篇章内小阶段和未来 10–20 章执行卡。标签、人物声线、场景、关系变化和伏笔会直接约束章节生成。',
  blueprintPlanning: '正在规划蓝图...',
+ blueprintReceiving: '正在接收蓝图（已返回 {n} 字），完成后自动校验结构…',
  blueprintRegenerate: '重新生成蓝图',
  blueprintGenerate: '生成初始蓝图',
  blueprintConfirmed: '已确认，将用于本次生成',

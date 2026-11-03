@@ -149,7 +149,8 @@
    <button v-if="blueprintGenerating" class="btn btn-outline btn-sm" @click="cancelBlueprint">{{ $t('generate.stopGeneration') }}</button>
    <span v-if="initialBlueprintConfirmed" class="blueprint-confirmed"> {{ $t('generate.blueprintConfirmed') }}</span>
   </div>
-  <div v-if="blueprintGenerating" class="thinking-hint">
+  <div v-if="blueprintGenerating && blueprintOutputChars > 0" class="thinking-hint">{{ $t('generate.blueprintReceiving', { n: blueprintOutputChars }) }}</div>
+  <div v-else-if="blueprintGenerating" class="thinking-hint">
    {{ blueprintThinkingChars > 0
       ? `${$t('generate.thinkingStatus', { seconds: blueprintThinkingElapsed })}${$t('generate.thinkingCharsSuffix', { n: blueprintThinkingChars })}`
       : $t('generate.thinkingStatus', { seconds: blueprintThinkingElapsed }) }}
@@ -1072,6 +1073,7 @@ function scrollReasoningBox(elRef) {
 // 大纲/蓝图生成的单次 token 消耗（接口返回，弹窗与蓝图卡片展示）
 const outlineTokenUsage = ref(null)
 const blueprintTokenUsage = ref(null)
+const blueprintOutputChars = ref(0)
 // 生成过程中的累计 token 消耗（SSE token_usage 事件）
 const generationTokenUsage = ref(null)
 function formatTokenCount(value) {
@@ -1198,6 +1200,8 @@ function generateInitialBlueprint() {
  blueprintSetupError.value = ''
  blueprintWarning.value = ''
  blueprintReasoningText.value = ''
+ blueprintTokenUsage.value = null
+ blueprintOutputChars.value = 0
  initialBlueprintConfirmed.value = false
  initialBlueprintText.value = ''
  initialBlueprint.value = null
@@ -1235,6 +1239,16 @@ function generateInitialBlueprint() {
   onContent: (content) => {
    // 服务端仍以 JSON 约束模型输出，但原始 JSON 不直接暴露给用户。
    // 等 completed 事件拿到结构化蓝图后，再转换为可读、可编辑的蓝图文本。
+   lastGenerationActivity = Date.now()
+   blueprintOutputChars.value += String(content || '').length
+  },
+  onStatus: (message) => { blueprintWarning.value = message || '' },
+  onEvent: (event) => {
+   if (event.type === 'blueprint_reset') {
+    blueprintOutputChars.value = 0
+    blueprintReasoningText.value = ''
+   }
+   if (event.type === 'token_usage') blueprintTokenUsage.value = event.usage || null
   },
   onCompleted: (event) => {
    initialBlueprint.value = event.blueprint || null
@@ -1245,7 +1259,8 @@ function generateInitialBlueprint() {
    stopThinkingTicker()
    scrollBlueprintToBottom()
   },
-  onError: (message) => {
+  onError: (message, event) => {
+   if (event?.tokenUsage) blueprintTokenUsage.value = event.tokenUsage
    blueprintSetupError.value = message || $t('generate.errBlueprintGen')
    blueprintGenerating.value = false
    stopThinkingTicker()

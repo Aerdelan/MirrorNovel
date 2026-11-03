@@ -409,6 +409,93 @@ function makePlan(chapters) {
   return JSON.stringify({ version: 1, phases: ['开端', '追查'], chapters });
 }
 
+const initialBlueprintBody = { novelTypeId: 'xianxia', protagonistName: '周行舟',
+  targetWordCount: 300000, chapterWordTarget: 5000, outline: '河湾夜班：周行舟在顺河货运核对交接证据并承担代价。' };
+
+test('初始蓝图：完整顶层JSON只调用一次，保留所有层级并通过校验', async () => {
+  const blueprint = require('./fixtures/initialBlueprint')();
+  state.aiHandler = call => emitText(JSON.stringify({ data: { blueprint } }), call.onChunk, call.signal);
+  const { events } = await postSse('/generate-blueprint', initialBlueprintBody);
+  const done = events.find(event => event.type === 'completed');
+  assert.ok(done, events.find(event => event.type === 'error')?.message);
+  assert.equal(done.blueprint.phases.length, 10);
+  assert.equal(done.blueprint.rollingPlan.chapters.length, 20);
+  assert.equal(done.validation.valid, true);
+  assert.equal(done.tokenUsage.calls, 1);
+  assert.equal(state.aiCalls.length, 1);
+  assert.equal(state.aiCalls[0].options.outputFormat, 'json');
+  assert.equal(state.novels.size, 0, 'blueprint preview must not create prose or a book');
+});
+
+test('初始蓝图：截坏外层不能把内部篇章当整份蓝图，自动修复一次并累计两次用量', async () => {
+  const blueprint = require('./fixtures/initialBlueprint')();
+  let calls = 0;
+  state.aiHandler = call => emitText(++calls === 1
+    ? '{"mainArc":"河湾夜班","phases":[{"title":"夜班账"}],"rollingPlan":'
+    : JSON.stringify(blueprint), call.onChunk, call.signal);
+  const { events } = await postSse('/generate-blueprint', initialBlueprintBody);
+  const done = events.find(event => event.type === 'completed');
+  assert.ok(done, events.find(event => event.type === 'error')?.message);
+  assert.equal(calls, 2);
+  assert.equal(done.tokenUsage.calls, 2);
+  assert.equal(state.aiCalls[1].options.taskType, 'blueprint_repair');
+  assert.match(state.aiCalls[1].userPrompt, /JSON无法完整解析/);
+  assert.match(state.aiCalls[1].userPrompt, /周行舟/);
+  assert.ok(events.some(event => event.type === 'blueprint_reset'));
+});
+
+test('初始蓝图：两次仍不完整则明确返回原因、编号和用量，不能补造蓝图或无限重试', async () => {
+  state.aiHandler = call => emitText('{"mainArc":"河湾夜班","phases":[{}]}', call.onChunk, call.signal);
+  const { events } = await postSse('/generate-blueprint', initialBlueprintBody);
+  const error = events.find(event => event.type === 'error');
+  assert.equal(error.code, 'BLUEPRINT_INVALID');
+  assert.deepEqual(error.diagnostics.missingFields, ['rollingPlan']);
+  assert.equal(error.diagnostics.reason, 'missing_fields');
+  assert.match(error.message, /rollingPlan/);
+  assert.ok(error.errorId);
+  assert.equal(error.tokenUsage.calls, 2);
+  assert.equal(state.aiCalls.length, 2);
+  assert.equal(events.some(event => event.type === 'completed'), false);
+  assert.equal(state.novels.size, 0);
+});
+
+test('初始蓝图：用完续写预算仍被截断时明确报告，不再整轮重跑', async () => {
+  state.aiHandler = async call => ({ ...await emitText('{"mainArc":"河湾夜班","phases":[', call.onChunk, call.signal),
+    finishReason: 'length', stitchedRounds: 8 });
+  const { events } = await postSse('/generate-blueprint', initialBlueprintBody);
+  const error = events.find(event => event.type === 'error');
+  assert.equal(error.diagnostics.reason, 'output_truncated');
+  assert.match(error.message, /截断/);
+  assert.equal(error.tokenUsage.calls, 1);
+  assert.equal(state.aiCalls.length, 1);
+});
+
+test('初始蓝图：真实HTTP流末帧没有换行符时仍通过接口解析和内容校验', async () => {
+  const http = require('node:http');
+  const blueprint = require('./fixtures/initialBlueprint')();
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      const content = JSON.stringify(blueprint);
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: content.slice(0, -1) } }] })}\n\n`);
+      res.end(`data:${JSON.stringify({ choices: [{ delta: { content: '}' }, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 200 } })}`);
+    });
+  });
+  await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));
+  try {
+    state.aiHandler = call => realAiService.streamGenerate(call.systemPrompt, call.userPrompt, call.onChunk, call.signal,
+      { baseUrl: `http://127.0.0.1:${upstream.address().port}/v1`, model: 'blueprint-test', disableThinking: true },
+      0, call.temperature, call.maxTokens, 10000, call.onReasoning, call.options);
+    const { events } = await postSse('/generate-blueprint', initialBlueprintBody);
+    const done = events.find(event => event.type === 'completed');
+    assert.ok(done, events.find(event => event.type === 'error')?.message);
+    assert.equal(done.validation.valid, true);
+    assert.equal(done.tokenUsage.outputTokens, 200);
+    assert.equal(state.aiCalls.length, 1);
+  } finally { await new Promise(resolve => upstream.close(resolve)); }
+});
+
 async function seedNovel(data) {
   const chapters = clone(data.chapters || []);
   const novel = new InMemoryNovel({

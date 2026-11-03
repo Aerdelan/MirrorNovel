@@ -290,6 +290,7 @@ export default {
  blueprintTitle: 'Three-level story blueprint',
  blueprintDesc: 'Confirm the book-level arcs, their subphases, and execution cards for the next 10–20 chapters. Tags, character voices, scenes, relationships, and foreshadowing directly constrain chapter generation.',
  blueprintPlanning: 'Planning blueprint…',
+ blueprintReceiving: 'Receiving blueprint ({n} characters); structure will be validated when complete…',
  blueprintRegenerate: 'Regenerate blueprint',
  blueprintGenerate: 'Generate blueprint',
  blueprintConfirmed: 'Confirmed — will be used for this run',
