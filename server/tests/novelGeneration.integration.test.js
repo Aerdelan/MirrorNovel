@@ -412,46 +412,51 @@ function makePlan(chapters) {
 const initialBlueprintBody = { novelTypeId: 'xianxia', protagonistName: '周行舟',
   targetWordCount: 300000, chapterWordTarget: 5000, outline: '河湾夜班：周行舟在顺河货运核对交接证据并承担代价。' };
 
-test('初始蓝图：完整顶层JSON只调用一次，保留所有层级并通过校验', async () => {
+const blueprintPart = require('./fixtures/blueprintPart');
+
+test('初始蓝图：按15块生成并组装所有层级，通过最终校验', async () => {
   const blueprint = require('./fixtures/initialBlueprint')();
-  state.aiHandler = call => emitText(JSON.stringify({ data: { blueprint } }), call.onChunk, call.signal);
+  state.aiHandler = call => emitText(JSON.stringify({ data: blueprintPart(call.options.blueprintPart, blueprint) }), call.onChunk, call.signal);
   const { events } = await postSse('/generate-blueprint', initialBlueprintBody);
   const done = events.find(event => event.type === 'completed');
   assert.ok(done, events.find(event => event.type === 'error')?.message);
   assert.equal(done.blueprint.phases.length, 10);
   assert.equal(done.blueprint.rollingPlan.chapters.length, 20);
   assert.equal(done.validation.valid, true);
-  assert.equal(done.tokenUsage.calls, 1);
-  assert.equal(state.aiCalls.length, 1);
-  assert.equal(state.aiCalls[0].options.outputFormat, 'json');
+  assert.equal(done.tokenUsage.calls, 15);
+  assert.equal(events.filter(event => event.type === 'token_usage').length, 15);
+  assert.equal(state.aiCalls.length, 15);
+  assert.ok(state.aiCalls.every(call => call.options.outputFormat === 'json' && call.maxTokens <= 16000));
+  assert.ok(events.some(event => event.type === 'status' && /15\/15/.test(event.message)));
   assert.equal(state.novels.size, 0, 'blueprint preview must not create prose or a book');
 });
 
-test('初始蓝图：截坏外层不能把内部篇章当整份蓝图，自动修复一次并累计两次用量', async () => {
+test('初始蓝图：截坏当前分块后仅局部修复，所有请求计入用量', async () => {
   const blueprint = require('./fixtures/initialBlueprint')();
   let calls = 0;
-  state.aiHandler = call => emitText(++calls === 1
-    ? '{"mainArc":"河湾夜班","phases":[{"title":"夜班账"}],"rollingPlan":'
-    : JSON.stringify(blueprint), call.onChunk, call.signal);
+  state.aiHandler = call => emitText(++calls === 4
+    ? '{"phase":{"title":"夜班账"}'
+    : JSON.stringify(blueprintPart(call.options.blueprintPart, blueprint)), call.onChunk, call.signal);
   const { events } = await postSse('/generate-blueprint', initialBlueprintBody);
   const done = events.find(event => event.type === 'completed');
   assert.ok(done, events.find(event => event.type === 'error')?.message);
-  assert.equal(calls, 2);
-  assert.equal(done.tokenUsage.calls, 2);
-  assert.equal(state.aiCalls[1].options.taskType, 'blueprint_repair');
-  assert.match(state.aiCalls[1].userPrompt, /JSON无法完整解析/);
-  assert.match(state.aiCalls[1].userPrompt, /周行舟/);
-  assert.ok(events.some(event => event.type === 'blueprint_reset'));
+  assert.equal(calls, 16);
+  assert.equal(done.tokenUsage.calls, 16);
+  assert.equal(state.aiCalls[4].options.taskType, 'blueprint_repair');
+  assert.equal(state.aiCalls[4].options.blueprintPart, state.aiCalls[3].options.blueprintPart);
+  assert.match(state.aiCalls[4].userPrompt, /JSON无法完整解析/);
+  assert.match(state.aiCalls[4].userPrompt, /周行舟/);
+  assert.ok(events.some(event => event.type === 'status' && /仅修复本块/.test(event.message)));
 });
 
 test('初始蓝图：两次仍不完整则明确返回原因、编号和用量，不能补造蓝图或无限重试', async () => {
   state.aiHandler = call => emitText('{"mainArc":"河湾夜班","phases":[{}]}', call.onChunk, call.signal);
   const { events } = await postSse('/generate-blueprint', initialBlueprintBody);
   const error = events.find(event => event.type === 'error');
-  assert.equal(error.code, 'BLUEPRINT_INVALID');
-  assert.deepEqual(error.diagnostics.missingFields, ['rollingPlan']);
-  assert.equal(error.diagnostics.reason, 'missing_fields');
-  assert.match(error.message, /rollingPlan/);
+  assert.equal(error.code, 'BLUEPRINT_PART_INVALID');
+  assert.equal(error.diagnostics.part, '全书概览');
+  assert.equal(error.diagnostics.reason, 'part_invalid');
+  assert.match(error.message, /全书概览/);
   assert.ok(error.errorId);
   assert.equal(error.tokenUsage.calls, 2);
   assert.equal(state.aiCalls.length, 2);
@@ -459,24 +464,71 @@ test('初始蓝图：两次仍不完整则明确返回原因、编号和用量�
   assert.equal(state.novels.size, 0);
 });
 
-test('初始蓝图：用完续写预算仍被截断时明确报告，不再整轮重跑', async () => {
+test('初始蓝图：分块仍持续截断时最多修复一次，不无限重跑', async () => {
   state.aiHandler = async call => ({ ...await emitText('{"mainArc":"河湾夜班","phases":[', call.onChunk, call.signal),
-    finishReason: 'length', stitchedRounds: 8 });
+    finishReason: 'length', stitchedRounds: 1 });
   const { events } = await postSse('/generate-blueprint', initialBlueprintBody);
   const error = events.find(event => event.type === 'error');
-  assert.equal(error.diagnostics.reason, 'output_truncated');
-  assert.match(error.message, /截断/);
-  assert.equal(error.tokenUsage.calls, 1);
-  assert.equal(state.aiCalls.length, 1);
+  assert.equal(error.diagnostics.reason, 'invalid_json_or_missing_field');
+  assert.equal(error.diagnostics.finishReason, 'length');
+  assert.equal(error.code, 'BLUEPRINT_PART_INVALID');
+  assert.equal(error.tokenUsage.calls, 2);
+  assert.equal(state.aiCalls.length, 2);
+  assert.ok(state.aiCalls.every(call => call.options.maxStitchRounds === 1));
+});
+
+test('初始蓝图：上游中途失败时仍保留成功分块及失败请求的用量，不创建作品', async () => {
+  const blueprint = require('./fixtures/initialBlueprint')();
+  state.aiHandler = call => {
+    if (state.aiCalls.length === 2) {
+      const error = new Error('upstream unavailable');
+      error.usage = { prompt_tokens: 13, completion_tokens: 7 };
+      throw error;
+    }
+    return emitText(JSON.stringify(blueprintPart(call.options.blueprintPart, blueprint)), call.onChunk, call.signal);
+  };
+  const { events } = await postSse('/generate-blueprint', initialBlueprintBody);
+  const recorded = events.find(event => event.type === 'token_usage').usage;
+  const error = events.find(event => event.type === 'error');
+  assert.ok(error.errorId);
+  assert.equal(error.diagnostics.part, '篇章第1-6章');
+  assert.equal(error.diagnostics.reason, 'upstream_error');
+  assert.equal(error.tokenUsage.calls, 2);
+  assert.equal(error.tokenUsage.inputTokens, recorded.inputTokens + 13);
+  assert.equal(error.tokenUsage.outputTokens, recorded.outputTokens + 7);
+  assert.equal(state.aiCalls.length, 2);
+  assert.equal(state.novels.size, 0);
+  assert.equal(events.some(event => event.type === 'completed'), false);
+});
+
+test('初始蓝图：总时间预算到期中止当前分块并返回明确超时，不继续计费请求', async () => {
+  const { TIMEOUT } = require('../config/timeouts');
+  const previous = TIMEOUT.BLUEPRINT;
+  TIMEOUT.BLUEPRINT = 30;
+  state.aiHandler = call => new Promise((_resolve, reject) => {
+    const fail = () => reject(abortError());
+    if (call.signal.aborted) fail();
+    else call.signal.addEventListener('abort', fail, { once: true });
+  });
+  try {
+    const { events } = await postSse('/generate-blueprint', initialBlueprintBody);
+    const error = events.find(event => event.type === 'error');
+    assert.equal(error.code, 'BLUEPRINT_TIMEOUT');
+    assert.match(error.message, /时间超过上限/);
+    assert.ok(error.errorId);
+    assert.equal(state.aiCalls.length, 1);
+    assert.equal(state.novels.size, 0);
+  } finally { TIMEOUT.BLUEPRINT = previous; }
 });
 
 test('初始蓝图：真实HTTP流末帧没有换行符时仍通过接口解析和内容校验', async () => {
   const http = require('node:http');
   const blueprint = require('./fixtures/initialBlueprint')();
+  let currentPart;
   const upstream = http.createServer((req, res) => {
     req.resume();
     req.on('end', () => {
-      const content = JSON.stringify(blueprint);
+      const content = JSON.stringify(currentPart);
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: content.slice(0, -1) } }] })}\n\n`);
       res.end(`data:${JSON.stringify({ choices: [{ delta: { content: '}' }, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 200 } })}`);
@@ -484,15 +536,18 @@ test('初始蓝图：真实HTTP流末帧没有换行符时仍通过接口解析�
   });
   await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));
   try {
-    state.aiHandler = call => realAiService.streamGenerate(call.systemPrompt, call.userPrompt, call.onChunk, call.signal,
+    state.aiHandler = call => {
+      currentPart = blueprintPart(call.options.blueprintPart, blueprint);
+      return realAiService.streamGenerate(call.systemPrompt, call.userPrompt, call.onChunk, call.signal,
       { baseUrl: `http://127.0.0.1:${upstream.address().port}/v1`, model: 'blueprint-test', disableThinking: true },
       0, call.temperature, call.maxTokens, 10000, call.onReasoning, call.options);
+    };
     const { events } = await postSse('/generate-blueprint', initialBlueprintBody);
     const done = events.find(event => event.type === 'completed');
     assert.ok(done, events.find(event => event.type === 'error')?.message);
     assert.equal(done.validation.valid, true);
-    assert.equal(done.tokenUsage.outputTokens, 200);
-    assert.equal(state.aiCalls.length, 1);
+    assert.equal(done.tokenUsage.outputTokens, 3000);
+    assert.equal(state.aiCalls.length, 15);
   } finally { await new Promise(resolve => upstream.close(resolve)); }
 });
 

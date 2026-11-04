@@ -76,4 +76,18 @@ function inspectBlueprintPayload(text) {
 
 function parseBlueprintPayload(text) { return inspectBlueprintPayload(text).parsed; }
 
-module.exports = { parseBlueprintPayload, inspectBlueprintPayload };
+function parseStructuredPayload(text, field) {
+  const visit = (value, depth = 0) => {
+    if (!value || typeof value !== 'object' || depth > 5) return null;
+    if (!Array.isArray(value) && Object.hasOwn(value, field)) return value;
+    for (const child of Array.isArray(value) ? value : ['data', 'result', 'blueprint', 'storyBlueprint'].map(key => value[key])) {
+      const found = visit(child, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  };
+  for (const value of documents(text)) { const found = visit(value); if (found) return found; }
+  return null;
+}
+
+module.exports = { parseBlueprintPayload, inspectBlueprintPayload, parseStructuredPayload };
