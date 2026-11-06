@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { parseBlueprintPayload, inspectBlueprintPayload, parseStructuredPayload } = require('../services/blueprintPayload');
+const { parseBlueprintPayload, inspectBlueprintPayload, inspectStructuredPayload } = require('../services/blueprintPayload');
 const payload = { mainArc: '保留字面文本：,} 和 ,] 以及引号"和括号{不能改写', phases: [{ title: '夜班账', subphases: [{ title: '现场' }] }], rollingPlan: { chapters: [{ chapterNumber: 1 }] } };
 
 test('reads complete blueprint roots through fences, explanations, arrays and nested envelopes', () => {
@@ -27,8 +27,8 @@ test('reports the actual missing fields instead of a generic structure error', (
 
 test('structured parts accept known envelopes but never promote nested fragments', () => {
   const phase = { phase: { title: '本篇章' } };
-  assert.deepEqual(parseStructuredPayload('说明\n' + JSON.stringify({ data: { result: phase } }), 'phase'), phase);
-  assert.equal(parseStructuredPayload('{"data":' + JSON.stringify(phase), 'phase'), null);
-  assert.equal(parseStructuredPayload(JSON.stringify({ arbitrary: phase }), 'phase'), null);
-  assert.equal(parseStructuredPayload('{"phase":', 'phase'), null);
+  assert.deepEqual(inspectStructuredPayload('说明\n' + JSON.stringify({ data: { result: phase } }), 'phase').parsed, phase);
+  assert.deepEqual(inspectStructuredPayload('{"data":' + JSON.stringify(phase), 'phase'), { parsed: null, reason: 'invalid_json' });
+  assert.deepEqual(inspectStructuredPayload(JSON.stringify({ arbitrary: phase }), 'phase'), { parsed: null, reason: 'missing_field' });
+  assert.equal(inspectStructuredPayload('{"phase":', 'phase').reason, 'invalid_json');
 });

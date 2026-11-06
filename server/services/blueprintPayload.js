@@ -76,18 +76,28 @@ function inspectBlueprintPayload(text) {
 
 function parseBlueprintPayload(text) { return inspectBlueprintPayload(text).parsed; }
 
-function parseStructuredPayload(text, field) {
+function inspectStructuredPayload(text, field) {
   const visit = (value, depth = 0) => {
     if (!value || typeof value !== 'object' || depth > 5) return null;
-    if (!Array.isArray(value) && Object.hasOwn(value, field)) return value;
+    if (!Array.isArray(value)) {
+      if (Object.hasOwn(value, field)) return value;
+      // Some models return the phase itself. Normalize its envelope only.
+      if (field === 'phase' && ['title', 'startChapter', 'endChapter', 'subphases'].every(key => Object.hasOwn(value, key))) {
+        return { phase: value };
+      }
+    }
     for (const child of Array.isArray(value) ? value : ['data', 'result', 'blueprint', 'storyBlueprint'].map(key => value[key])) {
       const found = visit(child, depth + 1);
       if (found) return found;
     }
     return null;
   };
-  for (const value of documents(text)) { const found = visit(value); if (found) return found; }
-  return null;
+  const roots = documents(text);
+  for (const value of roots) {
+    const parsed = visit(value);
+    if (parsed) return { parsed, reason: null };
+  }
+  return { parsed: null, reason: roots.length ? 'missing_field' : 'invalid_json' };
 }
 
-module.exports = { parseBlueprintPayload, inspectBlueprintPayload, parseStructuredPayload };
+module.exports = { parseBlueprintPayload, inspectBlueprintPayload, inspectStructuredPayload };

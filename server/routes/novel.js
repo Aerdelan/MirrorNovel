@@ -1604,8 +1604,8 @@ lockedFacts只填写用户大纲明确给出的事实，没有则留空。voiceG
               abortController.signal, resolveApiConfig(req.userModelConfig, 'reasoning'),
               1, attempt ? 0.2 : 0.35, maxTokens, Math.min(remaining, 600000),
               reasoning => { thinkingEmitter(reasoning); send({ type: 'reasoning', content: reasoning }); },
-              { outputFormat: 'json', stitchOnTruncation: true, maxStitchRounds: 1,
-                taskType: attempt ? 'blueprint_repair' : 'blueprint_initial', blueprintPart: name });
+              // A part is one JSON document. Retry it independently if cut off.
+              { taskType: attempt ? 'blueprint_repair' : 'blueprint_initial', blueprintPart: name });
           } catch (error) {
             if (error?.attempts || error?.usage) recordTokenUsage(ledger, 'reasoning', error);
             error.diagnostics = { ...error.diagnostics, part: name, attempt: attempt + 1, reason: 'upstream_error' };

@@ -1,4 +1,4 @@
-const { parseStructuredPayload } = require('./blueprintPayload');
+const { inspectStructuredPayload } = require('./blueprintPayload');
 
 const requireText = value => typeof value === 'string' && value.trim();
 const hasItems = value => Array.isArray(value) && value.length > 0;
@@ -56,19 +56,27 @@ async function generateBlueprintParts({ context, totalChapters, arcCount, rollin
       onStatus?.(`蓝图 ${step}/${stepCount}：${name}${attempt ? '（仅修复本块）' : ''}...`);
       const prompt = `${context}\n\n【本次仅执行的分块任务】\n${instruction}
 本次只输出上面要求的一个JSON对象，不能输出整份三级蓝图、其他分块、解释或代码围栏。
-${failure ? `【上次本块校验失败】${JSON.stringify(failure.errors)}\n只修复本块，保持原任务的剧情与已完成分块不变。` : ''}`;
+${failure ? `【上次本块校验失败】${JSON.stringify(failure.errors)}\n从头返回本块完整的JSON对象，保留要求的顶层字段 ${field}。各字段只写必要细节，优先保证字段完整和JSON闭合。` : ''}`;
       const result = await request({ name, prompt, attempt, maxTokens: name === '全书概览' ? 12000 : 16000 });
       onUsage?.(result);
       aborted();
-      const parsed = parseStructuredPayload(result?.content, field);
-      const errors = parsed ? validate(parsed) : ['JSON无法完整解析，或缺少顶层字段：' + field];
+      const content = String(result?.content || '');
+      const { parsed, reason: parseReason } = inspectStructuredPayload(content, field);
+      const reason = parsed ? 'part_invalid'
+        : result?.finishReason === 'length' ? 'output_truncated'
+          : !content.trim() ? 'empty_output' : parseReason;
+      const errors = parsed ? validate(parsed) : [{
+        output_truncated: '模型输出达到上限，本块未完整返回',
+        empty_output: '模型未返回蓝图内容',
+        invalid_json: 'JSON无法完整解析',
+        missing_field: `JSON缺少要求的顶层字段：${field}`,
+      }[reason]];
       if (!errors.length) return parsed;
       failure = { part: name, attempt: attempt + 1, errors: errors.slice(0, 12),
-        reason: !parsed ? 'invalid_json_or_missing_field' : 'part_invalid',
-        outputChars: String(result?.content || '').length, finishReason: result?.finishReason || null };
+        reason, expectedField: field, outputChars: content.length, finishReason: result?.finishReason || null };
       onFailure?.(failure);
     }
-    const error = new Error(`蓝图分块“${name}”未通过：${failure.errors.join('；')}。仅重试本块后仍失败，未创建正文`);
+    const error = new Error(`蓝图分块“${name}”未通过：${failure.errors.join('；')}。仅重试本块后仍失败`);
     error.code = 'BLUEPRINT_PART_INVALID';
     error.diagnostics = failure;
     throw error;
@@ -107,7 +115,7 @@ ${failure ? `【上次本块校验失败】${JSON.stringify(failure.errors)}\n�
 全书概览（供连贯性核对，不得改写）：${JSON.stringify(outline)}
 已完成篇章的衔接约束：${JSON.stringify(phases.map(phase => ({ title: phase.title, endChapter: phase.endChapter, exitCondition: phase.exitCondition, unresolvedQuestions: phase.unresolvedQuestions })))}
 返回结构示例（内容必须依据本书重新填写）：${JSON.stringify({ phase: { ...stageExample, subphases: [stageExample] } })}。
-subphases必须连续覆盖第${startChapter}-${endChapter}章，通常2-4个、最多8个，章数不足时1个。每个小阶段也必须有上述六个数组和进入/离开条件。保持本篇章概览分配的标签原名及兑现责任。只填本篇章及其小阶段，不写执行卡或其他篇章。`, parsed => {
+subphases必须连续覆盖第${startChapter}-${endChapter}章，通常2-4个、最多8个，章数不足时1个。每个小阶段也必须有上述六个数组和进入/离开条件。每项只写必要的剧情信息，人物推进和伏笔聚焦本阶段直接相关的条目。保持本篇章概览分配的标签原名及兑现责任。只填本篇章及其小阶段，不写执行卡或其他篇章。`, parsed => {
         const phase = parsed.phase;
         const errors = stageErrors(phase);
         if (Number(phase?.startChapter) !== Number(startChapter) || Number(phase?.endChapter) !== Number(endChapter)) errors.push('篇章范围被改写');

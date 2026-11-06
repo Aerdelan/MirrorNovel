@@ -426,7 +426,7 @@ test('初始蓝图：按15块生成并组装所有层级，通过最终校验', 
   assert.equal(done.tokenUsage.calls, 15);
   assert.equal(events.filter(event => event.type === 'token_usage').length, 15);
   assert.equal(state.aiCalls.length, 15);
-  assert.ok(state.aiCalls.every(call => call.options.outputFormat === 'json' && call.maxTokens <= 16000));
+  assert.ok(state.aiCalls.every(call => call.options.stitchOnTruncation !== true && call.maxTokens <= 16000));
   assert.ok(events.some(event => event.type === 'status' && /15\/15/.test(event.message)));
   assert.equal(state.novels.size, 0, 'blueprint preview must not create prose or a book');
 });
@@ -466,15 +466,16 @@ test('初始蓝图：两次仍不完整则明确返回原因、编号和用量�
 
 test('初始蓝图：分块仍持续截断时最多修复一次，不无限重跑', async () => {
   state.aiHandler = async call => ({ ...await emitText('{"mainArc":"河湾夜班","phases":[', call.onChunk, call.signal),
-    finishReason: 'length', stitchedRounds: 1 });
+    finishReason: 'length' });
   const { events } = await postSse('/generate-blueprint', initialBlueprintBody);
   const error = events.find(event => event.type === 'error');
-  assert.equal(error.diagnostics.reason, 'invalid_json_or_missing_field');
+  assert.equal(error.diagnostics.reason, 'output_truncated');
+  assert.match(error.message, /输出达到上限/);
   assert.equal(error.diagnostics.finishReason, 'length');
   assert.equal(error.code, 'BLUEPRINT_PART_INVALID');
   assert.equal(error.tokenUsage.calls, 2);
   assert.equal(state.aiCalls.length, 2);
-  assert.ok(state.aiCalls.every(call => call.options.maxStitchRounds === 1));
+  assert.ok(state.aiCalls.every(call => call.options.stitchOnTruncation !== true));
 });
 
 test('初始蓝图：上游中途失败时仍保留成功分块及失败请求的用量，不创建作品', async () => {
@@ -521,23 +522,30 @@ test('初始蓝图：总时间预算到期中止当前分块并返回明确超�
   } finally { TIMEOUT.BLUEPRINT = previous; }
 });
 
-test('初始蓝图：真实HTTP流末帧没有换行符时仍通过接口解析和内容校验', async () => {
+test('初始蓝图：真实HTTP流截断后重新生成分块，接受无外壳篇章与无换行尾帧', async () => {
   const http = require('node:http');
   const blueprint = require('./fixtures/initialBlueprint')();
-  let currentPart;
+  let currentCall;
+  let upstreamCalls = 0;
   const upstream = http.createServer((req, res) => {
     req.resume();
     req.on('end', () => {
-      const content = JSON.stringify(currentPart);
+      upstreamCalls++;
+      const { blueprintPart: name, taskType } = currentCall.options;
+      const part = blueprintPart(name, blueprint);
+      const firstPhase = name === '篇章第1-6章';
+      const truncated = firstPhase && taskType === 'blueprint_initial';
+      const content = truncated ? JSON.stringify(part).slice(0, -1)
+        : JSON.stringify(firstPhase ? part.phase : part);
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: content.slice(0, -1) } }] })}\n\n`);
-      res.end(`data:${JSON.stringify({ choices: [{ delta: { content: '}' }, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 200 } })}`);
+      res.end(`data:${JSON.stringify({ choices: [{ delta: { content: content.slice(-1) }, finish_reason: truncated ? 'length' : 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 200 } })}`);
     });
   });
   await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));
   try {
     state.aiHandler = call => {
-      currentPart = blueprintPart(call.options.blueprintPart, blueprint);
+      currentCall = call;
       return realAiService.streamGenerate(call.systemPrompt, call.userPrompt, call.onChunk, call.signal,
       { baseUrl: `http://127.0.0.1:${upstream.address().port}/v1`, model: 'blueprint-test', disableThinking: true },
       0, call.temperature, call.maxTokens, 10000, call.onReasoning, call.options);
@@ -546,8 +554,12 @@ test('初始蓝图：真实HTTP流末帧没有换行符时仍通过接口解析�
     const done = events.find(event => event.type === 'completed');
     assert.ok(done, events.find(event => event.type === 'error')?.message);
     assert.equal(done.validation.valid, true);
-    assert.equal(done.tokenUsage.outputTokens, 3000);
-    assert.equal(state.aiCalls.length, 15);
+    assert.equal(done.blueprint.phases[0].title, blueprint.phases[0].title);
+    assert.equal(done.tokenUsage.outputTokens, 3200);
+    assert.equal(upstreamCalls, 16);
+    assert.equal(state.aiCalls.length, 16);
+    assert.match(state.aiCalls[2].userPrompt, /从头返回本块完整的JSON对象/);
+    assert.match(state.aiCalls[2].userPrompt, /输出达到上限/);
   } finally { await new Promise(resolve => upstream.close(resolve)); }
 });
 
