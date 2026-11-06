@@ -73,7 +73,8 @@ ${failure ? `【上次本块校验失败】${JSON.stringify(failure.errors)}\n�
       }[reason]];
       if (!errors.length) return parsed;
       failure = { part: name, attempt: attempt + 1, errors: errors.slice(0, 12),
-        reason, expectedField: field, outputChars: content.length, finishReason: result?.finishReason || null };
+        reason, expectedField: field, outputChars: content.length, finishReason: result?.finishReason || null,
+        jsonModeRequested: result?.jsonModeRequested === true, malformedStreamFrames: result?.malformedStreamFrames || 0 };
       onFailure?.(failure);
     }
     const error = new Error(`蓝图分块“${name}”未通过：${failure.errors.join('；')}。仅重试本块后仍失败`);

@@ -14,6 +14,7 @@ test('an unterminated final SSE line preserves closing JSON, usage and finish re
   try {
     global.fetch = async () => providerStream([
       `data:${JSON.stringify({ choices: [{ delta: { content: '{"mainArc":"夜班账"' } }] })}\n\n`,
+      'data: {invalid-frame}\n\n',
       `data: ${JSON.stringify({ choices: [{ delta: { content: '}' }, finish_reason: 'stop' }], usage: { prompt_tokens: 31, completion_tokens: 17 } })}`,
     ]);
     const result = await streamGenerate('system', 'JSON任务', null, null,
@@ -21,7 +22,34 @@ test('an unterminated final SSE line preserves closing JSON, usage and finish re
     assert.deepEqual(JSON.parse(result.content), { mainArc: '夜班账' });
     assert.equal(result.finishReason, 'stop');
     assert.equal(result.usage.completion_tokens, 17);
+    assert.equal(result.malformedStreamFrames, 1);
   } finally { global.fetch = original; }
+});
+
+test('JSON mode falls back once on an explicit format rejection and remembers it per model', async (t) => {
+  const bodies = [];
+  t.mock.method(global, 'fetch', async (_url, options) => {
+    const body = JSON.parse(options.body);
+    bodies.push(body);
+    if (body.model === 'legacy-json' && body.response_format) {
+      return { ok: false, status: 400, text: async () => 'Unsupported parameter: response_format' };
+    }
+    return providerStream([`data: ${JSON.stringify({ choices: [{ delta: { content: '{"phase":{}}' }, finish_reason: 'stop' }] })}\n\n`]);
+  });
+  const config = { baseUrl: 'https://json-mode-capability.test/v1', disableThinking: true };
+  const generate = (model, jsonMode) => streamGenerate('Return JSON', '篇章', null, null,
+    { ...config, model }, 0, 0.3, 4096, 10000, null, { jsonMode });
+
+  const fallback = await generate('legacy-json', true);
+  assert.equal(fallback.jsonModeRequested, false);
+  assert.equal(fallback.attempts[0].retryReason, 'json_mode_unsupported');
+  assert.equal(fallback.attempts.length, 2);
+  await generate('legacy-json', true);
+  assert.equal((await generate('supports-json', true)).jsonModeRequested, true);
+  await generate('supports-json', false);
+  assert.deepEqual(bodies.map(body => body.response_format), [
+    { type: 'json_object' }, undefined, undefined, { type: 'json_object' }, undefined,
+  ]);
 });
 
 test('JSON continuation retains structural braces and the original schema/task', async () => {

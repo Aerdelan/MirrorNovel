@@ -526,11 +526,13 @@ test('初始蓝图：真实HTTP流截断后重新生成分块，接受无外壳�
   const http = require('node:http');
   const blueprint = require('./fixtures/initialBlueprint')();
   let currentCall;
-  let upstreamCalls = 0;
+  const requestFormats = [];
   const upstream = http.createServer((req, res) => {
-    req.resume();
+    let body = '';
+    req.setEncoding('utf8');
+    req.on('data', chunk => { body += chunk; });
     req.on('end', () => {
-      upstreamCalls++;
+      requestFormats.push(JSON.parse(body).response_format);
       const { blueprintPart: name, taskType } = currentCall.options;
       const part = blueprintPart(name, blueprint);
       const firstPhase = name === '篇章第1-6章';
@@ -556,7 +558,7 @@ test('初始蓝图：真实HTTP流截断后重新生成分块，接受无外壳�
     assert.equal(done.validation.valid, true);
     assert.equal(done.blueprint.phases[0].title, blueprint.phases[0].title);
     assert.equal(done.tokenUsage.outputTokens, 3200);
-    assert.equal(upstreamCalls, 16);
+    assert.deepEqual(requestFormats, Array.from({ length: 16 }, () => ({ type: 'json_object' })));
     assert.equal(state.aiCalls.length, 16);
     assert.match(state.aiCalls[2].userPrompt, /从头返回本块完整的JSON对象/);
     assert.match(state.aiCalls[2].userPrompt, /输出达到上限/);

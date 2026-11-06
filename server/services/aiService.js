@@ -826,6 +826,7 @@ const PROVIDER_CAP_CACHE_LIMIT = 50;
 // Ask for real usage by default, then remember a rejection per route/model so
 // subsequent calls do not pay another failed round trip.
 const usageStreamRejectedCache = new Set();
+const jsonModeRejectedCache = new Set();
 
 function providerCapKey(config) {
   return `${config?.baseUrl || ''}::${config?.model || ''}`;
@@ -956,6 +957,8 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
   const baseUrl = normalizeBaseUrl(config.baseUrl);
   const isOllama = /localhost:11434|127\.0\.0\.1:11434/.test(baseUrl);
   const apiUrl = isOllama ? `${baseUrl}/api/chat` : `${baseUrl}/chat/completions`;
+  const jsonModeKey = providerCapKey(config);
+  const useJsonMode = () => options.jsonMode === true && !jsonModeRejectedCache.has(jsonModeKey);
 
   const headers = { 'Content-Type': 'application/json' };
   if (config.apiKey) headers['Authorization'] = `Bearer ${config.apiKey}`;
@@ -1051,13 +1054,15 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
   const buildRequestBody = () => {
     const system = briefThinkingNote ? `${systemPrompt}${BRIEF_THINKING_NOTE}` : systemPrompt;
     return isOllama
-      ? { model: config.model, messages: [{ role: 'system', content: system }, { role: 'user', content: userPrompt }], stream: true, options: { temperature, num_predict: thinkingPolicy.contentBudget } }
+      ? { model: config.model, messages: [{ role: 'system', content: system }, { role: 'user', content: userPrompt }], stream: true,
+        options: { temperature, num_predict: thinkingPolicy.contentBudget }, ...(useJsonMode() ? { format: 'json' } : {}) }
       : {
         model: config.model,
         messages: [{ role: 'system', content: system }, { role: 'user', content: userPrompt }],
         stream: true,
         temperature,
         max_tokens: thinkingPolicy.maxTokens,
+        ...(useJsonMode() ? { response_format: { type: 'json_object' } } : {}),
         ...(usageStreamRejectedCache.has(usageStreamRejectedKey(config))
           ? {}
           : { stream_options: { include_usage: true } }),
@@ -1080,6 +1085,7 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
     let fullContent = '';
     let providerUsage = null;
     let finishReason = null;
+    let malformedStreamFrames = 0;
     let reasoningChars = 0;
     let reasoningTokenEstimate = 0;
     let attemptRecorded = false;
@@ -1128,6 +1134,7 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
       }
 
       const requestBody = buildRequestBody();
+      const jsonModeRequested = Boolean(requestBody.response_format || requestBody.format === 'json');
       requestInputEstimate = (requestBody.messages || []).reduce(
         (sum, message) => sum + countTokens(message?.content || ''),
         0,
@@ -1138,6 +1145,19 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
       if (!response.ok) {
         const errorText = await response.text();
         clearTimeout(timeoutId);
+        // Only retry without JSON mode when the provider rejects that parameter
+        // before generating. Remember the rejection for the remaining parts.
+        if (jsonModeRequested && [400, 422].includes(response.status)
+            && (isOllama ? /\bformat\b/i : /response_format|json_object/i).test(errorText)
+            && /unsupported|not\s+support|unknown|unrecognized|invalid|not\s+(?:permitted|allowed)|extra\s+(?:field|inputs)|不支持|未知|无效|无法识别/i.test(errorText)) {
+          if (jsonModeRejectedCache.size >= PROVIDER_CAP_CACHE_LIMIT) {
+            jsonModeRejectedCache.delete(jsonModeRejectedCache.keys().next().value);
+          }
+          jsonModeRejectedCache.add(jsonModeKey);
+          recordPhysicalAttempt({ accepted: false, discarded: true, error: errorText, retryReason: 'json_mode_unsupported' });
+          attempt -= 1;
+          continue;
+        }
         // Some compatible gateways reject include_usage instead of ignoring it.
         // Adapt once, cache the capability, and keep the failed physical request
         // in the attempt ledger.
@@ -1251,7 +1271,7 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         const data = isOllama ? trimmed : trimmed.slice(5).trimStart();
         if (data === '[DONE]') return;
         let parsed;
-        try { parsed = JSON.parse(data); } catch { return; }
+        try { parsed = JSON.parse(data); } catch { malformedStreamFrames += 1; return; }
         const content = isOllama ? parsed.message?.content || '' : parsed.choices?.[0]?.delta?.content || '';
         if (content) { fullContent += content; if (onChunk) onChunk(content); }
         const reasoning = !isOllama && parsed.choices?.[0]?.delta?.reasoning_content || '';
@@ -1461,6 +1481,8 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         // 诊断字段：思考字数与截断状态供调用方记账/展示。
         reasoningChars: totalReasoningChars,
         finishReason,
+        jsonModeRequested,
+        malformedStreamFrames,
         stitchedRounds,
         thinkingDowngrades,
         thinkingPolicy: {
