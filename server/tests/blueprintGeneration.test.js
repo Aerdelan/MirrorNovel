@@ -94,6 +94,36 @@ test('分块蓝图：取消后不继续请求，已返回用量仍记录', async
   assert.equal(s.usages.length, 1);
 });
 
+test('分块蓝图：缺字段的错误文案定位到具体小阶段与键，不改变拦截强度', async () => {
+  const s = scenario((call, normal) => {
+    if (call.name !== '篇章第1-6章') return normal;
+    const value = part(call.name, fixture());
+    value.phase.subphases[1].requiredScenes = [];
+    value.phase.subphases[0].characterBeats = [{ character: '周行舟', goal: '减少返工' }];
+    return JSON.stringify(value);
+  });
+  await assert.rejects(s.run(), error => {
+    assert.equal(error.code, 'BLUEPRINT_PART_INVALID');
+    assert.ok(error.diagnostics.errors.some(item => item.includes('小阶段2缺少requiredScenes')), error.diagnostics.errors.join(';'));
+    assert.ok(error.diagnostics.errors.some(item => item.includes('小阶段1的characterBeats不完整') && item.includes('conflict')), error.diagnostics.errors.join(';'));
+    assert.match(error.message, /原因：part_invalid/);
+    return true;
+  });
+  assert.equal(s.calls.length, 3);
+});
+
+test('分块蓝图：缺顶层字段时记录模型实际返回的键名，不记录故事正文', async () => {
+  const s = scenario((call, normal) => call.name === '执行卡第1-5章'
+    ? JSON.stringify({ cards: [{ chapterNumber: 1 }] }) : normal);
+  await assert.rejects(s.run(), error => {
+    assert.equal(error.diagnostics.reason, 'missing_field');
+    assert.equal(error.diagnostics.expectedField, 'chapters');
+    assert.deepEqual(error.diagnostics.foundKeys, ['cards']);
+    assert.match(error.diagnostics.errors[0], /没有顶层字段“chapters”/);
+    return true;
+  });
+});
+
 test('分块蓝图：短篇与超长篇均完整覆盖，最后一批执行卡允许不足5章', async () => {
   for (const totalChapters of [1, 7, 23, 400]) {
     const { arcCount, rollingChapterCount: rollingEnd } = blueprintRequirements(totalChapters);

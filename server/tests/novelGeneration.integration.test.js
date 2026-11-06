@@ -444,7 +444,7 @@ test('初始蓝图：截坏当前分块后仅局部修复，所有请求计入�
   assert.equal(done.tokenUsage.calls, 16);
   assert.equal(state.aiCalls[4].options.taskType, 'blueprint_repair');
   assert.equal(state.aiCalls[4].options.blueprintPart, state.aiCalls[3].options.blueprintPart);
-  assert.match(state.aiCalls[4].userPrompt, /JSON无法完整解析/);
+  assert.match(state.aiCalls[4].userPrompt, /未能从输出中提取到完整JSON文档/);
   assert.match(state.aiCalls[4].userPrompt, /周行舟/);
   assert.ok(events.some(event => event.type === 'status' && /仅修复本块/.test(event.message)));
 });

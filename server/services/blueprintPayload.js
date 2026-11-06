@@ -76,13 +76,20 @@ function inspectBlueprintPayload(text) {
 
 function parseBlueprintPayload(text) { return inspectBlueprintPayload(text).parsed; }
 
+// Key names only: they explain a wrong envelope without logging story text.
+function topLevelKeys(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? Object.keys(value).slice(0, 20) : [];
+}
+
 function inspectStructuredPayload(text, field) {
   const visit = (value, depth = 0) => {
     if (!value || typeof value !== 'object' || depth > 5) return null;
     if (!Array.isArray(value)) {
       if (Object.hasOwn(value, field)) return value;
-      // Some models return the phase itself. Normalize its envelope only.
-      if (field === 'phase' && ['title', 'startChapter', 'endChapter', 'subphases'].every(key => Object.hasOwn(value, key))) {
+      // Some models return the phase itself. Normalize the envelope by its
+      // identifiers only, so a too-thin phase is reported as missing its own
+      // fields (subphases/goal/...) instead of a missing top-level "phase".
+      if (field === 'phase' && ['title', 'startChapter', 'endChapter'].every(key => Object.hasOwn(value, key))) {
         return { phase: value };
       }
     }
@@ -95,9 +102,14 @@ function inspectStructuredPayload(text, field) {
   const roots = documents(text);
   for (const value of roots) {
     const parsed = visit(value);
-    if (parsed) return { parsed, reason: null };
+    if (parsed) return { parsed, reason: null, documentCount: roots.length };
   }
-  return { parsed: null, reason: roots.length ? 'missing_field' : 'invalid_json' };
+  return {
+    parsed: null,
+    reason: roots.length ? 'missing_field' : 'invalid_json',
+    documentCount: roots.length,
+    foundKeys: Array.from(new Set(roots.flatMap(topLevelKeys))).slice(0, 20),
+  };
 }
 
 module.exports = { parseBlueprintPayload, inspectBlueprintPayload, inspectStructuredPayload };

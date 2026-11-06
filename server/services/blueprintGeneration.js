@@ -5,35 +5,47 @@ const hasItems = value => Array.isArray(value) && value.length > 0;
 const isRecord = value => value && typeof value === 'object' && !Array.isArray(value);
 const STAGE_ARRAYS = ['tagCommitments', 'characterBeats', 'requiredScenes', 'forbiddenDrift', 'foreshadowing', 'unresolvedQuestions'];
 
-function arrayErrors(value, field) {
-  if (!hasItems(value)) return [`缺少${field}`];
-  const valid = field === 'characterBeats'
-    ? item => isRecord(item) && ['character', 'goal', 'conflict', 'change', 'voiceGuard'].every(key => requireText(item[key]))
-    : field === 'foreshadowing'
-      ? item => isRecord(item) && requireText(item.name) && requireText(item.plan)
-      : requireText;
-  return value.every(valid) ? [] : [`${field}含空值或不完整条目`];
+// Validation strength is unchanged; only the message names the failing item
+// and key so "missing field" can be traced to a concrete card or subphase.
+function arrayErrors(value, field, label = '') {
+  const owner = label ? `${label}的` : '';
+  if (!hasItems(value)) return [`${label}缺少${field}`];
+  if (field === 'characterBeats' || field === 'foreshadowing') {
+    const keys = field === 'characterBeats'
+      ? ['character', 'goal', 'conflict', 'change', 'voiceGuard']
+      : ['name', 'plan'];
+    const problems = [];
+    value.forEach((item, index) => {
+      if (!isRecord(item)) { problems.push(`第${index + 1}项不是对象`); return; }
+      const missing = keys.filter(key => !requireText(item[key]));
+      if (missing.length) problems.push(`第${index + 1}项缺少${missing.join('/')}`);
+    });
+    return problems.length ? [`${owner}${field}不完整：${problems.slice(0, 6).join('；')}`] : [];
+  }
+  const empty = value.map((item, index) => (requireText(item) ? 0 : index + 1)).filter(Boolean);
+  return empty.length ? [`${owner}${field}第${empty.slice(0, 6).join('/')}项为空`] : [];
 }
 
-function rangeErrors(rows, start, end) {
+function rangeErrors(rows, start, end, label = '') {
   const errors = [];
+  const prefix = label ? `${label}：` : '';
   let next = start;
   for (const row of rows) {
-    if (!isRecord(row)) { errors.push('章节范围条目必须是对象'); continue; }
+    if (!isRecord(row)) { errors.push(`${prefix}章节范围条目必须是对象`); continue; }
     if (!Number.isSafeInteger(Number(row.startChapter)) || Number(row.startChapter) !== next || !Number.isSafeInteger(Number(row.endChapter))
-      || Number(row.endChapter) < next || Number(row.endChapter) > end) errors.push(`章节范围应从第${next}章连续覆盖，不得重叠或越界`);
+      || Number(row.endChapter) < next || Number(row.endChapter) > end) errors.push(`${prefix}章节范围应从第${next}章连续覆盖，不得重叠或越界`);
     next = Number(row.endChapter) + 1;
   }
-  if (next !== end + 1) errors.push(`必须完整覆盖到第${end}章`);
+  if (next !== end + 1) errors.push(`${prefix}必须完整覆盖到第${end}章`);
   return errors;
 }
 
-function stageErrors(stage) {
+function stageErrors(stage, label = '阶段') {
   const errors = [];
   for (const field of ['title', 'goal', 'entryCondition', 'exitCondition']) {
-    if (!requireText(stage?.[field])) errors.push(`缺少${field}`);
+    if (!requireText(stage?.[field])) errors.push(`${label}缺少${field}`);
   }
-  for (const field of STAGE_ARRAYS) errors.push(...arrayErrors(stage?.[field], field));
+  for (const field of STAGE_ARRAYS) errors.push(...arrayErrors(stage?.[field], field, label));
   return errors;
 }
 
@@ -61,23 +73,24 @@ ${failure ? `【上次本块校验失败】${JSON.stringify(failure.errors)}\n�
       onUsage?.(result);
       aborted();
       const content = String(result?.content || '');
-      const { parsed, reason: parseReason } = inspectStructuredPayload(content, field);
+      const { parsed, reason: parseReason, documentCount = 0, foundKeys = [] } = inspectStructuredPayload(content, field);
       const reason = parsed ? 'part_invalid'
         : result?.finishReason === 'length' ? 'output_truncated'
           : !content.trim() ? 'empty_output' : parseReason;
       const errors = parsed ? validate(parsed) : [{
-        output_truncated: '模型输出达到上限，本块未完整返回',
-        empty_output: '模型未返回蓝图内容',
-        invalid_json: 'JSON无法完整解析',
-        missing_field: `JSON缺少要求的顶层字段：${field}`,
-      }[reason]];
+        output_truncated: '模型输出达到上限，本块未完整返回（finishReason=length）',
+        empty_output: '模型未返回蓝图内容（输出为空）',
+        invalid_json: '未能从输出中提取到完整JSON文档（可能被截断，或字符串内有未转义换行）',
+        missing_field: `JSON中没有顶层字段“${field}”；模型实际返回的顶层键：${foundKeys.join('、') || '无'}；完整JSON文档${documentCount}个`,
+      }[reason] || `本块输出无法使用（${reason}）`];
       if (!errors.length) return parsed;
       failure = { part: name, attempt: attempt + 1, errors: errors.slice(0, 12),
         reason, expectedField: field, outputChars: content.length, finishReason: result?.finishReason || null,
-        jsonModeRequested: result?.jsonModeRequested === true, malformedStreamFrames: result?.malformedStreamFrames || 0 };
+        jsonModeRequested: result?.jsonModeRequested === true, malformedStreamFrames: result?.malformedStreamFrames || 0,
+        documentCount, foundKeys };
       onFailure?.(failure);
     }
-    const error = new Error(`蓝图分块“${name}”未通过：${failure.errors.join('；')}。仅重试本块后仍失败`);
+    const error = new Error(`蓝图分块“${name}”未通过：${failure.errors.join('；')}。仅重试本块后仍失败（原因：${failure.reason}）`);
     error.code = 'BLUEPRINT_PART_INVALID';
     error.diagnostics = failure;
     throw error;
@@ -93,10 +106,14 @@ ${failure ? `【上次本块校验失败】${JSON.stringify(failure.errors)}\n�
       if (!Array.isArray(parsed.lockedFacts) || !parsed.lockedFacts.every(requireText)) errors.push('lockedFacts必须是事实字符串数组，可为空，不能编造原大纲没有的事实');
       if (!hasItems(parsed.phases) || parsed.phases.length !== arcCount) errors.push(`phases必须有${arcCount}个篇章`);
       if (Array.isArray(parsed.phases)) {
-        errors.push(...rangeErrors(parsed.phases, 1, totalChapters));
-        for (const phase of parsed.phases) if (!requireText(phase?.title) || !requireText(phase?.goal)) errors.push('篇章缺少title或goal');
+        errors.push(...rangeErrors(parsed.phases, 1, totalChapters, '概览篇章范围'));
+        parsed.phases.forEach((phase, index) => {
+          if (!requireText(phase?.title) || !requireText(phase?.goal)) errors.push(`第${index + 1}个篇章缺少title或goal`);
+        });
         const commitments = parsed.phases.flatMap(phase => Array.isArray(phase?.tagCommitments) ? phase.tagCommitments : []).join('、');
-        for (const tag of requiredTags) if (!commitments.includes(tag)) errors.push(`所选标签“${tag}”没有分配到任何篇章`);
+        for (const tag of requiredTags) {
+          if (!commitments.includes(tag)) errors.push(`所选标签“${tag}”没有分配到任何篇章（已写标签：${commitments || '无'}）`);
+        }
       }
       return errors;
     });
@@ -118,13 +135,15 @@ ${failure ? `【上次本块校验失败】${JSON.stringify(failure.errors)}\n�
 返回结构示例（内容必须依据本书重新填写）：${JSON.stringify({ phase: { ...stageExample, subphases: [stageExample] } })}。
 subphases必须连续覆盖第${startChapter}-${endChapter}章，通常2-4个、最多8个，章数不足时1个。每个小阶段也必须有上述六个数组和进入/离开条件。每项只写必要的剧情信息，人物推进和伏笔聚焦本阶段直接相关的条目。保持本篇章概览分配的标签原名及兑现责任。只填本篇章及其小阶段，不写执行卡或其他篇章。`, parsed => {
         const phase = parsed.phase;
-        const errors = stageErrors(phase);
-        if (Number(phase?.startChapter) !== Number(startChapter) || Number(phase?.endChapter) !== Number(endChapter)) errors.push('篇章范围被改写');
-        if (!hasItems(phase?.subphases)) errors.push('缺少subphases');
+        const errors = stageErrors(phase, '篇章本体');
+        if (Number(phase?.startChapter) !== Number(startChapter) || Number(phase?.endChapter) !== Number(endChapter)) {
+          errors.push(`篇章范围被改写（应为第${startChapter}-${endChapter}章，实际为第${phase?.startChapter ?? '?'}-${phase?.endChapter ?? '?'}章）`);
+        }
+        if (!hasItems(phase?.subphases)) errors.push('篇章本体缺少subphases');
         else {
           if (phase.subphases.length > 8) errors.push('subphases不能超过8个');
-          errors.push(...rangeErrors(phase.subphases, Number(startChapter), Number(endChapter)));
-          for (const subphase of phase.subphases) errors.push(...stageErrors(subphase));
+          errors.push(...rangeErrors(phase.subphases, Number(startChapter), Number(endChapter), '小阶段范围'));
+          phase.subphases.forEach((subphase, index) => errors.push(...stageErrors(subphase, `小阶段${index + 1}`)));
         }
         const commitments = [phase?.tagCommitments, ...(Array.isArray(phase?.subphases) ? phase.subphases.map(item => item?.tagCommitments) : [])].flat().join('、');
         for (const tag of requiredTags.filter(tag => (Array.isArray(anchor.tagCommitments) ? anchor.tagCommitments : []).join('、').includes(tag))) {
@@ -145,12 +164,15 @@ subphases必须连续覆盖第${startChapter}-${endChapter}章，通常2-4个、
 已完成执行卡的实际进展：${JSON.stringify(chapters.map(card => ({ chapterNumber: card.chapterNumber, title: card.title, purpose: card.purpose, exitHook: card.exitHook })))}
 返回{"chapters":[{"chapterNumber":${start},"title":"具体短标题","purpose":"本章新发生的状态变化","tagCommitments":["标签+兑现方式"],"characterBeats":[{"character":"角色","goal":"目标","conflict":"冲突","change":"变化","voiceGuard":"声线"}],"requiredScenes":["场景"],"relationshipChange":"关系变化","foreshadowingActions":["伏笔动作"],"exitHook":"新的章末局面"}]}。
 chapterNumber必须连续，标题和核心事件不能复刻前面的执行卡。`, parsed => {
-        if (!Array.isArray(parsed.chapters) || parsed.chapters.length !== end - start + 1) return ['执行卡数量不符'];
+        if (!Array.isArray(parsed.chapters) || parsed.chapters.length !== end - start + 1) {
+          return [`执行卡数量不符：要求${end - start + 1}张，实际${Array.isArray(parsed.chapters) ? parsed.chapters.length : 0}张`];
+        }
         const errors = [];
         parsed.chapters.forEach((card, index) => {
-          if (Number(card?.chapterNumber) !== start + index) errors.push('执行卡章节号缺失或顺序错误');
-          for (const field of ['title', 'purpose', 'relationshipChange', 'exitHook']) if (!requireText(card?.[field])) errors.push(`执行卡缺少${field}`);
-          for (const field of ['tagCommitments', 'characterBeats', 'requiredScenes', 'foreshadowingActions']) errors.push(...arrayErrors(card?.[field], field));
+          const label = `第${Number(card?.chapterNumber) || start + index}章执行卡`;
+          if (Number(card?.chapterNumber) !== start + index) errors.push(`${label}章节号缺失或顺序错位（应为第${start + index}章）`);
+          for (const field of ['title', 'purpose', 'relationshipChange', 'exitHook']) if (!requireText(card?.[field])) errors.push(`${label}缺少${field}`);
+          for (const field of ['tagCommitments', 'characterBeats', 'requiredScenes', 'foreshadowingActions']) errors.push(...arrayErrors(card?.[field], field, label));
         });
         return errors;
       });
