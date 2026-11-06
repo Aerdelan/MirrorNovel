@@ -20,60 +20,74 @@ function scenario(override, signal) {
   return { run, blueprint, calls, failures, statuses, usages };
 }
 
-test('分块蓝图：60章拆为15个有界任务，服务端组装完整三级结构', async () => {
+test('分块蓝图：60章通过3个任务组装完整三级结构', async () => {
   const s = scenario();
   const blueprint = await s.run();
-  assert.equal(s.calls.length, 15);
-  assert.equal(s.usages.length, 15);
+  assert.deepEqual(s.calls.map(call => call.name), ['全书概览', '篇章第1-60章', '执行卡第1-20章']);
+  assert.equal(s.usages.length, 3);
   assert.equal(s.failures.length, 0);
   assert.equal(s.calls[0].maxTokens, 16000, '概览块预算');
-  assert.ok(s.calls.slice(1, 11).every(call => call.maxTokens === 32000), '篇章块预算');
-  assert.ok(s.calls.slice(11).every(call => call.maxTokens === 24000), '执行卡块预算');
+  assert.equal(s.calls[1].maxTokens, 32000, '篇章块预算');
+  assert.equal(s.calls[2].maxTokens, 24000, '执行卡块预算');
   assert.deepEqual(blueprint.phases, s.blueprint.phases);
   assert.deepEqual(blueprint.rollingPlan.chapters, s.blueprint.rollingPlan.chapters);
   assert.equal(blueprint.rollingPlan.endChapter, 20);
   const normalized = normalizeProposedBlueprint(blueprint, { storyBlueprint: {}, storyBible: {}, plotThreads: [] }, 60);
   const validation = validateStoryBlueprint(normalized, 60, { requiredTags: ['职场'] });
   assert.equal(validation.valid, true, validation.errors.join(';'));
-  assert.match(s.statuses.at(-1), /15\/15/);
-  assert.match(s.calls[2].prompt, /已完成篇章的衔接约束/);
+  assert.match(s.statuses.at(-1), /3\/3/);
+  assert.ok(s.calls[1].prompt.includes(s.blueprint.mainArc));
+  assert.match(s.calls[1].prompt, /reversal标明关键选择发生在第几章及其结果/);
+  assert.match(s.calls[2].prompt, /篇章转折和伏笔按已定章号兑现/);
+  assert.ok(s.calls[2].prompt.includes(s.blueprint.phases[0].exitCondition));
 });
 
-test('分块蓝图：截断只重试当前篇章，保留前面成果和所有调用用量', async () => {
-  const s = scenario((call, normal) => call.name === '篇章第13-18章' && call.attempt === 0 ? '{"phase":{"title":"截断"}' : normal);
+test('分块蓝图：输出不完整时仅拆分当前批次，保留此前成果和所有调用用量', async () => {
+  const s = scenario((call, normal) => ['篇章第1-60章', '执行卡第1-20章'].includes(call.name) ? '{"截断":' : normal);
   const blueprint = await s.run();
-  assert.equal(blueprint.phases.length, 10);
-  assert.equal(s.calls.length, 16);
-  assert.equal(s.usages.length, 16);
-  assert.equal(s.calls.filter(call => call.name === '全书概览').length, 1);
-  assert.equal(s.calls.filter(call => call.name === '篇章第7-12章').length, 1);
-  const retry = s.calls.find(call => call.attempt === 1);
-  assert.equal(retry.name, '篇章第13-18章');
-  assert.match(retry.prompt, /上次本块校验失败/);
-  assert.equal(s.failures.length, 1);
+  assert.deepEqual(blueprint.phases, s.blueprint.phases);
+  assert.deepEqual(blueprint.rollingPlan.chapters, s.blueprint.rollingPlan.chapters);
+  assert.deepEqual(s.calls.map(call => call.name), [
+    '全书概览', '篇章第1-60章', '篇章第1-30章', '篇章第31-60章',
+    '执行卡第1-20章', '执行卡第1-10章', '执行卡第11-20章',
+  ]);
+  assert.equal(s.usages.length, 7);
+  assert.match(s.calls[3].prompt, /上一批最后一个篇章的衔接约束：\{"title":"篇章5","endChapter":30/);
+  assert.ok(s.calls[6].prompt.includes(s.blueprint.rollingPlan.chapters[9].title));
+  assert.ok(s.statuses.some(status => /2\/3.*拆成两批/.test(status)));
+  assert.equal(s.failures.length, 2);
 });
 
-test('分块蓝图：空条目不能通过数组检查，修复两次失败后停止，不发后续任务', async () => {
-  const s = scenario((call, normal) => call.name === '执行卡第6-10章'
-    ? JSON.stringify({ chapters: [null, null, null, null, null] }) : normal);
+test('分块蓝图：拆分后的批次继续截断时仅修复一次，停止后续调用', async () => {
+  const s = scenario((call, normal) => call.name.startsWith('篇章') ? '{"phases":' : normal);
+  await assert.rejects(s.run(), { code: 'BLUEPRINT_PART_INVALID' });
+  assert.deepEqual(s.calls.map(call => call.name), ['全书概览', '篇章第1-60章', '篇章第1-30章', '篇章第1-30章']);
+});
+
+test('分块蓝图：空执行卡不能通过数组检查，一次修复失败后停止', async () => {
+  const s = scenario((call, normal) => call.name === '执行卡第1-20章'
+    ? JSON.stringify({ chapters: Array(20).fill(null) }) : normal);
   await assert.rejects(s.run(), error => error.code === 'BLUEPRINT_PART_INVALID'
-    && error.diagnostics.part === '执行卡第6-10章' && error.diagnostics.attempt === 2);
-  assert.equal(s.calls.length, 14);
-  assert.equal(s.calls.at(-1).name, '执行卡第6-10章');
+    && error.diagnostics.part === '执行卡第1-20章' && error.diagnostics.attempt === 2);
+  assert.equal(s.calls.length, 4);
+  assert.equal(s.calls.at(-1).name, '执行卡第1-20章');
   assert.equal(s.failures.length, 2);
 });
 
 test('分块蓝图：重叠范围、空人物、空伏笔或遗漏标签都在当前块拦截', async () => {
   for (const mutate of [
-    value => { value.phase.subphases[1].startChapter = 1; },
-    value => { value.phase.characterBeats = [{}]; },
-    value => { value.phase.foreshadowing = [null]; },
-    value => { value.phase.tagCommitments = ['别的内容']; value.phase.subphases.forEach(stage => { stage.tagCommitments = ['别的内容']; }); },
-    value => { value.phase.subphases = [null]; },
+    phase => { phase.subphases[1].startChapter = 1; },
+    phase => { phase.characterBeats = [{}]; },
+    phase => { phase.foreshadowing = [null]; },
+    phase => { phase.tagCommitments = ['别的内容']; phase.subphases.forEach(stage => { stage.tagCommitments = ['别的内容']; }); },
+    phase => { phase.subphases = [null]; },
+    phase => { phase.subphases = '错误类型'; },
   ]) {
     const s = scenario((call, normal) => {
-      if (call.name !== '篇章第1-6章') return normal;
-      const value = part(call.name, fixture()); mutate(value); return JSON.stringify(value);
+      if (call.name !== '篇章第1-60章') return normal;
+      const value = part(call.name, fixture());
+      mutate(value.phases[0]);
+      return JSON.stringify(value);
     });
     await assert.rejects(s.run(), { code: 'BLUEPRINT_PART_INVALID' });
     assert.equal(s.calls.length, 3);
@@ -98,10 +112,10 @@ test('分块蓝图：取消后不继续请求，已返回用量仍记录', async
 
 test('分块蓝图：缺字段的错误文案定位到具体小阶段与键，不改变拦截强度', async () => {
   const s = scenario((call, normal) => {
-    if (call.name !== '篇章第1-6章') return normal;
+    if (call.name !== '篇章第1-60章') return normal;
     const value = part(call.name, fixture());
-    value.phase.subphases[1].requiredScenes = [];
-    value.phase.subphases[0].characterBeats = [{ character: '周行舟', goal: '减少返工' }];
+    value.phases[0].subphases[1].requiredScenes = [];
+    value.phases[0].subphases[0].characterBeats = [{ character: '周行舟', goal: '减少返工' }];
     return JSON.stringify(value);
   });
   await assert.rejects(s.run(), error => {
@@ -115,7 +129,7 @@ test('分块蓝图：缺字段的错误文案定位到具体小阶段与键，�
 });
 
 test('分块蓝图：缺顶层字段时记录模型实际返回的键名，不记录故事正文', async () => {
-  const s = scenario((call, normal) => call.name === '执行卡第1-5章'
+  const s = scenario((call, normal) => call.name === '执行卡第1-20章'
     ? JSON.stringify({ cards: [{ chapterNumber: 1 }] }) : normal);
   await assert.rejects(s.run(), error => {
     assert.equal(error.diagnostics.reason, 'missing_field');
@@ -132,9 +146,11 @@ test('分块蓝图：未选任何标签时允许省略 tagCommitments，其余�
     context: '未选择任何 SKU 标签的旧类型路径', totalChapters: 60, arcCount: 10, rollingEnd: 20, requiredTags: [],
     request: async call => {
       const payload = part(call.name, blueprint);
-      if (payload.phase) {
-        delete payload.phase.tagCommitments;
-        payload.phase.subphases.forEach(subphase => { delete subphase.tagCommitments; });
+      if (call.name.startsWith('篇章')) {
+        for (const phase of payload.phases) {
+          delete phase.tagCommitments;
+          phase.subphases.forEach(subphase => { delete subphase.tagCommitments; });
+        }
       }
       if (payload.chapters) payload.chapters.forEach(card => { delete card.tagCommitments; });
       return { content: JSON.stringify(payload) };
@@ -145,7 +161,7 @@ test('分块蓝图：未选任何标签时允许省略 tagCommitments，其余�
   assert.equal(validation.valid, true, validation.errors.join(';'));
 });
 
-test('分块蓝图：短篇与超长篇均完整覆盖，最后一批执行卡允许不足5章', async () => {
+test('分块蓝图：短篇与超长篇均按三块完整覆盖', async () => {
   for (const totalChapters of [1, 7, 23, 400]) {
     const { arcCount, rollingChapterCount: rollingEnd } = blueprintRequirements(totalChapters);
     const blueprint = fixture(), source = blueprint.phases[0];
@@ -161,7 +177,7 @@ test('分块蓝图：短篇与超长篇均完整覆盖，最后一批执行卡�
       request: async call => { calls++; return { content: JSON.stringify(part(call.name, blueprint)) }; } });
     const validation = validateStoryBlueprint(result, totalChapters);
     assert.equal(validation.valid, true, validation.errors.join(';'));
-    assert.equal(calls, 1 + arcCount + Math.ceil(rollingEnd / 5));
+    assert.equal(calls, 3);
     assert.equal(result.phases.at(-1).endChapter, totalChapters);
     assert.equal(result.rollingPlan.chapters.at(-1).chapterNumber, rollingEnd);
   }

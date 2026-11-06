@@ -141,6 +141,49 @@ test('local refinement stays inside the active approved subphase', () => {
   assert.deepEqual(planningWindow(novel, planData, 21, 180), [21, 22, 23]);
 });
 
+test('long outlines supply the requested chapter ranges without adding planning calls', async () => {
+  const { novel, planData } = fixture();
+  novel.outline = [
+    '全书背景：外包责任与仓库存续',
+    '前段细节'.repeat(4000),
+    '## 第301章至第304章',
+    '刘海柱在董事会上出示原始签收联。',
+    '**第305章** 决定辞去虚职。',
+    '第309章：下一阶段秘密',
+    '过渡内容'.repeat(3000),
+    '全书终局：主角保住仓库',
+  ].join('\n');
+
+  let calls = 0;
+  await ensureDetailedLongFormPlan({ novel, planData, chapterNumber: 301, totalChapters: 400,
+    requestPlan: async prompt => {
+      calls++;
+      const excerpt = prompt.split('【原始大纲】\n')[1].split('【三级动态故事蓝图')[0];
+      assert.match(excerpt, /全书背景：外包责任与仓库存续/);
+      assert.match(excerpt, /第301章至第304章\n刘海柱在董事会上出示原始签收联/);
+      assert.match(excerpt, /第305章\*\* 决定辞去虚职/);
+      assert.doesNotMatch(excerpt, /下一阶段秘密/);
+      assert.match(excerpt, /全书终局：主角保住仓库/);
+      assert.ok(excerpt.length <= 14000);
+      return result([301, 302, 303, 304, 305, 306, 307, 308]);
+    },
+  });
+  assert.equal(calls, 1);
+});
+
+test('long outlines without matching chapter headings retain the original context fallback', async () => {
+  const { novel, planData } = fixture();
+  novel.outline = `原始背景${'无章号的正文'.repeat(3000)}终局约束`;
+  await ensureDetailedLongFormPlan({ novel, planData, chapterNumber: 21, totalChapters: 21,
+    requestPlan: async prompt => {
+      assert.match(prompt, /原始背景/);
+      assert.match(prompt, /大纲中段由已确认篇章约束承载/);
+      assert.match(prompt, /终局约束/);
+      return result([21]);
+    },
+  });
+});
+
 test('multiple batches keep chapters 21-60 concrete and preserve all earlier plans', async () => {
   const { novel, planData } = fixture();
   const original = structuredClone(planData.chapters.slice(0, 20));

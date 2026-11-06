@@ -72,6 +72,28 @@ function validateDetailedPlan(content, numbers, priorChapters = []) {
   });
 }
 
+function outlineForPlanning(outline, start, end) {
+  if (outline.length <= 14000) return outline;
+
+  // Numbered headings can mark one chapter or a range such as 第301–308章.
+  const headings = [...outline.matchAll(/^[ \t#>*-]*第[ \t]*(\d+)[ \t]*(?:章?[ \t]*[-–—~～至到][ \t]*第?[ \t]*(\d+)[ \t]*)?章/gm)];
+  const sections = [];
+  for (const [index, heading] of headings.entries()) {
+    const first = Number(heading[1]);
+    const last = Number(heading[2] || heading[1]);
+    if (first > last || first > end || last < start) continue;
+    sections.push({ from: heading.index, to: headings[index + 1]?.index ?? outline.length });
+    if (sections.length === 16) break;
+  }
+  if (!sections.length) {
+    return `${outline.slice(0, 10000)}\n（大纲中段由已确认篇章约束承载）\n${outline.slice(-4000)}`;
+  }
+
+  const sectionLimit = Math.floor(7900 / sections.length) - 1;
+  const excerpts = sections.map(({ from, to }) => outline.slice(from, Math.min(to, from + sectionLimit)).trim());
+  return `${outline.slice(0, 4000)}\n【第${start}-${end}章对应的大纲原文】\n${excerpts.join('\n')}\n【大纲末段】\n${outline.slice(-2000)}`;
+}
+
 /** Refine only future placeholder cards. This never approves blueprint changes
  * or changes authored plans/committed chapters. No model call is needed when
  * a concrete plan already exists, including at a resumed batch boundary. */
@@ -84,11 +106,11 @@ async function ensureDetailedLongFormPlan({ novel, planData, chapterNumber, tota
   const start = numbers[0];
   const end = numbers.at(-1);
   const previous = (novel.chapters || []).filter(chapter => Number(chapter.chapterNumber) < start).slice(-3);
-  const outline = String(novel.outline || '');
-  const outlineContext = outline.length <= 14000 ? outline : `${outline.slice(0, 10000)}\n（大纲中段由已确认篇章约束承载）\n${outline.slice(-4000)}`;
+  const outlineContext = outlineForPlanning(String(novel.outline || ''), start, end);
   const prompt = `细化未来第${start}-${end}章的执行计划，只输出这${numbers.length}章的 JSON。
 你是在执行已确认大纲，不是在提出新的故事蓝图。不得改写已发生事实、终局、人物动机或用户已定章节。
 每章必须有不同的具体核心事件，写清谁采取什么行动、遇到什么阻力、造成什么新结果。后一章承接前章结果，不能用天气、上班日期或通用的“推进主线”凑章节。
+按指定章号落实本批次内的转折和伏笔。后续节点留待对应章节，阶段末章须达到已确认的离开条件。
 每章给出2-16字短标题，标题概括该章独有冲突或结果，不能摘取正文首句。不要输出正文。
 【原始大纲】
 ${outlineContext}
