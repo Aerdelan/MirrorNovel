@@ -26,7 +26,9 @@ test('分块蓝图：60章拆为15个有界任务，服务端组装完整三级�
   assert.equal(s.calls.length, 15);
   assert.equal(s.usages.length, 15);
   assert.equal(s.failures.length, 0);
-  assert.ok(s.calls.every(call => call.maxTokens <= 16000));
+  assert.equal(s.calls[0].maxTokens, 16000, '概览块预算');
+  assert.ok(s.calls.slice(1, 11).every(call => call.maxTokens === 32000), '篇章块预算');
+  assert.ok(s.calls.slice(11).every(call => call.maxTokens === 24000), '执行卡块预算');
   assert.deepEqual(blueprint.phases, s.blueprint.phases);
   assert.deepEqual(blueprint.rollingPlan.chapters, s.blueprint.rollingPlan.chapters);
   assert.equal(blueprint.rollingPlan.endChapter, 20);
@@ -122,6 +124,25 @@ test('分块蓝图：缺顶层字段时记录模型实际返回的键名，不�
     assert.match(error.diagnostics.errors[0], /没有顶层字段“chapters”/);
     return true;
   });
+});
+
+test('分块蓝图：未选任何标签时允许省略 tagCommitments，其余字段仍严格', async () => {
+  const blueprint = fixture();
+  const result = await generateBlueprintParts({
+    context: '未选择任何 SKU 标签的旧类型路径', totalChapters: 60, arcCount: 10, rollingEnd: 20, requiredTags: [],
+    request: async call => {
+      const payload = part(call.name, blueprint);
+      if (payload.phase) {
+        delete payload.phase.tagCommitments;
+        payload.phase.subphases.forEach(subphase => { delete subphase.tagCommitments; });
+      }
+      if (payload.chapters) payload.chapters.forEach(card => { delete card.tagCommitments; });
+      return { content: JSON.stringify(payload) };
+    },
+  });
+  const normalized = normalizeProposedBlueprint(result, { storyBlueprint: {}, storyBible: {}, plotThreads: [] }, 60);
+  const validation = validateStoryBlueprint(normalized, 60);
+  assert.equal(validation.valid, true, validation.errors.join(';'));
 });
 
 test('分块蓝图：短篇与超长篇均完整覆盖，最后一批执行卡允许不足5章', async () => {

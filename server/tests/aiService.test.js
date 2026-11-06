@@ -647,6 +647,38 @@ test('大纲提示词：传入 researchBlock 时把联网取材事实并入；�
   assert.doesNotMatch(plain, /联网取材得到的事实参考资料/);
 });
 
+test('连接中断耗尽重试后标记为可读的上游错误并附当前线路', async (t) => {
+  t.mock.method(global, 'fetch', async () => { throw new TypeError('fetch failed'); });
+  await assert.rejects(
+    streamGenerate('系统', '用户', null, null,
+      { baseUrl: 'https://unreachable.test/v1', model: 'deepseek-v4', disableThinking: true }, 0, 0.3, 1024, 5000, null, {}),
+    error => {
+      assert.equal(error.isApiError, true);
+      assert.match(error.message, /fetch failed/);
+      assert.match(error.message, /当前线路：deepseek-v4 @ unreachable\.test/);
+      return true;
+    });
+});
+
+test('单次请求超时后标记为可读的上游错误，不再退化成无信息兜底文案', async (t) => {
+  t.mock.method(global, 'fetch', async (_url, options) => new Promise((resolve, reject) => {
+    options.signal.addEventListener('abort', () => {
+      const aborted = new Error('aborted');
+      aborted.name = 'AbortError';
+      reject(aborted);
+    }, { once: true });
+  }));
+  await assert.rejects(
+    streamGenerate('系统', '用户', null, null,
+      { baseUrl: 'https://slow.test/v1', model: 'deepseek-v4', disableThinking: true }, 0, 0.3, 1024, 600, null, {}),
+    error => {
+      assert.equal(error.isApiError, true);
+      assert.match(error.message, /AI API 请求超时/);
+      assert.match(error.message, /当前线路：deepseek-v4 @ slow\.test/);
+      return true;
+    });
+});
+
 test('completeOnce：非流式封装复用 streamGenerate，返回完整 content', async () => {
   const originalFetch = global.fetch;
   try {

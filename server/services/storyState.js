@@ -785,6 +785,9 @@ function validateStoryBlueprint(blueprint, totalChapters, options = {}) {
   const warnings = [];
   const phases = toArray(blueprint?.phases);
   const expectedArcCount = Number(options.expectedArcCount || requirements.arcCount);
+  // 未选任何标签时标签兑现无从填写，生成阶段已允许省略；最终校验需保持一致。
+  const requiredTags = textList(options.requiredTags, 24);
+  const tagsRequired = requiredTags.length > 0;
   if (!blueprint?.mainArc || !String(blueprint.mainArc).trim()) errors.push('缺少全书主线');
   if (phases.length !== expectedArcCount) errors.push(`全书级蓝图应包含 ${expectedArcCount} 个大篇章，当前为 ${phases.length} 个`);
   phases.forEach((phase, index) => {
@@ -794,6 +797,7 @@ function validateStoryBlueprint(blueprint, totalChapters, options = {}) {
     if (previous && Number(phase.startChapter) !== Number(previous.endChapter) + 1) errors.push(`${label}与上一篇章存在章节空档或重叠`);
     if (index === phases.length - 1 && Number(phase.endChapter) !== total) errors.push(`最后一个篇章必须覆盖到第${total}章`);
     for (const [field, name] of [['tagCommitments', '标签兑现'], ['characterBeats', '人物推进'], ['requiredScenes', '必备场景'], ['forbiddenDrift', '禁止漂移'], ['foreshadowing', '伏笔计划'], ['unresolvedQuestions', '未决问题'], ['subphases', '篇章级小阶段']]) {
+      if (field === 'tagCommitments' && !tagsRequired) continue;
       if (!Array.isArray(phase[field]) || !phase[field].length) errors.push(`${label}缺少${name}`);
     }
     if (!phase.entryCondition) errors.push(`${label}缺少进入条件`);
@@ -804,7 +808,7 @@ function validateStoryBlueprint(blueprint, totalChapters, options = {}) {
       if (subIndex === 0 && Number(subphase.startChapter) !== Number(phase.startChapter)) errors.push(`${subLabel}没有从篇章起点开始`);
       if (subIndex > 0 && Number(subphase.startChapter) !== Number(subphases[subIndex - 1].endChapter) + 1) errors.push(`${subLabel}存在章节空档或重叠`);
       if (subIndex === subphases.length - 1 && Number(subphase.endChapter) !== Number(phase.endChapter)) errors.push(`${subLabel}没有覆盖到篇章终点`);
-      if (!subphase.tagCommitments?.length) errors.push(`${subLabel}缺少标签兑现`);
+      if (tagsRequired && !subphase.tagCommitments?.length) errors.push(`${subLabel}缺少标签兑现`);
       if (!subphase.characterBeats?.length) errors.push(`${subLabel}缺少人物推进`);
       if (!subphase.requiredScenes?.length) errors.push(`${subLabel}缺少必备场景`);
       if (!subphase.forbiddenDrift?.length) errors.push(`${subLabel}缺少禁止漂移`);
@@ -824,11 +828,10 @@ function validateStoryBlueprint(blueprint, totalChapters, options = {}) {
     chapters.forEach((chapter, index) => {
       if (Number(chapter.chapterNumber) !== index + 1) errors.push(`滚动执行蓝图缺少第${index + 1}章或章节顺序错误`);
       if (!chapter.purpose) errors.push(`滚动执行蓝图第${index + 1}章缺少章节目的`);
-      if (!chapter.tagCommitments?.length) errors.push(`滚动执行蓝图第${index + 1}章缺少标签兑现`);
+      if (tagsRequired && !chapter.tagCommitments?.length) errors.push(`滚动执行蓝图第${index + 1}章缺少标签兑现`);
       if (!chapter.characterBeats?.length) errors.push(`滚动执行蓝图第${index + 1}章缺少人物推进`);
     });
   }
-  const requiredTags = textList(options.requiredTags, 24);
   if (requiredTags.length) {
     const commitments = phases.flatMap((phase) => [
       ...toArray(phase.tagCommitments),

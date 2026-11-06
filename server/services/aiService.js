@@ -1577,10 +1577,21 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         await new Promise(r => setTimeout(r, delay));
         continue;
       }
-      // 所有重试耗尽，向外抛
-      const finalError = (e.name === 'AbortError')
+      // 所有重试耗尽，向外抛。超时与连接中断同样属于“调用方可见的上游错误”：
+      // 漏掉 isApiError，SSE 路由只会退化成“初始蓝图生成失败，请稍后重试”这类
+      // 无信息兜底文案，错误编号在日志里也没法对应具体原因。
+      const timedOut = e?.name === 'AbortError';
+      const finalError = timedOut
         ? new Error(`AI API 请求超时（${Math.round((Number(timeoutMs) || 90000) / 1000)}s）`)
-        : e;
+        : (e instanceof Error ? e : new Error(String(e || 'AI API 请求失败')));
+      const connectionLost = timedOut || /fetch failed|ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|socket hang up|terminated|stream (?:error|reset|closed)/i.test(String(e?.message || ''));
+      if (connectionLost) {
+        let routeHost = config.baseUrl;
+        try { routeHost = new URL(config.baseUrl).host; } catch {}
+        finalError.message = `${finalError.message} —— 当前线路：${config.model} @ ${routeHost}`;
+        finalError.isApiError = true;
+        finalError.statusCode = e?.statusCode || 0;
+      }
       throw attachTelemetry(finalError);
     }
   } // for

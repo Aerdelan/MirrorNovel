@@ -426,7 +426,10 @@ test('初始蓝图：按15块生成并组装所有层级，通过最终校验', 
   assert.equal(done.tokenUsage.calls, 15);
   assert.equal(events.filter(event => event.type === 'token_usage').length, 15);
   assert.equal(state.aiCalls.length, 15);
-  assert.ok(state.aiCalls.every(call => call.options.stitchOnTruncation !== true && call.maxTokens <= 16000));
+  assert.ok(state.aiCalls.every(call => call.options.stitchOnTruncation === true && call.options.outputFormat === 'json'));
+  assert.equal(state.aiCalls[0].maxTokens, 16000, '概览块预算');
+  assert.ok(state.aiCalls.slice(1, 11).every(call => call.maxTokens === 32000), '篇章块预算');
+  assert.ok(state.aiCalls.slice(11).every(call => call.maxTokens === 24000), '执行卡块预算');
   assert.ok(events.some(event => event.type === 'status' && /15\/15/.test(event.message)));
   assert.equal(state.novels.size, 0, 'blueprint preview must not create prose or a book');
 });
@@ -447,6 +450,21 @@ test('初始蓝图：截坏当前分块后仅局部修复，所有请求计入�
   assert.match(state.aiCalls[4].userPrompt, /未能从输出中提取到完整JSON文档/);
   assert.match(state.aiCalls[4].userPrompt, /周行舟/);
   assert.ok(events.some(event => event.type === 'status' && /仅修复本块/.test(event.message)));
+});
+
+test('初始蓝图：未分类的上游错误会带出错误类型与分块，不再只给兜底文案', async () => {
+  state.aiHandler = () => {
+    const failure = new Error('fetch failed');
+    failure.name = 'TypeError';
+    throw failure;
+  };
+  const { events } = await postSse('/generate-blueprint', initialBlueprintBody);
+  const error = events.find(event => event.type === 'error');
+  assert.equal(error.code, 'BLUEPRINT_FAILED');
+  assert.equal(error.diagnostics.part, '全书概览');
+  assert.equal(error.diagnostics.reason, 'upstream_error');
+  assert.match(error.message, /分块“全书概览”调用失败（TypeError）：fetch failed/);
+  assert.ok(error.errorId);
 });
 
 test('初始蓝图：两次仍不完整则明确返回原因、编号和用量，不能补造蓝图或无限重试', async () => {
@@ -475,7 +493,9 @@ test('初始蓝图：分块仍持续截断时最多修复一次，不无限重�
   assert.equal(error.code, 'BLUEPRINT_PART_INVALID');
   assert.equal(error.tokenUsage.calls, 2);
   assert.equal(state.aiCalls.length, 2);
-  assert.ok(state.aiCalls.every(call => call.options.stitchOnTruncation !== true));
+  // 截断优先走一次结构续写（mock 层不实现续写，但选项必须开启），
+  // 续写后仍无效才重试整块，最多一次。
+  assert.ok(state.aiCalls.every(call => call.options.stitchOnTruncation === true));
 });
 
 test('初始蓝图：上游中途失败时仍保留成功分块及失败请求的用量，不创建作品', async () => {
@@ -557,8 +577,9 @@ test('初始蓝图：真实HTTP流截断后重新生成分块，接受无外壳�
     assert.ok(done, events.find(event => event.type === 'error')?.message);
     assert.equal(done.validation.valid, true);
     assert.equal(done.blueprint.phases[0].title, blueprint.phases[0].title);
-    assert.equal(done.tokenUsage.outputTokens, 3200);
-    assert.deepEqual(requestFormats, Array.from({ length: 16 }, () => ({ type: 'json_object' })));
+    assert.equal(done.tokenUsage.outputTokens, 3400, '截断后续写请求的用量也要计入');
+    assert.ok(requestFormats.length >= 16);
+    assert.ok(requestFormats.every(format => format?.type === 'json_object'));
     assert.equal(state.aiCalls.length, 16);
     assert.match(state.aiCalls[2].userPrompt, /从头返回本块完整的JSON对象/);
     assert.match(state.aiCalls[2].userPrompt, /输出达到上限/);

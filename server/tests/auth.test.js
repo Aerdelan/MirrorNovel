@@ -268,6 +268,33 @@ test('cooldown reports only its remaining seconds rather than restarting the ful
   assert.equal(state.sent.length, 0);
 });
 
+test('加密保存的云端 Key 解密后仍保留 provider / 地址 / 模型名', () => {
+  const { seal } = require('../services/secretBox');
+  const { decryptedModelConfig } = require('../middleware/auth');
+  // 模拟 Mongoose 子文档：实际字段在 _doc 里，实例自身只能展开出内部字段。
+  class SubDoc {
+    constructor(doc) { this._doc = doc; this.$isNew = false; }
+    get provider() { return this._doc.provider; }
+    get cloudBaseUrl() { return this._doc.cloudBaseUrl; }
+    get cloudReasoningModel() { return this._doc.cloudReasoningModel; }
+    get cloudApiKey() { return this._doc.cloudApiKey; }
+    toObject() { return { ...this._doc }; }
+  }
+  const subdoc = new SubDoc({
+    provider: 'cloud',
+    cloudBaseUrl: 'https://tokenrhythm.test/v1',
+    cloudReasoningModel: 'minimax-m3.1-flash',
+    cloudApiKey: seal('sk-isolated-test-key'),
+  });
+  // 前置条件：直接展开子文档确实拿不到任何业务字段（旧实现的失效原因）
+  assert.equal({ ...subdoc }.provider, undefined);
+  const config = decryptedModelConfig(subdoc);
+  assert.equal(config.provider, 'cloud');
+  assert.equal(config.cloudBaseUrl, 'https://tokenrhythm.test/v1');
+  assert.equal(config.cloudReasoningModel, 'minimax-m3.1-flash');
+  assert.equal(config.cloudApiKey, 'sk-isolated-test-key');
+});
+
 test('duplicate account, wrong password, nonexistent account and disabled account are handled', async () => {
   const user = await seedUser({ disabled: true });
   assert.equal((await request('/auth/send-code', { email: user.email })).status, 400);

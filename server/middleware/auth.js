@@ -10,11 +10,15 @@ const { open } = require('../services/secretBox');
  */
 function decryptedModelConfig(modelConfig) {
   if (!modelConfig) return modelConfig;
-  const provider = modelConfig.provider || 'default';
-  if (provider !== 'cloud') return modelConfig;
-  const plainKey = open(modelConfig.cloudApiKey);
-  if (plainKey === modelConfig.cloudApiKey) return modelConfig;
-  return { ...modelConfig, cloudApiKey: plainKey };
+  // Mongoose 子文档直接展开（{ ...doc }）只会拿到 $__/$__parent/_doc 等内部字段，
+  // provider / baseUrl / 模型名会整份丢失，账号里的云线路于是被静默忽略、请求退回
+  // 服务器默认线路（默认线路没配时报“线路尚未配置”）。必须先转成普通对象。
+  const plain = typeof modelConfig.toObject === 'function' ? modelConfig.toObject() : modelConfig;
+  const provider = plain.provider || 'default';
+  if (provider !== 'cloud') return plain;
+  const plainKey = open(plain.cloudApiKey);
+  if (plainKey === plain.cloudApiKey) return plain;
+  return { ...plain, cloudApiKey: plainKey };
 }
 
 const auth = async (req, res, next) => {
@@ -48,7 +52,7 @@ const auth = async (req, res, next) => {
     req.userModelConfig = decryptedModelConfig(user.modelConfig);
     const override = parseOverrideHeader(req.headers[HEADER_NAME]);
     if (override.ok) {
-      req.userModelConfig = mergeModelConfig(user.modelConfig, override.config);
+      req.userModelConfig = mergeModelConfig(req.userModelConfig, override.config);
       req.modelConfigFromLocal = true;
     }
 
@@ -74,3 +78,5 @@ const auth = async (req, res, next) => {
 };
 
 module.exports = auth;
+// 仅供回归测试：验证加密 Key 解密后不会丢掉账号线路字段。
+module.exports.decryptedModelConfig = decryptedModelConfig;

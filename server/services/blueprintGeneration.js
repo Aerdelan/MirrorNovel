@@ -40,12 +40,22 @@ function rangeErrors(rows, start, end, label = '') {
   return errors;
 }
 
-function stageErrors(stage, label = '阶段') {
+function stageErrors(stage, label = '阶段', tagOptional = false) {
   const errors = [];
   for (const field of ['title', 'goal', 'entryCondition', 'exitCondition']) {
     if (!requireText(stage?.[field])) errors.push(`${label}缺少${field}`);
   }
-  for (const field of STAGE_ARRAYS) errors.push(...arrayErrors(stage?.[field], field, label));
+  for (const field of STAGE_ARRAYS) {
+    // 未选任何标签时没有可兑现的标签，模型省略 tagCommitments 是合理的；
+    // 若仍然写了，就按字符串数组照常校验，不放宽内容标准。
+    if (field === 'tagCommitments' && tagOptional) {
+      if (Array.isArray(stage?.tagCommitments) && stage.tagCommitments.length) {
+        errors.push(...arrayErrors(stage.tagCommitments, field, label));
+      }
+      continue;
+    }
+    errors.push(...arrayErrors(stage?.[field], field, label));
+  }
   return errors;
 }
 
@@ -55,6 +65,7 @@ function stageErrors(stage, label = '阶段') {
 async function generateBlueprintParts({ context, totalChapters, arcCount, rollingEnd, requiredTags = [],
   request, onUsage, onStatus, onFailure, signal }) {
   let step = 0;
+  const tagOptional = requiredTags.length === 0;
   const stepCount = 1 + arcCount + Math.ceil(rollingEnd / 5);
   const aborted = () => {
     if (signal?.aborted) { const error = new Error('aborted'); error.name = 'AbortError'; throw error; }
@@ -69,7 +80,10 @@ async function generateBlueprintParts({ context, totalChapters, arcCount, rollin
       const prompt = `${context}\n\n【本次仅执行的分块任务】\n${instruction}
 本次只输出上面要求的一个JSON对象，不能输出整份三级蓝图、其他分块、解释或代码围栏。
 ${failure ? `【上次本块校验失败】${JSON.stringify(failure.errors)}\n从头返回本块完整的JSON对象，保留要求的顶层字段 ${field}。各字段只写必要细节，优先保证字段完整和JSON闭合。` : ''}`;
-      const result = await request({ name, prompt, attempt, maxTokens: name === '全书概览' ? 12000 : 16000 });
+      // 分块输出预算：篇章块要装下“篇章本体 + 2-4 个小阶段 × 六个数组”，执行卡块
+      // 要装下 5 张完整卡片；16000 在推理模型上会被思考挤掉、正文提前截断。
+      const maxTokens = name === '全书概览' ? 16000 : name.startsWith('执行卡') ? 24000 : 32000;
+      const result = await request({ name, prompt, attempt, maxTokens });
       onUsage?.(result);
       aborted();
       const content = String(result?.content || '');
@@ -87,7 +101,7 @@ ${failure ? `【上次本块校验失败】${JSON.stringify(failure.errors)}\n�
       failure = { part: name, attempt: attempt + 1, errors: errors.slice(0, 12),
         reason, expectedField: field, outputChars: content.length, finishReason: result?.finishReason || null,
         jsonModeRequested: result?.jsonModeRequested === true, malformedStreamFrames: result?.malformedStreamFrames || 0,
-        documentCount, foundKeys };
+        stitchedRounds: result?.stitchedRounds || 0, documentCount, foundKeys };
       onFailure?.(failure);
     }
     const error = new Error(`蓝图分块“${name}”未通过：${failure.errors.join('；')}。仅重试本块后仍失败（原因：${failure.reason}）`);
@@ -135,7 +149,7 @@ ${failure ? `【上次本块校验失败】${JSON.stringify(failure.errors)}\n�
 返回结构示例（内容必须依据本书重新填写）：${JSON.stringify({ phase: { ...stageExample, subphases: [stageExample] } })}。
 subphases必须连续覆盖第${startChapter}-${endChapter}章，通常2-4个、最多8个，章数不足时1个。每个小阶段也必须有上述六个数组和进入/离开条件。每项只写必要的剧情信息，人物推进和伏笔聚焦本阶段直接相关的条目。保持本篇章概览分配的标签原名及兑现责任。只填本篇章及其小阶段，不写执行卡或其他篇章。`, parsed => {
         const phase = parsed.phase;
-        const errors = stageErrors(phase, '篇章本体');
+        const errors = stageErrors(phase, '篇章本体', tagOptional);
         if (Number(phase?.startChapter) !== Number(startChapter) || Number(phase?.endChapter) !== Number(endChapter)) {
           errors.push(`篇章范围被改写（应为第${startChapter}-${endChapter}章，实际为第${phase?.startChapter ?? '?'}-${phase?.endChapter ?? '?'}章）`);
         }
@@ -143,7 +157,7 @@ subphases必须连续覆盖第${startChapter}-${endChapter}章，通常2-4个、
         else {
           if (phase.subphases.length > 8) errors.push('subphases不能超过8个');
           errors.push(...rangeErrors(phase.subphases, Number(startChapter), Number(endChapter), '小阶段范围'));
-          phase.subphases.forEach((subphase, index) => errors.push(...stageErrors(subphase, `小阶段${index + 1}`)));
+          phase.subphases.forEach((subphase, index) => errors.push(...stageErrors(subphase, `小阶段${index + 1}`, tagOptional)));
         }
         const commitments = [phase?.tagCommitments, ...(Array.isArray(phase?.subphases) ? phase.subphases.map(item => item?.tagCommitments) : [])].flat().join('、');
         for (const tag of requiredTags.filter(tag => (Array.isArray(anchor.tagCommitments) ? anchor.tagCommitments : []).join('、').includes(tag))) {
@@ -172,7 +186,11 @@ chapterNumber必须连续，标题和核心事件不能复刻前面的执行卡�
           const label = `第${Number(card?.chapterNumber) || start + index}章执行卡`;
           if (Number(card?.chapterNumber) !== start + index) errors.push(`${label}章节号缺失或顺序错位（应为第${start + index}章）`);
           for (const field of ['title', 'purpose', 'relationshipChange', 'exitHook']) if (!requireText(card?.[field])) errors.push(`${label}缺少${field}`);
-          for (const field of ['tagCommitments', 'characterBeats', 'requiredScenes', 'foreshadowingActions']) errors.push(...arrayErrors(card?.[field], field, label));
+          for (const field of ['tagCommitments', 'characterBeats', 'requiredScenes', 'foreshadowingActions']) {
+            if (field === 'tagCommitments' && tagOptional
+                && (!Array.isArray(card?.tagCommitments) || !card.tagCommitments.length)) continue;
+            errors.push(...arrayErrors(card?.[field], field, label));
+          }
         });
         return errors;
       });

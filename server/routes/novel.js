@@ -1604,8 +1604,12 @@ lockedFacts只填写用户大纲明确给出的事实，没有则留空。voiceG
               abortController.signal, resolveApiConfig(req.userModelConfig, 'reasoning'),
               1, attempt ? 0.2 : 0.35, maxTokens, Math.min(remaining, 600000),
               reasoning => { thinkingEmitter(reasoning); send({ type: 'reasoning', content: reasoning }); },
-              // A part is one JSON document. Retry it independently if cut off.
-              { jsonMode: true, taskType: attempt ? 'blueprint_repair' : 'blueprint_initial', blueprintPart: name });
+              // A part is one JSON document. A truncated document is continued in
+              // structured JSON mode first (one round) instead of refetching the
+              // whole part, which on reasoning models costs minutes and thousands
+              // of thinking tokens; the part is still fully re-validated.
+              { jsonMode: true, outputFormat: 'json', stitchOnTruncation: true, maxStitchRounds: 1,
+                taskType: attempt ? 'blueprint_repair' : 'blueprint_initial', blueprintPart: name });
           } catch (error) {
             if (error?.attempts || error?.usage) recordTokenUsage(ledger, 'reasoning', error);
             error.diagnostics = { ...error.diagnostics, part: name, attempt: attempt + 1, reason: 'upstream_error' };
@@ -1635,9 +1639,16 @@ lockedFacts只填写用户大纲明确给出的事实，没有则留空。voiceG
         error.message = '蓝图总生成时间超过上限，请稍后重试';
       }
       console.warn('[Blueprint] Generation failed:', JSON.stringify({ errorId, code: error.code || 'BLUEPRINT_FAILED', ...error.diagnostics }));
+      // 未能分类的错误（单块超时、连接中断、内部异常）此前只会显示一句无信息
+      // 的兜底文案，错误编号在日志里也对不上。带上错误类型、原文与分块名。
+      const partName = error.diagnostics?.part;
+      const unclassified = (error.diagnostics?.reason === 'upstream_error'
+        ? `${partName ? `分块“${partName}”` : '模型'}调用失败（${error.name || 'Error'}）：${redactError(error.message || '无错误信息')}`
+        : `${partName ? `分块“${partName}”` : '服务端'}未分类错误（${error.name || 'Error'}）：${redactError(error.message || '无错误信息')}`)
+        .replace(/\s+/g, ' ').slice(0, 300);
       send({ type: 'error', code: error.code || 'BLUEPRINT_FAILED', errorId, diagnostics: error.diagnostics || null,
         tokenUsage: usageSnapshot(ledger.tokenUsage),
-        message: (error.isApiError ? redactError(error.message) : (error.code ? error.message : '初始蓝图生成失败，请稍后重试'))
+        message: (error.isApiError ? redactError(error.message) : (error.code ? error.message : unclassified))
           + '（错误编号：' + errorId + '）。未创建作品或开始正文。' });
       res.end();
     } finally {
