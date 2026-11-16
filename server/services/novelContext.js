@@ -19,7 +19,7 @@ function extractChapterSnapshot(chapter) {
   if (semantic) return {
     chapterNumber: chapter.chapterNumber, summary: semantic.summary,
     conflictLines: semantic.events.map(event => event.text),
-    endState: semantic.characters.map(character => `${character.name}：${character.state}`).join('；') || semantic.events.at(-1).text,
+    endState: (Array.isArray(semantic.characters) ? semantic.characters : []).map(character => `${character.name}：${character.state}`).join('；') || semantic.events.at(-1).text,
   }
   if (!content || content.length < 50) return { summary: '', keyLines: [], endState: '' }
 
@@ -634,7 +634,9 @@ function compileChapterExecutionPackage({
   chapters = null,
   memoryQuery = '',
 } = {}) {
-  const semantic = Array.isArray(chapters) && (contextMemory?.version === 2 || chapters.some(validChapterMemory))
+  // Even before the first semantic summary is available, use committed prose
+  // for continuity rather than an old heuristic document or stale checkpoint.
+  const semantic = Array.isArray(chapters) && chapters.length
     ? buildSemanticContext({ chapters, contextMemory, currentChapter, query: memoryQuery }) : null;
   if (semantic) {
     const checkpointBlock = semantic.checkpointSummary

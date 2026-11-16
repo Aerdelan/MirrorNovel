@@ -114,9 +114,32 @@ function proxyApi(req, res) {
   const headers = { ...req.headers, host: target.host }
   delete headers['accept-encoding'] // 避免压缩后再解压，SSE 更稳
 
+  // A broken response is different from a connection failure before headers.
+  // Once an SSE response has started, ending it with JSON makes fetch observe a
+  // successful EOF and can hide a truncated generation. Propagate a transport
+  // failure instead so the renderer checks the durable job and reconnects.
+  let failed = false
+  const fail = (error) => {
+    if (failed) return
+    failed = true
+    upstream.destroy()
+    if (res.destroyed || res.writableEnded) return
+    if (res.headersSent) {
+      res.destroy(error)
+    } else {
+      res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(JSON.stringify({ message: `无法连接后端：${error.message}` }))
+    }
+  }
   const upstream = client.request(
     { protocol: target.protocol, hostname: target.hostname, port: target.port, path: target.pathname + target.search, method: req.method, headers },
     (upstreamRes) => {
+      upstreamRes.once('aborted', () => fail(new Error('后端响应中断，请检查生成任务状态')))
+      upstreamRes.once('error', fail)
+      if (res.destroyed) {
+        upstreamRes.destroy()
+        return
+      }
       // 关闭一切缓冲，保证流式内容尽快到达渲染层
       res.writeHead(upstreamRes.statusCode || 502, {
         ...upstreamRes.headers,
@@ -127,9 +150,14 @@ function proxyApi(req, res) {
     }
   )
   upstream.setTimeout(0) // 长连接不设超时（思考阶段可能数分钟无数据）
-  upstream.on('error', (error) => {
-    if (!res.headersSent) res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' })
-    res.end(JSON.stringify({ message: `无法连接后端：${error.message}` }))
+  upstream.on('error', fail)
+  // req.close also fires after an ordinary, fully uploaded POST. Only a real
+  // aborted upload or closed downstream response should detach the subscription.
+  req.once('aborted', () => upstream.destroy())
+  req.once('error', fail)
+  res.once('error', () => upstream.destroy())
+  res.once('close', () => {
+    if (!res.writableEnded) upstream.destroy()
   })
   req.pipe(upstream)
 }

@@ -510,7 +510,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useNovelStore } from '../stores/novel'
 import { useAuthStore } from '../stores/auth'
@@ -524,7 +524,7 @@ import { formatBlueprintText, parseBlueprintText } from '../utils/blueprintText'
 import { normalizeChapterWordTargetInput } from '../utils/chapterWordTarget'
 import api from '../api'
 import ReferenceSelector from '../components/ReferenceSelector.vue'
-import { GENERATION_IDLE_MS, backendGenerationActive, readGenerationAttempt, saveGenerationAttempt } from '../utils/generationRecovery'
+import { GENERATION_IDLE_MS, backendGenerationActive, createGenerationRecoveryMonitor, createGenerationSnapshotReader, generationAttemptUiMode, generationErrorMessage, readGenerationAttempt, saveGenerationAttempt } from '../utils/generationRecovery'
 
 const router = useRouter()
 const route = useRoute()
@@ -836,19 +836,26 @@ const restoringInput = ref(false)
 let lastGenerationActivity = Date.now()
 let generationEpoch = 0
 let ownGenerationRequest = null
+let recoveryMonitor = null
 const ownerId = () => authStore.user?._id || authStore.user?.id || ''
 function persistAttempt() { return saveGenerationAttempt(ownerId(), pendingAttempt.value) }
 function rememberAttempt(params) {
+ recoveryMonitor?.stop()
  const requestId = globalThis.crypto?.randomUUID?.() || `generation-${Date.now()}-${Math.random().toString(36).slice(2)}`
  params.clientRequestId = requestId
- pendingAttempt.value = { requestId, novelId: '', input: JSON.parse(JSON.stringify(params)), startedAt: Date.now() }
+ const uiMode = activeTab.value === 'lightnovel' ? 'lightnovel' : 'generate'
+ const uiForm = uiMode === 'lightnovel' ? {
+  charName: lnCharName.value, charTrait: lnCharTrait.value, worldSetting: lnWorldSetting.value,
+ } : undefined
+ pendingAttempt.value = { requestId, novelId: '', input: JSON.parse(JSON.stringify(params)), uiMode, uiForm, startedAt: Date.now() }
  lastGenerationActivity = Date.now()
  recoveryMessage.value = persistAttempt() ? '' : $t('recovery.storageFailed')
  recoveryUnknown.value = false; recoveryActive.value = false
  return ++generationEpoch
 }
-function finishAttempt() { pendingAttempt.value = null; persistAttempt() }
+function finishAttempt() { recoveryMonitor?.stop(); recoveryMonitor = null; pendingAttempt.value = null; persistAttempt() }
 function resetGenerationView(confirmed = true) {
+ recoveryMonitor?.stop(); recoveryMonitor = null
  generationEpoch++
  if (ownGenerationRequest) { ownGenerationRequest._aborted = true; ownGenerationRequest.abort(); ownGenerationRequest = null }
  outlineRejectCallback?.()
@@ -861,6 +868,71 @@ function resetGenerationView(confirmed = true) {
  if (confirmed) { finishAttempt(); recoveryActive.value = false; recoveryUnknown.value = false }
  recoveryMessage.value = $t(confirmed ? 'recovery.resetDone' : 'recovery.resetUnknown')
 }
+
+function followDisconnectedGeneration(lightNovel = false) {
+ recoveryMonitor?.stop()
+ const epoch = generationEpoch, owner = ownerId()
+ const current = () => epoch === generationEpoch && owner === ownerId()
+ const streamClosed = () => !ownGenerationRequest || ownGenerationRequest.readyState === XMLHttpRequest.DONE
+ const snapshot = createGenerationSnapshotReader({
+  current, canApply: streamClosed,
+  fetchNovel: id => novelStore.fetchNovelDetail(id),
+  onNovel(novel) {
+   const text = (novel.chapters || []).map(chapter => chapter.content || '').join('\n\n')
+   generatedChapterNumber.value = Number(novel.currentChapterIndex || generatedChapterNumber.value)
+   if (lightNovel) { lnStreamingText.value = text; lnScrollToBottom() }
+   else { rawStreamingText.value = text; streamingText.value = text; scrollToBottom() }
+  },
+ })
+ recoveryMonitor = createGenerationRecoveryMonitor({
+  fetchStatus: () => generatedNovelId.value
+   ? novelStore.fetchGenerationJob(generatedNovelId.value)
+   : novelStore.checkGenerationRequest(pendingAttempt.value.requestId),
+  async onStatus(data) {
+   if (!current()) return false
+   if (data.novelId) {
+    generatedNovelId.value = data.novelId
+    if (pendingAttempt.value) { pendingAttempt.value.novelId = data.novelId; persistAttempt() }
+   }
+   recoveryUnknown.value = false
+   recoveryActive.value = backendGenerationActive(data)
+   if (recoveryActive.value || (!generatedNovelId.value && Date.now() - lastGenerationActivity < GENERATION_IDLE_MS)) {
+    // Keep the existing generation guarded while the server owns the task.
+    // No pause or repeat generation request is sent when SSE disconnects.
+    const message = $t(recoveryActive.value ? 'recovery.running' : 'recovery.preparing')
+    recoveryMessage.value = message
+    if (lightNovel) { lnGenerating.value = true; lnStatus.value = message }
+    else { generating.value = true; genStatus.value = message }
+    const chapter = Number(data.job?.lastCommittedChapter || 0)
+    generatedChapterNumber.value = Math.max(generatedChapterNumber.value, chapter)
+    // A snapshot failure does not make the successfully read job state unknown.
+    // Keep monitoring; the reader also throttles failed full-book requests.
+    try { await snapshot.refresh(generatedNovelId.value, chapter) } catch {}
+    return current()
+   }
+   const completed = data.novelStatus === 'completed' || data.job?.status === 'completed'
+   if (completed && generatedNovelId.value) {
+    // The last SSE draft can be incomplete. Do not expose post-processing of
+    // that stale draft as a completed book; reload the committed text first.
+    if (!await snapshot.refresh(generatedNovelId.value, data.job?.lastCommittedChapter, { force: true })) return current()
+    if (!current()) return false
+   }
+   const message = completed ? $t('generate.statusDone') : generationErrorMessage(data.job?.error, $t('generate.statusPaused'))
+   if (lightNovel) { lnGenerating.value = false; lnOk.value = completed; lnStatus.value = message }
+   else { generating.value = false; genOk.value = completed; genStatus.value = message }
+   recoveryMessage.value = message
+   finishAttempt()
+   return false
+  },
+  onUnavailable() {
+   if (!current()) return
+   recoveryUnknown.value = true
+   recoveryMessage.value = $t('recovery.unknown')
+  },
+ })
+ recoveryMonitor.start()
+}
+onUnmounted(() => { generationEpoch += 1; recoveryMonitor?.stop() })
 async function checkGenerationStall() {
  if (recoveryChecking.value) return
  recoveryChecking.value = true
@@ -911,7 +983,22 @@ async function pauseAndRecover() {
  finally { recoveryChecking.value = false }
 }
 
-async function applyInitialInput(input) {
+async function applyInitialInput(input, attempt = { input }) {
+ if (generationAttemptUiMode(attempt) === 'lightnovel') {
+  activeTab.value = 'lightnovel'
+  lnSelectedType.value = input.novelTypeId || ''
+  lnCharName.value = typeof attempt.uiForm?.charName === 'string' ? attempt.uiForm.charName : input.protagonistName || ''
+  lnCharTrait.value = typeof attempt.uiForm?.charTrait === 'string' ? attempt.uiForm.charTrait : ''
+  lnWorldSetting.value = typeof attempt.uiForm?.worldSetting === 'string' ? attempt.uiForm.worldSetting : input.worldSetting || ''
+  lnGenMode.value = input.mode === 'chapter' ? 'chapter' : 'book'
+  lnTargetWordCount.value = input.targetWordCount || 50000
+  lnExpertMode.value = input.expertMode === true
+  selectedPersonaId.value = input.personaId || ''
+  selectedReferenceIds.value = [...(input.referenceIds || [])]
+  referenceExamplesEnabled.value = input.referenceExamplesEnabled === true
+  structurePattern.value = input.structurePattern || ''
+  return
+ }
  activeTab.value = 'generate'
  gender.value = input.gender || input.typeSku?.channel || 'male'
  await nextTick() // gender's watcher clears SKU selections before restoring them.
@@ -1436,7 +1523,8 @@ async function startGen() {
  } else if (event.type === 'plan_needs_extension') {
  genStatus.value = event.message || $t('generate.statusPlanExtend'); generating.value = false
  } else if (event.type === 'disconnected') {
- genStatus.value = event.message || $t('common.streamDisconnected'); generating.value = false
+ genStatus.value = event.message || $t('common.streamDisconnected')
+ followDisconnectedGeneration()
  } else if (event.type === 'draft_restored') {
  rawStreamingText.value = String(event.content || '')
  streamingText.value = rawStreamingText.value
@@ -1745,7 +1833,8 @@ async function startLNGen() {
  } else if (event.type === 'plan_needs_extension') {
  lnStatus.value = event.message || $t('generate.statusPlanExtend'); lnGenerating.value = false
  } else if (event.type === 'disconnected') {
- lnStatus.value = event.message || $t('common.streamDisconnected'); lnGenerating.value = false
+ lnStatus.value = event.message || $t('common.streamDisconnected')
+ followDisconnectedGeneration(true)
  } else if (event.type === 'draft_restored') {
  lnStreamingText.value = String(event.content || '')
  lnScrollToBottom()
@@ -1766,10 +1855,11 @@ onMounted(async () => {
  const savedAttempt = readGenerationAttempt(ownerId())
  if (savedAttempt) {
   pendingAttempt.value = savedAttempt
-  await applyInitialInput(savedAttempt.input)
+  await applyInitialInput(savedAttempt.input, savedAttempt)
   generatedNovelId.value = savedAttempt.novelId || ''
   lastGenerationActivity = savedAttempt.startedAt || Date.now()
   recoveryMessage.value = $t('recovery.restoredAttempt')
+  followDisconnectedGeneration(generationAttemptUiMode(savedAttempt) === 'lightnovel')
  }
  try {
    const data = await novelStore.fetchFullTypes()

@@ -1,0 +1,14 @@
+{
+  "name": "mirrornovel-website",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MirrorNovel 免费开源桌面端官网，原生 HTML 静态生成",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "node --test tests/site.test.mjs",
+    "preview": "node scripts/serve.mjs",
+    "update:release": "node scripts/update-release.mjs"
+  },
+  "engines": { "node": ">=22" }
+}

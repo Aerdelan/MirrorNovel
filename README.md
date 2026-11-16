@@ -277,6 +277,7 @@ MirrorNovel/
 ├── app/           # uni-app H5 / Capacitor Android 工程
 ├── shared/        # 跨端公共逻辑
 ├── docs/          # 类型体系、迁移记录、测试记录与截图
+├── website/       # 桌面端官网源码、功能指南、静态构建与 SEO 配置
 ├── .github/       # 质量检查、Windows 与 Android 构建流程
 ├── PROJECT_ARCHITECTURE.md
 └── LICENSE

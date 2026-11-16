@@ -92,7 +92,7 @@ test('stalled generation checks the server, survives offline reload, restores or
   const generate = page.locator('.generate-page > button.btn-lg')
   await generate.click()
   await page.locator('.gen-modal-header').getByRole('button', { name: '检测卡顿' }).click()
-  await page.getByText(/后台任务仍在运行，长时间思考不代表卡死/).waitFor()
+  await page.locator('.recovery-panel').getByText(/后台任务仍在运行，长时间思考不代表卡死/).waitFor()
   assert.equal(await generate.isDisabled(), true)
   assert.equal(generated.length, 1)
   offline = true
@@ -107,7 +107,10 @@ test('stalled generation checks the server, survives offline reload, restores or
    localStorage.setItem(key, JSON.stringify(saved))
   })
   await page.reload()
-  await page.getByText(/已找回上次生成时的填写内容/).waitFor()
+  // Automatic recovery immediately replaces the initial banner with the
+  // current offline/running status. Assert the restored form and task guard,
+  // rather than depending on a transient first-render message.
+  await page.waitForFunction(() => document.querySelector('input[placeholder="故事主角名字"]')?.value === '回填主角')
   assert.equal(await page.getByPlaceholder('故事主角名字').inputValue(), input.protagonistName)
   assert.equal(await generate.isDisabled(), true)
   offline = false; active = false

@@ -164,6 +164,7 @@ import { useAuthStore } from '../stores/auth'
 import { useI18n } from '../composables/useI18n'
 import { saveBlob } from '../utils/download'
 import api from '../api'
+import { backendGenerationActive } from '../utils/generationRecovery'
 
 const route = useRoute()
 const router = useRouter()
@@ -190,6 +191,7 @@ const continueThinkingSeconds = ref(0)
 const novelActionBusy = ref('')
 const continuingNovelId = ref('')
 let continueJobPollTimer = null
+let continueJobPollEpoch = 0
 
 // ---- 编辑引擎 ----
 const editorialRunning = ref(false)
@@ -229,6 +231,7 @@ onUnmounted(() => {
  window.removeEventListener('keydown', handleContinueProgressKeydown)
  if (continueJobPollTimer) clearTimeout(continueJobPollTimer)
  continueJobPollTimer = null
+ continueJobPollEpoch += 1
 })
 
 // 从 keep-alive 缓存重新激活时刷新书架数据（切换 tab 回来时）
@@ -294,6 +297,7 @@ async function startBookContinue(novel) {
 }
 
 function stopContinueTracking() {
+ continueJobPollEpoch += 1
  if (continueJobPollTimer) clearTimeout(continueJobPollTimer)
  continueJobPollTimer = null
  continuingNovelId.value = ''
@@ -304,19 +308,24 @@ function stopContinueTracking() {
 
 async function reconcileContinueJob(novelId) {
  if (!novelId || continuingNovelId.value !== novelId) return
+ const epoch = ++continueJobPollEpoch
+ const current = () => epoch === continueJobPollEpoch && continuingNovelId.value === novelId
  if (continueJobPollTimer) clearTimeout(continueJobPollTimer)
  continueJobPollTimer = null
  try {
-  const { job } = await novelStore.fetchGenerationJob(novelId)
-  if (job && (job.status === 'running' || job.status === 'pause_requested')) {
+  const data = await novelStore.fetchGenerationJob(novelId)
+  if (!current()) return
+  const job = data.job
+  if (backendGenerationActive(data)) {
    isContinuing.value = true
    isBookContinuing.value = true
-   currentContinueChapter.value = Number(job.chapterNumber || 0)
-   continueWordCount.value = Number(job.draftLength || 0)
+   currentContinueChapter.value = Number(job?.chapterNumber || 0)
+   continueWordCount.value = Number(job?.draftLength || 0)
    continueJobPollTimer = setTimeout(() => reconcileContinueJob(novelId), 2000)
    return
   }
  } catch (error) {
+  if (!current()) return
   // A brief status-query failure must not manufacture a completion event.
   continueJobPollTimer = setTimeout(() => reconcileContinueJob(novelId), 4000)
   return

@@ -1,0 +1,14 @@
+{
+  "name": "MirrorNovel",
+  "origin": "https://mirrornovel-desktop-20261111.bright-tapir-3778.chatgpt.site",
+  "repository": "https://github.com/Aerdelan/MirrorNovel",
+  "author": "https://github.com/Aerdelan",
+  "updated": "2026-11-11",
+  "release": {
+    "tag": "v1.10.3",
+    "version": "1.1.4",
+    "file": "MirrorNovel.Setup.1.1.4.exe",
+    "url": "https://github.com/Aerdelan/MirrorNovel/releases/download/v1.10.3/MirrorNovel.Setup.1.1.4.exe",
+    "verified": "2026-11-11"
+  }
+}

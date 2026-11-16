@@ -12,6 +12,7 @@ const { createStyleRevision, buildRevisionSampleBlock, freezeRevisionSnapshot } 
 const { loadActivePreferences } = require('../services/writingStyle');
 const { buildStyleContext } = require('../services/styleContext');
 const { captureGenerationInput, readGenerationInput } = require('../services/generationInput');
+const { recoverChapterStream } = require('../services/chapterStreamRecovery');
 const WritingStyleRevision = require('../models/WritingStyleRevision');
 const { queueChapterVersion, archiveChapterVersion } = require('../services/chapterVersions');
 const ChapterVersion = require('../models/ChapterVersion');
@@ -596,10 +597,7 @@ async function createStoryBlueprintProposal({ user, modelConfig, novel, persona,
   const requiredTags = getBlueprintTagChecklist(blueprintType);
   const nextRollingStart = Math.min(totalChapters, chapterNumber + 1);
   const nextRollingEnd = Math.min(totalChapters, nextRollingStart + 19);
-  const context = buildContextFromDocs(
-    novel.chapterSummaryDoc, novel.foreshadowingDoc, novel.outline, '', chapterNumber + 1, '',
-    { contextMemory: novel.contextMemory, maxChars: 9000 }
-  );
+  const context = semanticMemoryPrompt(novel, chapterNumber + 1);
   const prompt = `请担任“三级长篇小说剧情蓝图编辑”。基于已完成章节和当前已确认蓝图，校准全书篇章、篇章内小阶段以及未来10-20章的滚动执行卡。你只能提出建议，绝不能改写已经发生的事实、主角核心动机或已确认终局。
 
 ${blueprintType?.tagContract || ''}
@@ -1252,6 +1250,7 @@ function prepareCreativeState(novel) {  initializeCreativeState(novel);
 
 async function refreshSemanticMemory({ req, res, novel, signal, throughChapter = Infinity, chapterTokenStats = null, accountChapter = throughChapter }) {
   if (!novel.chapters?.length) return;
+  let persistenceError = null;
   const heartbeat = setInterval(() => {
     if (!res.writableEnded && !res.destroyed) { try { res.write(': memory-heartbeat\n\n'); } catch {} }
   }, 10000);
@@ -1272,11 +1271,14 @@ async function refreshSemanticMemory({ req, res, novel, signal, throughChapter =
         }
       },
       onUsage: result => emitTokenUsage(res, novel, 'reasoning', result, chapterTokenStats),
-      persist: () => saveNovelDoc(novel),
+      persist: async () => {
+        try { await saveNovelDoc(novel); }
+        catch (error) { persistenceError = error; throw error; }
+      },
       onProgress: message => { try { res.write(`data: ${JSON.stringify({ type: 'status', message })}\n\n`); } catch {} },
     });
   } catch (error) {
-    if (signal?.aborted || isAbortError(error)) throw error;
+    if (persistenceError || signal?.aborted || isAbortError(error)) throw persistenceError || error;
     console.warn('[Memory] 更新失败:', error?.name || 'Error', /^[A-Za-z0-9_.-]{1,80}$/.test(String(error?.code || '')) ? error.code : 'MEMORY_UPDATE_FAILED');
     const failure = new Error('剧情语义记忆更新未成功，已保留已写章节和上一版记忆，请稍后继续重试');
     failure.code = 'SEMANTIC_MEMORY_REQUIRED';
@@ -1293,6 +1295,46 @@ async function refreshSemanticMemory({ req, res, novel, signal, throughChapter =
     }
   }
   await saveNovelDoc(novel);
+}
+
+// Memory enrichment is recoverable derived data, not a second commit gate for
+// already saved prose. Keep verified caches, include unsummarized source prose
+// in the next prompt, and try again at the next chapter boundary. Storage and
+// explicit cancellation errors still stop immediately.
+async function refreshGenerationMemory(options) {
+  try { await refreshSemanticMemory(options); }
+  catch (error) {
+    if (options.signal?.aborted || error?.code !== 'SEMANTIC_MEMORY_REQUIRED') throw error;
+    await saveNovelDoc(options.novel);
+    try {
+      options.res.write(`data: ${JSON.stringify({ type: 'status', message: '剧情记忆整理暂不可用，已保留正文和已验证记忆；将结合已保存正文继续创作，并在下一章自动重试整理。' })}\n\n`);
+    } catch {}
+  }
+}
+
+async function generateChapterDraft({ run, req, res, novel, systemPrompt, prompt, chapterNumber,
+  contract = {}, checkpoint, readDraft, onChunk, chapterTokenStats, temperature, maxTokens, includeEndingHistory = true }) {
+  return recoverChapterStream({
+    signal: run.controller.signal,
+    readDraft,
+    checkpoint: phase => checkpoint.flush(phase),
+    onRetry: ({ attempt, maxResumes }) => {
+      try { res.write(`data: ${JSON.stringify({ type: 'status', message: `第${chapterNumber}章连接中断，草稿已保存，正在从断点自动续接（${attempt}/${maxResumes}）...` })}\n\n`); } catch {}
+    },
+    generate: async draft => {
+      const thinking = createThinkingEmitter(res);
+      try {
+        return await streamGenerate(systemPrompt,
+          appendResumeInstruction(prompt + (includeEndingHistory ? buildEndingHistory(novel.chapters, chapterNumber) : ''), draft),
+          onChunk, run.controller.signal, resolveApiConfig(req.userModelConfig, 'writing'), 2,
+          temperature ?? getChapterTemperature(contract), maxTokens ?? getChapterOutputTokenLimit(contract.wordTarget), 900000,
+          thinking, { stitchOnTruncation: true, taskType: 'chapter_write' });
+      } catch (error) {
+        if (error?.attempts || error?.usage) emitTokenUsage(res, novel, 'writing', error, chapterTokenStats);
+        throw error;
+      } finally { thinking.stop(); }
+    },
+  });
 }
 
 function semanticMemoryPrompt(novel, currentChapter, query = '') {
@@ -1414,6 +1456,20 @@ function ensureExecutableChapterPlan(novel, targetWordCount) {
   novel.markModified('chapterPlanData');
   novel.markModified('chapterPlan');
   return plan;
+}
+
+async function extendBookPlanAtBoundary({ novel, planData, chapterNumber, totalChapters, targetWordCount, extensions, res }) {
+  // Models can return a short batch of plans or consistently undershoot their
+  // chapter word targets. Expand at a committed boundary, never rewrite an
+  // existing card/ending or synthesize a plan without the user's outline.
+  if (chapterNumber !== totalChapters || extensions >= 3
+    || getCompletedWordCount(novel) >= targetWordCount || !String(novel.outline || '').trim()) return null;
+  const extended = ensureExecutableChapterPlan(novel, targetWordCount);
+  const nextTotal = getTotalPlannedChapters(extended, targetWordCount, chapterNumber);
+  if (nextTotal <= totalChapters) return null;
+  await saveNovelDoc(novel);
+  try { res.write(`data: ${JSON.stringify({ type: 'status', message: `当前章节计划已执行完毕，目标字数尚未达到；已按实际章节字数自动补充至第${nextTotal}章，继续创作...` })}\n\n`); } catch {}
+  return { planData: extended, totalChapters: nextTotal };
 }
 
 // 获取所有小说类型
@@ -2010,7 +2066,7 @@ ${tmpl.dynamicPrompt}
     // 章节计划的 JSON 可能为空、被截断或无法解析。只要用户已经确认了
     // 故事蓝图，就可以像“继续生成”一样使用保守的本地执行计划，避免
     // 首次生成在 0 字处直接暂停。没有蓝图的旧 API 调用仍保留严格校验。
-    if (isBook && String(outline || '').trim() && (targetWordCount >= 100000 || hasConfirmedBlueprint)) {
+    if (isBook && String(outline || '').trim() && (targetWordCount >= 100000 || hasConfirmedBlueprint || planData.chapters.length)) {
       const beforePlanEnd = planData.chapters.reduce((max, chapter) => Math.max(max, Number(chapter.chapterNumber || 0)), 0);
       const beforePlanCount = planData.chapters.length;
       planData = ensureExecutableChapterPlan(novel, targetWordCount);
@@ -2053,24 +2109,20 @@ ${tmpl.dynamicPrompt}
       }
 
       // 温度随章节压力稳定变化，避免每章随机切换作者声线。
-      const chapterTemp = getChapterTemperature(contract);
       // A2：按章号从本书版本快照做确定性轮换选择；块追加在系统提示末尾，
       // 保持前缀缓存友好。旧作品无快照时 block 为空串，走旧路径。
       const styleSelection = buildRevisionSampleBlock(novel.styleRevisionSnapshot, chNum);
 
       let genResult = null;
       if (!(buffer && ['reviewing', 'draft_complete'].includes(resumedPhase))) {
-        try {
-          genResult = await streamGenerate(systemPrompt + styleSelection.block, appendResumeInstruction(prompt + buildEndingHistory(novel.chapters, chNum), buffer), (chunk) => {
+        genResult = await generateChapterDraft({ run: generationRun, req, res, novel,
+          systemPrompt: systemPrompt + styleSelection.block, prompt, chapterNumber: chNum, contract,
+          checkpoint, readDraft: () => buffer, chapterTokenStats, onChunk: (chunk) => {
             buffer += chunk;
             checkpoint.schedule('writing');
             try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
-          }, abortController.signal, resolveApiConfig(req.userModelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget), 900000, createThinkingEmitter(res), { stitchOnTruncation: true, taskType: 'chapter_write' });
-        } catch (error) {
-          if (error?.attempts || error?.usage) emitTokenUsage(res, novel, 'writing', error, chapterTokenStats);
-          try { await checkpoint.flush('writing_interrupted'); } catch {}
-          throw error;
-        }
+          },
+        });
         await checkpoint.flush('reviewing');
       }
 
@@ -2159,16 +2211,17 @@ ${tmpl.dynamicPrompt}
       }
 
       try { res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber: chNum, title: chapterResult.title, wordCount: chapterResult.wordCount })}\n\n`); } catch {}
-      await refreshSemanticMemory({ req, res, novel, signal: abortController.signal, throughChapter: chNum, chapterTokenStats });
+      await refreshGenerationMemory({ req, res, novel, signal: abortController.signal, throughChapter: chNum, chapterTokenStats });
       return chapterResult;
     }
 
     console.log('开始正文循环生成，outline长度:', outline?.length || 0, 'aborted:', abortController.signal.aborted, '当前章节数:', novel.chapters.length);
     try {
-      await refreshSemanticMemory({ req, res, novel, signal: abortController.signal });
+      await refreshGenerationMemory({ req, res, novel, signal: abortController.signal });
       if (isBook) {
         // ====== 整本模式：严格按结构化章节计划创作 ======
-        const totalPlannedChapters = getTotalPlannedChapters(planData, targetWordCount);
+        let totalPlannedChapters = getTotalPlannedChapters(planData, targetWordCount);
+        let planExtensions = 0;
         let lastChapterContent = '';
 
         for (let ch = 1; ch <= totalPlannedChapters; ch++) {
@@ -2237,6 +2290,10 @@ ${buildChapterTail({
               }
             } catch (error) { console.warn('[Blueprint] 自动审核失败，继续写作:', error.message); }
           }
+          if (abortController.signal.aborted) break;
+          const extension = await extendBookPlanAtBoundary({ novel, planData, chapterNumber: ch,
+            totalChapters: totalPlannedChapters, targetWordCount, extensions: planExtensions, res });
+          if (extension) { planData = extension.planData; totalPlannedChapters = extension.totalChapters; planExtensions++; }
         }
 
         if (abortController.signal.aborted) {
@@ -2439,7 +2496,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
     const previousPlanEnd = storedPlanBeforeResume.chapters.reduce(
       (max, chapter) => Math.max(max, Number(chapter.chapterNumber || 0)), 0
     );
-    const planData = ensureExecutableChapterPlan(novel, targetWordCount);
+    let planData = ensureExecutableChapterPlan(novel, targetWordCount);
     const resumedPlanEnd = planData.chapters.reduce(
       (max, chapter) => Math.max(max, Number(chapter.chapterNumber || 0)), 0
     );
@@ -2487,23 +2544,19 @@ router.post('/continue/:novelId', auth, async (req, res) => {
         try { res.write(`data: ${JSON.stringify({ type: 'draft_restored', chapterNumber: chNum, length: buffer.length, content: buffer })}\n\n`); } catch {}
       }
 
-      const chapterTemp = getChapterTemperature(contract);
       // A2：按章号从本书版本快照做确定性轮换（同 /generate，块在系统提示末尾）。
       const styleSelection = buildRevisionSampleBlock(novel.styleRevisionSnapshot, chNum);
 
       let contResult = null;
       if (!(buffer && ['reviewing', 'draft_complete'].includes(resumedPhase))) {
-        try {
-          contResult = await streamGenerate(systemPrompt + styleSelection.block, appendResumeInstruction(prompt + buildEndingHistory(novel.chapters, chNum), buffer), (chunk) => {
+        contResult = await generateChapterDraft({ run: generationRun, req, res, novel,
+          systemPrompt: systemPrompt + styleSelection.block, prompt, chapterNumber: chNum, contract,
+          checkpoint, readDraft: () => buffer, chapterTokenStats, onChunk: (chunk) => {
             buffer += chunk;
             checkpoint.schedule('writing');
             try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
-          }, abortController.signal, resolveApiConfig(req.userModelConfig, 'writing'), 2, chapterTemp, getChapterOutputTokenLimit(contract.wordTarget), 900000, createThinkingEmitter(res), { stitchOnTruncation: true, taskType: 'chapter_write' });
-        } catch (error) {
-          if (error?.attempts || error?.usage) emitTokenUsage(res, novel, 'writing', error, chapterTokenStats);
-          try { await checkpoint.flush('writing_interrupted'); } catch {}
-          throw error;
-        }
+          },
+        });
         await checkpoint.flush('reviewing');
       }
 
@@ -2589,12 +2642,12 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       }
 
       try { res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber: chNum, title: chapterResult.title, wordCount: chapterResult.wordCount })}\n\n`); } catch {}
-      await refreshSemanticMemory({ req, res, novel, signal: abortController.signal, throughChapter: chNum, chapterTokenStats });
+      await refreshGenerationMemory({ req, res, novel, signal: abortController.signal, throughChapter: chNum, chapterTokenStats });
       return chapterResult;
     }
 
     try {
-      await refreshSemanticMemory({ req, res, novel, signal: abortController.signal });
+      await refreshGenerationMemory({ req, res, novel, signal: abortController.signal });
       if (mode === 'book') {
         // ====== 整本模式：循环生成多章直到目标字数 ======
         if (!planData.chapters.length) {
@@ -2619,7 +2672,8 @@ router.post('/continue/:novelId', auth, async (req, res) => {
         }
 
         const startCh = getHighestChapterNumber(novel) + 1;
-        const totalPlannedChapters = getTotalPlannedChapters(planData, targetWordCount, startCh - 1);
+        let totalPlannedChapters = getTotalPlannedChapters(planData, targetWordCount, startCh - 1);
+        let planExtensions = 0;
         if (planData.chapters.length && startCh > totalPlannedChapters) {
           let completion = assessStoryCompletion(novel, planData, targetWordCount);
           if (!completion.complete && completion.wordTargetReached && completion.missingChapters.length === 0 && completion.unresolvedHooks.length) {
@@ -2703,6 +2757,10 @@ ${buildChapterTail({
               }
             } catch (error) { console.warn('[Blueprint] 自动审核失败，继续写作:', error.message); }
           }
+          if (abortController.signal.aborted) break;
+          const extension = await extendBookPlanAtBoundary({ novel, planData, chapterNumber: ch,
+            totalChapters: totalPlannedChapters, targetWordCount, extensions: planExtensions, res });
+          if (extension) { planData = extension.planData; totalPlannedChapters = extension.totalChapters; planExtensions++; }
         }
 
         if (abortController.signal.aborted) {
@@ -3018,31 +3076,21 @@ router.post('/continue-import', auth, async (req, res) => {
     }
 
     try {
-      await refreshSemanticMemory({ req, res, novel, signal: abortController.signal });
+      await refreshGenerationMemory({ req, res, novel, signal: abortController.signal });
       userPrompt += '\n\n' + semanticMemoryPrompt(novel, chapterNumber, continuationRequest);
       let result;
       if (!(chapterBuffer && ['draft_complete', 'commit_ready'].includes(resumedDraftPhase))) {
-        try {
-          result = await streamGenerate(
-            systemPrompt,
-            appendResumeInstruction(userPrompt, chapterBuffer),
-            (chunk) => {
+        result = await generateChapterDraft({ run: generationRun, req, res, novel, systemPrompt,
+          prompt: userPrompt, chapterNumber, checkpoint, readDraft: () => chapterBuffer, chapterTokenStats,
+          temperature: 0.85, maxTokens: 16384, includeEndingHistory: false,
+          onChunk: (chunk) => {
               chapterBuffer += chunk;
               checkpoint.schedule('writing');
               try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
-            },
-            abortController.signal,
-            resolveApiConfig(req.userModelConfig, 'writing'),
-            2, 0.85, 16384, 900000, createThinkingEmitter(res),
-            { stitchOnTruncation: true, taskType: 'chapter_write' }
-          );
-          emitTokenUsage(res, novel, 'writing', result, chapterTokenStats);
-          await checkpoint.flush('draft_complete');
-        } catch (error) {
-          if (error?.attempts || error?.usage) emitTokenUsage(res, novel, 'writing', error, chapterTokenStats);
-          try { await checkpoint.flush('writing_interrupted'); } catch {}
-          throw error;
-        }
+          },
+        });
+        emitTokenUsage(res, novel, 'writing', result, chapterTokenStats);
+        await checkpoint.flush('draft_complete');
       }
 
       if (abortController.signal.aborted) {
@@ -3681,23 +3729,20 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
     });
 
     try {
-      await refreshSemanticMemory({ req, res, novel, signal: abortController.signal, throughChapter: chNum });
+      await refreshGenerationMemory({ req, res, novel, signal: abortController.signal, throughChapter: chNum });
       userPrompt += '\n\n' + semanticMemoryPrompt(novel, chNum + 1, notes);
       let result;
       if (!(appendBuffer && ['draft_complete', 'commit_ready'].includes(resumedDraftPhase))) {
-        try {
-          result = await streamGenerate(systemPrompt, appendResumeInstruction(userPrompt, appendBuffer), (chunk) => {
+        result = await generateChapterDraft({ run: generationRun, req, res, novel, systemPrompt,
+          prompt: userPrompt, chapterNumber: chNum, checkpoint, readDraft: () => appendBuffer, chapterTokenStats,
+          temperature: 0.85, maxTokens: 16384, includeEndingHistory: false, onChunk: (chunk) => {
             appendBuffer += chunk;
             checkpoint.schedule('writing');
             try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
-          }, abortController.signal, resolveApiConfig(req.userModelConfig, 'writing'), 2, 0.85, 16384, 900000, createThinkingEmitter(res), { stitchOnTruncation: true, taskType: 'chapter_write' });
-          emitTokenUsage(res, novel, 'writing', result, chapterTokenStats);
-          await checkpoint.flush('draft_complete');
-        } catch (error) {
-          if (error?.attempts || error?.usage) emitTokenUsage(res, novel, 'writing', error, chapterTokenStats);
-          try { await checkpoint.flush('writing_interrupted'); } catch {}
-          throw error;
-        }
+          },
+        });
+        emitTokenUsage(res, novel, 'writing', result, chapterTokenStats);
+        await checkpoint.flush('draft_complete');
       }
 
       if (abortController.signal.aborted) {

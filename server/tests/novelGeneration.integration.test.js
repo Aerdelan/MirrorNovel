@@ -1665,26 +1665,33 @@ test('token 账本：每章把服务商口径用量写进 qualityReport.tokens�
   assert.ok(tokenEvents.every((event) => event.usage && event.usage.inputTokens > 0));
 });
 
-test('语义记忆失败后暂停：正文已提交，继续只补记忆，不重复生成已完成章节', async () => {
-  state.planContent = makePlan([{ chapterNumber: 1, title: '取得原件', coreEvent: '林舟取得原始签收单并交给苏晚保管。', wordTarget: 600 }]);
-  state.chapterQueue = [makeChapter('林舟取得原始签收单并交给苏晚保管', '语义记忆断点')];
-  state.memoryHandler = async call => emitText('{"summary":"无证据的错误输出"}', null, call.signal);
-  const { events } = await postSse('/generate', { novelTypeId: 'xianxia', outline: '林舟核对签收原件，明确责任。', protagonistName: '林舟', targetWordCount: 600, mode: 'book' });
+test('记忆整理失败不打断跨章生成，下一章自动补齐且不重写已提交正文', async () => {
+  state.planContent = makePlan([
+    { chapterNumber: 1, title: '取得原件', coreEvent: '林舟取得原始签收单并交给苏晚保管。', wordTarget: 600 },
+    { chapterNumber: 2, title: '查明责任', coreEvent: '林舟核对签名并找到责任人。', wordTarget: 600 },
+  ]);
+  const first = makeChapter('林舟取得原始签收单并交给苏晚保管', '语义记忆断点');
+  state.chapterQueue = [first, makeChapter('林舟核对签名并找到责任人', '恢复记忆后第二章')];
+  state.memoryHandler = async call => {
+    if (state.memoryCalls.length <= 2) return emitText('{"summary":"无证据的错误输出"}', null, call.signal);
+    state.memoryHandler = null;
+    const source = call.userPrompt.split('【正文开始】\n')[1].split('\n【正文结束】')[0];
+    return emitText(JSON.stringify({ summary: '本章实际发生事件及结果：' + source.slice(0, 100),
+      events: [{ text: '林舟保留签收单并继续调查', evidence: source.slice(0, 80) }], facts: [], characters: [], openLoops: [], resolvedLoops: [] }), null, call.signal);
+  };
+  const { events } = await postSse('/generate', { novelTypeId: 'xianxia', outline: '林舟核对签收原件，明确责任。', protagonistName: '林舟', targetWordCount: 1200, mode: 'book' });
   const book = getCreatedNovel(events);
-  assert.equal(book.status, 'paused');
-  assert.equal(book.chapters.length, 1);
-  assert.ok(events.some(event => event.type === 'chapter_end'));
-  assert.match(events.at(-1).message, /语义记忆/);
-  assert.equal(state.aiCalls.filter(call => call.kind === 'chapter').length, 1);
-  assert.equal(state.memoryCalls.length, 2);
-  const text = book.chapters[0].content;
-  state.memoryHandler = null;
-  const resumed = await postSse(`/continue/${book._id}`, { mode: 'book' });
-  assert.equal(resumed.events.at(-1).type, 'completed');
-  assert.equal(book.chapters.length, 1);
-  assert.equal(book.chapters[0].content, text);
-  assert.equal(book.chapters[0].memorySummary.sourceHash, require('../services/semanticMemory').hash(text));
-  assert.equal(state.aiCalls.filter(call => call.kind === 'chapter').length, 1);
+  assert.equal(book.status, 'completed');
+  assert.equal(events.at(-1).type, 'completed');
+  assert.equal(book.chapters.length, 2);
+  assert.ok(events.some(event => event.type === 'status' && /记忆整理暂不可用/.test(event.message)));
+  assert.equal(state.aiCalls.filter(call => call.kind === 'chapter').length, 2);
+  assert.equal(state.memoryCalls.length, 4);
+  assert.equal(book.chapters[0].content, first);
+  assert.ok(book.chapters.every(chapter => chapter.memorySummary?.sourceHash));
+  const secondCall = state.aiCalls.filter(call => call.kind === 'chapter')[1];
+  assert.match(secondCall.userPrompt, /已保存正文摘录/);
+  assert.match(secondCall.userPrompt, /语义记忆断点/);
 });
 
 test('旧书继续前补齐逐章总结与阶段记忆，正文提示词使用两层记忆', async () => {
@@ -1706,7 +1713,7 @@ test('旧书继续前补齐逐章总结与阶段记忆，正文提示词使用�
   assert.ok(book.tokenUsage.byRole.reasoning.calls >= 9);
 });
 
-test('指定章节正文已提交后总结失败不伪报追加失败，下次写正文前先补记忆', async () => {
+test('指定章节正文已提交后总结失败不伪报追加失败，下次仍以已保存正文续写', async () => {
   const original = makeChapter('林舟找到签收单', '单章追加原文');
   const book = await seedNovel({ _id: 'append-memory-pending', status: 'paused', targetWordCount: 20000,
     chapters: [{ chapterNumber: 1, title: '第1章 原件', content: original, wordCount: original.length }] });
@@ -1723,10 +1730,11 @@ test('指定章节正文已提交后总结失败不伪报追加失败，下次�
   const before = book.chapters[0].content;
   state.chapterQueue = [makeChapter('签名对应的负责人到场对质', '第二次追加')];
   state.memoryHandler = async () => ({ content: 'invalid' });
-  const blocked = await postSse(`/${book._id}/continue-chapter/1`, { wordCount: 600, notes: '负责人到场' });
-  assert.equal(blocked.events.at(-1).type, 'paused');
-  assert.equal(book.chapters[0].content, before);
-  assert.equal(state.aiCalls.filter(call => call.kind === 'chapter').length, 1);
+  const next = await postSse(`/${book._id}/continue-chapter/1`, { wordCount: 600, notes: '负责人到场' });
+  assert.equal(next.events.at(-1).type, 'completed');
+  assert.ok(book.chapters[0].content.startsWith(before));
+  assert.equal(state.aiCalls.filter(call => call.kind === 'chapter').length, 2);
+  assert.match(state.aiCalls.filter(call => call.kind === 'chapter')[1].userPrompt, /已保存正文摘录/);
 });
 
 test('记忆接口失败时已返回的服务商用量仍记入整本账本', async () => {
@@ -1737,10 +1745,77 @@ test('记忆接口失败时已返回的服务商用量仍记入整本账本', as
   };
   const { events } = await postSse('/generate', { novelTypeId: 'xianxia', outline: '查明签收责任。', targetWordCount: 600, mode: 'book' });
   const book = getCreatedNovel(events);
-  assert.equal(book.status, 'paused');
+  assert.equal(book.status, 'completed');
   assert.equal(book.chapters.length, 1);
   assert.ok(book.tokenUsage.byRole.reasoning.inputTokens >= 137);
   assert.equal(book.chapters[0].qualityReport.tokens.byRole.reasoning.inputTokens, 137);
+});
+
+test('开始创作：短篇只返回一章计划时自动补足并连续写完，而非第一章后暂停', async () => {
+  state.planContent = makePlan([{ chapterNumber: 1, title: '收到来信', coreEvent: '林舟收到匿名来信并决定追查失踪证人。', wordTarget: 1200 }]);
+  state.chapterQueue = [makeChapter('林舟收到匿名来信并决定追查失踪证人', '第一章').repeat(2), makeChapter('林舟核对码头记录并找到证人', '第二章').repeat(2)];
+  const { events } = await postSse('/generate', { novelTypeId: 'xianxia', outline: '林舟追查来信来源，在码头找到证人。',
+    targetWordCount: 2300, chapterWordTarget: 2000, mode: 'book' });
+  const book = getCreatedNovel(events);
+  assert.equal(events.at(-1).type, 'completed');
+  assert.equal(book.status, 'completed');
+  assert.deepEqual(book.chapters.map(c => c.chapterNumber), [1, 2]);
+  assert.ok(events.some(e => e.type === 'status' && /自动扩展/.test(e.message)));
+  assert.equal(book.chapterPlanData.chapters[0].coreEvent, '林舟收到匿名来信并决定追查失踪证人。');
+});
+
+test('章节实际字数偏短：执行完计划后自动补充，达到目标后停止', async () => {
+  state.planContent = makePlan([{ chapterNumber: 1, title: '收到来信', coreEvent: '林舟收到匿名来信并决定追查。', wordTarget: 3000 }]);
+  state.chapterQueue = [makeChapter('林舟收到匿名来信并决定追查', '不足目标首章'), makeChapter('林舟核对线索并找到证人', '自动补充第二章')];
+  const { events } = await postSse('/generate', { novelTypeId: 'xianxia', outline: '调查匿名来信并核对真相。', targetWordCount: 1200, mode: 'book' });
+  const book = getCreatedNovel(events);
+  assert.equal(events.at(-1).type, 'completed');
+  assert.deepEqual(book.chapters.map(c => c.chapterNumber), [1, 2]);
+  assert.ok(events.some(e => e.type === 'status' && /按实际章节字数自动补充/.test(e.message)));
+  assert.equal(state.aiCalls.filter(c => c.kind === 'chapter').length, 2);
+});
+
+test('正文流中途掉线：同任务从已保存前缀自动续接，不重复生成开头或插入章节', async () => {
+  const content = makeChapter('林舟拿到原件并决定核对签名', '自动断点续接');
+  let writes = 0;
+  state.aiHandler = async call => {
+    if (call.kind !== 'chapter') return defaultAiHandler(call);
+    writes++;
+    if (writes === 1) {
+      call.onChunk(content.slice(0, 330));
+      throw Object.assign(new Error('stream reset after prefix'), { resumable: true, isApiError: true,
+        usage: { prompt_tokens: 123, completion_tokens: 45 } });
+    }
+    assert.match(call.userPrompt, /【断点续写】/);
+    assert.ok(call.userPrompt.includes(content.slice(0, 330)));
+    assert.ok([...state.jobs.values()].some(job => job.draft === content.slice(0, 330)));
+    return emitText(content.slice(330), call.onChunk, call.signal);
+  };
+  const { events } = await postSse('/generate', { novelTypeId: 'xianxia', targetWordCount: 600, mode: 'chapter' });
+  const book = getCreatedNovel(events);
+  assert.equal(events.at(-1).type, 'completed');
+  assert.equal(book.chapters.length, 1);
+  assert.equal(book.chapters[0].content, content);
+  assert.equal(events.filter(e => e.type === 'chapter_start').length, 1);
+  assert.equal(writes, 2);
+  assert.ok(events.some(e => e.type === 'status' && /从断点自动续接/.test(e.message)));
+  assert.ok(book.tokenUsage.byRole.writing.inputTokens >= 123);
+});
+
+test('记忆持久化失败必须停止，不能误当附加模型失败继续下一章', async () => {
+  state.planContent = makePlan([{ chapterNumber: 1, title: '来信', coreEvent: '林舟收到来信。', wordTarget: 600 },
+    { chapterNumber: 2, title: '调查', coreEvent: '林舟找到证人。', wordTarget: 600 }]);
+  state.chapterQueue = [makeChapter('林舟收到来信', '保存失败首章')];
+  state.memoryHandler = async call => {
+    state.saveFailureAt = state.saveCount + 1;
+    const source = call.userPrompt.split('【正文开始】\n')[1].split('\n【正文结束】')[0];
+    return emitText(JSON.stringify({ summary: '林舟收到匿名来信后决定采取行动并继续追查失踪证人，原件被妥善保留。',
+      events: [{ text: '林舟收到来信', evidence: source.slice(0, 60) }] }), null, call.signal);
+  };
+  const { events } = await postSse('/generate', { novelTypeId: 'xianxia', outline: '调查失踪证人。', targetWordCount: 1200, mode: 'book' });
+  assert.equal(getCreatedNovel(events).status, 'paused');
+  assert.equal(state.aiCalls.filter(c => c.kind === 'chapter').length, 1);
+  assert.equal(events.at(-1).type, 'error');
 });
 
 test('整本生成：每章字数设置贯穿大纲/计划提示词并落库', async () => {

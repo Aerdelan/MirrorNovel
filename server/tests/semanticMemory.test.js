@@ -6,6 +6,17 @@ const {
   renderSemanticContext,
 } = require('../services/semanticMemory');
 const { compileChapterExecutionPackage } = require('../services/novelContext');
+const { buildContinuePrompt } = require('../services/aiService');
+
+test('single-chapter continuation without a semantic cache retains the saved ending instead of only the opening', () => {
+  const book = { protagonistName: '林舟', chapters: [{ chapterNumber: 1, wordCount: 6000,
+    content: '旧邮局的开场。'.repeat(800) + '章末唯一事实：林舟已经离开邮局，把铜钥匙交给了苏晚。' }],
+    contextMemory: { version: 1, checkpointSummary: '过期记忆不应注入' } };
+  const prompt = buildContinuePrompt('test', book);
+  assert.match(prompt, /章末唯一事实：林舟已经离开邮局，把铜钥匙交给了苏晚/);
+  assert.match(prompt, /已保存正文摘录/);
+  assert.doesNotMatch(prompt, /过期记忆不应注入/);
+});
 
 function novel(count = 6) {
   return {
@@ -94,6 +105,66 @@ test('a fake evidence quote is rejected twice and cannot replace the previous su
   assert.equal(book.contextMemory.checkpointSummary, '旧记忆');
 });
 
+test('a single markdown JSON wrapper and omitted optional records do not block valid chapter memory', async () => {
+  const book = novel(1);
+  const calls = [];
+  await ensureSemanticMemory({ novel: book, request: model(calls, (_task, prompt) => {
+    const response = JSON.parse(chapterResponse(prompt).content);
+    for (const field of ['facts', 'characters', 'openLoops', 'resolvedLoops']) delete response[field];
+    return { content: `以下是根据正文整理的结果：\n\n\`\`\`json\n${JSON.stringify(response)}\n\`\`\`\n整理完毕。` };
+  }) });
+  assert.equal(calls.length, 1, 'valid content does not require a paid validation retry');
+  const memory = validChapterMemory(book.chapters[0]);
+  assert.ok(memory);
+  for (const field of ['facts', 'characters', 'openLoops', 'resolvedLoops']) assert.deepEqual(memory[field], []);
+  assert.equal(memory.events.length, 1);
+});
+
+test('missing required events or malformed optional records remain validation errors', async (t) => {
+  for (const patch of [{ events: undefined }, { facts: null }, { characters: {} }, { resolvedLoops: 'none' }]) {
+    await t.test(JSON.stringify(patch), async () => {
+      const book = novel(1);
+      const calls = [];
+      await assert.rejects(ensureSemanticMemory({ novel: book,
+        request: model(calls, (_task, prompt) => chapterResponse(prompt, patch)),
+      }), error => error.code === 'SEMANTIC_MEMORY_REQUIRED');
+      assert.equal(calls.length, 2);
+      assert.equal(book.chapters[0].memorySummary, undefined);
+    });
+  }
+});
+
+test('JSON evidence containing literal markdown fences is kept unchanged', async () => {
+  const book = novel(1);
+  book.chapters[0].content += '苏晚在纸上原样写下了```json```作为记录标记。';
+  await ensureSemanticMemory({ novel: book, request: model([], (_task, prompt) => chapterResponse(prompt, {
+    facts: [{ text: '苏晚写下记录标记', evidence: '苏晚在纸上原样写下了```json```作为记录标记。' }],
+  })) });
+  assert.equal(book.chapters[0].memorySummary.facts[0].evidence, '苏晚在纸上原样写下了```json```作为记录标记。');
+});
+
+test('omitted stage focus indexes keep the complete verified ledger', async () => {
+  const book = novel();
+  await ensureSemanticMemory({ novel: book, request: model([], task => task === 'stage_memory'
+    ? { content: JSON.stringify({ summary: '林舟逐步追查失踪证人，在寻找铜钥匙的过程中不断得到新证据，苏晚保管着记录，两人将继续核对已有线索。' }) }
+    : undefined) });
+  assert.equal(book.contextMemory.checkpointChapter, 6);
+  assert.equal(book.contextMemory.factLedger.length, 6);
+  assert.deepEqual(book.contextMemory.focusFactIds, []);
+  assert.deepEqual(book.contextMemory.focusLoopIds, []);
+});
+
+test('older cached chapter memory without optional character indexes can still merge', async () => {
+  const book = novel();
+  await ensureSemanticMemory({ novel: book, request: model([]) });
+  for (const chapter of book.chapters) delete chapter.memorySummary.characters;
+  book.contextMemory = { version: 1 };
+  const calls = [];
+  await ensureSemanticMemory({ novel: book, request: model(calls) });
+  assert.deepEqual(calls.map(call => call.task), ['stage_memory']);
+  assert.equal(book.contextMemory.checkpointChapter, 6);
+});
+
 test('a failed stage merge preserves the last successful cumulative memory and cached chapter summaries', async () => {
   const book = novel();
   await ensureSemanticMemory({ novel: book, request: model([]) });
@@ -179,6 +250,56 @@ test('execution prompts use cumulative memory plus unmerged semantic summaries a
   assert.doesNotMatch(earlier.chapterSummaryDoc, /第5章|第6章|第8章/);
 });
 
+test('a partial memory outage retains recent committed prose without stale summaries or future chapters', async () => {
+  const book = novel(1);
+  await ensureSemanticMemory({ novel: book, request: model([]) });
+  const second = { chapterNumber: 2, content: '苏晚把唯一原件交给林舟，两人决定立即离开旧邮局。' };
+  const future = { chapterNumber: 3, content: '尚未应进入当前提示词的未来情节。' };
+  book.chapters.push(second, future);
+  const semantic = buildSemanticContext({ chapters: book.chapters, contextMemory: book.contextMemory, currentChapter: 3 });
+  assert.deepEqual(semantic.pendingChapterNumbers, [2]);
+  assert.equal(semantic.pendingChapterExcerpts[0].content, second.content);
+  const compiled = compileChapterExecutionPackage({ chapters: book.chapters, contextMemory: book.contextMemory,
+    currentChapter: 3, chapterSummaryDoc: '过期旧摘要：原件仍在苏晚手上。',
+  });
+  assert.match(compiled.dynamicContext, /第1章：/);
+  assert.match(compiled.dynamicContext, /已保存正文摘录/);
+  assert.match(compiled.dynamicContext, /并非摘要/);
+  assert.ok(compiled.dynamicContext.includes(second.content));
+  assert.doesNotMatch(compiled.dynamicContext, /过期旧摘要|未来情节/);
+});
+
+test('legacy works with no semantic summaries use bounded source excerpts and preserve the latest ending', () => {
+  const book = novel(7);
+  book.contextMemory = { version: 1, checkpointSummary: '过期的阶段记忆不能进入提示词' };
+  book.chapters[6].content = '最新章开头。' + '动作与冲突。'.repeat(1200) + '结尾唯一状态：林舟带走原件，苏晚留在门外。';
+  const semantic = buildSemanticContext({ chapters: book.chapters, contextMemory: book.contextMemory, currentChapter: 8 });
+  assert.deepEqual(semantic.pendingChapterNumbers, [1, 2, 3, 4, 5, 6, 7]);
+  assert.deepEqual(semantic.pendingChapterExcerpts.map(item => item.chapterNumber), [5, 6, 7]);
+  assert.ok(semantic.pendingChapterExcerpts.every(item => item.content.length <= 1800));
+  const compiled = compileChapterExecutionPackage({ chapters: book.chapters, contextMemory: book.contextMemory,
+    chapterSummaryDoc: '过期的逐章摘要不能进入提示词', maxDynamicChars: 900, currentChapter: 8,
+  });
+  assert.ok(compiled.dynamicChars <= 900);
+  assert.match(compiled.dynamicContext, /有7章尚无有效语义总结/);
+  assert.match(compiled.dynamicContext, /第7章｜已保存正文摘录/);
+  assert.match(compiled.dynamicContext, /结尾唯一状态：林舟带走原件，苏晚留在门外/);
+  assert.doesNotMatch(compiled.dynamicContext + compiled.stableContext, /过期的阶段记忆|过期的逐章摘要/);
+});
+
+test('edited chapters use current source text while preserving but excluding old snapshots', async () => {
+  const book = novel();
+  await ensureSemanticMemory({ novel: book, request: model([]) });
+  const oldCheckpoint = structuredClone(book.contextMemory);
+  const oldChapterMemory = structuredClone(book.chapters[5].memorySummary);
+  book.chapters[5].content = '林舟发现记录是伪造的，于是撕毁副本，带走原件与苏晚离开。';
+  const compiled = compileChapterExecutionPackage({ chapters: book.chapters, contextMemory: book.contextMemory, currentChapter: 7 });
+  assert.match(compiled.dynamicContext, /记录是伪造的/);
+  assert.doesNotMatch(compiled.stableContext, /阶段记忆检查点/);
+  assert.deepEqual(book.contextMemory, oldCheckpoint, 'building prompts must not overwrite durable snapshots');
+  assert.deepEqual(book.chapters[5].memorySummary, oldChapterMemory);
+});
+
 test('long-term retrieval can select an old fact rather than always returning the newest facts', async () => {
   const book = novel(24);
   await ensureSemanticMemory({ novel: book, request: model([], (task, prompt) => {
@@ -213,6 +334,25 @@ test('semantic context budgeting keeps complete records and all unmerged chapter
   assert.ok(context.length <= 7000);
   for (const summary of summaries) assert.ok(context.includes(summary));
   assert.ok(!context || context.endsWith('。'));
+});
+
+test('a stage-merge outage cannot push the newest chapter summaries out of the prompt budget', async () => {
+  const book = novel(12);
+  await assert.rejects(ensureSemanticMemory({ novel: book, request: model([], (task, prompt) => {
+    if (task === 'stage_memory') return { content: 'invalid JSON' };
+    if (task !== 'chapter_memory') return;
+    const number = Number(prompt.match(/【章节号】(\d+)/)[1]);
+    return chapterResponse(prompt, { summary: '本章行动、冲突与后果。'.repeat(20) + `第${number}章结果终点。` });
+  }) }), error => error.code === 'SEMANTIC_MEMORY_REQUIRED');
+  assert.ok(book.chapters.every(validChapterMemory));
+  const compiled = compileChapterExecutionPackage({ chapters: book.chapters, contextMemory: book.contextMemory,
+    currentChapter: 13, maxDynamicChars: 1000,
+  });
+  assert.ok(compiled.dynamicContext.length <= 1000);
+  assert.match(compiled.dynamicContext, /第12章结果终点/);
+  assert.match(compiled.dynamicContext, /第11章结果终点/);
+  assert.doesNotMatch(compiled.dynamicContext, /第1章结果终点/);
+  assert.ok(compiled.dynamicContext.indexOf('第11章结果终点') < compiled.dynamicContext.indexOf('第12章结果终点'));
 });
 
 test('deletion and renumbering invalidates cached source chapter references', async () => {

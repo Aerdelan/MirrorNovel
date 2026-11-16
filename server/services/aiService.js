@@ -4,7 +4,7 @@ const { hasAcceptableRewriteLength, buildRewriteReviewPrompt } = require('./rewr
 const { resolveGenreContract } = require('../config/genreContracts');
 const { getServerRoute } = require('../config/modelCatalog');
 const { getRequestModelConfig } = require('./requestContext');
-const { buildSemanticContext, validChapterMemory, renderSemanticContext } = require('./semanticMemory');
+const { buildSemanticContext, renderSemanticContext } = require('./semanticMemory');
 const {
   resolveThinkingPolicy,
   thinkingFieldCandidates,
@@ -563,38 +563,11 @@ ${buildOutlineSpec(targetWordCount, chapterWordTarget)}
 /** Build a bounded chapter context for continuation prompts. */
 function buildChapterContext(chapters, contextMemory = {}) {
   if (!chapters || chapters.length === 0) return '';
-
-  if (contextMemory?.version === 2 || chapters.some(validChapterMemory)) {
-    const semantic = buildSemanticContext({ chapters, contextMemory });
-    return renderSemanticContext(semantic, { maxChars: 10000 });
-  }
-
-  const totalChars = chapters.reduce((s, c) => s + (c.content || '').length, 0);
-  const threshold = 8000; // 超过此阈值触发压缩
-
-  if (totalChars <= threshold || chapters.length <= 3) {
-    // 内容少：保留每章前3000字，总上限10000
-    return chapters.map((ch, i) => {
-      const content = (ch.content || '').slice(0, 3000);
-      return `【第${ch.chapterNumber}章（${ch.wordCount}字）】\n${content}`;
-    }).join('\n\n').slice(0, 10000);
-  }
-
-  // 内容多：最近2章保留详情，前面的章节压缩为单行摘要
-  const recentChapters = chapters.slice(-2);
-  const earlyChapters = chapters.slice(0, -2);
-
-  const earlySummary = earlyChapters.map((ch, i) => {
-    const firstLine = (ch.content || '').split('\n')[0] || '';
-    return `第${ch.chapterNumber}章（${ch.wordCount}字）：${firstLine.slice(0, 50)}...`;
-  }).join('\n');
-
-  const recentDetail = recentChapters.map((ch, i) => {
-    const content = (ch.content || '').slice(0, 2000);
-    return `【第${ch.chapterNumber}章（${ch.wordCount}字）】\n${content}`;
-  }).join('\n\n');
-
-  return `【前期章节概要】\n${earlySummary}\n\n【最近章节详情】\n${recentDetail}`.slice(0, 10000);
+  // A first/legacy chapter can have no semantic cache when the auxiliary
+  // model is unavailable. Preserve its actual ending rather than falling back
+  // to a cut-off opening or a stale summary.
+  const semantic = buildSemanticContext({ chapters, contextMemory });
+  return renderSemanticContext(semantic, { maxChars: 10000 });
 }
 
 function buildInitialPrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, mode, outline, persona, resolvedType) {

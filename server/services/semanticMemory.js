@@ -15,7 +15,14 @@ function memoryError(message) {
 }
 
 function parseJson(content) {
-  const text = String(content || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  let text = String(content || '').trim();
+  // Some compatible models wrap their otherwise valid JSON in an explanation
+  // and one markdown block. Accept that wrapper, without guessing between
+  // several objects or repairing JSON strings/evidence with regex replacements.
+  if (!text.startsWith('{')) {
+    const fences = [...text.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)];
+    if (fences.length === 1) text = fences[0][1].trim();
+  }
   const value = JSON.parse(text);
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('记忆必须为 JSON 对象');
   return value;
@@ -26,7 +33,10 @@ function requiredText(value, name, max = 500) {
   return value.trim();
 }
 
-function boundedArray(value, name, max = 12) {
+function boundedArray(value, name, max = 12, optional = false) {
+  // Omitted optional indexes mean "no supplied records", never invented facts.
+  // Explicitly malformed values (objects, strings, null) still fail validation.
+  if (optional && value === undefined) return [];
   if (!Array.isArray(value) || value.length > max) throw new Error(`${name}格式错误或条目过多`);
   return value;
 }
@@ -68,17 +78,17 @@ function validateChapterPart(content, source, prefix, knownLoops) {
     if (normalize(quote).length < 4 || !normalize(source).includes(normalize(quote))) throw new Error('记忆证据不在本段正文中');
     return quote;
   };
-  const items = (field, max = 12) => boundedArray(data[field], field, max).map((row, index) => ({
+  const items = (field, max = 12) => boundedArray(data[field], field, max, field !== 'events').map((row, index) => ({
     id: `${prefix}_${field}_${index}`, text: requiredText(row?.text, field, 360), evidence: evidence(row),
   }));
   const events = items('events', 10);
   if (!events.length) throw new Error('缺少已发生事件');
   const facts = items('facts');
   const openLoops = items('openLoops', 8);
-  const characters = boundedArray(data.characters, 'characters', 10).map(row => ({
+  const characters = boundedArray(data.characters, 'characters', 10, true).map(row => ({
     name: requiredText(row?.name, '人物名', 60), state: requiredText(row?.state, '人物状态', 360), evidence: evidence(row),
   }));
-  const resolvedLoops = boundedArray(data.resolvedLoops, 'resolvedLoops', 10).map(row => {
+  const resolvedLoops = boundedArray(data.resolvedLoops, 'resolvedLoops', 10, true).map(row => {
     const id = requiredText(row?.id, '伏笔ID', 160);
     if (!knownLoops.has(id)) throw new Error('回收了不存在的未决问题');
     return { id, evidence: evidence(row) };
@@ -225,7 +235,7 @@ async function ensureSemanticMemory({ novel, throughChapter = Infinity, request,
 只归纳已经发生的事件、因果转折、人物关系和当前局面，不预测后文，不把人物猜测写成事实。不能用概括性口号替代具体变化。
 旧的重要事实和未决问题不能因为本批未提及就消失；未决问题账本已按逐章证据核对回收，不得擅自宣布解决。
 【上一版阶段记忆】${base.checkpointSummary || '无，首次建立'}
-【新增章节总结】${JSON.stringify(batch.map(chapter => ({ chapterNumber: chapter.chapterNumber, summary: chapter.memorySummary.summary, characters: chapter.memorySummary.characters.map(({ name, state }) => ({ name, state })) })))}
+【新增章节总结】${JSON.stringify(batch.map(chapter => ({ chapterNumber: chapter.chapterNumber, summary: chapter.memorySummary.summary, characters: list(chapter.memorySummary.characters).map(({ name, state }) => ({ name, state })) })))}
 【重要事实索引】${JSON.stringify(factIndex.map(item => ({ id: item.id, text: item.text })))}
 【仍未解决的问题索引】${JSON.stringify(loopIndex.map(item => ({ id: item.id, text: item.text })))}
 只返回 {"summary":"600-1500字累计记忆：保留起因、重要转折、代价与结果、人物目前状态，最多4000字","focusFactIds":["最重要的事实ID，最多24个"],"focusLoopIds":["最重要的未决问题ID，最多24个"]}。ID只能来自提供的索引，完整账本由程序保留，不能臆造事实或问题。`;
@@ -233,7 +243,7 @@ async function ensureSemanticMemory({ novel, throughChapter = Infinity, request,
       const data = parseJson(content);
       const summary = requiredText(data.summary, '阶段记忆', 4000);
       if (summary.length < 40) throw new Error('阶段记忆信息不足');
-      const ids = (field, allowed) => boundedArray(data[field], field, 24).map(id => {
+      const ids = (field, allowed) => boundedArray(data[field], field, 24, true).map(id => {
         if (typeof id !== 'string' || !allowed.has(id)) throw new Error('阶段记忆引用了不存在的事实或问题');
         return id;
       });
@@ -301,17 +311,39 @@ function relevantRecords(records, query, focusIds = [], limit = 14) {
   return selectRecords(records, query, focusIds, limit).map(item => `第${item.chapterNumber}章：${item.text}`);
 }
 
+function proseExcerpt(content, maxChars = 1800) {
+  const text = String(content || '').trim();
+  if (text.length <= maxChars) return text;
+  // These are explicitly labelled source excerpts, not a fabricated summary.
+  // Keep the ending for immediate continuity, plus opening and middle evidence.
+  const marker = '\n……（原文节选，此处有省略）……\n';
+  const budget = Math.max(0, maxChars - marker.length * 2);
+  const head = Math.floor(budget * 0.2);
+  const middle = Math.floor(budget * 0.25);
+  const tail = budget - head - middle;
+  const midStart = Math.floor((text.length - middle) / 2);
+  return text.slice(0, head) + marker + text.slice(midStart, midStart + middle) + marker + text.slice(-tail);
+}
+
 function buildSemanticContext({ chapters = [], contextMemory = {}, currentChapter = Infinity, query = '' }) {
   const completed = chapters.filter(chapter => Number(chapter.chapterNumber) < currentChapter).sort((a, b) => Number(a.chapterNumber) - Number(b.chapterNumber));
   const current = checkpointIsCurrent(contextMemory, completed);
   const checkpoint = current ? Number(contextMemory.checkpointChapter) : 0;
   const pending = completed.filter(chapter => Number(chapter.chapterNumber) > checkpoint);
+  const missing = pending.filter(chapter => !validChapterMemory(chapter) && String(chapter.content || '').trim());
   const ledger = collectLedger(completed);
   return {
     version: VERSION, checkpointChapter: checkpoint, checkpointSummary: current ? contextMemory.checkpointSummary : '',
     chapterSummaryDoc: semanticSummaryDoc(pending),
     chapterSummaries: pending.map(chapter => ({ chapterNumber: chapter.chapterNumber, memory: validChapterMemory(chapter) }))
       .filter(item => item.memory).map(item => `第${item.chapterNumber}章：${item.memory.summary}`),
+    // Keep this separate from chapterSummaries: a temporarily unavailable
+    // memory model must not silently erase committed prose from the next call.
+    // Old checkpoints and stale L1 summaries remain excluded by their hashes.
+    pendingChapterNumbers: missing.map(chapter => Number(chapter.chapterNumber)),
+    pendingChapterExcerpts: missing.slice(-3).map(chapter => ({
+      chapterNumber: Number(chapter.chapterNumber), content: proseExcerpt(chapter.content),
+    })),
     facts: relevantRecords(ledger.facts, query, current ? contextMemory.focusFactIds : []),
     openLoops: relevantRecords(ledger.openLoops, query, current ? contextMemory.focusLoopIds : []),
     characters: ledger.characters.slice(-12).map(item => `${item.name}（第${item.chapterNumber}章）：${item.state}`),
@@ -332,8 +364,30 @@ function renderSemanticContext(memory, { maxChars = 10000, checkpoint = true, re
     used += block.length + 2;
   };
   add('【正文事实记忆】', '以下记忆来自已写正文；计划不等于已发生事实，未列出的历史信息不代表未发生或已经解决。');
+  const missing = list(memory.pendingChapterNumbers);
+  if (missing.length) {
+    add('【语义记忆待补齐】', `有${missing.length}章尚无有效语义总结。下面仅提供近期已保存正文摘录，并非摘要；省略部分不代表未发生，不得据此虚构事实或认定伏笔已解决。`);
+    // Prefer the latest committed prose over historical summaries if the
+    // caller has a tight dynamic-context budget. No extra model call is needed.
+    for (const excerpt of list(memory.pendingChapterExcerpts).slice().reverse()) {
+      const label = `【第${excerpt.chapterNumber}章｜已保存正文摘录，记忆待补齐】`;
+      const available = maxChars - used - label.length - 3;
+      if (available >= 80) add(label, proseExcerpt(excerpt.content, Math.min(1800, available)));
+    }
+  }
   if (checkpoint && memory.checkpointSummary) add(`【阶段记忆检查点｜截至第${memory.checkpointChapter}章】`, memory.checkpointSummary);
-  if (recent) for (const summary of list(memory.chapterSummaries)) add('【已写章节语义总结】', summary);
+  if (recent) {
+    // A failed L2 merge may leave more than one batch of valid L1 summaries.
+    // Select newest first, then present the selected records chronologically;
+    // filling the budget from chapter one would hide the immediate predecessor.
+    const selected = [];
+    let remaining = maxChars - used;
+    for (const summary of list(memory.chapterSummaries).slice().reverse()) {
+      const size = '【已写章节语义总结】\n'.length + String(summary).length + 2;
+      if (size <= remaining) { selected.push(summary); remaining -= size; }
+    }
+    for (const summary of selected.reverse()) add('【已写章节语义总结】', summary);
+  }
   const fields = [['【不可遗忘事实】', memory.facts], ['【当前开放剧情线】', memory.openLoops],
     ['【正文确认的人物状态】', memory.characters], ['【相关历史事件】', memory.relevantHistory]];
   for (let index = 0; index < 14; index++) {
