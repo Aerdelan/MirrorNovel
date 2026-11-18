@@ -484,6 +484,36 @@ test('初始蓝图：按3块生成并组装所有层级，通过最终校验', a
   assert.equal(state.novels.size, 0, 'blueprint preview must not create prose or a book');
 });
 
+test('初始蓝图：63章概览缺事实且只有1个篇章时分项补齐，全链路计费和校验正确', async () => {
+  const blueprint = require('./fixtures/initialBlueprint')();
+  const ranges = [[1, 6], [7, 12], [13, 18], [19, 25], [26, 31], [32, 37], [38, 44], [45, 50], [51, 56], [57, 63]];
+  blueprint.phases.forEach((phase, i) => {
+    const [start, end] = ranges[i];
+    Object.assign(phase, { startChapter: start, endChapter: end });
+    const middle = Math.floor((start + end) / 2);
+    Object.assign(phase.subphases[0], { startChapter: start, endChapter: middle });
+    Object.assign(phase.subphases[1], { startChapter: middle + 1, endChapter: end });
+  });
+  state.aiHandler = call => {
+    const name = call.options.blueprintPart;
+    let payload = structuredClone(blueprintPart(name, blueprint));
+    if (name === '全书概览') { payload.lockedFacts = { malformed: '事实' }; payload.phases = payload.phases.slice(0, 1); }
+    return emitText(JSON.stringify(payload), call.onChunk, call.signal);
+  };
+  const { events } = await postSse('/generate-blueprint', { ...initialBlueprintBody, targetWordCount: 315000 });
+  const done = events.find(event => event.type === 'completed');
+  assert.ok(done, events.find(event => event.type === 'error')?.message);
+  assert.equal(done.validation.valid, true);
+  assert.equal(done.blueprint.phases.length, 10);
+  assert.equal(done.blueprint.phases.at(-1).endChapter, 63);
+  assert.deepEqual(done.blueprint.lockedFacts, ['主角：周行舟', ...blueprint.lockedFacts]);
+  assert.equal(done.tokenUsage.calls, 14, '2次概览、1次事实、9个缺失概览篇章、细化篇章、执行卡');
+  assert.equal(events.filter(event => event.type === 'token_usage').length, 14);
+  assert.equal(state.aiCalls.filter(call => call.options.blueprintPart === '概览篇章第1-6章').length, 0);
+  assert.ok(events.some(event => event.type === 'status' && /分项补齐事实与篇章/.test(event.message)));
+  assert.equal(state.novels.size, 0);
+});
+
 test('初始蓝图：篇章数量不符时拆分当前批次，所有请求计入用量', async () => {
   const blueprint = require('./fixtures/initialBlueprint')();
   let calls = 0;
@@ -573,17 +603,17 @@ test('初始蓝图：未分类的上游错误会带出错误类型与分块，�
   assert.ok(error.errorId);
 });
 
-test('初始蓝图：两次仍不完整则明确返回原因、编号和用量，不能补造蓝图或无限重试', async () => {
+test('初始蓝图：概览分项补齐仍失败则返回具体分项、编号和完整用量，不补造事实', async () => {
   state.aiHandler = call => emitText('{"mainArc":"河湾夜班","phases":[{}]}', call.onChunk, call.signal);
   const { events } = await postSse('/generate-blueprint', initialBlueprintBody);
   const error = events.find(event => event.type === 'error');
   assert.equal(error.code, 'BLUEPRINT_PART_INVALID');
-  assert.equal(error.diagnostics.part, '全书概览');
-  assert.equal(error.diagnostics.reason, 'part_invalid');
-  assert.match(error.message, /全书概览/);
+  assert.equal(error.diagnostics.part, '概览事实');
+  assert.equal(error.diagnostics.reason, 'missing_field');
+  assert.match(error.message, /概览事实/);
   assert.ok(error.errorId);
-  assert.equal(error.tokenUsage.calls, 2);
-  assert.equal(state.aiCalls.length, 2);
+  assert.equal(error.tokenUsage.calls, 4);
+  assert.equal(state.aiCalls.length, 4);
   assert.equal(events.some(event => event.type === 'completed'), false);
   assert.equal(state.novels.size, 0);
 });

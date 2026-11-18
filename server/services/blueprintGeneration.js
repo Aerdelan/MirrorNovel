@@ -59,6 +59,30 @@ function stageErrors(stage, label = '阶段', tagOptional = false) {
   return errors;
 }
 
+const validFacts = value => Array.isArray(value) && value.every(requireText);
+
+function overviewPhaseErrors(phase, label = '概览篇章') {
+  const errors = [];
+  if (!requireText(phase?.title) || !requireText(phase?.goal)) errors.push(`${label}缺少title或goal`);
+  return errors;
+}
+
+function overviewErrors(parsed, totalChapters, arcCount, requiredTags) {
+  const errors = [];
+  if (!requireText(parsed.mainArc)) errors.push('mainArc不能为空');
+  if (!validFacts(parsed.lockedFacts)) errors.push('lockedFacts必须是事实字符串数组，可为空，不能编造原大纲没有的事实');
+  if (!hasItems(parsed.phases) || parsed.phases.length !== arcCount) errors.push(`phases必须有${arcCount}个篇章`);
+  if (Array.isArray(parsed.phases)) {
+    errors.push(...rangeErrors(parsed.phases, 1, totalChapters, '概览篇章范围'));
+    parsed.phases.forEach((phase, i) => errors.push(...overviewPhaseErrors(phase, `第${i + 1}个篇章`)));
+    const commitments = parsed.phases.flatMap(phase => Array.isArray(phase?.tagCommitments) ? phase.tagCommitments : []).join('、');
+    for (const tag of requiredTags) {
+      if (!commitments.includes(tag)) errors.push(`所选标签“${tag}”没有分配到任何篇章（已写标签：${commitments || '无'}）`);
+    }
+  }
+  return errors;
+}
+
 // When otherwise valid phases omit these two arrays, request only the missing
 // content. Never invent placeholders or copy a parent's plan into its children.
 function planPhaseRepair(parsed, errors) {
@@ -158,27 +182,92 @@ ${failure && !repair ? `【上次本块校验失败】${JSON.stringify(failure.e
     throw error;
   };
 
-  const outline = await task(1, '全书概览', 'mainArc',
+  // These are chapter boundaries only, not invented story content. A complete,
+  // valid model plan keeps its own boundaries; scaffolding is used for examples
+  // and to bound recovery when the overview is incomplete.
+  const overviewSlots = Array.from({ length: arcCount }, (_, i) => ({
+    startChapter: Math.floor(i * totalChapters / arcCount) + 1,
+    endChapter: Math.floor((i + 1) * totalChapters / arcCount),
+  }));
+  const overviewExample = { mainArc: '主线因果与终局', lockedFacts: [],
+    phases: overviewSlots.map(slot => ({ title: '填写该篇章的具体名称', ...slot, goal: '具体目标',
+      obstacle: '阻力', reversal: '反转', threads: ['支线'], tagCommitments: requiredTags.map(tag => `${tag}：具体兑现动作`) })) };
+  let lastOverview = null;
+  const overviewAttempts = [];
+  let outline;
+  try {
+    outline = await task(1, '全书概览', 'mainArc',
     `只设计全书主线、不可改写事实与${arcCount}个连续大篇章的简明概览，覆盖第1-${totalChapters}章。
-返回{"mainArc":"主线因果与终局","lockedFacts":["设定"],"phases":[{"title":"篇章名","startChapter":1,"endChapter":6,"goal":"目标","obstacle":"阻力","reversal":"反转","threads":["支线"],"tagCommitments":["所选标签原名：具体兑现动作"]}]}。
-按全书章数自行划分范围，示例中的1-6不是固定值。每个所选标签至少分配到一个篇章，使用标签原名。
+返回包含全部${arcCount}个篇章的JSON，结构示例：${JSON.stringify(overviewExample)}。
+phases必须恰好有${arcCount}项，不是只填示例的第一项。按大纲节奏自行划分连续范围，示例章号不是固定值。每个所选标签至少分配到一个篇章，使用标签原名。
+lockedFacts必须显式返回字符串数组，只摘取用户大纲已明确的事实，不把新设计当作事实；没有明确事实时返回[]，不能省略、返回null、字符串或对象。
 这一步不输出subphases或rollingPlan，每篇章概览控制在150字左右。所选标签：${requiredTags.join('、')}`, parsed => {
-      const errors = [];
-      if (!requireText(parsed.mainArc)) errors.push('mainArc不能为空');
-      if (!Array.isArray(parsed.lockedFacts) || !parsed.lockedFacts.every(requireText)) errors.push('lockedFacts必须是事实字符串数组，可为空，不能编造原大纲没有的事实');
-      if (!hasItems(parsed.phases) || parsed.phases.length !== arcCount) errors.push(`phases必须有${arcCount}个篇章`);
-      if (Array.isArray(parsed.phases)) {
-        errors.push(...rangeErrors(parsed.phases, 1, totalChapters, '概览篇章范围'));
-        parsed.phases.forEach((phase, index) => {
-          if (!requireText(phase?.title) || !requireText(phase?.goal)) errors.push(`第${index + 1}个篇章缺少title或goal`);
-        });
-        const commitments = parsed.phases.flatMap(phase => Array.isArray(phase?.tagCommitments) ? phase.tagCommitments : []).join('、');
-        for (const tag of requiredTags) {
-          if (!commitments.includes(tag)) errors.push(`所选标签“${tag}”没有分配到任何篇章（已写标签：${commitments || '无'}）`);
-        }
-      }
-      return errors;
+      lastOverview = parsed;
+      overviewAttempts.push(parsed);
+      return overviewErrors(parsed, totalChapters, arcCount, requiredTags);
     }, 16000);
+  } catch (error) {
+    // Recover only when an attempt produced a parsed, invalid overview.
+    // Upstream errors, cancellations and timeouts retain their failure path.
+    if (error.code !== 'BLUEPRINT_PART_INVALID' || !lastOverview) throw error;
+    aborted();
+    onStatus?.('蓝图 1/3：全书概览仍不完整，保留有效内容，分项补齐事实与篇章...');
+    const knownMainArc = overviewAttempts.find(item => requireText(item.mainArc))?.mainArc;
+    const knownFacts = overviewAttempts.find(item => validFacts(item.lockedFacts))?.lockedFacts;
+    const mainArc = knownMainArc || (await task(1, '概览主线', 'mainArc',
+      '只根据用户大纲返回{"mainArc":"全书主线因果与终局"}，不输出事实、篇章或其他字段。',
+      parsed => requireText(parsed.mainArc) ? [] : ['mainArc不能为空'], 4000)).mainArc;
+    const lockedFacts = knownFacts || (await task(1, '概览事实', 'lockedFacts',
+      '只摘取用户大纲中明确给出的不可改写事实，返回{"lockedFacts":["事实原文或准确转述"]}。lockedFacts必须是字符串数组，没有明确事实则返回[]；禁止编造事实，禁止将新剧情设计或上次无效的lockedFacts作为事实，不输出其他字段。',
+      parsed => validFacts(parsed.lockedFacts) ? [] : ['lockedFacts必须是事实字符串数组，可为空'], 4000)).lockedFacts;
+    // If the returned chapter partition is already complete, keep it even if
+    // titles or tags need repair. Otherwise use an explicit, continuous layout.
+    const partition = overviewAttempts.find(item => Array.isArray(item.phases)
+      && item.phases.length === arcCount && !rangeErrors(item.phases, 1, totalChapters).length);
+    const candidates = partition?.phases || (Array.isArray(lastOverview.phases) ? lastOverview.phases : []);
+    const slots = candidates.length === arcCount && !rangeErrors(candidates, 1, totalChapters).length
+      ? candidates.map(({ startChapter, endChapter }) => ({ startChapter, endChapter })) : overviewSlots;
+    const tagSlots = requiredTags.map((tag, i) => {
+      const assigned = slots.findIndex(slot => candidates.some(phase =>
+        Number(phase?.startChapter) === Number(slot.startChapter) && Number(phase?.endChapter) === Number(slot.endChapter)
+        && Array.isArray(phase?.tagCommitments) && phase.tagCommitments.join('、').includes(tag)));
+      return assigned < 0 ? i % arcCount : assigned;
+    });
+    const phases = [];
+    for (const [index, slot] of slots.entries()) {
+      aborted();
+      // Assign each required tag to a recovery slot so omission cannot silently
+      // drop the global tag contract. No tags or story facts are invented here.
+      const assignedTags = requiredTags.filter((_, i) => tagSlots[i] === index);
+      const validate = phase => {
+        const errors = overviewPhaseErrors(phase);
+        errors.push(...rangeErrors([phase], Number(slot.startChapter), Number(slot.endChapter), '概览篇章范围'));
+        const commitments = Array.isArray(phase?.tagCommitments) ? phase.tagCommitments.join('、') : '';
+        for (const tag of assignedTags) if (!commitments.includes(tag)) errors.push(`概览篇章缺少所选标签“${tag}”`);
+        return errors;
+      };
+      const matches = candidates.filter(phase => Number(phase?.startChapter) === Number(slot.startChapter)
+        && Number(phase?.endChapter) === Number(slot.endChapter));
+      if (matches.length === 1 && !validate(matches[0]).length) { phases.push(matches[0]); continue; }
+      const { phase } = await task(1, `概览篇章第${slot.startChapter}-${slot.endChapter}章`, 'phase',
+        `只补齐一个概览篇章，固定覆盖第${slot.startChapter}-${slot.endChapter}章。全书主线：${mainArc}
+不可改写事实：${JSON.stringify(lockedFacts)}
+全书篇章范围：${JSON.stringify(slots)}
+此前已确定的概览篇章：${JSON.stringify(phases)}
+后续已有概览内容（仅供衔接，不能改写原始大纲）：${JSON.stringify(candidates.filter(item => Number(item?.startChapter) > Number(slot.endChapter)))}
+本篇章必须兑现的标签：${assignedTags.join('、')}。约150字，尊重大纲在该范围的事件、转折和终局，不输出subphases或其他篇章。
+返回{"phase":{"title":"具体篇章名","startChapter":${slot.startChapter},"endChapter":${slot.endChapter},"goal":"目标","obstacle":"阻力","reversal":"反转","threads":["支线"],"tagCommitments":["标签原名：兑现动作"]}}。`,
+        parsed => validate(parsed.phase), 4000);
+      phases.push(phase);
+    }
+    outline = { mainArc, lockedFacts, phases };
+    const errors = overviewErrors(outline, totalChapters, arcCount, requiredTags);
+    if (errors.length) {
+      error.message = `全书概览分项补齐后仍未通过：${errors.join('；')}`;
+      error.diagnostics = { ...error.diagnostics, errors };
+      throw error;
+    }
+  }
 
   const generatePhases = async (anchors, previous = null, allowSplit = true, next = null) => {
     const start = Number(anchors[0].startChapter);

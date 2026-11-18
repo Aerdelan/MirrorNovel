@@ -27,6 +27,113 @@ function phaseRepairs(blueprint) {
   }))) };
 }
 
+test('分块蓝图：概览事实格式错误且篇章不足时分项补齐，严格组装完整蓝图', async () => {
+  const s = scenario((call, normal) => call.name === '全书概览'
+    ? JSON.stringify({ mainArc: '保留原先主线', lockedFacts: { invalid: '不能当作事实' }, phases: [] }) : normal);
+  const result = await s.run();
+  assert.equal(result.mainArc, '保留原先主线');
+  assert.deepEqual(result.lockedFacts, s.blueprint.lockedFacts);
+  assert.equal(result.phases.length, 10);
+  assert.equal(s.calls.filter(call => call.name === '概览事实').length, 1);
+  assert.equal(s.calls.filter(call => call.name.startsWith('概览篇章')).length, 10);
+  assert.equal(s.calls.length, 15);
+  assert.equal(s.usages.length, 15);
+  assert.ok(s.statuses.some(status => /分项补齐事实与篇章/.test(status)));
+  assert.equal(validateStoryBlueprint(result, 60, { requiredTags: ['职场'] }).valid, true);
+  assert.match(s.calls.find(call => call.name === '概览事实').prompt, /禁止编造事实/);
+});
+
+test('分块蓝图：只缺事实时保留完整篇章，模型显式返回空事实数组可通过', async () => {
+  const s = scenario((call, normal) => {
+    if (call.name === '概览事实') return '{"lockedFacts":[]}';
+    if (call.name !== '全书概览') return normal;
+    const payload = JSON.parse(normal).data.result;
+    delete payload.lockedFacts;
+    return JSON.stringify(payload);
+  });
+  const result = await s.run();
+  assert.deepEqual(result.lockedFacts, []);
+  assert.deepEqual(result.phases, s.blueprint.phases);
+  assert.deepEqual(s.calls.map(call => call.name), ['全书概览', '全书概览', '概览事实', '篇章第1-60章', '执行卡第1-20章']);
+});
+
+test('分块蓝图：概览重试退化时仍保留前次有效主线与篇章和后次有效事实', async () => {
+  const s = scenario((call, normal) => {
+    if (call.name !== '全书概览') return normal;
+    const payload = JSON.parse(normal).data.result;
+    if (!call.attempt) delete payload.lockedFacts;
+    else { payload.mainArc = ''; payload.lockedFacts = []; payload.phases = payload.phases.slice(0, 1); }
+    return JSON.stringify(payload);
+  });
+  const result = await s.run();
+  assert.equal(result.mainArc, s.blueprint.mainArc);
+  assert.deepEqual(result.lockedFacts, []);
+  assert.deepEqual(result.phases, s.blueprint.phases);
+  assert.equal(s.calls.length, 4, '保留跨尝试的有效字段，不重复请求事实和篇章');
+});
+
+test('分块蓝图：概览事实缺失不改变已有效分配到后续篇章的标签', async () => {
+  const s = scenario((call, normal) => {
+    if (call.name !== '全书概览') return normal;
+    const payload = JSON.parse(normal).data.result;
+    delete payload.lockedFacts;
+    payload.phases.slice(0, -1).forEach(phase => { phase.tagCommitments = []; });
+    return JSON.stringify(payload);
+  });
+  await s.run();
+  assert.equal(s.calls.filter(call => call.name.startsWith('概览篇章')).length, 0);
+  assert.match(s.calls.find(call => call.name.startsWith('篇章')).prompt, /"title":"篇章10"/);
+});
+
+test('分块蓝图：缺失主线时单独补齐，保留已有效的事实和篇章', async () => {
+  const s = scenario((call, normal) => {
+    if (call.name !== '全书概览') return normal;
+    const payload = JSON.parse(normal).data.result;
+    payload.mainArc = null;
+    return JSON.stringify(payload);
+  });
+  const result = await s.run();
+  assert.equal(result.mainArc, s.blueprint.mainArc);
+  assert.deepEqual(result.lockedFacts, s.blueprint.lockedFacts);
+  assert.deepEqual(s.calls.map(call => call.name), ['全书概览', '全书概览', '概览主线', '篇章第1-60章', '执行卡第1-20章']);
+});
+
+test('分块蓝图：概览事实分项补齐仍返回错误类型时停止，不静默替换为空数组', async () => {
+  for (const lockedFacts of [null, '不合法的事实', { fact: '不是数组' }, [{}]]) {
+    const s = scenario((call, normal) => {
+      if (call.name === '全书概览') return JSON.stringify({ mainArc: '主线', lockedFacts, phases: [] });
+      if (call.name === '概览事实') return JSON.stringify({ lockedFacts });
+      return normal;
+    });
+    await assert.rejects(s.run(), error => error.code === 'BLUEPRINT_PART_INVALID'
+      && error.diagnostics.part === '概览事实' && error.diagnostics.attempt === 2);
+    assert.equal(s.calls.length, 4);
+  }
+});
+
+test('分块蓝图：概览单篇章仍越界时停止，不生成空壳篇章或继续正文计划', async () => {
+  const s = scenario((call, normal) => {
+    if (call.name === '全书概览') return JSON.stringify({ mainArc: '主线', lockedFacts: [], phases: [] });
+    if (call.name.startsWith('概览篇章')) return JSON.stringify({ phase: { title: '越界篇章', goal: '目标', startChapter: 1, endChapter: 60 } });
+    return normal;
+  });
+  await assert.rejects(s.run(), error => error.code === 'BLUEPRINT_PART_INVALID'
+    && error.diagnostics.part === '概览篇章第1-6章');
+  assert.equal(s.calls.length, 4);
+});
+
+test('分块蓝图：概览分项补齐取消后不发后续请求，已返回用量仍入账', async () => {
+  const controller = new AbortController();
+  const s = scenario((call, normal) => {
+    if (call.name === '全书概览') return JSON.stringify({ mainArc: '主线', lockedFacts: null, phases: [] });
+    controller.abort();
+    return normal;
+  }, controller.signal);
+  await assert.rejects(s.run(), { name: 'AbortError' });
+  assert.equal(s.calls.length, 3);
+  assert.equal(s.usages.length, 3);
+});
+
 test('分块蓝图：63章小阶段遗漏伏笔和未决问题时只补字段，完整覆盖超过12条错误的目标', async () => {
   const blueprint = fixture();
   const last = blueprint.phases.at(-1);
@@ -274,8 +381,9 @@ test('分块蓝图：重叠范围、空人物、空伏笔或遗漏标签都在�
 test('分块蓝图：错误概览不会带着断层或缺失标签进入篇章生成', async () => {
   for (const phases of [[null], fixture().phases.map(phase => ({ ...phase, tagCommitments: [] }))]) {
     const s = scenario(() => JSON.stringify({ mainArc: '主线', lockedFacts: ['设定'], phases }));
-    await assert.rejects(s.run(), error => error.code === 'BLUEPRINT_PART_INVALID' && error.diagnostics.part === '全书概览');
-    assert.equal(s.calls.length, 2);
+    await assert.rejects(s.run(), error => error.code === 'BLUEPRINT_PART_INVALID' && error.diagnostics.part === '概览篇章第1-6章');
+    assert.equal(s.calls.length, 4);
+    assert.ok(!s.calls.some(call => call.name.startsWith('篇章') || call.name.startsWith('执行卡')));
   }
 });
 
