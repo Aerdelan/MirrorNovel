@@ -1,3 +1,5 @@
+import { blueprintPlanText, normalizeBlueprintPlans } from '../../../shared/blueprintPlan.mjs'
+
 const FALLBACK = {
   mainArc: '故事主线', lockedFacts: '不可改写的设定', tagChecklist: '全书标签清单', phases: '全书级篇章',
   phase: '大篇章', subphase: '小阶段', rolling: '滚动执行蓝图', rollingChapter: '执行章',
@@ -40,9 +42,26 @@ function formatForeshadowing(item, l) {
   if (typeof item === 'string') return item
   return [oneLine(item?.name) || l.untitled, `${l.setup}=${Number(item?.setupChapter) || 0}`, `${l.progress}=${list(item?.progressChapters).join(',') || 0}`, `${l.payoff}=${Number(item?.payoffChapter) || 0}`, `${l.plan}=${oneLine(item?.plan) || l.none}`].join('｜')
 }
+function pushPlanDetails(lines, stage, planText, l) {
+  // Prose editing must also retain any real, separately supplied constraints.
+  // Empty optional collections are omitted instead of displayed as “暂无”.
+  for (const [label, values] of [
+    [l.goal, [stage.goal]], [l.obstacle, [stage.obstacle]], [l.reversal, [stage.reversal]],
+    [l.entry, [stage.entryCondition]], [l.exit, [stage.exitCondition]], [l.threads, stage.threads],
+    [l.chapterPurpose, [stage.purpose]], [l.relationship, [stage.relationshipChange]], [l.exitHook, [stage.exitHook]],
+    [l.tags, stage.tagCommitments], [l.characters, list(stage.characterBeats).map(item => formatCharacterBeat(item, l))],
+    [l.scenes, stage.requiredScenes], [l.forbidden, stage.forbiddenDrift],
+    [l.foreshadowing, list(stage.foreshadowing).map(item => formatForeshadowing(item, l))],
+    [l.unresolved, stage.unresolvedQuestions], [l.foreshadowingActions, stage.foreshadowingActions],
+  ]) {
+    const extra = list(values).map(oneLine).filter(value => value && ![l.none, '暂无', 'None'].includes(value) && !planText.includes(value))
+    if (extra.length) lines.push(`${label}：${extra.join('；')}`)
+  }
+}
 function pushStage(lines, stage, heading, l) {
   lines.push('', `【${heading}】`)
-  if (stage?.planText) { lines.push(`${l.planText}：`, stage.planText); return }
+  const planText = blueprintPlanText(stage)
+  if (planText) { lines.push(`${l.planText}：`, planText); pushPlanDetails(lines, stage, planText, l); return }
   lines.push(`${l.goal}：${oneLine(stage?.goal) || l.none}`)
   lines.push(`${l.obstacle}：${oneLine(stage?.obstacle) || l.none}`)
   lines.push(`${l.reversal}：${oneLine(stage?.reversal) || l.none}`)
@@ -88,7 +107,8 @@ export function formatBlueprintText(blueprint, t) {
     pushList(lines, l.forbidden, rolling.forbiddenDrift, l.none)
     list(rolling.chapters).forEach((chapter) => {
       lines.push('', `【${l.rollingChapter} ${Number(chapter?.chapterNumber) || start}｜${oneLine(chapter?.title) || l.untitled}】`)
-      if (chapter.planText) { lines.push(`${l.planText}：`, chapter.planText); return }
+      const planText = blueprintPlanText(chapter)
+      if (planText) { lines.push(`${l.planText}：`, planText); pushPlanDetails(lines, chapter, planText, l); return }
       lines.push(`${l.chapterPurpose}：${oneLine(chapter?.purpose) || l.none}`)
       pushList(lines, l.tags, chapter?.tagCommitments, l.none)
       pushList(lines, l.characters, list(chapter?.characterBeats).map((item) => formatCharacterBeat(item, l)), l.none)
@@ -144,6 +164,11 @@ function parseForeshadowing(value, n, none) {
 
 /** Parse an edited readable blueprint document back to the backend shape. */
 export function parseBlueprintText(text, currentBlueprint = {}, t) {
+  // Do not reconstruct an unchanged preview through the text parser. Keep all
+  // original fields, including prose supplied by a different client version.
+  if (currentBlueprint?.phases?.length && String(text || '').trim() === formatBlueprintText(currentBlueprint, t).trim()) {
+    return normalizeBlueprintPlans(JSON.parse(JSON.stringify(currentBlueprint)))
+  }
   const l = labels(t)
   const n = {
     mainArc: aliases(l.mainArc, '故事主线', 'Main story arc'), lockedFacts: aliases(l.lockedFacts, '不可改写的设定', 'Locked facts'),
@@ -242,5 +267,5 @@ export function parseBlueprintText(text, currentBlueprint = {}, t) {
     if (item.chapterNumber) item.purpose ||= summary.slice(0, 360)
     else item.goal ||= summary.slice(0, 420)
   }
-  return result
+  return normalizeBlueprintPlans(result)
 }

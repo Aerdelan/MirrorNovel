@@ -464,6 +464,58 @@ test('大纲预览：总截止时间会中止生成并明确提示，不返回�
 
 const blueprintPart = require('./fixtures/blueprintPart');
 
+test('开始生成：旧预览提交的稀疏蓝图有真实剧情但缺少可选数组时仍保留剧情并通过校验', async () => {
+  const blueprint = require('./fixtures/initialBlueprint')();
+  for (const phase of blueprint.phases) {
+    for (const stage of [phase, ...phase.subphases]) {
+      stage.goal = '周行舟在核对签收记录时发现日期与车辆出入记录不符，他选择暂停放货并公开原始账目，承担回款延误的代价，让同事重新判断他的立场。';
+      for (const field of ['characterBeats', 'requiredScenes', 'forbiddenDrift', 'foreshadowing', 'unresolvedQuestions']) stage[field] = [];
+    }
+  }
+  state.aiHandler = () => { throw new Error('isolated stop after creation'); };
+  const result = await postSse('/generate', { ...initialBlueprintBody, mode: 'book', storyBlueprint: blueprint, enableResearch: false });
+  assert.equal(result.response.status, 200, result.raw);
+  const created = result.events.find(event => event.type === 'novel_created');
+  assert.ok(created, result.raw);
+  const novel = state.novels.get(created.novelId);
+  assert.ok(novel.storyBlueprint.phases[0].planText.includes('公开原始账目'));
+  assert.equal(novel.storyBlueprint.phases[0].characterBeats.length, 0, '不伪造人物推进以凑字段');
+});
+
+test('开始生成：文本蓝图经过预览、确认、序列化提交后仍能创建作品并保存已编辑剧情', async () => {
+  const fixture = require('./fixtures/initialBlueprint')();
+  const prosePart = require('./fixtures/blueprintProsePart');
+  state.aiHandler = call => emitText(prosePart(call.options.blueprintPart, fixture), call.onChunk, call.signal);
+  const preview = await postSse('/generate-blueprint', initialBlueprintBody);
+  const blueprint = preview.events.find(event => event.type === 'completed')?.blueprint;
+  assert.ok(blueprint, preview.raw);
+  const { pathToFileURL } = require('node:url');
+  const { formatBlueprintText, parseBlueprintText } = await import(pathToFileURL(path.join(serverRoot, '../client/src/utils/blueprintText.js')).href);
+  const text = formatBlueprintText(blueprint);
+  const confirmed = parseBlueprintText(text.replace('重新核对现场证据', '当众封存并核对原始证据'), blueprint);
+  state.aiHandler = () => { throw new Error('isolated stop after creation'); };
+  const started = await postSse('/generate', { ...initialBlueprintBody, mode: 'book', storyBlueprint: confirmed, enableResearch: false });
+  assert.equal(started.response.status, 200, started.raw);
+  const created = started.events.find(event => event.type === 'novel_created');
+  assert.ok(created, started.raw);
+  const saved = state.novels.get(created.novelId);
+  assert.ok(saved.storyBlueprint.phases[0].planText.includes('当众封存并核对原始证据'));
+  assert.equal(saved.storyBlueprint.phases[0].characterBeats.length, 0);
+});
+
+test('开始生成：所有剧情字段都是暂无时仍拒绝创建，不能用跳过校验掩盖空蓝图', async () => {
+  const blueprint = require('./fixtures/initialBlueprint')();
+  for (const phase of blueprint.phases) for (const stage of [phase, ...phase.subphases]) {
+    for (const field of ['goal', 'obstacle', 'reversal', 'entryCondition', 'exitCondition']) stage[field] = '暂无';
+    for (const field of ['characterBeats', 'requiredScenes', 'forbiddenDrift', 'foreshadowing', 'unresolvedQuestions']) stage[field] = [];
+  }
+  const result = await postSse('/generate', { ...initialBlueprintBody, mode: 'book', storyBlueprint: blueprint, enableResearch: false });
+  assert.equal(result.response.status, 400);
+  assert.match(result.raw, /没有具体剧情规划/);
+  assert.equal(state.novels.size, 0);
+  assert.equal(state.aiCalls.length, 0);
+});
+
 test('初始蓝图：默认请求分段文本，63章无需英文键名或小阶段仍能完整生成', async () => {
   const blueprint = require('./fixtures/initialBlueprint')();
   blueprint.phases.at(-1).endChapter = 63;

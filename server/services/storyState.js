@@ -801,6 +801,11 @@ function validateStoryBlueprint(blueprint, totalChapters, options = {}) {
     if (index === phases.length - 1 && Number(phase.endChapter) !== total) errors.push(`最后一个篇章必须覆盖到第${total}章`);
     const prose = typeof phase.planText === 'string' && phase.planText.trim().length >= 40;
     if (phase.planText && !prose) errors.push(`${label}剧情规划内容过短`);
+    if (!prose && /^(?:暂无|无|待补充|待定|未填写|None)?[。.\s]*$/i.test(String(phase.goal || ''))
+      && ['characterBeats', 'requiredScenes', 'forbiddenDrift', 'foreshadowing', 'unresolvedQuestions'].every(field => !phase[field]?.length)) {
+      errors.push(`${label}没有具体剧情规划，请重新生成蓝图或补充本篇章的事件、人物选择与结果`);
+      return;
+    }
     for (const [field, name] of [['tagCommitments', '标签兑现'], ['characterBeats', '人物推进'], ['requiredScenes', '必备场景'], ['forbiddenDrift', '禁止漂移'], ['foreshadowing', '伏笔计划'], ['unresolvedQuestions', '未决问题'], ['subphases', '篇章级小阶段']]) {
       if (prose && field !== 'subphases') continue;
       if (field === 'tagCommitments' && !tagsRequired) continue;

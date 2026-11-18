@@ -1777,6 +1777,10 @@ router.post('/generate', auth, async (req, res) => {
       status: 'generating', batchIndex: 0,
     });
     if (storyBlueprint && typeof storyBlueprint === 'object') {
+      // Older previews could submit prose in goal/purpose while discarding
+      // planText. Recover only that authored content before the shared validator.
+      const { normalizeBlueprintPlans } = await import('../../shared/blueprintPlan.mjs');
+      storyBlueprint = normalizeBlueprintPlans(storyBlueprint);
       const totalBlueprintChapters = Math.max(1, Math.ceil(targetWordCount / chapterWordTarget));
       const normalizedBlueprint = normalizeProposedBlueprint(storyBlueprint, novel, totalBlueprintChapters);
       const requiredTags = getBlueprintTagChecklist(type);
