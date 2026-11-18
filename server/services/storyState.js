@@ -585,6 +585,7 @@ function mergeBlueprintText(left, right, limit = 420) {
 
 function mergeBlueprintPhases(left, right) {
   const merged = {
+    ...((left.planText || right.planText) ? { planText: mergeBlueprintText(left.planText, right.planText, 24000) } : {}),
     title: mergeBlueprintText(left.title, right.title, 80),
     startChapter: left.startChapter,
     endChapter: right.endChapter,
@@ -623,6 +624,7 @@ function normalizeBlueprintStage(stage, fallbackStart, fallbackEnd, includeSubph
   const start = Math.max(1, Math.round(Number(stage.startChapter || fallbackStart || 1)));
   const end = Math.max(start, Math.round(Number(stage.endChapter || fallbackEnd || start)));
   const normalized = {
+    ...(stage.planText ? { planText: String(stage.planText).trim().slice(0, 12000) } : {}),
     title: shortText(stage.title || '剧情阶段', 80),
     startChapter: start,
     endChapter: end,
@@ -662,6 +664,7 @@ function normalizeBlueprintPhase(phase, fallbackStart, fallbackEnd) {
 function normalizeRollingChapter(chapter, fallbackNumber) {
   chapter = chapter || {};
   return {
+    ...(chapter.planText ? { planText: String(chapter.planText).trim().slice(0, 8000) } : {}),
     chapterNumber: Math.max(1, Math.round(Number(chapter.chapterNumber || fallbackNumber || 1))),
     title: shortText(chapter.title, 80),
     purpose: shortText(chapter.purpose || chapter.goal, 360),
@@ -796,18 +799,22 @@ function validateStoryBlueprint(blueprint, totalChapters, options = {}) {
     if (index === 0 && Number(phase.startChapter) !== 1) errors.push(`${label}必须从第1章开始`);
     if (previous && Number(phase.startChapter) !== Number(previous.endChapter) + 1) errors.push(`${label}与上一篇章存在章节空档或重叠`);
     if (index === phases.length - 1 && Number(phase.endChapter) !== total) errors.push(`最后一个篇章必须覆盖到第${total}章`);
+    const prose = typeof phase.planText === 'string' && phase.planText.trim().length >= 40;
+    if (phase.planText && !prose) errors.push(`${label}剧情规划内容过短`);
     for (const [field, name] of [['tagCommitments', '标签兑现'], ['characterBeats', '人物推进'], ['requiredScenes', '必备场景'], ['forbiddenDrift', '禁止漂移'], ['foreshadowing', '伏笔计划'], ['unresolvedQuestions', '未决问题'], ['subphases', '篇章级小阶段']]) {
+      if (prose && field !== 'subphases') continue;
       if (field === 'tagCommitments' && !tagsRequired) continue;
       if (!Array.isArray(phase[field]) || !phase[field].length) errors.push(`${label}缺少${name}`);
     }
-    if (!phase.entryCondition) errors.push(`${label}缺少进入条件`);
-    if (!phase.exitCondition) errors.push(`${label}缺少离开条件`);
+    if (!prose && !phase.entryCondition) errors.push(`${label}缺少进入条件`);
+    if (!prose && !phase.exitCondition) errors.push(`${label}缺少离开条件`);
     const subphases = toArray(phase.subphases);
     subphases.forEach((subphase, subIndex) => {
       const subLabel = `${label}的小阶段${subIndex + 1}`;
       if (subIndex === 0 && Number(subphase.startChapter) !== Number(phase.startChapter)) errors.push(`${subLabel}没有从篇章起点开始`);
       if (subIndex > 0 && Number(subphase.startChapter) !== Number(subphases[subIndex - 1].endChapter) + 1) errors.push(`${subLabel}存在章节空档或重叠`);
       if (subIndex === subphases.length - 1 && Number(subphase.endChapter) !== Number(phase.endChapter)) errors.push(`${subLabel}没有覆盖到篇章终点`);
+      if (prose && subphase.planText?.trim().length >= 40) return;
       if (tagsRequired && !subphase.tagCommitments?.length) errors.push(`${subLabel}缺少标签兑现`);
       if (!subphase.characterBeats?.length) errors.push(`${subLabel}缺少人物推进`);
       if (!subphase.requiredScenes?.length) errors.push(`${subLabel}缺少必备场景`);
@@ -828,6 +835,7 @@ function validateStoryBlueprint(blueprint, totalChapters, options = {}) {
     chapters.forEach((chapter, index) => {
       if (Number(chapter.chapterNumber) !== index + 1) errors.push(`滚动执行蓝图缺少第${index + 1}章或章节顺序错误`);
       if (!chapter.purpose) errors.push(`滚动执行蓝图第${index + 1}章缺少章节目的`);
+      if (chapter.planText?.trim().length >= 30) return;
       if (tagsRequired && !chapter.tagCommitments?.length) errors.push(`滚动执行蓝图第${index + 1}章缺少标签兑现`);
       if (!chapter.characterBeats?.length) errors.push(`滚动执行蓝图第${index + 1}章缺少人物推进`);
     });
@@ -836,6 +844,7 @@ function validateStoryBlueprint(blueprint, totalChapters, options = {}) {
     const commitments = phases.flatMap((phase) => [
       ...toArray(phase.tagCommitments),
       ...toArray(phase.subphases).flatMap((subphase) => toArray(subphase.tagCommitments)),
+      phase.planText || '',
     ]).join('、');
     for (const tag of requiredTags) {
       if (!commitments.includes(tag)) errors.push(`所选标签“${tag}”没有落实到任何篇章`);
@@ -951,6 +960,7 @@ function renderStoryBlueprintForContext(novel, chapterNumber, totalChapters) {
   const renderStage = (phase, prefix = '') => [
     `${prefix}第${phase.startChapter}-${phase.endChapter}章 ${phase.title}`,
     phase.goal ? `目标：${phase.goal}` : '',
+    phase.planText ? `剧情规划：${phase.planText}` : '',
     phase.obstacle ? `阻力：${phase.obstacle}` : '',
     phase.reversal ? `反转：${phase.reversal}` : '',
     phase.entryCondition ? `进入条件：${phase.entryCondition}` : '',
@@ -1092,6 +1102,7 @@ function collectBlueprintChapterRequirements(novel, chapterNumber) {
   return {
     // tagChecklist is a book-level commitment and must remain visible even
     // when the active stage forgot to repeat a tag.
+    planText: [...new Set([phase?.planText, subphase?.planText, rollingChapter?.planText].filter(Boolean))].join('\n\n'),
     tagCommitments: uniqueText([
       ...toArray(blueprint.tagChecklist),
       ...stages.flatMap((item) => toArray(item.tagCommitments)),
@@ -1368,6 +1379,7 @@ function buildChapterContract(options) {
     // fields. This prevents stage conditions and rolling-card outcomes from
     // being lost when a chapter plan is synthesized locally.
     blueprintStageTitle: blueprintRequirements.stageTitle,
+    blueprintPlanText: blueprintRequirements.planText,
     blueprintStageGoal: blueprintRequirements.stageGoal,
     blueprintStageObstacle: blueprintRequirements.stageObstacle,
     blueprintStageReversal: blueprintRequirements.stageReversal,
@@ -1430,6 +1442,7 @@ function renderChapterContract(contract) {
     '本章关系变化：' + (contract.relationshipBeat || '由场景中的选择和反应自然体现'),
     '本章缓冲功能：' + (contract.breathingPurpose || '无；不要为了凑字数插入无关日常'),
     contract.blueprintStageTitle ? '当前蓝图阶段：' + contract.blueprintStageTitle : '',
+    contract.blueprintPlanText ? '已确认的剧情规划（必须落实人物选择、因果与章末局面）：\n' + contract.blueprintPlanText : '',
     contract.blueprintStageGoal ? '阶段目标：' + contract.blueprintStageGoal : '',
     contract.blueprintStageObstacle ? '阶段阻力：' + contract.blueprintStageObstacle : '',
     contract.blueprintStageReversal ? '阶段反转：' + contract.blueprintStageReversal : '',

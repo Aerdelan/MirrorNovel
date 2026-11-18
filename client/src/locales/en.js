@@ -298,6 +298,7 @@ export default {
  blueprintEditHint: 'You can edit the blueprint text; keep the section headings and chapter ranges',
  blueprintTextPlaceholder: 'The readable blueprint will appear here when it is ready',
  blueprintTextMainArc: 'Main story arc',
+ blueprintTextPlanText: 'Plot plan',
  blueprintTextLockedFacts: 'Locked facts',
  blueprintTextTagChecklist: 'Book-wide tag checklist',
  blueprintTextPhases: 'Book-level arcs',

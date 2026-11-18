@@ -1609,7 +1609,7 @@ router.post('/generate-blueprint', auth, async (req, res) => {
     const requirements = blueprintRequirements(totalChapters);
     const requiredTags = getBlueprintTagChecklist(resolvedType);
     const rollingEnd = requirements.rollingChapterCount;
-    const prompt = `为以下长篇小说制定可执行的三级故事蓝图；后续分块任务给出本次要返回的具体JSON结构。
+    const prompt = `为以下长篇小说制定可执行的故事蓝图；后续分块任务说明需要规划的篇章范围，请使用中文标题和剧情段落。
 全书${target}字，每章约${chapterWords}字，共${totalChapters}章，${requirements.arcCount}个连续大篇章；首个滚动窗口第1-${rollingEnd}章。
 小说类型：${resolvedType.name}；必须持续兑现的标签：${requiredTags.join('、')}。
 主角：${protagonistName || '依据大纲'}。
@@ -1617,7 +1617,7 @@ router.post('/generate-blueprint', auth, async (req, res) => {
 【用户创作大纲】
 ${String(outline).slice(0, 60000)}
 【统一约束】尊重已确定的主线、人物目标、世界规则和终局，不把计划写成已发生事实；不同角色保留不同声线、关系和认知。不能用笼统推进句代替具体事件、选择、代价与结果。
-lockedFacts只填写用户大纲明确给出的事实，没有则留空。voiceGuard应写独有词汇、句长、称呼礼貌、回避点和失控方式，不能只写性格形容词；禁止所有角色都变成冷静、完整、讲逻辑的同一种声音。
+已定事实只填写用户大纲明确给出的内容，没有则留空。人物声线应体现独有词汇、句长、称呼礼貌、回避点和失控方式；禁止所有角色都变成冷静、完整、讲逻辑的同一种声音。
 `;
 
     // SSE 流式输出：蓝图由推理模型生成，耗时长，前端实时展示生成进度。超时放宽到 60 分钟。
@@ -1648,10 +1648,11 @@ lockedFacts只填写用户大纲明确给出的事实，没有则留空。voiceG
     const deadline = Date.now() + TIMEOUT.BLUEPRINT;
     const deadlineTimer = setTimeout(() => { deadlineExceeded = true; abortController.abort(); }, TIMEOUT.BLUEPRINT);
     try {
-      const system = `你是一位重视因果、人物弧线和标签兑现的长篇小说架构师。${buildPersonaPrompt(persona, { includeDeslop: false })}\n\n${resolvedType.tagContract || ''}\n只输出当前分块任务要求的完整JSON对象，不输出说明、正文或代码围栏。`;
+      const system = `你是一位重视因果、人物弧线和标签兑现的长篇小说架构师。${buildPersonaPrompt(persona, { includeDeslop: false })}\n\n${resolvedType.tagContract || ''}\n只输出当前分块任务要求的中文标题和剧情规划段落，不输出JSON或代码围栏。`;
       const rawBlueprint = await generateBlueprintParts({
         context: prompt + buildReferencePrompt(await prepareReferenceContext(req.userId, req.body)),
         totalChapters, arcCount: requirements.arcCount, rollingEnd, requiredTags,
+        outputStyle: 'prose',
         signal: abortController.signal,
         onStatus: message => send({ type: 'status', message }),
         onUsage: result => {
@@ -1668,11 +1669,9 @@ lockedFacts只填写用户大纲明确给出的事实，没有则留空。voiceG
               abortController.signal, resolveApiConfig(req.userModelConfig, 'reasoning'),
               1, attempt ? 0.2 : 0.35, maxTokens, Math.min(remaining, 600000),
               reasoning => { thinkingEmitter(reasoning); send({ type: 'reasoning', content: reasoning }); },
-              // A part is one JSON document. A truncated document is continued in
-              // structured JSON mode first (one round) instead of refetching the
-              // whole part, which on reasoning models costs minutes and thousands
-              // of thinking tokens; the part is still fully re-validated.
-              { jsonMode: true, outputFormat: 'json', stitchOnTruncation: true, maxStitchRounds: 1,
+              // Prose continuation retains the original chapter task; the server
+              // parses headings and validates coverage after stitching.
+              { outputFormat: 'text', stitchOnTruncation: true, maxStitchRounds: 2,
                 taskType: attempt ? 'blueprint_repair' : 'blueprint_initial', blueprintPart: name });
           } catch (error) {
             if (error?.attempts || error?.usage) recordTokenUsage(ledger, 'reasoning', error);

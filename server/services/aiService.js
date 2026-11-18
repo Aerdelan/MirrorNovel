@@ -1608,6 +1608,7 @@ function buildChapterPlan(outline, targetWordCount, protagonistName, worldSettin
   const compactBlueprintStage = (phase, includeSubphases = false) => ({
     title: phase.title || '', startChapter: phase.startChapter || 1, endChapter: phase.endChapter || estChapters,
     goal: phase.goal || '', obstacle: phase.obstacle || '', reversal: phase.reversal || '', threads: phase.threads || [],
+    ...(phase.planText ? { planText: phase.planText } : {}),
     tagCommitments: phase.tagCommitments || [], characterBeats: phase.characterBeats || [],
     requiredScenes: phase.requiredScenes || [], forbiddenDrift: phase.forbiddenDrift || [],
     entryCondition: phase.entryCondition || '', exitCondition: phase.exitCondition || '',

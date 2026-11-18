@@ -1,6 +1,7 @@
 const FALLBACK = {
   mainArc: '故事主线', lockedFacts: '不可改写的设定', tagChecklist: '全书标签清单', phases: '全书级篇章',
   phase: '大篇章', subphase: '小阶段', rolling: '滚动执行蓝图', rollingChapter: '执行章',
+  planText: '剧情规划',
   chapterRange: '第 {start}-{end} 章', goal: '阶段目标', obstacle: '主要阻力', reversal: '关键反转',
   threads: '支线与人物关系', tags: '标签兑现', characters: '人物推进与声线', scenes: '必备场景',
   forbidden: '禁止漂移', entry: '进入条件', exit: '离开条件', foreshadowing: '伏笔计划', unresolved: '未决问题',
@@ -41,6 +42,7 @@ function formatForeshadowing(item, l) {
 }
 function pushStage(lines, stage, heading, l) {
   lines.push('', `【${heading}】`)
+  if (stage?.planText) { lines.push(`${l.planText}：`, stage.planText); return }
   lines.push(`${l.goal}：${oneLine(stage?.goal) || l.none}`)
   lines.push(`${l.obstacle}：${oneLine(stage?.obstacle) || l.none}`)
   lines.push(`${l.reversal}：${oneLine(stage?.reversal) || l.none}`)
@@ -70,7 +72,7 @@ export function formatBlueprintText(blueprint, t) {
     const start = Math.max(1, Number(phase?.startChapter) || 1)
     const end = Math.max(start, Number(phase?.endChapter) || start)
     pushStage(lines, phase, `${l.phase} ${phaseIndex + 1}｜${rangeText(t, start, end)}｜${oneLine(phase?.title) || l.untitled}`, l)
-    list(phase?.subphases).forEach((subphase, subIndex) => {
+    list(phase?.subphases).filter(subphase => !phase.planText || subphase.planText !== phase.planText).forEach((subphase, subIndex) => {
       const subStart = Math.max(start, Number(subphase?.startChapter) || start)
       const subEnd = Math.max(subStart, Number(subphase?.endChapter) || subStart)
       pushStage(lines, subphase, `${l.subphase} ${phaseIndex + 1}.${subIndex + 1}｜${rangeText(t, subStart, subEnd)}｜${oneLine(subphase?.title) || l.untitled}`, l)
@@ -86,6 +88,7 @@ export function formatBlueprintText(blueprint, t) {
     pushList(lines, l.forbidden, rolling.forbiddenDrift, l.none)
     list(rolling.chapters).forEach((chapter) => {
       lines.push('', `【${l.rollingChapter} ${Number(chapter?.chapterNumber) || start}｜${oneLine(chapter?.title) || l.untitled}】`)
+      if (chapter.planText) { lines.push(`${l.planText}：`, chapter.planText); return }
       lines.push(`${l.chapterPurpose}：${oneLine(chapter?.purpose) || l.none}`)
       pushList(lines, l.tags, chapter?.tagCommitments, l.none)
       pushList(lines, l.characters, list(chapter?.characterBeats).map((item) => formatCharacterBeat(item, l)), l.none)
@@ -146,6 +149,7 @@ export function parseBlueprintText(text, currentBlueprint = {}, t) {
     mainArc: aliases(l.mainArc, '故事主线', 'Main story arc'), lockedFacts: aliases(l.lockedFacts, '不可改写的设定', 'Locked facts'),
     tagChecklist: aliases(l.tagChecklist, '全书标签清单', 'Book-wide tag checklist'), phases: aliases(l.phases, '全书级篇章', 'Book-level arcs'),
     phase: aliases(l.phase, '大篇章', 'Arc'), subphase: aliases(l.subphase, '小阶段', 'Subphase'), rolling: aliases(l.rolling, '滚动执行蓝图', 'Rolling execution plan'),
+    planText: aliases(l.planText, '剧情规划', 'Plot plan'),
     rollingChapter: aliases(l.rollingChapter, '执行章', 'Execution chapter'), goal: aliases(l.goal, '阶段目标', 'Stage goal'),
     obstacle: aliases(l.obstacle, '主要阻力', 'Main obstacle'), reversal: aliases(l.reversal, '关键反转', 'Key reversal'),
     threads: aliases(l.threads, '支线与人物关系', 'Subplots and relationships'), tags: aliases(l.tags, '标签兑现', 'Tag commitments'),
@@ -159,8 +163,8 @@ export function parseBlueprintText(text, currentBlueprint = {}, t) {
     payoff: aliases(l.payoff, '回收', 'Payoff'), plan: aliases(l.plan, '安排', 'Plan'), none: new Set([l.none, '暂无', 'None']),
   }
   const result = { ...currentBlueprint, blueprintLevel: 3, mainArc: '', lockedFacts: [], tagChecklist: [], phases: [], rollingPlan: null }
-  let section = '', arc = null, stage = null, rollingChapter = null, collection = ''
-  const clear = () => { collection = '' }
+  let section = '', arc = null, stage = null, rollingChapter = null, collection = '', planTarget = null
+  const clear = () => { collection = ''; planTarget = null }
   const setCollection = (line, target, definitions) => {
     for (const [key, names] of definitions) {
       const lead = afterLabel(line, names)
@@ -174,7 +178,7 @@ export function parseBlueprintText(text, currentBlueprint = {}, t) {
   }
   for (const raw of String(text || '').replace(/\r\n/g, '\n').split('\n')) {
     const line = raw.trim()
-    if (!line) continue
+    if (!line) { if (planTarget?.planText) planTarget.planText += '\n'; continue }
     const heading = headingValue(line)
     if (heading) {
       if (n.mainArc.includes(heading)) { section = 'mainArc'; arc = stage = rollingChapter = null; clear(); continue }
@@ -203,6 +207,9 @@ export function parseBlueprintText(text, currentBlueprint = {}, t) {
     }
     const target = section === 'rollingChapter' ? rollingChapter : section === 'rolling' ? result.rollingPlan : stage
     if (!target) continue
+    if (planTarget) { planTarget.planText += `${planTarget.planText ? '\n' : ''}${raw}`; continue }
+    const prose = afterLabel(line, n.planText)
+    if (prose !== null) { target.planText = prose; planTarget = target; continue }
     const scalarDefs = section === 'rollingChapter'
       ? [['purpose', n.chapterPurpose], ['relationshipChange', n.relationship], ['exitHook', n.exitHook]]
       : section === 'rolling' ? [['objective', n.windowObjective]]
@@ -228,5 +235,12 @@ export function parseBlueprintText(text, currentBlueprint = {}, t) {
   }
   if (!result.mainArc.trim()) throw new Error(typeof t === 'function' ? t('generate.errBlueprintMainArc') : '请保留“故事主线”段落')
   if (!result.phases.length) throw new Error(typeof t === 'function' ? t('generate.errBlueprintPhases') : '至少需要一个全书级篇章')
+  for (const item of [...result.phases, ...result.phases.flatMap(phase => phase.subphases || []), ...list(result.rollingPlan?.chapters)]) {
+    if (!item.planText) continue
+    item.planText = item.planText.trim()
+    const summary = item.planText.trim().split('\n').find(line => line.trim()) || ''
+    if (item.chapterNumber) item.purpose ||= summary.slice(0, 360)
+    else item.goal ||= summary.slice(0, 420)
+  }
   return result
 }

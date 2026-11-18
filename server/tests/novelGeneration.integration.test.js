@@ -464,6 +464,29 @@ test('大纲预览：总截止时间会中止生成并明确提示，不返回�
 
 const blueprintPart = require('./fixtures/blueprintPart');
 
+test('初始蓝图：默认请求分段文本，63章无需英文键名或小阶段仍能完整生成', async () => {
+  const blueprint = require('./fixtures/initialBlueprint')();
+  blueprint.phases.at(-1).endChapter = 63;
+  blueprint.phases.at(-1).subphases.at(-1).endChapter = 63;
+  const prosePart = require('./fixtures/blueprintProsePart');
+  state.aiHandler = call => {
+    assert.equal(call.options.outputFormat, 'text');
+    assert.equal(call.options.jsonMode, undefined);
+    assert.match(call.systemPrompt, /不输出JSON/);
+    return emitText(prosePart(call.options.blueprintPart, blueprint), call.onChunk, call.signal);
+  };
+  const { events } = await postSse('/generate-blueprint', { ...initialBlueprintBody, targetWordCount: 315000 });
+  const done = events.find(event => event.type === 'completed');
+  assert.ok(done, events.find(event => event.type === 'error')?.message);
+  assert.equal(done.validation.valid, true);
+  assert.equal(done.blueprint.phases.length, 10);
+  assert.equal(done.blueprint.phases.at(-1).endChapter, 63);
+  assert.equal(done.blueprint.rollingPlan.chapters.length, 20);
+  assert.ok(done.blueprint.phases[2].planText.includes('重新核对现场证据'));
+  assert.equal(done.tokenUsage.calls, 3);
+  assert.equal(state.novels.size, 0);
+});
+
 test('初始蓝图：按3块生成并组装所有层级，通过最终校验', async () => {
   const blueprint = require('./fixtures/initialBlueprint')();
   state.aiHandler = call => emitText(JSON.stringify({ data: blueprintPart(call.options.blueprintPart, blueprint) }), call.onChunk, call.signal);
@@ -476,7 +499,7 @@ test('初始蓝图：按3块生成并组装所有层级，通过最终校验', a
   assert.equal(done.tokenUsage.calls, 3);
   assert.equal(events.filter(event => event.type === 'token_usage').length, 3);
   assert.equal(state.aiCalls.length, 3);
-  assert.ok(state.aiCalls.every(call => call.options.stitchOnTruncation === true && call.options.outputFormat === 'json'));
+  assert.ok(state.aiCalls.every(call => call.options.stitchOnTruncation === true && call.options.outputFormat === 'text' && !call.options.jsonMode));
   assert.equal(state.aiCalls[0].maxTokens, 16000, '概览块预算');
   assert.equal(state.aiCalls[1].maxTokens, 32000, '篇章块预算');
   assert.equal(state.aiCalls[2].maxTokens, 24000, '执行卡块预算');
@@ -693,7 +716,7 @@ test('初始蓝图：真实HTTP流续写后仍截断则拆分篇章批次，接�
       const { blueprintPart: name } = currentCall.options;
       const part = blueprintPart(name, blueprint);
       const truncated = name === '篇章第1-60章';
-      const continuation = request.messages.at(-1).content.includes('上一次JSON因输出上限中断');
+      const continuation = request.messages.at(-1).content.includes('长度限制被截断');
       const content = continuation ? ' ' : truncated ? JSON.stringify(part).slice(0, -1) : JSON.stringify(part);
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: content.slice(0, -1) } }] })}\n\n`);
@@ -713,9 +736,9 @@ test('初始蓝图：真实HTTP流续写后仍截断则拆分篇章批次，接�
     assert.ok(done, events.find(event => event.type === 'error')?.message);
     assert.equal(done.validation.valid, true);
     assert.equal(done.blueprint.phases[0].title, blueprint.phases[0].title);
-    assert.equal(done.tokenUsage.outputTokens, 1200, '截断后续写请求的用量也要计入');
-    assert.equal(requestFormats.length, 6);
-    assert.ok(requestFormats.every(format => format?.type === 'json_object'));
+    assert.equal(done.tokenUsage.outputTokens, 1400, '截断后续写请求的用量也要计入');
+    assert.equal(requestFormats.length, 7);
+    assert.ok(requestFormats.every(format => format === undefined));
     assert.deepEqual(state.aiCalls.map(call => call.options.blueprintPart), [
       '全书概览', '篇章第1-60章', '篇章第1-30章', '篇章第31-60章', '执行卡第1-20章',
     ]);

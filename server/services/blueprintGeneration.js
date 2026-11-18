@@ -1,4 +1,5 @@
 const { inspectStructuredPayload } = require('./blueprintPayload');
+const { prosePrompt, parseBlueprintProse } = require('./blueprintProse');
 
 const requireText = value => typeof value === 'string' && value.trim();
 const hasItems = value => Array.isArray(value) && value.length > 0;
@@ -41,6 +42,10 @@ function rangeErrors(rows, start, end, label = '') {
 }
 
 function stageErrors(stage, label = '阶段', tagOptional = false) {
+  if (typeof stage?.planText === 'string') {
+    if (stage.planText.trim().length < 40) return [`${label}剧情规划内容过短，需写出具体事件、人物选择和结果`];
+    return requireText(stage.title) && requireText(stage.goal) ? [] : [`${label}缺少篇章标题或剧情内容`];
+  }
   const errors = [];
   for (const field of ['title', 'goal', 'entryCondition', 'exitCondition']) {
     if (!requireText(stage?.[field])) errors.push(`${label}缺少${field}`);
@@ -129,7 +134,7 @@ phaseStartChapter和subphaseStartChapter必须与目标清单一致；修复篇�
 // Parse failures split once; incomplete phase lists shrink recursively to a
 // single phase, retaining only independently validated results at each step.
 async function generateBlueprintParts({ context, totalChapters, arcCount, rollingEnd, requiredTags = [],
-  request, onUsage, onStatus, onFailure, signal }) {
+  request, onUsage, onStatus, onFailure, signal, outputStyle = 'json' }) {
   const tagOptional = requiredTags.length === 0;
   const aborted = () => {
     if (signal?.aborted) { const error = new Error('aborted'); error.name = 'AbortError'; throw error; }
@@ -140,7 +145,9 @@ async function generateBlueprintParts({ context, totalChapters, arcCount, rollin
     for (let attempt = 0; attempt < 2; attempt++) {
       aborted();
       onStatus?.(`蓝图 ${step}/3：${name}${repair ? '（仅补齐缺失字段）' : attempt ? '（仅修复本块）' : ''}...`);
-      const prompt = `${context}\n\n【本次仅执行的分块任务】\n${repair ? repair.instruction : instruction}
+      const prompt = outputStyle === 'prose'
+        ? prosePrompt({ context, instruction, name, field, failure, requiredTags })
+        : `${context}\n\n【本次仅执行的分块任务】\n${repair ? repair.instruction : instruction}
 本次只输出上面要求的一个JSON对象，不能输出整份三级蓝图、其他分块、解释或代码围栏。
 ${failure && !repair ? `【上次本块校验失败】${JSON.stringify(failure.errors)}\n从头返回本块完整的JSON对象，保留要求的顶层字段 ${field}。各字段只写必要细节，优先保证字段完整和JSON闭合。` : ''}`;
       const result = await request({ name, prompt, attempt, maxTokens });
@@ -148,16 +155,20 @@ ${failure && !repair ? `【上次本块校验失败】${JSON.stringify(failure.e
       aborted();
       const content = String(result?.content || '');
       const expectedField = repair ? 'repairs' : field;
-      const { parsed: response, reason: parseReason, documentCount = 0, foundKeys = [] } = inspectStructuredPayload(content, expectedField);
-      const applied = response && repair ? repair.apply(response) : null;
+      const inspection = outputStyle === 'prose' ? parseBlueprintProse(content, field, requiredTags) : inspectStructuredPayload(content, expectedField);
+      const patch = outputStyle === 'prose' && repair ? inspectStructuredPayload(content, 'repairs').parsed : null;
+      const { parsed: response, reason: parseReason, documentCount = 0, foundKeys = [] } = inspection;
+      const applied = repair && (patch || (outputStyle !== 'prose' && response)) ? repair.apply(patch || response) : null;
       const parsed = applied ? applied.parsed : response;
-      const reason = parsed ? 'part_invalid'
+      const truncatedText = inspection.prose && result?.finishReason === 'length';
+      const reason = truncatedText ? 'output_truncated' : parsed ? 'part_invalid'
         : result?.finishReason === 'length' ? 'output_truncated'
           : !content.trim() ? 'empty_output' : parseReason;
-      const errors = applied?.errors.length ? applied.errors : parsed ? validate(parsed) : [{
+      const errors = truncatedText ? ['剧情文本尚未生成完整，需要接续或拆分生成'] : applied?.errors.length ? applied.errors : parsed ? validate(parsed) : [{
         output_truncated: '模型输出达到上限，本块未完整返回（finishReason=length）',
         empty_output: '模型未返回蓝图内容（输出为空）',
         invalid_json: '未能从输出中提取到完整JSON文档（可能被截断，或字符串内有未转义换行）',
+        invalid_text: '未识别到本次要求的篇章或章节标题，请返回完整的分段剧情文本',
         missing_field: `JSON中没有顶层字段“${expectedField}”；模型实际返回的顶层键：${foundKeys.join('、') || '无'}；完整JSON文档${documentCount}个`,
       }[reason] || `本块输出无法使用（${reason}）`];
       if (!errors.length) return parsed;
@@ -166,7 +177,7 @@ ${failure && !repair ? `【上次本块校验失败】${JSON.stringify(failure.e
         jsonModeRequested: result?.jsonModeRequested === true, malformedStreamFrames: result?.malformedStreamFrames || 0,
         stitchedRounds: result?.stitchedRounds || 0, documentCount, foundKeys };
       onFailure?.(failure);
-      if (parsed && recoverPartial) {
+      if (parsed && !truncatedText && recoverPartial) {
         const recovered = await recoverPartial(parsed);
         if (recovered) return recovered;
       }
@@ -293,8 +304,9 @@ lockedFacts必须显式返回字符串数组，只摘取用户大纲已明确的
         errors.push(`${label}范围被改写（实际为第${phase?.startChapter ?? '?'}-${phase?.endChapter ?? '?'}章）`);
       }
       const subphases = Array.isArray(phase?.subphases) ? phase.subphases : [];
-      if (!subphases.length) errors.push(`${label}缺少subphases`);
-      else {
+      if (!subphases.length) {
+        if (!phase?.planText) errors.push(`${label}缺少subphases`);
+      } else {
         if (subphases.length > 8) errors.push(`${label}的subphases不能超过8个`);
         errors.push(...rangeErrors(subphases, Number(startChapter), Number(endChapter), `${label}的小阶段范围`));
         subphases.forEach((subphase, i) => errors.push(...stageErrors(subphase, `${label}的小阶段${i + 1}`, tagOptional)));
@@ -377,6 +389,10 @@ chapterNumber必须连续，每张卡承接前一章的局面，标题和核心�
         parsed.chapters.forEach((card, index) => {
           const label = `第${Number(card?.chapterNumber) || start + index}章执行卡`;
           if (Number(card?.chapterNumber) !== start + index) errors.push(`${label}章节号缺失或顺序错位（应为第${start + index}章）`);
+          if (requireText(card?.planText)) {
+            if (!requireText(card.title) || !requireText(card.purpose) || card.planText.trim().length < 30) errors.push(`${label}剧情内容过短或缺少标题`);
+            return;
+          }
           for (const field of ['title', 'purpose', 'relationshipChange', 'exitHook']) if (!requireText(card?.[field])) errors.push(`${label}缺少${field}`);
           for (const field of ['tagCommitments', 'characterBeats', 'requiredScenes', 'foreshadowingActions']) {
             if (field === 'tagCommitments' && tagOptional

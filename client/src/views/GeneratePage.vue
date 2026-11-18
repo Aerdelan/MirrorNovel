@@ -1327,8 +1327,8 @@ function generateInitialBlueprint() {
    scrollReasoningBox(blueprintReasoningRef)
   },
   onContent: (content) => {
-   // 服务端仍以 JSON 约束模型输出，但原始 JSON 不直接暴露给用户。
-   // 等 completed 事件拿到结构化蓝图后，再转换为可读、可编辑的蓝图文本。
+   // 模型输出分段剧情文本；完成后用服务端整理的蓝图显示可编辑预览，
+   // 避免把重试或续写中的临时片段混进最终确认内容。
    lastGenerationActivity = Date.now()
    blueprintOutputChars.value += String(content || '').length
   },

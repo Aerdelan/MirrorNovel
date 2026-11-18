@@ -189,6 +189,7 @@ const novelSchema = new mongoose.Schema({
     tagChecklist: { type: [String], default: [] },
     phases: [{
       title: { type: String, default: '' },
+      planText: { type: String, default: '' },
       startChapter: { type: Number, default: 1 },
       endChapter: { type: Number, default: 0 },
       goal: { type: String, default: '' },

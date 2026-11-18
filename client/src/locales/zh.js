@@ -234,6 +234,7 @@ export default {
  blueprintEditHint: '可直接编辑蓝图文字；请保留段落标题和阶段章节范围',
  blueprintTextPlaceholder: '蓝图生成后会以可读文本显示在这里',
  blueprintTextMainArc: '故事主线',
+ blueprintTextPlanText: '剧情规划',
  blueprintTextLockedFacts: '不可改写的设定',
  blueprintTextTagChecklist: '全书标签清单',
  blueprintTextPhases: '全书级篇章',
