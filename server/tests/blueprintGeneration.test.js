@@ -150,6 +150,75 @@ test('分块蓝图：60章通过3个任务组装完整三级结构', async () =>
   assert.ok(s.calls[2].prompt.includes(s.blueprint.phases[0].exitCondition));
 });
 
+test('分块蓝图：每次只返回一个完整篇章时逐批补齐，保留已完成篇章且不重复请求', async () => {
+  const s = scenario((call, normal) => {
+    if (!call.name.startsWith('篇章')) return normal;
+    const payload = JSON.parse(normal).data.result;
+    payload.phases = [payload.phases[0]];
+    return JSON.stringify(payload);
+  });
+  const blueprint = await s.run();
+  assert.deepEqual(blueprint.phases, s.blueprint.phases);
+  assert.equal(s.calls.length, 12, '概览、10次篇章请求、执行卡');
+  assert.deepEqual(s.calls.filter(call => call.name.startsWith('篇章')).map(call => call.name),
+    Array.from({ length: 10 }, (_, i) => `篇章第${i * 6 + 1}-60章`));
+  assert.equal(s.usages.length, 12);
+  assert.match(s.calls[2].prompt, /上一批最后一个篇章的衔接约束/);
+  assert.ok(s.statuses.some(status => /数量不符，保留1个已校验篇章/.test(status)));
+});
+
+test('分块蓝图：只返回跨全书的错误篇章时递归缩小到单篇章，保持原定范围', async () => {
+  const s = scenario((call, normal) => {
+    if (!call.name.startsWith('篇章')) return normal;
+    const payload = JSON.parse(normal).data.result;
+    if (payload.phases.length > 1) {
+      payload.phases = [{ ...payload.phases[0], endChapter: payload.phases.at(-1).endChapter }];
+    }
+    return JSON.stringify(payload);
+  });
+  const blueprint = await s.run();
+  assert.deepEqual(blueprint.phases, s.blueprint.phases);
+  assert.equal(s.calls.length, 21, '10个叶子篇章、9个拆分节点、概览和执行卡');
+  assert.equal(s.calls.filter(call => call.name === '篇章第1-60章').length, 1);
+});
+
+test('分块蓝图：保留后面的有效篇章，补前面的缺项时传递其进入条件', async () => {
+  const s = scenario((call, normal) => {
+    if (call.name !== '篇章第1-60章') return normal;
+    const payload = JSON.parse(normal).data.result;
+    return JSON.stringify({ phases: [payload.phases.at(-1)] });
+  });
+  const result = await s.run();
+  assert.deepEqual(result.phases, s.blueprint.phases);
+  assert.deepEqual(s.calls.map(call => call.name), ['全书概览', '篇章第1-60章', '篇章第1-54章', '执行卡第1-20章']);
+  assert.match(s.calls[2].prompt, /下一已确定篇章的衔接约束/);
+  assert.ok(s.calls[2].prompt.includes(s.blueprint.phases.at(-1).entryCondition));
+});
+
+test('分块蓝图：数量不符时不保留重复或缺字段的篇章，取消后不继续补齐', async () => {
+  const controller = new AbortController();
+  const s = scenario((call, normal) => {
+    if (!call.name.startsWith('篇章')) return normal;
+    if (call.name !== '篇章第1-60章') { controller.abort(); return normal; }
+    const payload = JSON.parse(normal).data.result;
+    return JSON.stringify({ phases: [payload.phases[0], payload.phases[0], { ...payload.phases[1], characterBeats: [] }] });
+  }, controller.signal);
+  await assert.rejects(s.run(), { name: 'AbortError' });
+  assert.equal(s.calls.length, 3);
+  assert.equal(s.usages.length, 3);
+  assert.ok(s.statuses.some(status => /保留0个已校验篇章/.test(status)));
+  assert.equal(s.calls.at(-1).name, '篇章第1-30章');
+});
+
+test('分块蓝图：单篇章仍持续返回空列表时只重试一次并停止，不能无限拆分', async () => {
+  const s = scenario((call, normal) => call.name.startsWith('篇章') ? '{"phases":[]}' : normal);
+  await assert.rejects(s.run(), error => error.code === 'BLUEPRINT_PART_INVALID'
+    && error.diagnostics.part === '篇章第1-6章' && error.diagnostics.attempt === 2);
+  assert.deepEqual(s.calls.map(call => call.name), [
+    '全书概览', '篇章第1-60章', '篇章第1-30章', '篇章第1-18章', '篇章第1-12章', '篇章第1-6章', '篇章第1-6章',
+  ]);
+});
+
 test('分块蓝图：输出不完整时仅拆分当前批次，保留此前成果和所有调用用量', async () => {
   const s = scenario((call, normal) => ['篇章第1-60章', '执行卡第1-20章'].includes(call.name) ? '{"截断":' : normal);
   const blueprint = await s.run();

@@ -102,14 +102,15 @@ phaseStartChapter和subphaseStartChapter必须与目标清单一致；修复篇�
 }
 
 // Validate each of the three stages before passing its results to the next.
-// If a large response cannot be parsed, split that batch once at a chapter boundary.
+// Parse failures split once; incomplete phase lists shrink recursively to a
+// single phase, retaining only independently validated results at each step.
 async function generateBlueprintParts({ context, totalChapters, arcCount, rollingEnd, requiredTags = [],
   request, onUsage, onStatus, onFailure, signal }) {
   const tagOptional = requiredTags.length === 0;
   const aborted = () => {
     if (signal?.aborted) { const error = new Error('aborted'); error.name = 'AbortError'; throw error; }
   };
-  const task = async (step, name, field, instruction, validate, maxTokens, split, planRepair) => {
+  const task = async (step, name, field, instruction, validate, maxTokens, split, planRepair, recoverPartial) => {
     let failure = null;
     let repair = null;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -141,6 +142,10 @@ ${failure && !repair ? `【上次本块校验失败】${JSON.stringify(failure.e
         jsonModeRequested: result?.jsonModeRequested === true, malformedStreamFrames: result?.malformedStreamFrames || 0,
         stitchedRounds: result?.stitchedRounds || 0, documentCount, foundKeys };
       onFailure?.(failure);
+      if (parsed && recoverPartial) {
+        const recovered = await recoverPartial(parsed);
+        if (recovered) return recovered;
+      }
       if (split && (result?.finishReason === 'length' || reason === 'invalid_json')) {
         onStatus?.(`蓝图 ${step}/3：${name}输出不完整，拆成两批继续...`);
         return split();
@@ -175,28 +180,82 @@ ${failure && !repair ? `【上次本块校验失败】${JSON.stringify(failure.e
       return errors;
     }, 16000);
 
-  const generatePhases = async (anchors, previous = null, allowSplit = true) => {
+  const generatePhases = async (anchors, previous = null, allowSplit = true, next = null) => {
     const start = Number(anchors[0].startChapter);
     const end = Number(anchors.at(-1).endChapter);
-    const stageExample = { title: '篇章或小阶段名', startChapter: start, endChapter: end,
+    const stageExample = { title: '篇章或小阶段名', startChapter: start, endChapter: Number(anchors[0].endChapter),
       goal: '具体目标', obstacle: '阻力', reversal: '反转', threads: ['支线'],
       tagCommitments: ['标签原名：兑现动作'],
       characterBeats: [{ character: '角色', goal: '目标', conflict: '冲突', change: '变化', voiceGuard: '声线' }],
       requiredScenes: ['具体场景'], forbiddenDrift: ['禁止偏移'], entryCondition: '进入条件', exitCondition: '离开条件',
-      foreshadowing: [{ name: '伏笔', setupChapter: start, progressChapters: [], payoffChapter: end, plan: '铺设回收' }],
+      foreshadowing: [{ name: '伏笔', setupChapter: start, progressChapters: [], payoffChapter: Number(anchors[0].endChapter), plan: '铺设回收' }],
       unresolvedQuestions: ['未决问题'] };
     const split = allowSplit && anchors.length > 1 ? async () => {
       const middle = Math.ceil(anchors.length / 2);
       const { phases: first } = await generatePhases(anchors.slice(0, middle), previous, false);
-      const { phases: second } = await generatePhases(anchors.slice(middle), first.at(-1), false);
+      const { phases: second } = await generatePhases(anchors.slice(middle), first.at(-1), false, next);
       return { phases: [...first, ...second] };
     } : undefined;
+    const validatePhase = (phase, anchor) => {
+      const { startChapter, endChapter } = anchor;
+      const label = `第${startChapter}-${endChapter}章篇章`;
+      const errors = stageErrors(phase, label, tagOptional);
+      if (Number(phase?.startChapter) !== Number(startChapter) || Number(phase?.endChapter) !== Number(endChapter)) {
+        errors.push(`${label}范围被改写（实际为第${phase?.startChapter ?? '?'}-${phase?.endChapter ?? '?'}章）`);
+      }
+      const subphases = Array.isArray(phase?.subphases) ? phase.subphases : [];
+      if (!subphases.length) errors.push(`${label}缺少subphases`);
+      else {
+        if (subphases.length > 8) errors.push(`${label}的subphases不能超过8个`);
+        errors.push(...rangeErrors(subphases, Number(startChapter), Number(endChapter), `${label}的小阶段范围`));
+        subphases.forEach((subphase, i) => errors.push(...stageErrors(subphase, `${label}的小阶段${i + 1}`, tagOptional)));
+      }
+      const commitments = [phase?.tagCommitments, ...subphases.map(item => item?.tagCommitments)].flat().join('、');
+      const assignedTags = Array.isArray(anchor.tagCommitments) ? anchor.tagCommitments.join('、') : '';
+      for (const tag of requiredTags) {
+        if (assignedTags.includes(tag) && !commitments.includes(tag)) errors.push(`${label}遗漏已分配标签“${tag}”`);
+      }
+      return errors;
+    };
+    const recoverPartial = async parsed => {
+      if (anchors.length <= 1 || !Array.isArray(parsed.phases) || parsed.phases.length === anchors.length) return null;
+      // A row is reusable only if its range is unique and its complete contents
+      // satisfy the same checks as a normal batch. Never stretch one row over
+      // missing anchors, and never reuse duplicate or malformed candidates.
+      const retained = anchors.map(anchor => {
+        const matches = parsed.phases.filter(phase => Number(phase?.startChapter) === Number(anchor.startChapter)
+          && Number(phase?.endChapter) === Number(anchor.endChapter));
+        return matches.length === 1 && !validatePhase(matches[0], anchor).length ? matches[0] : null;
+      });
+      const count = retained.filter(Boolean).length;
+      onStatus?.(`蓝图 2/3：篇章第${start}-${end}章数量不符，保留${count}个已校验篇章，拆分补齐其余篇章...`);
+      if (!count) {
+        const middle = Math.ceil(anchors.length / 2);
+        const { phases: first } = await generatePhases(anchors.slice(0, middle), previous, allowSplit);
+        const { phases: second } = await generatePhases(anchors.slice(middle), first.at(-1), allowSplit, next);
+        return { phases: [...first, ...second] };
+      }
+      const phases = [];
+      for (let i = 0; i < anchors.length;) {
+        aborted();
+        if (retained[i]) { phases.push(retained[i++]); continue; }
+        let endIndex = i + 1;
+        while (endIndex < anchors.length && !retained[endIndex]) endIndex++;
+        const generated = await generatePhases(anchors.slice(i, endIndex), phases.at(-1) || previous,
+          allowSplit, retained[endIndex] || next);
+        phases.push(...generated.phases);
+        i = endIndex;
+      }
+      return { phases };
+    };
     return task(2, `篇章第${start}-${end}章`, 'phases',
       `按顺序细化第${start}-${end}章的以下${anchors.length}个篇章，逐一保持原有章节范围：${JSON.stringify(anchors)}。
 全书主线：${outline.mainArc}
 不可改写事实：${JSON.stringify(outline.lockedFacts)}
 ${previous ? `上一批最后一个篇章的衔接约束：${JSON.stringify({ title: previous.title, endChapter: previous.endChapter, exitCondition: previous.exitCondition, unresolvedQuestions: previous.unresolvedQuestions })}\n` : ''}相邻篇章的进入条件要承接前一篇章的离开条件。
-返回结构示例（按要求填齐所有篇章）：${JSON.stringify({ phases: [{ ...stageExample, subphases: [stageExample] }] })}。
+${next ? `下一已确定篇章的衔接约束：${JSON.stringify({ title: next.title, startChapter: next.startChapter, entryCondition: next.entryCondition })}\n本批末尾必须衔接上述进入条件，不得改写已保留篇章。` : ''}
+phases数组必须恰好包含${anchors.length}个篇章，按以下范围逐项输出，不能合并或只输出第一个：${JSON.stringify(anchors.map(({ title, startChapter, endChapter }) => ({ title, startChapter, endChapter })))}。
+返回结构示例（仅演示一个篇章元素的字段，实际数组必须填齐上述${anchors.length}个篇章）：${JSON.stringify({ phases: [{ ...stageExample, subphases: [stageExample] }] })}。
 跨度较长的篇章，用现有reversal标明关键选择发生在第几章及其结果，用exitCondition写清阶段末章的新局面。伏笔用已有章号字段安排埋设与回收，优先沿用大纲已定的章号。
 每个篇章的subphases连续覆盖本篇章，通常2个，章数不足时1个，最多8个。篇章及每一个subphase都必须逐一填写这些字段：${STAGE_ARRAYS.join('、')}、entryCondition、exitCondition。
 尤其注意：父篇章有foreshadowing和unresolvedQuestions不代表小阶段可以省略。每个小阶段必须单独填写非空foreshadowing数组（每项含name、plan及相应章号）和非空unresolvedQuestions字符串数组，具体说明它如何埋设、推进或回收伏笔，以及仍需解答的问题。
@@ -204,30 +263,8 @@ ${previous ? `上一批最后一个篇章的衔接约束：${JSON.stringify({ ti
         if (!Array.isArray(parsed.phases) || parsed.phases.length !== anchors.length) {
           return [`篇章数量不符：要求${anchors.length}个，实际${Array.isArray(parsed.phases) ? parsed.phases.length : 0}个`];
         }
-        const errors = [];
-        parsed.phases.forEach((phase, index) => {
-          const anchor = anchors[index];
-          const { startChapter, endChapter } = anchor;
-          const label = `第${startChapter}-${endChapter}章篇章`;
-          errors.push(...stageErrors(phase, label, tagOptional));
-          if (Number(phase?.startChapter) !== Number(startChapter) || Number(phase?.endChapter) !== Number(endChapter)) {
-            errors.push(`${label}范围被改写（实际为第${phase?.startChapter ?? '?'}-${phase?.endChapter ?? '?'}章）`);
-          }
-          const subphases = Array.isArray(phase?.subphases) ? phase.subphases : [];
-          if (!subphases.length) errors.push(`${label}缺少subphases`);
-          else {
-            if (subphases.length > 8) errors.push(`${label}的subphases不能超过8个`);
-            errors.push(...rangeErrors(subphases, Number(startChapter), Number(endChapter), `${label}的小阶段范围`));
-            subphases.forEach((subphase, i) => errors.push(...stageErrors(subphase, `${label}的小阶段${i + 1}`, tagOptional)));
-          }
-          const commitments = [phase?.tagCommitments, ...subphases.map(item => item?.tagCommitments)].flat().join('、');
-          const assignedTags = Array.isArray(anchor.tagCommitments) ? anchor.tagCommitments.join('、') : '';
-          for (const tag of requiredTags) {
-            if (assignedTags.includes(tag) && !commitments.includes(tag)) errors.push(`${label}遗漏已分配标签“${tag}”`);
-          }
-        });
-        return errors;
-      }, 32000, split, planPhaseRepair);
+        return parsed.phases.flatMap((phase, index) => validatePhase(phase, anchors[index]));
+      }, 32000, split, planPhaseRepair, recoverPartial);
   };
   const { phases } = await generatePhases(outline.phases);
 

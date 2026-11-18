@@ -484,7 +484,7 @@ test('初始蓝图：按3块生成并组装所有层级，通过最终校验', a
   assert.equal(state.novels.size, 0, 'blueprint preview must not create prose or a book');
 });
 
-test('初始蓝图：篇章数量不符时仅修复当前分块，所有请求计入用量', async () => {
+test('初始蓝图：篇章数量不符时拆分当前批次，所有请求计入用量', async () => {
   const blueprint = require('./fixtures/initialBlueprint')();
   let calls = 0;
   state.aiHandler = call => emitText(++calls === 2
@@ -493,13 +493,38 @@ test('初始蓝图：篇章数量不符时仅修复当前分块，所有请求�
   const { events } = await postSse('/generate-blueprint', initialBlueprintBody);
   const done = events.find(event => event.type === 'completed');
   assert.ok(done, events.find(event => event.type === 'error')?.message);
-  assert.equal(calls, 4);
-  assert.equal(done.tokenUsage.calls, 4);
-  assert.equal(state.aiCalls[2].options.taskType, 'blueprint_repair');
-  assert.equal(state.aiCalls[2].options.blueprintPart, state.aiCalls[1].options.blueprintPart);
-  assert.match(state.aiCalls[2].userPrompt, /篇章数量不符/);
+  assert.equal(calls, 5);
+  assert.equal(done.tokenUsage.calls, 5);
+  assert.equal(state.aiCalls[2].options.taskType, 'blueprint_initial');
+  assert.equal(state.aiCalls[2].options.blueprintPart, '篇章第1-30章');
+  assert.equal(state.aiCalls[3].options.blueprintPart, '篇章第31-60章');
   assert.match(state.aiCalls[2].userPrompt, /周行舟/);
-  assert.ok(events.some(event => event.type === 'status' && /仅修复本块/.test(event.message)));
+  assert.ok(events.some(event => event.type === 'status' && /数量不符.*拆分补齐/.test(event.message)));
+});
+
+test('初始蓝图：63章要求10个篇章但每次只返回1个时自动补齐，通过最终校验', async () => {
+  const blueprint = require('./fixtures/initialBlueprint')();
+  blueprint.phases.at(-1).endChapter = 63;
+  blueprint.phases.at(-1).subphases.at(-1).endChapter = 63;
+  state.aiHandler = call => {
+    const payload = structuredClone(blueprintPart(call.options.blueprintPart, blueprint));
+    if (call.options.blueprintPart.startsWith('篇章')) payload.phases = [payload.phases[0]];
+    return emitText(JSON.stringify(payload), call.onChunk, call.signal);
+  };
+  const { events } = await postSse('/generate-blueprint', { ...initialBlueprintBody, targetWordCount: 315000 });
+  const done = events.find(event => event.type === 'completed');
+  assert.ok(done, events.find(event => event.type === 'error')?.message);
+  assert.equal(done.validation.valid, true);
+  assert.equal(done.blueprint.phases.length, 10);
+  assert.equal(done.blueprint.phases.at(-1).endChapter, 63);
+  assert.equal(done.tokenUsage.calls, 12);
+  assert.equal(events.filter(event => event.type === 'token_usage').length, 12);
+  const phaseCalls = state.aiCalls.filter(call => call.options.blueprintPart.startsWith('篇章'));
+  assert.equal(phaseCalls.length, 10);
+  assert.equal(phaseCalls[0].options.blueprintPart, '篇章第1-63章');
+  assert.equal(phaseCalls[1].options.blueprintPart, '篇章第7-63章');
+  assert.ok(events.some(event => event.type === 'status' && /保留1个已校验篇章/.test(event.message)));
+  assert.equal(state.novels.size, 0);
 });
 
 test('初始蓝图：小阶段漏掉伏笔和未决问题时仅请求字段补齐，重新校验后完成', async () => {
