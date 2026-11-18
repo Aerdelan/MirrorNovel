@@ -191,6 +191,7 @@ const aiServiceMock = {
   buildContinuePrompt: () => 'CONTINUE_PROMPT',
   buildImportContinuePrompt: () => 'IMPORT_CONTINUE_PROMPT',
   buildOutlinePrompt: () => 'OUTLINE_PROMPT',
+  getOutlineRequirements: realAiService.getOutlineRequirements,
   // 章节计划提示词直接用真实实现：它是纯字符串构建函数（无 IO），
   // 每章字数等参数只有经过它才能被端到端验证。
   buildChapterPlan: realAiService.buildChapterPlan,
@@ -411,6 +412,55 @@ function makePlan(chapters) {
 
 const initialBlueprintBody = { novelTypeId: 'xianxia', protagonistName: '周行舟',
   targetWordCount: 300000, chapterWordTarget: 5000, outline: '河湾夜班：周行舟在顺河货运核对交接证据并承担代价。' };
+
+test('大纲预览：使用放宽预算、持续续写和进度事件，完整后才返回完成事件', async () => {
+  state.aiHandler = async call => {
+    assert.equal(call.options.continueUntilComplete, true);
+    assert.equal(call.options.stitchOnTruncation, true);
+    assert.ok(call.maxTokens > 48000);
+    call.options.onStitch(9);
+    call.onChunk('完整的大纲与终局');
+    return { content: '完整的大纲与终局', finishReason: 'stop', stitchedRounds: 9,
+      usage: { prompt_tokens: 100, completion_tokens: 200 } };
+  };
+  const { events } = await postSse('/generate-outline', initialBlueprintBody);
+  assert.ok(events.some(event => event.type === 'status' && /第 9 轮/.test(event.message)));
+  const done = events.find(event => event.type === 'completed');
+  assert.equal(done.outline, '完整的大纲与终局');
+  assert.equal(done.tokenUsage.outputTokens, 200);
+  assert.ok(!events.some(event => event.type === 'error'));
+});
+
+test('大纲预览：接续未完成时保留片段和用量，不能把截断结果标为成功', async () => {
+  state.aiHandler = async call => {
+    call.onChunk('截断的半句话');
+    return { content: '截断的半句话', finishReason: 'length', stitchedRounds: 2,
+      usage: { prompt_tokens: 100, completion_tokens: 200 } };
+  };
+  const { events } = await postSse('/generate-outline', initialBlueprintBody);
+  assert.ok(events.some(event => event.type === 'content' && event.content === '截断的半句话'));
+  assert.ok(!events.some(event => event.type === 'completed'));
+  const error = events.find(event => event.type === 'error');
+  assert.equal(error.code, 'OUTLINE_INCOMPLETE');
+  assert.equal(error.tokenUsage.outputTokens, 200);
+  assert.match(error.message, /尚未完整生成/);
+});
+
+test('大纲预览：总截止时间会中止生成并明确提示，不返回完成事件', async () => {
+  const { TIMEOUT } = require('../config/timeouts');
+  const previous = TIMEOUT.OUTLINE;
+  TIMEOUT.OUTLINE = 25;
+  try {
+    state.aiHandler = call => new Promise((resolve, reject) => {
+      call.onChunk('尚未完成的内容');
+      call.signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+    });
+    const { events } = await postSse('/generate-outline', initialBlueprintBody);
+    assert.ok(!events.some(event => event.type === 'completed'));
+    assert.match(events.find(event => event.type === 'error').message, /总生成时间上限/);
+    assert.equal(state.aiCalls.length, 1);
+  } finally { TIMEOUT.OUTLINE = previous; }
+});
 
 const blueprintPart = require('./fixtures/blueprintPart');
 

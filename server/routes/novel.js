@@ -1506,8 +1506,7 @@ router.post('/generate-outline', auth, async (req, res) => {
 
     const outlineRequirements = getOutlineRequirements(targetWordCount, chapterWords);
 
-    // SSE 流式输出：思考模型生成大纲动辄十几分钟，前端需要实时看到思考/正文进度，
-    // 而不是一个长时间无反馈的挂起请求。超时翻倍到 40 分钟。
+    // SSE 流式输出：推送思考/正文进度，总截止时间覆盖所有截断续写。
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
@@ -1532,6 +1531,11 @@ router.post('/generate-outline', auth, async (req, res) => {
     // 这里和正文生成保持相同机制，定时向前端推送 thinking 事件防止计步器超时。
     const thinkingEmitter = createThinkingEmitter(res);
 
+    let deadlineExceeded = false;
+    const deadlineTimer = setTimeout(() => {
+      deadlineExceeded = true;
+      abortController.abort();
+    }, TIMEOUT.OUTLINE);
     try {
       const result = await streamGenerate(
         systemPrompt, outlinePrompt,
@@ -1540,11 +1544,11 @@ router.post('/generate-outline', auth, async (req, res) => {
         resolveApiConfig(req.userModelConfig, 'outline'),
         2, 0.82, outlineRequirements.outputTokens, TIMEOUT.OUTLINE,
         (reasoning) => { thinkingEmitter(reasoning); send({ type: 'reasoning', content: reasoning }); },
-        // 截断自动续写：单轮预算受服务商输出上限约束，超长篇大纲靠多轮接续累加，
-        // 最多 6 轮；续写分片照常流式推给前端。
+        // 单轮受服务商硬上限约束时接续生成，不按固定轮数提前结束。
         {
           stitchOnTruncation: true,
-          maxStitchRounds: 6,
+          continueUntilComplete: true,
+          onStitch: round => send({ type: 'status', message: `达到单次输出上限，正在接续生成大纲（第 ${round} 轮）...` }),
           taskType: 'global_outline',
         }
       );
@@ -1564,22 +1568,26 @@ router.post('/generate-outline', auth, async (req, res) => {
       }
 
       // 大纲是独立调用（尚无小说文档可记账），把单次用量随完成事件返回供前端展示。
-      if (result.finishReason === 'length') {
-        // 走到这里意味着多轮续写后仍被截断：把已补写的轮数说清楚，
-        // 否则用户只看到一个没头没尾的大纲，无法判断是线路上限还是余额问题。
+      if (result.finishReason === 'length' || deadlineExceeded) {
         const rounds = Number(result.stitchedRounds) || 0;
-        send({ type: 'status', message: `已自动续写 ${rounds} 轮后仍达到模型输出长度上限，大纲末尾可能被截断；建议换一条输出上限更大的大纲线路` });
+        send({ type: 'error', code: 'OUTLINE_INCOMPLETE', tokenUsage: callUsageStats(result),
+          message: `大纲尚未完整生成${deadlineExceeded ? '（达到总生成时间上限）' : '（接续生成未能完成）'}，已接续 ${rounds} 轮。已保留生成内容，请重试或更换大纲线路。` });
+        return res.end();
       }
       send({ type: 'completed', outline, tokenUsage: callUsageStats(result) });
       res.end();
     } catch (error) {
-      if (abortController.signal.aborted) {
+      if (abortController.signal.aborted && !deadlineExceeded) {
         console.log('大纲生成已取消（客户端断开）');
         return res.end();
       }
       console.error('大纲生成失败:', error);
-      send({ type: 'error', message: error.message || '大纲生成失败' });
+      send({ type: 'error', tokenUsage: callUsageStats(error), message: deadlineExceeded
+        ? '大纲达到总生成时间上限，尚未完整生成。已保留生成内容，请重试或更换大纲线路。'
+        : error.message || '大纲生成失败' });
       res.end();
+    } finally {
+      clearTimeout(deadlineTimer);
     }
   } catch (error) {
     console.error('大纲生成失败:', error);

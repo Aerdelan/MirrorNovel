@@ -370,6 +370,7 @@ EMAIL_SECURE=true
 | `CORS_ORIGIN` | 允许跨域的前端来源，多个地址用英文逗号分隔；默认包含本地 5173 / 5174 |
 | `MODEL_NORMAL_1_BASE_URL` / `_API_KEY` / `_MODEL` | 单独覆盖 `normal_1` 线路；其他预置线路为 `normal_2`、`advanced_1`、`vip`、`svip`，使用相应大写前缀 |
 | `AI_THINKING_MODE` | `auto` / `enabled` / `disabled`，默认按任务采用策略 |
+| `AI_OUTLINE_MAX_TOKENS` | 大纲单次正文输出预算，默认 `131072`，可配置 `256`–`700000`；服务商硬上限仍然有效，遇到长度截断会自动接续，不限固定轮数，整个大纲预览最多生成 60 分钟。修改服务端环境变量后需重启后端 |
 | `AI_THINKING_BUDGET` / `AI_THINKING_MAX_CHARS` | 思考预算与保护阈值；可用 `AI_THINKING_BUDGET_WRITING` 等按任务覆盖 |
 | `WEB_SEARCH_PROVIDER` | `none` / `tavily` / `serper` / `brave`；配合对应 API Key 启用自动检索 |
 | `TAVILY_API_KEY` / `SERPER_API_KEY` / `BRAVE_API_KEY` | 对应检索服务的凭据，不需要全部配置 |

@@ -471,12 +471,12 @@ function getOutlineRequirements(targetWordCount, chapterWordTarget) {
   // 那会诱发凑名单、套现成 IP 名字和同质化。核心常驻角色保持可管理，其余按阶段引入。
   const coreCharacterCount = Math.max(5, Math.min(12, Math.round(5 + scale * 7)));
   const subplotCount = Math.max(4, Math.min(24, Math.round(5 + scale * 19)));
-  // 大纲预算：提示词本身要求 8-12 阶段/40 人物/24 支线/60-80 节点，
-  // 之前的 2 万/3 万字预算写不完这套结构，必然在支线中段截断。现在直接
-  // 放开到 6 万字/4.8 万 token：单次请求由服务商上限兜底（超限会自动探明
-  // 并按更小预算重试），总量由截断自动续写按轮补足，不再由我们主动收紧。
+  // 字数估计只用于策划，不再反推偏小的返回 token 上限。默认给足 128K，
+  // 可通过环境变量调到应用支持的 700K；线路硬上限仍由参数适配自动探明。
   const outlineChars = Math.max(7000, Math.min(60000, Math.round(7000 + scale * 53000)));
-  const outputTokens = Math.max(9000, Math.min(48000, Math.ceil(outlineChars / 1.45)));
+  const configuredTokens = Number(process.env.AI_OUTLINE_MAX_TOKENS);
+  const outputTokens = Number.isFinite(configuredTokens) && configuredTokens >= MIN_CONTENT_TOKENS
+    ? Math.min(MAX_GENERATION_TOKENS, Math.floor(configuredTokens)) : 131072;
   const chapterWords = normalizeChapterWordTarget(chapterWordTarget);
   const estChapters = Math.max(1, Math.ceil(target / chapterWords));
   return { target, phaseCount, nodeCount, characterCount, coreCharacterCount, subplotCount, outlineChars, outputTokens, chapterWords, estChapters };
@@ -1357,22 +1357,25 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
 
       // 截断续写：finish=length 说明正文被输出预算截断，此时结果本身是可用正文，
       // 与其把半截大纲丢弃，不如补一次“从中断处继续”。仅调用方显式开启时生效。
-      // 轮数上限从 2 提到 8：单轮受服务商硬上限约束（常见 8K/16K），要稳定写完
-      // 长篇大纲只能靠多轮累加，这里夹住的是“失控成本”而不是合理长度。
+      // 大纲可显式取消轮数限制，由调用方的总截止时间和取消信号兜底。
+      // 其他任务保留原有轮数限制，避免改变结构化分块等调用的重试策略。
       let stitchedRounds = 0;
       const maxStitchRounds = options.stitchOnTruncation === true
-        ? Math.max(0, Math.min(8, Number(options.maxStitchRounds ?? 1)))
+        ? (options.continueUntilComplete === true && signal
+          ? Infinity : Math.max(0, Math.min(8, Number(options.maxStitchRounds ?? 1))))
         : 0;
       while (finishReason === 'length'
-             && fullContent.trim().length >= 200
+             && fullContent.trim().length > 0
+             && !signal?.aborted
              && stitchedRounds < maxStitchRounds) {
         stitchedRounds += 1;
+        options.onStitch?.(stitchedRounds);
         const overlapLimit = 300;
-        const tail = fullContent.slice(-1200);
+        const tail = fullContent.slice(-6000);
         const jsonOutput = options.outputFormat === 'json';
         const continuationPrompt = jsonOutput
           ? `【原始结构化任务，仍须完整执行】\n${userPrompt}\n\n上一次JSON因输出上限中断。只输出紧接中断位置的剩余字符，补齐尚未完成的字段、数组和根对象；不重新输出整个对象，不加代码围栏或说明，不能把嵌套对象当成完整蓝图。\n【已输出JSON的开头】\n${fullContent.slice(0, 1800)}\n【已输出JSON的末端，严格从此后继续】\n${fullContent.slice(-6000)}`
-          : `你的上一次输出因为长度限制被截断了。请**只输出尚未写完的剩余部分**，严格从中断处接续，不要重复已经写过的内容，不要重新开头，不要输出任何解释或标记。\n\n【已输出内容的结尾片段（仅供衔接参考，切勿重复）】\n${tail}`;
+          : `【原始任务，仍须完整执行所有要求】\n${userPrompt}\n\n你的上一次输出因为长度限制被截断了。请**只输出尚未写完的剩余部分**，严格从中断处接续，不要重复已经写过的内容，不要重新开头，不要输出任何解释或标记。必须完成原始任务的全部要求，不要因本次是续写而提前总结收尾。\n\n【已输出内容的开头（仅供核对结构，切勿重复）】\n${fullContent.slice(0, 1800)}\n【已输出内容的结尾片段（仅供衔接参考，切勿重复）】\n${tail}`;
         // A repeated brace or quote is often required JSON syntax, not prose
         // overlap. Never drop structural characters at the stitch boundary.
         const continuationOverlap = held => jsonOutput ? 0 : countOverlapSuffix(fullContent, held.slice(0, overlapLimit));

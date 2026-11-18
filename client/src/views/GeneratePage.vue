@@ -1230,6 +1230,7 @@ function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, per
    // 用户未手动编辑时用最终结果整体覆盖（清掉失败重试可能残留的片段）
    if (!outlineUserEdited.value) outlineModalText.value = event.outline || outlineModalText.value
    outlineTokenUsage.value = event.tokenUsage || null
+   outlineWarn.value = ''
    outlineStreaming.value = false
    scrollOutlineToBottom()
   },
@@ -1238,8 +1239,10 @@ function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, per
    // 否则用户只会觉得"生成莫名其妙就完了"。
    if (message) outlineWarn.value = message
   },
-  onError: (message) => {
+  onError: (message, event) => {
    outlineStreaming.value = false
+   outlineWarn.value = ''
+   if (event?.tokenUsage) outlineTokenUsage.value = event.tokenUsage
    outlineError.value = message || $t('generate.errOutline')
    genStatus.value = outlineError.value
    notifyModelError(message)

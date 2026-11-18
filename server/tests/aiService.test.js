@@ -371,7 +371,7 @@ test('思考失控看门狗：正文开始前思考超限即掐断重试，不�
   }
 });
 
-test('outline requirements scale stages, cast, branches, nodes and output budget with target size', () => {
+test('outline requirements scale structure with target size without restricting output to its estimate', () => {
   const short = getOutlineRequirements(100000);
   const long = getOutlineRequirements(1000000);
   assert.ok(long.phaseCount > short.phaseCount);
@@ -381,14 +381,68 @@ test('outline requirements scale stages, cast, branches, nodes and output budget
   assert.ok(long.coreCharacterCount < long.characterCount);
   assert.ok(long.subplotCount > short.subplotCount);
   assert.ok(long.outlineChars > short.outlineChars);
-  assert.ok(long.outputTokens > short.outputTokens);
-  // 预算放开到 4.8 万 token：要求 12 阶段/24 支线却只给写不完的预算，
-  // 那不是省 token 而是废大纲；单轮超出线路上限时由服务商报错自动收缩预算。
-  assert.ok(long.outputTokens <= 48000);
+  assert.equal(long.outputTokens, short.outputTokens);
+  assert.ok(long.outputTokens > 48000);
   assert.match(buildOutlinePrompt('urban', '林舟', '旧城', 1000000), /严格写12个阶段/);
   assert.match(buildOutlinePrompt('urban', '林舟', '旧城', 1000000), /至少24条支线/);
   assert.match(buildOutlinePrompt('urban', '林舟', '旧城', 2800000), /12名核心常驻角色、全书约40名/);
   assert.match(buildOutlinePrompt('urban', '林舟', '旧城', 2800000), /不得为了凑数量一次性罗列姓名/);
+});
+
+test('outline output budget defaults to 128K and supports configuration up to 700K', (t) => {
+  const previous = process.env.AI_OUTLINE_MAX_TOKENS;
+  t.after(() => {
+    if (previous === undefined) delete process.env.AI_OUTLINE_MAX_TOKENS;
+    else process.env.AI_OUTLINE_MAX_TOKENS = previous;
+  });
+  process.env.AI_OUTLINE_MAX_TOKENS = '';
+  assert.equal(getOutlineRequirements(50000).outputTokens, 131072);
+  process.env.AI_OUTLINE_MAX_TOKENS = '700000';
+  assert.equal(getOutlineRequirements(1000000).outputTokens, 700000);
+  process.env.AI_OUTLINE_MAX_TOKENS = '900000';
+  assert.equal(getOutlineRequirements(1000000).outputTokens, 700000);
+  for (const invalid of ['invalid', '-1', '0', 'Infinity']) {
+    process.env.AI_OUTLINE_MAX_TOKENS = invalid;
+    assert.equal(getOutlineRequirements(50000).outputTokens, 131072);
+  }
+});
+
+test('outline continuation passes eight rounds, retains the original task and forwards identical text', async (t) => {
+  const bodies = [];
+  const statuses = [];
+  let displayed = '';
+  t.mock.method(global, 'fetch', async (_url, options) => {
+    bodies.push(JSON.parse(options.body));
+    return providerStream([`data: ${JSON.stringify({ choices: [{ delta: { content: `节点${bodies.length}：新事件。` },
+      finish_reason: bodies.length === 11 ? 'stop' : 'length' }], usage: { prompt_tokens: 10, completion_tokens: 20 } })}\n\n`]);
+  });
+  const result = await streamGenerate('策划师', '原始大纲：80个节点，必须写完结局。', chunk => { displayed += chunk; },
+    new AbortController().signal, { baseUrl: 'https://outline-complete.test/v1', model: 'test', disableThinking: true },
+    0, 0.3, 131072, 10000, null,
+    { stitchOnTruncation: true, continueUntilComplete: true, onStitch: round => statuses.push(round) });
+  assert.equal(result.stitchedRounds, 10);
+  assert.equal(result.finishReason, 'stop');
+  assert.equal(displayed, result.content);
+  assert.equal(result.usage.completion_tokens, 220);
+  assert.equal(statuses.length, 10);
+  assert.ok(bodies.slice(1).every(body => body.messages.at(-1).content.includes('原始大纲：80个节点，必须写完结局。')));
+  assert.match(result.content, /节点11/);
+});
+
+test('outline continuation stops on cancellation and preserves partial content', async (t) => {
+  const controller = new AbortController();
+  let calls = 0;
+  t.mock.method(global, 'fetch', async () => {
+    calls += 1;
+    if (calls === 2) { controller.abort(); throw new Error('cancelled'); }
+    return providerStream([`data: ${JSON.stringify({ choices: [{ delta: { content: '尚未写完的节点。' }, finish_reason: 'length' }] })}\n\n`]);
+  });
+  const result = await streamGenerate('策划师', '原始任务', null, controller.signal,
+    { baseUrl: 'https://outline-cancel.test/v1', model: 'test', disableThinking: true },
+    0, 0.3, 131072, 10000, null, { stitchOnTruncation: true, continueUntilComplete: true });
+  assert.equal(calls, 2);
+  assert.equal(result.finishReason, 'length');
+  assert.equal(result.content, '尚未写完的节点。');
 });
 
 test('outline prompt demands information density instead of word-count minimums', () => {
