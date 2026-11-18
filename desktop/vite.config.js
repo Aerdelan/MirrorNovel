@@ -27,7 +27,9 @@ export default defineConfig(({ mode }) => {
       // 而桌面端构建会把 client/src 一起编译进来。若不强制去重，产物里会有两份 Pinia，
       // 业务 store 读到的 activePinia 永远是 undefined，启动即白屏
       // （dev 模式 Vite 的依赖预打包会天然去重，所以只在打包后暴露）。
-      dedupe: ['vue', 'vue-router', 'pinia', 'axios'],
+      // Shared client sources also import these packages. Resolve them from
+      // desktop/node_modules when CI installs only the desktop package.
+      dedupe: ['vue', 'vue-router', 'pinia', 'axios', 'fflate', 'htmlparser2'],
       alias: {
         '@': fileURLToPath(new URL('./src', import.meta.url)),
         '@client': fileURLToPath(new URL('../client/src', import.meta.url)),

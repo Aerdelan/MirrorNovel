@@ -5,7 +5,7 @@ const VerificationCode = require('../models/VerificationCode');
 const {
   sendVerificationCode,
   startEmailHealthCheck,
-  isEmailReady,
+  getEmailStatus,
 } = require('../services/emailService');
 const jwt = require('jsonwebtoken');
 const { randomInt } = require('crypto');
@@ -40,9 +40,14 @@ startEmailHealthCheck();
  */
 function buildCodeResponse({ sent, code, label }) {
   if (sent) return { message: `${label}验证码已发送到您的邮箱`, emailSent: true, retryAfter: codeResendSeconds };
+  const reasons = { auth: '邮箱服务认证失败', timeout: '邮箱服务连接超时',
+    tls: '邮箱服务安全连接失败', unreachable: '无法连接邮箱服务', network: '邮箱服务网络异常' };
+  const reported = getEmailStatus?.().errorKind;
+  const emailErrorKind = Object.hasOwn(reasons, reported) ? reported : 'unknown';
   return {
-    message: `${label}验证码邮件发送失败，请稍后重试或联系管理员`,
+    message: `${label}验证码邮件发送失败${reasons[emailErrorKind] ? `（${reasons[emailErrorKind]}）` : ''}，请稍后重试或联系管理员`,
     emailSent: false,
+    emailErrorKind,
     ...(RETURN_CODE_WHEN_EMAIL_DOWN ? { code } : {}),
   };
 }
@@ -109,7 +114,10 @@ router.post('/send-code', async (req, res) => {
     const { code } = verificationCode;
 
     // 尝试发送邮件；失败只影响本次响应，健康状态由 emailService 统一维护
-    if (isEmailReady()) {
+    // A failed background probe is advisory. The next user request must be
+    // allowed to attempt delivery; otherwise transient probe failures block
+    // every mailbox for up to five minutes despite a recovered SMTP server.
+    {
       try {
         await sendVerificationCode(email, code, 'register');
         return res.json(buildCodeResponse({ sent: true, label: '注册' }));
@@ -143,7 +151,7 @@ router.post('/send-reset-code', async (req, res) => {
     const verificationCode = await reserveCode(email, 'reset');
     const { code } = verificationCode;
 
-    if (isEmailReady()) {
+    {
       try {
         await sendVerificationCode(email, code, 'reset');
         return res.json(buildCodeResponse({ sent: true, label: '密码重置' }));

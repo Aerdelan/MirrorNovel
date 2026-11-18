@@ -69,6 +69,7 @@ mock('../services/aiService', { getFriendlyErrorMessage() {}, normalizeBaseUrl: 
 mock('../services/emailService', {
   startEmailHealthCheck() {},
   isEmailReady: () => state.mailReady,
+  getEmailStatus: () => ({ errorKind: state.mailFails ? 'timeout' : '' }),
   async sendVerificationCode(email, code, type) {
     if (state.mailFails) throw new Error('SMTP unavailable');
     state.sent.push({ email, code, type });
@@ -207,11 +208,23 @@ test('failed SMTP does not report success, disclose a code or block immediate re
     const result = await request(`/auth/${endpoint}`, { email });
     assert.equal(result.status, 200);
     assert.equal(result.body.emailSent, false);
+    assert.equal(result.body.emailErrorKind, 'timeout');
+    assert.match(result.body.message, /连接超时/);
     assert.equal(result.body.code, undefined);
     assert.equal(state.codes.length, 0);
   }
   state.mailFails = false;
   assert.equal((await request('/auth/send-code', { email: 'new@example.com' })).body.emailSent, true);
+});
+
+test('a failed background health probe cannot suppress real registration or reset delivery', async () => {
+  await seedUser();
+  state.mailReady = false;
+  const registered = await request('/auth/send-code', { email: 'new@example.com' });
+  const reset = await request('/auth/send-reset-code', { email: registration.email });
+  assert.equal(registered.body.emailSent, true);
+  assert.equal(reset.body.emailSent, true);
+  assert.deepEqual(state.sent.map(item => item.type), ['register', 'reset']);
 });
 
 test('repeated sends return a normal cooldown response without invalidating the delivered code', async () => {
