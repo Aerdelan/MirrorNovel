@@ -20,6 +20,114 @@ function scenario(override, signal) {
   return { run, blueprint, calls, failures, statuses, usages };
 }
 
+function phaseRepairs(blueprint) {
+  return { repairs: blueprint.phases.flatMap(phase => phase.subphases.map(stage => ({
+    phaseStartChapter: phase.startChapter, subphaseStartChapter: stage.startChapter,
+    foreshadowing: stage.foreshadowing, unresolvedQuestions: stage.unresolvedQuestions,
+  }))) };
+}
+
+test('分块蓝图：63章小阶段遗漏伏笔和未决问题时只补字段，完整覆盖超过12条错误的目标', async () => {
+  const blueprint = fixture();
+  const last = blueprint.phases.at(-1);
+  last.endChapter = 63;
+  last.subphases.at(-1).endChapter = 63;
+  const calls = [], statuses = [], usages = [];
+  const result = await generateBlueprintParts({ context: '原始大纲：河湾夜班', totalChapters: 63,
+    arcCount: 10, rollingEnd: 20, requiredTags: ['职场'],
+    onStatus: status => statuses.push(status), onUsage: usage => usages.push(usage),
+    request: async call => {
+      calls.push(call);
+      if (call.name === '篇章第1-63章' && call.attempt) {
+        assert.match(call.prompt, /仅补齐缺失字段，不重写篇章/);
+        assert.match(call.prompt, /"subphaseStartChapter":58/);
+        assert.match(call.prompt, /原始大纲：河湾夜班/);
+        assert.doesNotMatch(call.prompt, /从头返回本块/);
+        return { content: JSON.stringify(phaseRepairs(blueprint)) };
+      }
+      const payload = structuredClone(part(call.name, blueprint));
+      if (call.name.startsWith('篇章')) payload.phases.forEach(phase => phase.subphases.forEach(stage => {
+        delete stage.foreshadowing; delete stage.unresolvedQuestions;
+      }));
+      return { content: JSON.stringify(payload) };
+    },
+  });
+  assert.equal(calls.length, 4);
+  assert.equal(usages.length, 4);
+  assert.ok(statuses.some(status => /仅补齐缺失字段/.test(status)));
+  assert.equal(result.phases.length, 10);
+  assert.equal(result.phases[0].title, blueprint.phases[0].title);
+  assert.equal(result.phases[0].subphases[0].goal, blueprint.phases[0].subphases[0].goal);
+  assert.deepEqual(result.phases, blueprint.phases);
+  const validation = validateStoryBlueprint(result, 63, { requiredTags: ['职场'] });
+  assert.equal(validation.valid, true, validation.errors.join('；'));
+});
+
+test('分块蓝图：支持只补一个字段及篇章本身，已有字段保持原值', async () => {
+  const baseline = fixture();
+  const s = scenario((call, normal) => {
+    if (!call.name.startsWith('篇章')) return normal;
+    if (call.attempt) return JSON.stringify({ repairs: [
+      { phaseStartChapter: 1, subphaseStartChapter: null, foreshadowing: baseline.phases[0].foreshadowing },
+      { phaseStartChapter: 1, subphaseStartChapter: 1, unresolvedQuestions: baseline.phases[0].subphases[0].unresolvedQuestions,
+        foreshadowing: [{ name: '不应覆盖', plan: '不应覆盖' }] },
+    ] });
+    const payload = part(call.name, fixture());
+    delete payload.phases[0].foreshadowing;
+    delete payload.phases[0].subphases[0].unresolvedQuestions;
+    return JSON.stringify(payload);
+  });
+  const result = await s.run();
+  assert.deepEqual(result.phases, baseline.phases);
+});
+
+test('分块蓝图：字段补齐不能篡改已通过的剧情和章节范围', async () => {
+  const s = scenario((call, normal) => {
+    if (!call.name.startsWith('篇章')) return normal;
+    if (call.attempt) {
+      const patch = phaseRepairs(fixture());
+      patch.repairs.forEach(item => { item.title = '篡改标题'; item.endChapter = 999; });
+      return JSON.stringify(patch);
+    }
+    const payload = part(call.name, fixture());
+    payload.phases.forEach(phase => phase.subphases.forEach(stage => {
+      delete stage.foreshadowing; delete stage.unresolvedQuestions;
+    }));
+    return JSON.stringify(payload);
+  });
+  const result = await s.run();
+  assert.deepEqual(result.phases, s.blueprint.phases);
+  assert.equal(s.calls.length, 4);
+});
+
+test('分块蓝图：字段补齐遇到空内容、重复或未知目标仍严格拒绝且不无限重试', async () => {
+  for (const mutate of [
+    patch => { patch.repairs[0].foreshadowing = []; },
+    patch => { patch.repairs[0].unresolvedQuestions = []; },
+    patch => { patch.repairs[0].foreshadowing = [{ name: '伏笔' }]; },
+    patch => { patch.repairs[0].subphaseStartChapter = 999; },
+    patch => { patch.repairs[1] = patch.repairs[0]; },
+    patch => { patch.repairs.pop(); },
+  ]) {
+    const s = scenario((call, normal) => {
+      if (!call.name.startsWith('篇章')) return normal;
+      if (call.attempt) {
+        const patch = phaseRepairs(fixture()); mutate(patch);
+        return JSON.stringify(patch);
+      }
+      const payload = part(call.name, fixture());
+      payload.phases.forEach(phase => phase.subphases.forEach(stage => {
+        delete stage.foreshadowing; delete stage.unresolvedQuestions;
+      }));
+      return JSON.stringify(payload);
+    });
+    await assert.rejects(s.run(), error => error.code === 'BLUEPRINT_PART_INVALID'
+      && error.diagnostics.expectedField === 'repairs');
+    assert.equal(s.calls.length, 3);
+    assert.equal(s.usages.length, 3);
+  }
+});
+
 test('分块蓝图：60章通过3个任务组装完整三级结构', async () => {
   const s = scenario();
   const blueprint = await s.run();

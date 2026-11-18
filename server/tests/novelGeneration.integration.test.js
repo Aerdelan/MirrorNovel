@@ -502,6 +502,37 @@ test('初始蓝图：篇章数量不符时仅修复当前分块，所有请求�
   assert.ok(events.some(event => event.type === 'status' && /仅修复本块/.test(event.message)));
 });
 
+test('初始蓝图：小阶段漏掉伏笔和未决问题时仅请求字段补齐，重新校验后完成', async () => {
+  const blueprint = require('./fixtures/initialBlueprint')();
+  state.aiHandler = call => {
+    const name = call.options.blueprintPart;
+    let payload = structuredClone(blueprintPart(name, blueprint));
+    if (name.startsWith('篇章')) {
+      if (call.options.taskType === 'blueprint_repair') {
+        assert.match(call.userPrompt, /仅补齐缺失字段/);
+        payload = { repairs: blueprint.phases.flatMap(phase => phase.subphases.map(stage => ({
+          phaseStartChapter: phase.startChapter, subphaseStartChapter: stage.startChapter,
+          foreshadowing: stage.foreshadowing, unresolvedQuestions: stage.unresolvedQuestions,
+        }))) };
+      } else payload.phases.forEach(phase => phase.subphases.forEach(stage => {
+        delete stage.foreshadowing; delete stage.unresolvedQuestions;
+      }));
+    }
+    return emitText(JSON.stringify(payload), call.onChunk, call.signal);
+  };
+  const { events } = await postSse('/generate-blueprint', initialBlueprintBody);
+  const done = events.find(event => event.type === 'completed');
+  assert.ok(done, events.find(event => event.type === 'error')?.message);
+  assert.equal(done.validation.valid, true);
+  assert.equal(done.tokenUsage.calls, 4);
+  assert.equal(events.filter(event => event.type === 'token_usage').length, 4);
+  assert.ok(events.some(event => event.type === 'status' && /仅补齐缺失字段/.test(event.message)));
+  assert.equal(done.blueprint.phases[0].title, blueprint.phases[0].title);
+  assert.equal(done.blueprint.phases[0].subphases[0].foreshadowing[0].name,
+    blueprint.phases[0].subphases[0].foreshadowing[0].name);
+  assert.equal(state.novels.size, 0);
+});
+
 test('初始蓝图：未分类的上游错误会带出错误类型与分块，不再只给兜底文案', async () => {
   state.aiHandler = () => {
     const failure = new Error('fetch failed');

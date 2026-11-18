@@ -59,6 +59,48 @@ function stageErrors(stage, label = '阶段', tagOptional = false) {
   return errors;
 }
 
+// When otherwise valid phases omit these two arrays, request only the missing
+// content. Never invent placeholders or copy a parent's plan into its children.
+function planPhaseRepair(parsed, errors) {
+  if (!errors.length || !errors.every(error => /缺少(?:foreshadowing|unresolvedQuestions)$/.test(error))) return null;
+  const targets = [];
+  for (const phase of parsed.phases) {
+    for (const stage of [phase, ...phase.subphases]) {
+      const fields = ['foreshadowing', 'unresolvedQuestions'].filter(field => !hasItems(stage[field]));
+      if (fields.length) targets.push({ phaseStartChapter: Number(phase.startChapter),
+        subphaseStartChapter: stage === phase ? null : Number(stage.startChapter),
+        fields, stage, parentForeshadowing: phase.foreshadowing,
+        parentUnresolvedQuestions: phase.unresolvedQuestions });
+    }
+  }
+  return {
+    instruction: `【仅补齐缺失字段，不重写篇章】
+以下篇章和小阶段的其他内容已通过校验。只为每个目标补充fields列出的字段，必须符合原始大纲、目标阶段的事件和父篇章的伏笔安排。
+目标清单（必须逐项完整覆盖）：${JSON.stringify(targets)}
+返回一个完整JSON对象：{"repairs":[{"phaseStartChapter":1,"subphaseStartChapter":1,"foreshadowing":[{"name":"具体伏笔","setupChapter":1,"progressChapters":[],"payoffChapter":6,"plan":"本小阶段如何埋设、推进或回收这条伏笔"}],"unresolvedQuestions":["本阶段具体的未决问题"]}]}。
+phaseStartChapter和subphaseStartChapter必须与目标清单一致；修复篇章本身时subphaseStartChapter为null。每个目标只输出一次，只输出其fields要求补充的字段。每个数组至少1项，不能用空数组或“无”“待补充”等占位；foreshadowing每项必须有非空name和plan。不得输出phases、改写标题、章节范围或其他已通过的内容。`,
+    apply(payload) {
+      if (!Array.isArray(payload.repairs) || payload.repairs.length !== targets.length) {
+        return { parsed, errors: [`repairs必须逐项覆盖全部${targets.length}个修复目标`] };
+      }
+      const repaired = structuredClone(parsed);
+      const key = item => JSON.stringify([Number(item.phaseStartChapter),
+        item.subphaseStartChapter == null ? null : Number(item.subphaseStartChapter)]);
+      const remaining = new Map(targets.map(target => [key(target), target]));
+      for (const patch of payload.repairs) {
+        const target = isRecord(patch) && remaining.get(key(patch));
+        if (!target) return { parsed, errors: ['repairs包含未知或重复的修复目标'] };
+        remaining.delete(key(patch));
+        const phase = repaired.phases.find(item => Number(item.startChapter) === target.phaseStartChapter);
+        const stage = target.subphaseStartChapter === null ? phase
+          : phase.subphases.find(item => Number(item.startChapter) === target.subphaseStartChapter);
+        for (const field of target.fields) stage[field] = patch[field];
+      }
+      return { parsed: repaired, errors: [] };
+    },
+  };
+}
+
 // Validate each of the three stages before passing its results to the next.
 // If a large response cannot be parsed, split that batch once at a chapter boundary.
 async function generateBlueprintParts({ context, totalChapters, arcCount, rollingEnd, requiredTags = [],
@@ -67,31 +109,35 @@ async function generateBlueprintParts({ context, totalChapters, arcCount, rollin
   const aborted = () => {
     if (signal?.aborted) { const error = new Error('aborted'); error.name = 'AbortError'; throw error; }
   };
-  const task = async (step, name, field, instruction, validate, maxTokens, split) => {
+  const task = async (step, name, field, instruction, validate, maxTokens, split, planRepair) => {
     let failure = null;
+    let repair = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       aborted();
-      onStatus?.(`蓝图 ${step}/3：${name}${attempt ? '（仅修复本块）' : ''}...`);
-      const prompt = `${context}\n\n【本次仅执行的分块任务】\n${instruction}
+      onStatus?.(`蓝图 ${step}/3：${name}${repair ? '（仅补齐缺失字段）' : attempt ? '（仅修复本块）' : ''}...`);
+      const prompt = `${context}\n\n【本次仅执行的分块任务】\n${repair ? repair.instruction : instruction}
 本次只输出上面要求的一个JSON对象，不能输出整份三级蓝图、其他分块、解释或代码围栏。
-${failure ? `【上次本块校验失败】${JSON.stringify(failure.errors)}\n从头返回本块完整的JSON对象，保留要求的顶层字段 ${field}。各字段只写必要细节，优先保证字段完整和JSON闭合。` : ''}`;
+${failure && !repair ? `【上次本块校验失败】${JSON.stringify(failure.errors)}\n从头返回本块完整的JSON对象，保留要求的顶层字段 ${field}。各字段只写必要细节，优先保证字段完整和JSON闭合。` : ''}`;
       const result = await request({ name, prompt, attempt, maxTokens });
       onUsage?.(result);
       aborted();
       const content = String(result?.content || '');
-      const { parsed, reason: parseReason, documentCount = 0, foundKeys = [] } = inspectStructuredPayload(content, field);
+      const expectedField = repair ? 'repairs' : field;
+      const { parsed: response, reason: parseReason, documentCount = 0, foundKeys = [] } = inspectStructuredPayload(content, expectedField);
+      const applied = response && repair ? repair.apply(response) : null;
+      const parsed = applied ? applied.parsed : response;
       const reason = parsed ? 'part_invalid'
         : result?.finishReason === 'length' ? 'output_truncated'
           : !content.trim() ? 'empty_output' : parseReason;
-      const errors = parsed ? validate(parsed) : [{
+      const errors = applied?.errors.length ? applied.errors : parsed ? validate(parsed) : [{
         output_truncated: '模型输出达到上限，本块未完整返回（finishReason=length）',
         empty_output: '模型未返回蓝图内容（输出为空）',
         invalid_json: '未能从输出中提取到完整JSON文档（可能被截断，或字符串内有未转义换行）',
-        missing_field: `JSON中没有顶层字段“${field}”；模型实际返回的顶层键：${foundKeys.join('、') || '无'}；完整JSON文档${documentCount}个`,
+        missing_field: `JSON中没有顶层字段“${expectedField}”；模型实际返回的顶层键：${foundKeys.join('、') || '无'}；完整JSON文档${documentCount}个`,
       }[reason] || `本块输出无法使用（${reason}）`];
       if (!errors.length) return parsed;
       failure = { part: name, attempt: attempt + 1, errors: errors.slice(0, 12),
-        reason, expectedField: field, outputChars: content.length, finishReason: result?.finishReason || null,
+        reason, expectedField, outputChars: content.length, finishReason: result?.finishReason || null,
         jsonModeRequested: result?.jsonModeRequested === true, malformedStreamFrames: result?.malformedStreamFrames || 0,
         stitchedRounds: result?.stitchedRounds || 0, documentCount, foundKeys };
       onFailure?.(failure);
@@ -99,6 +145,7 @@ ${failure ? `【上次本块校验失败】${JSON.stringify(failure.errors)}\n�
         onStatus?.(`蓝图 ${step}/3：${name}输出不完整，拆成两批继续...`);
         return split();
       }
+      if (!attempt && parsed && planRepair) repair = planRepair(parsed, errors);
     }
     const error = new Error(`蓝图分块“${name}”未通过：${failure.errors.join('；')}。仅重试本块后仍失败（原因：${failure.reason}）`);
     error.code = 'BLUEPRINT_PART_INVALID';
@@ -151,7 +198,9 @@ ${failure ? `【上次本块校验失败】${JSON.stringify(failure.errors)}\n�
 ${previous ? `上一批最后一个篇章的衔接约束：${JSON.stringify({ title: previous.title, endChapter: previous.endChapter, exitCondition: previous.exitCondition, unresolvedQuestions: previous.unresolvedQuestions })}\n` : ''}相邻篇章的进入条件要承接前一篇章的离开条件。
 返回结构示例（按要求填齐所有篇章）：${JSON.stringify({ phases: [{ ...stageExample, subphases: [stageExample] }] })}。
 跨度较长的篇章，用现有reversal标明关键选择发生在第几章及其结果，用exitCondition写清阶段末章的新局面。伏笔用已有章号字段安排埋设与回收，优先沿用大纲已定的章号。
-每个篇章的subphases连续覆盖本篇章，通常2个，章数不足时1个，最多8个。篇章及小阶段都要填齐六个数组和进入/离开条件，各数组优先写1-2项直接相关的内容，保留分配的全部标签及其原名。各条写简短具体的事件和约束，避免在篇章和小阶段重复描述。未选标签时tagCommitments可为空。不要写执行卡。`, parsed => {
+每个篇章的subphases连续覆盖本篇章，通常2个，章数不足时1个，最多8个。篇章及每一个subphase都必须逐一填写这些字段：${STAGE_ARRAYS.join('、')}、entryCondition、exitCondition。
+尤其注意：父篇章有foreshadowing和unresolvedQuestions不代表小阶段可以省略。每个小阶段必须单独填写非空foreshadowing数组（每项含name、plan及相应章号）和非空unresolvedQuestions字符串数组，具体说明它如何埋设、推进或回收伏笔，以及仍需解答的问题。
+各数组优先写1-2项直接相关的内容，保留分配的全部标签及其原名。各条写简短具体的事件和约束，避免在篇章和小阶段重复描述。未选标签时tagCommitments可为空。不要写执行卡。`, parsed => {
         if (!Array.isArray(parsed.phases) || parsed.phases.length !== anchors.length) {
           return [`篇章数量不符：要求${anchors.length}个，实际${Array.isArray(parsed.phases) ? parsed.phases.length : 0}个`];
         }
@@ -178,7 +227,7 @@ ${previous ? `上一批最后一个篇章的衔接约束：${JSON.stringify({ ti
           }
         });
         return errors;
-      }, 32000, split);
+      }, 32000, split, planPhaseRepair);
   };
   const { phases } = await generatePhases(outline.phases);
 
