@@ -1,12 +1,20 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { detectRepeatedEnding, assertDistinctEnding, repairRepeatedEnding, buildEndingHistory } = require('../services/chapterRepetition');
+const { detectRepeatedOpening, detectRepeatedEnding, assertDistinctEnding, repairRepeatedEnding, buildEndingHistory } = require('../services/chapterRepetition');
 
 const ending = [
   '他终于把那封信放回抽屉，窗外的雨仍旧没有停。楼下传来清洁车的声音，车轮碾过井盖，发出一声短促的碰撞。他伸手按住抽屉边沿，想起信封上没有寄件人的地址。',
   '走廊的灯忽然熄了，门缝里最后一点光也暗下去。他没有起身，只将桌上的录音机拨回起点。磁带转动起来，里面的人先咳了一声，随即准确说出了他此刻坐着的位置。',
   '他拔掉插头。声音却没有停。那不是从录音机里传来的，而是隔着一扇门，有人在等他答话。',
 ].join('\n\n');
+
+test('minor edits to a copied transition do not evade the chapter boundary check', () => {
+  const old = '广播响过第三遍时，沈青仍站在封闭车站的闸机旁，手里捏着一张没有日期的车票，检票员把油灯放上桌面，低头对照那本停在昨晚的登记簿，等她亲口报出一位已经没人记得的乘客。';
+  const rewritten = old.replace('沈青', '许眠').replace('捏着', '握着').replace('低头', '俯身').replace('一位', '那个');
+  const chapters = [{ chapterNumber: 1, content: '车站已经停运。\n' + old }];
+  assert.equal(detectRepeatedOpening(rewritten + '\n车铃响了。', chapters, 2)?.approximate, true);
+  assert.equal(detectRepeatedEnding('她迈上月台。\n' + rewritten, chapters, 2)?.approximate, true);
+});
 const fresh = '林舟把值班表递给老周，指着签名下方新添的两笔。老周没有接，先把门带上，才从口袋里摸出一张车票。票面上的日期比失踪案早了三天，他说那晚的末班车根本没有进站。林舟抬起头，候车室的广播正在重复报出那趟车的班次。老周攥着车票的手慢慢收紧，纸上的折痕压过那个被墨水涂去的站名。';
 const chapters = [{ chapterNumber: 1, content: '首章独有正文。'.repeat(400) + ending }];
 const workplaceEnding = require('./fixtures/repeatedWorkplaceEnding');

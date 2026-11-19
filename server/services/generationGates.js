@@ -16,6 +16,7 @@
  */
 
 const { qualityScore } = require('./chapterToolchain');
+const { openStoryHooks } = require('./storyState');
 
 const DEFAULT_EXPERT_GATE_THRESHOLD = 70;
 // 低于此长度的章节本身审稿成本很低，且短章更容易存在结构问题，不做门控。
@@ -85,15 +86,14 @@ function localExpertGate(content) {
  * 语义级自评才有增量价值；否则启发式结果（updateForeshadowingDoc / updateCreativeState）
  * 已经足够，不必每章都付一次推理调用。
  *
- * 注意 planned 状态的伏笔尚未写入正文，模型无法在本章对其对账，故不计入门控条件——
- * 否则计划型长篇会因 "planned 永远非空" 而永远触发调用，门控形同虚设。
+ * 尚未到埋设章的计划伏笔不触发门控，已到期或仍待对账的伏笔需要审查。
  * @returns {{audit: boolean, reason: string}}
  */
 function shouldAuditChapterHooks({ novel, contract, content } = {}) {
   try {
     if (!hookAuditGateEnabled()) return { audit: true, reason: '门控已关闭' };
 
-    const pending = (novel?.foreshadowingLedger || []).filter((item) => item.status === 'pending');
+    const pending = openStoryHooks(novel?.foreshadowingLedger, Number(contract?.chapterNumber) || 0);
     if (pending.length) return { audit: true, reason: `存在 ${pending.length} 条待回收伏笔` };
 
     if ((contract?.resolveHooks || []).length) return { audit: true, reason: '本章契约要求回收伏笔' };

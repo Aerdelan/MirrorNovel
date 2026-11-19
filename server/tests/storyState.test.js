@@ -713,7 +713,7 @@ test('applyHookAudit persists character bible fields and explicit tag evidence',
       stressResponse: '压力下反复确认手边证据',
     }],
     tagEvidence: [{ tag: '日系校园', evidence: '放学后的部室里，社团成员争论学园祭分工。' }],
-  }, '林舟在放学后的部室里，和社团成员争论学园祭分工；随后用旧钥匙打开了档案柜。');
+  }, '林舟在放学后的部室里，和社团成员争论学园祭分工。林舟用旧钥匙打开了档案柜。');
   assert.equal(novel.foreshadowingLedger[0].status, 'resolved');
   assert.equal(novel.foreshadowingLedger[0].stage, 'paid_off');
   assert.match(novel.foreshadowingLedger[0].resolutionEvidence, /旧钥匙/);

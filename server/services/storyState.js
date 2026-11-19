@@ -1222,6 +1222,14 @@ function getChapterOutputTokenLimit(wordTarget) {
   return Math.max(2200, Math.min(24000, Math.ceil(target * 1.35)));
 }
 
+function openStoryHooks(ledger, throughChapter) {
+  return toArray(ledger).filter(hook => {
+    if (!hook) return false;
+    if (['resolved', 'paid_off', 'abandoned'].includes(hook.status) || hook.stage === 'paid_off') return false;
+    return hook.status !== 'planned' || Number(hook.setChapter || 0) < throughChapter;
+  });
+}
+
 /** Return the concrete blockers that prevent a planned long-form work ending. */
 function assessStoryCompletion(novel, planData, targetWords) {
   const plan = planData && planData.chapters ? planData : parseChapterPlan(planData || novel.chapterPlan || '');
@@ -1229,12 +1237,7 @@ function assessStoryCompletion(novel, planData, targetWords) {
   const writtenNumbers = new Set(toArray(novel.chapters).map((chapter) => Number(chapter.chapterNumber)).filter(Boolean));
   const missingChapters = plannedNumbers.filter((number) => !writtenNumbers.has(number));
   const finalPlannedChapter = plannedNumbers.length ? Math.max(...plannedNumbers) : 0;
-  const unresolvedHooks = toArray(novel.foreshadowingLedger)
-    .filter((hook) => {
-      const targetChapter = Number(hook.targetChapter || 0);
-      return targetChapter > 0 && targetChapter <= finalPlannedChapter
-        && hook.status !== 'resolved' && hook.status !== 'paid_off' && hook.stage !== 'paid_off' && hook.status !== 'abandoned';
-    })
+  const unresolvedHooks = openStoryHooks(novel.foreshadowingLedger, finalPlannedChapter)
     .map((hook) => String(hook.content || hook.id || '未命名伏笔'));
   const currentWords = toArray(novel.chapters).reduce((sum, chapter) => sum + Number(chapter.wordCount || 0), 0);
   const wordTarget = Math.max(1, Number(targetWords || novel.targetWordCount || 50000));
@@ -1349,18 +1352,27 @@ function buildChapterContract(options) {
   const previous = options.previousChapter;
   // Do not show future planned hooks as if they were already present in the
   // narrative. The current chapter receives its own setHooks separately.
-  const pendingHooks = novel.foreshadowingLedger
-    .filter((item) => item.status === 'pending' || (item.status === 'planned' && Number(item.setChapter || 0) < chapterNumber))
-    .slice(0, 8);
+  const closing = options.closingBook === true && chapterNumber === totalChapters;
+  const nearEnding = options.closingBook === true && chapterNumber >= totalChapters - 2;
+  const openHooks = openStoryHooks(novel.foreshadowingLedger, chapterNumber);
+  const dueHooks = openHooks.filter(item => Number(item.targetChapter) > 0 && Number(item.targetChapter) <= chapterNumber);
+  const pendingHooks = [...new Set([...dueHooks, ...openHooks])].slice(0, 8);
+  const scheduledHooks = nearEnding
+    ? openHooks.filter(item => !Number(item.targetChapter) || Number(item.targetChapter) <= chapterNumber).slice(0, 4)
+    : dueHooks.slice(0, 4);
   const mustAdvance = novel.plotThreads.filter((item) => ['active', 'planned'].includes(item.status) && item.nextMilestone).slice(0, 3);
-  const mustNot = ['不要复述上一章已经完成的核心事件', '不要在一章内同时解决所有主线和伏笔'];
+  const mustNot = ['不要复述上一章已经完成的核心事件'];
+  if (nearEnding) mustNot.push('避免新增需要后文解释的悬念，优先兑现已经铺设的线索');
+  else mustNot.push('不要在一章内同时解决所有主线和伏笔');
   novel.recentEventSignatures.slice(-5).forEach((event) => mustNot.push('不要重复事件：' + String(event).slice(0, 80)));
   if (emotion.isBreath) mustNot.push('不要用突兀搞笑抵消题材基调，也不要写成没有信息增量的纯日常');
   // 章末防同构（源头修复）：把近几章的实际收尾作为负面清单注入，
   // 否则模型在恒定的收尾指令下会收敛到同一种收尾模板。
   const recentEndings = collectRecentEndings(novel, 3);
-  recentEndings.forEach((item) => mustNot.push(`第${item.chapterNumber}章已用「…${item.ending}」收尾，本章不得复用该句式或同构套路`));
-  const endingStyle = pickEndingStyle(chapterNumber, emotion.tension, emotion.isBreath);
+  if (recentEndings.length) mustNot.push('已有收尾只供核对，本章不得复用该句式或同构套路');
+  const endingStyle = closing
+    ? { label: '终局收束', hint: '兑现旧伏笔，写明人物选择造成的结果与新的稳定局面，避免留下需要后续章节回答的新悬念' }
+    : pickEndingStyle(chapterNumber, emotion.tension, emotion.isBreath);
   const wordTarget = Number(options.wordTarget) || getAdaptiveChapterWordTarget({
     planData: plan,
     chapterNumber,
@@ -1412,11 +1424,13 @@ function buildChapterContract(options) {
       ...blueprintRequirements.rollingForbiddenDrift,
       skuCommitments.all.length ? `禁止把所选标签“${skuCommitments.all.join('、')}”稀释成通用网文套路` : '',
     ], 16),
-    setHooks: planChapter.setHooks || [],
-    resolveHooks: planChapter.resolveHooks || [],
+    setHooks: closing ? [] : planChapter.setHooks || [],
+    resolveHooks: uniqueText([...toArray(planChapter.resolveHooks), ...(closing ? openHooks : scheduledHooks).map(item => item.content)], closing ? Infinity : 16),
+    closing,
+    verifyHookResolution: options.closingBook === true,
     pendingHooks,
     mustAdvance,
-    previousEnd: previous ? compressPreviousChapter(previous.content) : '故事开场，建立人物的当下处境。',
+    previousEnd: previous ? String(previous.content || '').trim().slice(-220) : '故事开场，建立人物的当下处境。',
     mustNot,
     endingStyle,
     recentEndings,
@@ -1437,7 +1451,8 @@ function renderChapterContract(contract) {
     '唯一核心事件：' + contract.coreEvent,
     '章节功能：' + contract.emotion.chapterRole + (contract.phase ? '（' + contract.phase + '）' : ''),
     '情绪目标：压力 ' + contract.emotion.tension + '/10；' + contract.emotion.tone,
-    '必须承接的上一章状态：' + contract.previousEnd,
+    '上一章已发生的末尾（仅供确定时点）：' + contract.previousEnd,
+    '开头从上一章最后一个动作或信息的直接后果写起，首段就发生新的动作、反应或选择。跳过已写过的场景、对话和前情回顾。',
     '必须推进的剧情线：' + advance,
     '本章角色：' + list(contract.characters),
     contract.characterContinuity?.length
@@ -1459,7 +1474,7 @@ function renderChapterContract(contract) {
     contract.blueprintRelationshipChange ? '执行卡关系变化：' + contract.blueprintRelationshipChange : '',
     contract.blueprintForeshadowing?.length ? '蓝图伏笔动作：' + list(contract.blueprintForeshadowing) : '',
     contract.blueprintUnresolvedQuestions?.length ? '阶段结束仍保留的问题：' + list(contract.blueprintUnresolvedQuestions) : '',
-    contract.blueprintExitHook ? '执行卡章末钩子：' + contract.blueprintExitHook : '',
+    contract.blueprintExitHook ? (contract.closing ? '蓝图规定的最终局面：' : '执行卡章末钩子：') + contract.blueprintExitHook : '',
     contract.lockedFacts?.length ? '不可改写事实：' + list(contract.lockedFacts) : '',
     '全书风格/题材标签（每章持续生效）：' + list(contract.styleCommitments),
     '本章必须兑现的标签：' + list(contract.tagCommitments),
@@ -1576,7 +1591,7 @@ function updateCreativeState(novel, chapterNumber, content, contract, continuity
     const literalHit = key.length >= 6 && compact.includes(key);
     const scheduledHit = scheduled && coverage >= 0.6;
     const looseHit = coverage >= 0.7;
-    if (chapterNumber > Number(hook.setChapter || 0) && (literalHit || scheduledHit || looseHit)) {
+    if (!contract?.verifyHookResolution && chapterNumber > Number(hook.setChapter || 0) && (literalHit || scheduledHit || looseHit)) {
       hook.status = 'resolved';
       hook.stage = 'paid_off';
       hook.resolvedChapter = chapterNumber;
@@ -1612,9 +1627,9 @@ function applyHookAudit(novel, chapterNumber, audit, sourceContent = '') {
 
   const findHook = (raw) => {
     const id = String(raw && raw.id || '').trim();
+    if (id) return novel.foreshadowingLedger.find(item => item.id === id);
     const text = String(raw && (raw.content || raw.text || raw) || '').replace(/\s/g, '');
     return novel.foreshadowingLedger.find((item) => {
-      if (id && item.id === id) return true;
       const content = String(item.content || '').replace(/\s/g, '');
       if (!text || !content) return false;
       return text.includes(content.slice(0, 8)) || content.includes(text.slice(0, 8));
@@ -1624,7 +1639,11 @@ function applyHookAudit(novel, chapterNumber, audit, sourceContent = '') {
   for (const raw of (Array.isArray(audit.hooksResolved) ? audit.hooksResolved : [])) {
     const hook = findHook(raw);
     const openStage = hook && ['planned', 'seeded', 'reinforced', 'due'].includes(hook.stage);
-    if (!hook || (!['pending', 'planned', 'seeded', 'reinforced', 'due'].includes(hook.status) && !openStage)) continue;
+    if (!hook || ['resolved', 'paid_off', 'abandoned'].includes(hook.status)
+      || (!['pending', 'planned', 'seeded', 'reinforced', 'due'].includes(hook.status) && !openStage)) continue;
+    const evidence = compactAuditText(raw?.evidence, 300);
+    if (sourceContent && (evidence.length < 10
+      || !String(sourceContent).replace(/\s/g, '').includes(evidence.replace(/\s/g, '')))) continue;
     hook.status = 'resolved';
     hook.stage = 'paid_off';
     hook.resolvedChapter = Number(chapterNumber) || hook.resolvedChapter;
@@ -1739,6 +1758,7 @@ module.exports = {
   getAdaptiveChapterWordTarget,
   getChapterOutputTokenLimit,
   assessStoryCompletion,
+  openStoryHooks,
   closeUnresolvedHooksAtEnding,
   buildChapterContract,
   renderChapterContract,

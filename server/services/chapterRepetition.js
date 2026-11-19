@@ -1,8 +1,8 @@
 // Local, model-independent check. Compare endings separately: a copied 200-character
 // ending in a 5,000-character chapter is almost invisible to whole-chapter scores.
 const ENDING_CHARS = 1800;
-const MIN_MATCH = 100;
-const ANCHOR = 32;
+const MIN_MATCH = 55;
+const ANCHOR = 24;
 
 function normalizeWithOffsets(value) {
   const source = String(value || '');
@@ -17,55 +17,142 @@ function normalizeWithOffsets(value) {
   return { text, offsets };
 }
 
-function detectRepeatedEnding(content, chapters = [], chapterNumber = Infinity, minStart = 0) {
+function edgeSentences(text, opening) {
+  const sentences = Array.from(text.matchAll(/[^。！？!?\r\n]+[。！？!?]?/g));
+  return (opening ? sentences.slice(0, 4) : sentences.slice(-5))
+    .map(match => ({ start: match.index, raw: match[0], normalized: normalizeWithOffsets(match[0]).text }))
+    .filter(sentence => sentence.normalized.length >= 64);
+}
+
+function trigrams(text) {
+  return new Set(Array.from({ length: text.length - 2 }, (_, index) => text.slice(index, index + 3)));
+}
+
+function detectNearRepeatedEdge(source, chapters, chapterNumber, minStart, opening) {
+  const offset = opening ? 0 : Math.max(minStart, source.length - 650);
+  const candidates = edgeSentences(opening ? source.slice(0, 650) : source.slice(offset), opening);
+  if (!candidates.length) return null;
+  const recent = chapters.filter(chapter => Number(chapter.chapterNumber) < chapterNumber).slice(-5);
+  for (const candidate of candidates) {
+    const grams = trigrams(candidate.normalized);
+    if (grams.size < 42) continue;
+    for (const chapter of recent) {
+      const old = String(chapter.content || '');
+      const samples = edgeSentences(old.slice(-650), false);
+      if (opening) samples.push(...edgeSentences(old.slice(0, 650), true));
+      for (const sample of samples) {
+        if (Math.abs(candidate.normalized.length - sample.normalized.length) > candidate.normalized.length * 0.2) continue;
+        const other = trigrams(sample.normalized);
+        const shared = Array.from(grams).filter(gram => other.has(gram)).length;
+        if (2 * shared / (grams.size + other.size) < 0.75) continue;
+        const start = offset + candidate.start;
+        return { chapterNumber: Number(chapter.chapterNumber), matchedChars: candidate.normalized.length,
+          start, end: start + candidate.raw.length, excerpt: sample.raw, approximate: true };
+      }
+    }
+  }
+  return null;
+}
+
+function detectRepeatedEdge(content, chapters, chapterNumber, minStart, opening) {
   const source = String(content || '');
-  const tailStart = Math.max(0, source.length - ENDING_CHARS, minStart);
-  const current = normalizeWithOffsets(source.slice(tailStart));
-  if (current.text.length < MIN_MATCH) return null;
+  const offset = opening ? 0 : Math.max(0, source.length - ENDING_CHARS, minStart);
+  const current = normalizeWithOffsets(opening ? source.slice(0, 650) : source.slice(offset));
+  const minimum = MIN_MATCH;
+  if (current.text.length < minimum) return null;
   let best = null;
   for (const chapter of chapters) {
     // Never compare a revision with itself or with chapters that follow it.
     if (Number(chapter.chapterNumber) >= chapterNumber) continue;
-    const previous = normalizeWithOffsets(String(chapter.content || '').slice(-ENDING_CHARS)).text;
-    if (previous.length < MIN_MATCH) continue;
-    const anchors = new Map();
-    const coveredUntil = new Map();
-    for (let i = 0; i <= previous.length - ANCHOR; i++) {
-      const key = previous.slice(i, i + ANCHOR);
-      if (!anchors.has(key)) anchors.set(key, []);
-      anchors.get(key).push(i);
-    }
-    // Sampling every 32 characters still guarantees an anchor inside a match
-    // of >=100 characters. Extend both ways to recover the exact source span.
-    for (let i = 0; i <= current.text.length - ANCHOR; i += ANCHOR) {
-      const positions = anchors.get(current.text.slice(i, i + ANCHOR)) || [];
-      for (const j of positions) {
-        const diagonal = i - j;
-        if (i < (coveredUntil.get(diagonal) || 0)) continue;
-        let left = 0, right = ANCHOR;
-        while (i - left > 0 && j - left > 0 && current.text[i - left - 1] === previous[j - left - 1]) left++;
-        while (i + right < current.text.length && j + right < previous.length && current.text[i + right] === previous[j + right]) right++;
-        const matchedChars = left + right;
-        // A diagonal can have separate matches; skip anchors inside the
-        // segment just visited, not later unrelated passages on that diagonal.
-        coveredUntil.set(diagonal, i + right);
-        if (matchedChars < MIN_MATCH || (best && best.matchedChars >= matchedChars)) continue;
-        const start = tailStart + current.offsets[i - left];
-        const end = tailStart + current.offsets[i + right - 1] + 1;
-        best = { chapterNumber: Number(chapter.chapterNumber), matchedChars, start, end, excerpt: source.slice(start, end) };
-        if (matchedChars === current.text.length) return best;
+    const oldText = String(chapter.content || '');
+    const samples = opening ? [oldText.slice(0, 650), oldText.slice(-ENDING_CHARS)] : [oldText.slice(-ENDING_CHARS)];
+    for (const sample of samples) {
+      const previous = normalizeWithOffsets(sample).text;
+      if (previous.length < minimum) continue;
+      const anchors = new Map();
+      const coveredUntil = new Map();
+      for (let i = 0; i <= previous.length - ANCHOR; i++) {
+        const key = previous.slice(i, i + ANCHOR);
+        if (!anchors.has(key)) anchors.set(key, []);
+        anchors.get(key).push(i);
+      }
+      // Sampling every 24 characters still leaves an anchor within a match.
+      for (let i = 0; i <= current.text.length - ANCHOR; i += ANCHOR) {
+        const positions = anchors.get(current.text.slice(i, i + ANCHOR)) || [];
+        for (const j of positions) {
+          const diagonal = i - j;
+          if (i < (coveredUntil.get(diagonal) || 0)) continue;
+          let left = 0, right = ANCHOR;
+          while (i - left > 0 && j - left > 0 && current.text[i - left - 1] === previous[j - left - 1]) left++;
+          while (i + right < current.text.length && j + right < previous.length && current.text[i + right] === previous[j + right]) right++;
+          const matchedChars = left + right;
+          // A diagonal can have separate matches; skip anchors inside the
+          // segment just visited, not later unrelated passages on that diagonal.
+          coveredUntil.set(diagonal, i + right);
+          if (matchedChars < minimum || (best && best.matchedChars >= matchedChars)) continue;
+          const start = offset + current.offsets[i - left];
+          const end = offset + current.offsets[i + right - 1] + 1;
+          best = { chapterNumber: Number(chapter.chapterNumber), matchedChars, start, end, excerpt: source.slice(start, end) };
+          if (matchedChars === current.text.length) return best;
+        }
       }
     }
   }
-  return best;
+  return best || detectNearRepeatedEdge(source, chapters, chapterNumber, minStart, opening);
 }
 
-function repetitionError(match, cause) {
-  const error = new Error(`章末与第${match.chapterNumber}章重复${match.matchedChars}字，已阻止写入正式章节`);
-  error.code = 'CHAPTER_ENDING_REPEATED';
+function detectRepeatedEnding(content, chapters = [], chapterNumber = Infinity, minStart = 0) {
+  return detectRepeatedEdge(content, chapters, chapterNumber, minStart, false);
+}
+
+function detectRepeatedOpening(content, chapters = [], chapterNumber = Infinity) {
+  return detectRepeatedEdge(content, chapters.filter(chapter => Number(chapter.chapterNumber) < chapterNumber).slice(-5), chapterNumber, 0, true);
+}
+
+function repetitionError(match, cause, opening = false) {
+  const error = new Error(`${opening ? '开头' : '章末'}与第${match.chapterNumber}章重复${match.matchedChars}字，已阻止写入正式章节`);
+  error.code = opening ? 'CHAPTER_OPENING_REPEATED' : 'CHAPTER_ENDING_REPEATED';
   error.repetition = match;
   if (cause) error.cause = cause;
   return error;
+}
+
+function assertDistinctOpening(content, chapters, chapterNumber) {
+  const match = detectRepeatedOpening(content, chapters, chapterNumber);
+  if (match) throw repetitionError(match, null, true);
+}
+
+async function repairRepeatedOpening({ content, chapters, chapterNumber, generate, onStatus, signal }) {
+  const match = detectRepeatedOpening(content, chapters, chapterNumber);
+  if (!match) return { content, report: null };
+  const boundary = content.slice(match.end).search(/[。！？\n]/);
+  const end = /[。！？!?\n]/.test(content[match.end - 1]) ? match.end
+    : boundary < 0 ? content.length : match.end + boundary + 1;
+  if (end > 1500) throw repetitionError(match, null, true);
+  onStatus?.(`检测到第${chapterNumber}章开头与第${match.chapterNumber}章重复，正在修订衔接...`);
+  const prompt = `只替换本章开头，从前一章结尾发生后的第一个新动作写起。保留本章已经出现的事实和因果，不复演上一章，不输出标题。
+【待替换开头】
+${content.slice(0, end)}
+【本章后文，仅供衔接】
+${content.slice(end, end + 900)}
+【旧章重复片段，禁止复用】
+${match.excerpt}`;
+  let result;
+  try {
+    result = await generate(prompt, end);
+  } catch (error) {
+    if (signal?.aborted || error?.name === 'AbortError') throw error;
+    throw repetitionError(match, error, true);
+  }
+  signal?.throwIfAborted();
+  const replacement = String(result?.content || '').trim();
+  if (result?.finishReason === 'length' || replacement.length < 30 || replacement.length > end * 2 + 100) {
+    throw repetitionError(match, null, true);
+  }
+  const suffix = content.slice(end);
+  const revised = replacement + (suffix && !/^\s/.test(suffix) ? '\n\n' : '') + suffix;
+  assertDistinctOpening(revised, chapters, chapterNumber);
+  return { content: revised, report: { repaired: true, sourceChapter: match.chapterNumber, matchedChars: match.matchedChars } };
 }
 
 function assertDistinctEnding(content, chapters, chapterNumber, minStart = 0) {
@@ -78,7 +165,7 @@ function buildEndingHistory(chapters = [], chapterNumber = Infinity) {
   if (!history.length) return '';
   return '\n【章末防重复】以下是已经发表的收尾，仅供核对事实，禁止复制进本章。'
     + '衔接是从其后果继续推进，不是重演这些段落；本章结尾须落在本章新发生的动作、信息或选择上。\n'
-    + history.map(chapter => `第${chapter.chapterNumber}章已用收尾：\n${String(chapter.content || '').slice(-500)}`).join('\n');
+    + history.map(chapter => `第${chapter.chapterNumber}章已用收尾：\n${String(chapter.content || '').slice(-160)}`).join('\n');
 }
 
 async function repairRepeatedEnding({ content, chapters, chapterNumber, generate, onStatus, minRewriteStart = 0, signal }) {
@@ -124,4 +211,5 @@ ${match.excerpt.slice(0, 1800)}`;
   return { content: revised, report: { repaired: true, sourceChapter: match.chapterNumber, matchedChars: match.matchedChars } };
 }
 
-module.exports = { detectRepeatedEnding, assertDistinctEnding, repairRepeatedEnding, buildEndingHistory };
+module.exports = { detectRepeatedOpening, assertDistinctOpening, repairRepeatedOpening,
+  detectRepeatedEnding, assertDistinctEnding, repairRepeatedEnding, buildEndingHistory };

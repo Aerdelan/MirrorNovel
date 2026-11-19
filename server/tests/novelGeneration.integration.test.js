@@ -1080,6 +1080,10 @@ test('新书整本：先落结构化计划，再严格按章生成并回收伏�
     makeChapter(`林舟决定追查失踪证人，并看清${hook}`, '雨夜钥匙'),
     makeChapter(`林舟发现${hook}对应暗门锁孔，终于找到证人`, '地下暗门'),
   ];
+  const payoff = `林舟发现${hook}对应暗门锁孔，终于找到证人。`;
+  state.aiHandler = call => call.kind === 'hookAudit' && call.userPrompt.includes('这是全书最后一章')
+    ? emitText(JSON.stringify({ hooksResolved: [{ id: 'PLAN_1_' + hook, evidence: payoff }] }), null, call.signal)
+    : defaultAiHandler(call);
 
   const { response, events } = await postSse('/generate', {
     novelTypeId: 'xianxia',
@@ -1109,6 +1113,92 @@ test('新书整本：先落结构化计划，再严格按章生成并回收伏�
   assert.equal(novel.foreshadowingLedger[0].resolvedChapter, 2);
   assert.deepEqual(state.aiCalls.filter((call) => call.kind !== 'hookAudit').map((call) => call.kind), ['plan', 'chapter', 'chapter']);
   assert.match(state.aiCalls.filter((call) => call.kind === "chapter")[1].userPrompt, /本章应回收伏笔：铜钥匙上的裂纹/);
+});
+
+test('整本生成从开头和结尾移除旧章片段，补写无回收章号的伏笔后才完结', async () => {
+  const oldEnding = require('./fixtures/repeatedWorkplaceEnding');
+  const hook = '值班簿被撕去的末页';
+  const evidence = '值班簿被撕去的末页藏在信封夹层，原件上的印章证明是仓管员更改了交接时间。';
+  const first = makeChapter('刘海柱发现值班簿少了一页并把空封套收起来', '仓库旧现场') + '\n\n' + oldEnding;
+  const newOpening = '值班员刚把货架门锁上，刘海柱就递出那张出入证。为了让证据留在现场，他请两位同事同时签字，随即在监控下拆开信封。';
+  const freshEnding = '值班员把签收表钉进公示栏。退赔款已经打进账上，等了三个月的司机把存根折进上衣口袋，推开玻璃门走了出去。'
+    + '刘海柱没去送他，留在柜台前把剩下四份收据核对完。最后一笔的汇款日期没有错，签收人和车辆编号也对得上。他将签字笔帽扣紧，打开仓库边门。'
+    + '外面的人正把一叠晚班派车单夹在铁板上。刘海柱拿过第一张，照新规矩让司机当面确认。他第一次不用托人捎话，便能和司机一起把货、车、人都填进同一张表。'
+    + '那人从帆布包里翻出一只装着热茶的旧保温杯，拧开盖子放在他的手边。货车驶出院子后，两人把桌椅移到灯下，按签收时间把当天的单子一张张码齐。';
+  const body = makeChapter('刘海柱查封仓库后核对责任人，最终公布退款名单', '次日对账现场');
+  state.planContent = makePlan([
+    { chapterNumber: 1, wordTarget: 600, coreEvent: '查到值班簿缺页', setHooks: [hook] },
+    { chapterNumber: 2, wordTarget: 600, coreEvent: '核对责任人并公布退款名单' },
+  ]);
+  state.chapterQueue = [first, oldEnding + '\n\n' + body + '\n\n' + oldEnding];
+  let closureAudits = 0;
+  state.aiHandler = call => {
+    if (call.options?.taskType === 'targeted_repair') {
+      return emitText(call.userPrompt.includes('待替换开头') ? newOpening : freshEnding, null, call.signal);
+    }
+    if (call.options?.taskType === 'ending_hook_repair') {
+      assert.ok(call.userPrompt.includes(hook));
+      return emitText([newOpening, body, evidence, freshEnding].join('\n\n'), null, call.signal);
+    }
+    if (call.kind === 'hookAudit' && call.userPrompt.includes('这是全书最后一章')) {
+      closureAudits++;
+      return emitText(JSON.stringify({ hooksResolved: [{ id: 'PLAN_1_' + hook, evidence }] }), null, call.signal);
+    }
+    return defaultAiHandler(call);
+  };
+  const { events } = await postSse('/generate', {
+    novelTypeId: 'xianxia', mode: 'book', targetWordCount: 1200, enableResearch: false,
+    outline: '刘海柱核对仓库交接账本，追踪责任证据并让受损司机获得退款。',
+  });
+  const novel = getCreatedNovel(events);
+  assert.equal(novel.status, 'completed', events.find(event => event.type === 'error')?.message);
+  assert.equal(closureAudits, 2, 'reject invented quote before rewriting, then verify the updated manuscript');
+  assert.equal(novel.chapters.length, 2);
+  const final = novel.chapters[1];
+  assert.ok(!final.content.includes(oldEnding));
+  assert.ok(final.content.includes(evidence));
+  assert.equal(final.qualityReport.openingRepetition.sourceChapter, 1);
+  assert.equal(final.qualityReport.endingRepetition.sourceChapter, 1);
+  assert.equal(novel.foreshadowingLedger[0].targetChapter, 0);
+  assert.equal(novel.foreshadowingLedger[0].resolutionEvidence, evidence);
+  assert.equal(novel.foreshadowingLedger[0].status, 'resolved');
+  assert.ok(eventIndex(events, 'chapter_end', event => event.chapterNumber === 2) < eventIndex(events, 'completed'));
+});
+
+test('整本续写可以为已完结的旧作品补收伏笔，证据未通过时保留草稿和原结局', async () => {
+  const content = makeChapter('林舟将原始档案交给法院保管', '手稿已封存');
+  const hook = '档案室备用钥匙的去向';
+  const payoff = '失踪的档案室备用钥匙一直在证人保管的铁盒底部，林舟亲手将它交回了登记处。';
+  const novel = await seedNovel({ status: 'completed', targetWordCount: 600, chapterWordTarget: 2000,
+    outline: '林舟查明旧案真相并封存证据',
+    chapters: [{ chapterNumber: 1, content, wordCount: content.length }],
+    chapterPlanData: { chapters: [{ chapterNumber: 1, wordTarget: 600, coreEvent: '证据交存' }] },
+    foreshadowingLedger: [{ id: 'missing-key', content: hook, setChapter: 1, targetChapter: 0, status: 'pending' }],
+  });
+  const draft = makeChapter('证人打开了铁盒，把里面的东西放到窗边', '封条换新日期');
+  state.chapterQueue = [draft];
+  state.aiHandler = call => {
+    if (call.kind === 'hookAudit') return emitText(JSON.stringify({ hooksResolved: [] }), null, call.signal);
+    if (call.options?.taskType === 'ending_hook_repair') return emitText(draft, null, call.signal);
+    return defaultAiHandler(call);
+  };
+  const failed = await postSse(`/continue/${novel._id}`, { mode: 'book' });
+  assert.match(failed.events.find(event => event.type === 'error')?.message || '', /终章尚未核实回收 1 条伏笔/);
+  assert.equal(novel.chapters.length, 1);
+  assert.equal(novel.status, 'paused');
+  assert.equal(novel.foreshadowingLedger[0].status, 'pending');
+  assert.equal(novel.chapterPlanData.chapters.length, 2);
+  state.aiHandler = call => {
+    if (call.options?.taskType === 'ending_hook_repair') return emitText(draft + '\n\n' + payoff, null, call.signal);
+    if (call.kind === 'hookAudit') return emitText(JSON.stringify({ hooksResolved: [{ id: 'missing-key', evidence: payoff }] }), null, call.signal);
+    return defaultAiHandler(call);
+  };
+  const resumed = await postSse(`/continue/${novel._id}`, { mode: 'book' });
+  assert.ok(resumed.events.some(event => event.type === 'completed'), resumed.raw);
+  assert.equal(novel.chapters[0].content, content);
+  assert.equal(novel.chapters.length, 2);
+  assert.equal(novel.chapterPlanData.chapters.length, 2);
+  assert.equal(novel.foreshadowingLedger[0].resolutionEvidence, payoff);
 });
 
 test('新书整本：计划为空时暂停，不进入无约束正文循环', async () => {
