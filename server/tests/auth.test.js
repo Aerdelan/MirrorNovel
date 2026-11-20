@@ -80,6 +80,8 @@ process.env.JWT_SECRET = 'isolated-auth-regression-test-secret';
 process.env.NODE_ENV = 'production';
 process.env.EMAIL_RETURN_CODE_ON_FAILURE = 'true';
 delete process.env.JWT_EXPIRES_IN;
+const testCodeResendSeconds = 30;
+process.env.EMAIL_CODE_RESEND_SECONDS = String(testCodeResendSeconds);
 
 let server, base;
 test.before(async () => {
@@ -234,7 +236,7 @@ test('repeated sends return a normal cooldown response without invalidating the 
   const again = await request('/auth/send-code', { email: ' READER@EXAMPLE.COM ' });
   assert.equal(again.status, 200);
   assert.equal(again.body.cooldown, true);
-  assert.ok(again.body.retryAfter > 0 && again.body.retryAfter <= 30);
+  assert.ok(again.body.retryAfter > 0 && again.body.retryAfter <= testCodeResendSeconds);
   assert.equal(again.headers.get('retry-after'), String(again.body.retryAfter));
   assert.equal(state.sent.length, 1);
   assert.equal(state.codes[0].code, originalCode);
@@ -248,7 +250,7 @@ test('concurrent sends reserve one code and one email, and resend replaces an ol
   assert.equal(state.sent.length, 1);
   assert.equal(state.codes.length, 1);
   const slot = state.codes[0];
-  slot.createdAt = new Date(Date.now() - 31000);
+  slot.createdAt = new Date(Date.now() - (testCodeResendSeconds + 1) * 1000);
   slot.attempts = 10;
   assert.equal((await request('/auth/send-code', { email: registration.email })).status, 200);
   assert.equal(state.codes.length, 1);
@@ -261,7 +263,7 @@ test('more than ten sends from one IP do not block another user or a delivered c
     const response = await request('/auth/send-code', { email: `reader${i}@example.com` });
     assert.equal(response.status, 200);
     assert.equal(response.body.emailSent, true);
-    assert.equal(response.body.retryAfter, 30);
+    assert.equal(response.body.retryAfter, testCodeResendSeconds);
   }
   await seedCode();
   assert.equal((await request('/auth/register', registration)).status, 201);
@@ -274,10 +276,11 @@ test('a correct code remains usable after several typos', async () => {
 });
 
 test('cooldown reports only its remaining seconds rather than restarting the full wait', async () => {
-  await seedCode({ createdAt: new Date(Date.now() - 24000) });
+  const remainingSeconds = 6;
+  await seedCode({ createdAt: new Date(Date.now() - (testCodeResendSeconds - remainingSeconds) * 1000) });
   const reply = await request('/auth/send-code', { email: registration.email });
   assert.equal(reply.status, 200);
-  assert.ok(reply.body.retryAfter > 0 && reply.body.retryAfter <= 6);
+  assert.ok(reply.body.retryAfter > 0 && reply.body.retryAfter <= remainingSeconds);
   assert.equal(state.sent.length, 0);
 });
 
