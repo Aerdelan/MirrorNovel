@@ -1,9 +1,10 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, shallowRef } from 'vue'
 import api from '../api'
 import { buildModelOverrideHeader, HEADER_NAME } from '../utils/modelOverride'
 import { classifySSEEnd, createSSEParser } from '../utils/sseParser'
 import { normalizeNovelChapters } from '../utils/novelChapters'
+import { createChapterStream } from '../utils/chapterStream'
 
 const STREAM_DISCONNECTED_MESSAGE = '连接已中断，后台任务状态未知；请返回书架刷新状态'
 
@@ -46,7 +47,7 @@ export const useNovelStore = defineStore('novel', () => {
  const streamingText = ref('')
  const generatedOutline = ref('')
  const prefillContinue = ref(null)
- const activeGenerationRequest = ref(null)
+ const activeGenerationRequest = shallowRef(null)
  const skuCatalog = ref(null)
 
 async function fetchTypes() {
@@ -119,6 +120,36 @@ async function fetchFullTypes() {
  activeGenerationRequest.value = null
  }
 
+ function chapterResponseParser(xhr, onChunk, onStatus) {
+ const chapters = createChapterStream()
+ const parser = createSSEParser({ onEvent(event) {
+  if (activeGenerationRequest.value !== xhr) return
+  if (chapters.apply(event)) {
+   streamingText.value = chapters.text
+   onChunk?.(event.type === 'content' ? event.content : '', streamingText.value)
+  }
+  if (event.type === 'outline') generatedOutline.value = event.content
+  if (event.type !== 'content') onStatus?.(event)
+ } })
+ let cursor = 0
+ function readPending() {
+  const response = xhr.responseText
+  const chunk = response.slice(cursor)
+  cursor = response.length
+  parser.push(chunk)
+ }
+ xhr.onprogress = readPending
+ return {
+  finish() {
+   readPending()
+   parser.finish()
+   if (activeGenerationRequest.value !== xhr) return null
+   activeGenerationRequest.value = null
+   return unexpectedStreamEnd(xhr, parser)
+  },
+ }
+ }
+
  // ---- 生成 ----
  function startGeneration(params, onChunk, onStatus) {
  streamingText.value = ''
@@ -130,33 +161,9 @@ async function fetchFullTypes() {
  xhr.setRequestHeader('Content-Type', 'application/json')
  applyModelOverrideHeader(xhr)
  xhr._aborted = false
- let lastIndex = 0
- let humanizedReceived = false
- let humanizedContent = ''
- const parser = createSSEParser({ onEvent(event) {
- if (event.type === 'content') {
- if (!humanizedReceived) { streamingText.value += event.content; if (onChunk) onChunk(event.content, streamingText.value) }
- }
- else if (event.type === 'draft_restored') {
- streamingText.value = String(event.content || '')
- humanizedReceived = false
- if (onStatus) onStatus(event)
- }
- else if (event.type === 'outline') { generatedOutline.value = event.content; if (onStatus) onStatus({ type: 'outline', content: event.content }) }
- else if (event.type === 'chapter_start') { humanizedReceived = false; if (onStatus) onStatus(event) }
- else if (event.type === 'humanized') { humanizedReceived = true; humanizedContent = event.content; if (onStatus) onStatus(event) }
- else if (onStatus) onStatus(event)
- } })
- xhr.onprogress = () => {
- parser.push(xhr.responseText.substring(lastIndex))
- lastIndex = xhr.responseText.length
- // 如果已收到改写内容，用改写后的文本替换显示
- if (humanizedReceived) { streamingText.value = humanizedContent }
- }
+ const parser = chapterResponseParser(xhr, onChunk, onStatus)
  xhr.onloadend = () => {
- parser.push(xhr.responseText.substring(lastIndex)); lastIndex = xhr.responseText.length; parser.finish()
- if (activeGenerationRequest.value === xhr) activeGenerationRequest.value = null
- const endEvent = unexpectedStreamEnd(xhr, parser)
+ const endEvent = parser.finish()
  if (endEvent && onStatus) onStatus(endEvent)
  }
  xhr.send(JSON.stringify(params))
@@ -173,27 +180,10 @@ async function fetchFullTypes() {
  xhr.setRequestHeader('Content-Type', 'application/json')
  applyModelOverrideHeader(xhr)
  xhr._aborted = false
- let lastIndex = 0
- const parser = createSSEParser({ onEvent(event) {
- if (event.type === 'content') { streamingText.value += event.content; if (onChunk) onChunk(event.content, streamingText.value) }
- else if (event.type === 'draft_restored') {
- streamingText.value = String(event.content || '')
- if (onChunk) onChunk('', streamingText.value)
- if (onStatus) onStatus(event)
- }
- else if (onStatus) onStatus(event)
- } })
- xhr.onprogress = () => {
- parser.push(xhr.responseText.substring(lastIndex))
- lastIndex = xhr.responseText.length
- }
- xhr.send(JSON.stringify({ mode: mode || 'chapter' }))
+ const parser = chapterResponseParser(xhr, onChunk, onStatus)
  return new Promise((resolve, reject) => {
  xhr.onloadend = () => {
- parser.push(xhr.responseText.substring(lastIndex)); lastIndex = xhr.responseText.length; parser.finish()
- if (activeGenerationRequest.value === xhr) activeGenerationRequest.value = null
- if (xhr._aborted) return resolve()
- const endEvent = unexpectedStreamEnd(xhr, parser)
+ const endEvent = parser.finish()
  if (endEvent) {
   if (onStatus) onStatus(endEvent)
   if (endEvent.type === 'error') return reject(new Error(endEvent.message))
@@ -203,6 +193,7 @@ async function fetchFullTypes() {
  // XHR guarantees loadend after error; final classification happens there so
  // onerror + onloadend cannot report the same disconnect twice.
  xhr.onerror = () => {}
+ xhr.send(JSON.stringify({ mode: mode || 'chapter' }))
  })
  }
 
@@ -216,27 +207,10 @@ async function fetchFullTypes() {
  xhr.setRequestHeader('Content-Type', 'application/json')
  applyModelOverrideHeader(xhr)
  xhr._aborted = false
- let lastIndex = 0
- const parser = createSSEParser({ onEvent(event) {
- if (event.type === 'content') { streamingText.value += event.content; if (onChunk) onChunk(event.content, streamingText.value) }
- else if (event.type === 'draft_restored') {
- streamingText.value = String(event.content || '')
- if (onChunk) onChunk('', streamingText.value)
- if (onStatus) onStatus(event)
- }
- else if (onStatus) onStatus(event)
- } })
- xhr.onprogress = () => {
- parser.push(xhr.responseText.substring(lastIndex))
- lastIndex = xhr.responseText.length
- }
- xhr.send(JSON.stringify(params))
+ const parser = chapterResponseParser(xhr, onChunk, onStatus)
  return new Promise((resolve, reject) => {
  xhr.onloadend = () => {
- parser.push(xhr.responseText.substring(lastIndex)); lastIndex = xhr.responseText.length; parser.finish()
- if (activeGenerationRequest.value === xhr) activeGenerationRequest.value = null
- if (xhr._aborted) return resolve()
- const endEvent = unexpectedStreamEnd(xhr, parser)
+ const endEvent = parser.finish()
  if (endEvent) {
   if (onStatus) onStatus(endEvent)
   if (endEvent.type === 'error') return reject(new Error(endEvent.message))
@@ -244,6 +218,7 @@ async function fetchFullTypes() {
  resolve()
  }
  xhr.onerror = () => {}
+ xhr.send(JSON.stringify(params))
  })
  }
 

@@ -9,6 +9,34 @@ function providerStream(frames) {
     ? { done: false, value: new TextEncoder().encode(frames[index++]) } : { done: true } }) } };
 }
 
+test('chapter EOF without a completion marker surfaces the exact draft for recovery', async (t) => {
+  const chunk = '关闭连接前已经发出的正文';
+  t.mock.method(global, 'fetch', async () => providerStream([
+    `data: ${JSON.stringify({ choices: [{ delta: { content: chunk } }] })}\n\n`,
+  ]));
+  let displayed = '';
+  await assert.rejects(streamGenerate('system', 'chapter', text => { displayed += text; }, null,
+    { baseUrl: 'https://chapter-eof.test/v1', model: 'test', disableThinking: true }, 0,
+    0.7, 2000, 10000, null, { requireTerminal: true, taskType: 'chapter_write' }),
+  error => error.resumable === true && error.partialContent === chunk);
+  assert.equal(displayed, chunk);
+});
+
+test('chapter token-limit continuation splices a replay larger than 300 characters exactly once', async (t) => {
+  const prefix = Array.from({ length: 100 }, (_, index) => `第${index}条交接记录。`).join('');
+  const addition = '目击者终于解释了账本丢失的原因。';
+  let requests = 0;
+  const frame = (content, reason) => `data: ${JSON.stringify({ choices: [{ delta: { content }, finish_reason: reason }] })}\n\n`;
+  t.mock.method(global, 'fetch', async () => ++requests === 1 ? providerStream([frame(prefix, 'length')])
+    : providerStream([frame(prefix.slice(-530, -310)), frame(prefix.slice(-310) + addition, 'stop')]));
+  let displayed = '';
+  const result = await streamGenerate('system', 'chapter', text => { displayed += text; }, null,
+    { baseUrl: 'https://chapter-stitch.test/v1', model: 'test', disableThinking: true }, 0,
+    0.7, 2000, 10000, null, { requireTerminal: true, stitchOnTruncation: true, taskType: 'chapter_write' });
+  assert.equal(result.content, prefix + addition);
+  assert.equal(displayed, result.content);
+});
+
 test('an unterminated final SSE line preserves closing JSON, usage and finish reason', async () => {
   const original = global.fetch;
   try {

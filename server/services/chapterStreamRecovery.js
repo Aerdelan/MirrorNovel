@@ -18,6 +18,58 @@ function waitForRetry(ms, signal) {
   });
 }
 
+// A resumed stream can replay the end of the existing draft. Buffer only
+// while an exact suffix match is possible, then forward new bytes once.
+function createChapterContinuationWriter(draft, onChunk) {
+  const tail = String(draft || '').slice(-6000);
+  const minimum = 32;
+  let prefix = '';
+  let pending = tail.length >= minimum;
+  let candidates;
+  let overlap = 0;
+  let added = '';
+
+  function forward(text) {
+    if (!text) return;
+    onChunk?.(text);
+    added += text;
+  }
+
+  function finish(interrupted = false) {
+    if (!pending) return added;
+    pending = false;
+    // On a second interruption the stream may end in the middle of a replay,
+    // before we have reached the end of the saved draft.
+    const replayOnly = interrupted && prefix.length >= minimum && candidates?.length;
+    forward(prefix.slice(replayOnly ? prefix.length : overlap));
+    prefix = '';
+    return added;
+  }
+
+  return {
+    write(chunk) {
+      if (!pending) { forward(chunk); return; }
+      prefix += chunk;
+      if (prefix.length < minimum) return;
+      if (!candidates) {
+        candidates = [];
+        const anchor = prefix.slice(0, minimum);
+        for (let at = tail.indexOf(anchor); at !== -1; at = tail.indexOf(anchor, at + 1)) {
+          candidates.push(at);
+        }
+      }
+      candidates = candidates.filter(at => {
+        const suffix = tail.slice(at);
+        if (prefix.length < suffix.length) return suffix.startsWith(prefix);
+        if (prefix.startsWith(suffix)) overlap = Math.max(overlap, suffix.length);
+        return false;
+      });
+      if (!candidates.length) finish();
+    },
+    finish,
+  };
+}
+
 async function recoverChapterStream({ generate, readDraft, checkpoint, signal, onRetry,
   maxResumes = 2, wait = waitForRetry }) {
   for (let attempt = 0; ; attempt++) {
@@ -42,4 +94,4 @@ async function recoverChapterStream({ generate, readDraft, checkpoint, signal, o
   }
 }
 
-module.exports = { recoverChapterStream };
+module.exports = { recoverChapterStream, createChapterContinuationWriter };

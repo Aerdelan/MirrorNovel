@@ -12,7 +12,7 @@ const { createStyleRevision, buildRevisionSampleBlock, freezeRevisionSnapshot } 
 const { loadActivePreferences } = require('../services/writingStyle');
 const { buildStyleContext } = require('../services/styleContext');
 const { captureGenerationInput, readGenerationInput } = require('../services/generationInput');
-const { recoverChapterStream } = require('../services/chapterStreamRecovery');
+const { recoverChapterStream, createChapterContinuationWriter } = require('../services/chapterStreamRecovery');
 const WritingStyleRevision = require('../models/WritingStyleRevision');
 const { queueChapterVersion, archiveChapterVersion } = require('../services/chapterVersions');
 const ChapterVersion = require('../models/ChapterVersion');
@@ -192,6 +192,7 @@ const {
   renderPlanForContext,
   seedPlannedHooks,
   applyHookAudit,
+  matchHookResolutionEvidence,
   getChapterOutputTokenLimit,
   assessStoryCompletion,
   openStoryHooks,
@@ -1199,21 +1200,26 @@ async function auditChapterHooks({ user, modelConfig, novel, chapterNumber, cont
     const plannedSet = (contract?.setHooks || []).join('；') || '无';
     const plannedResolve = (contract?.resolveHooks || []).join('；') || '无';
 
-    const prompt = `【本章正文】
+    const reviewContext = `【本章正文】
 ${text}
 
 【当前所有未回收伏笔账目】
-${hooksText || '（无）'}
+${hooksText || '（无）'}`;
+    const prompt = closureHooks ? `${reviewContext}
+
+这是全书最后一章。只核对所列伏笔，输出 JSON 对象，唯一字段为 hooksResolved：
+{"hooksResolved":[{"id":"账目的原始ID","evidence":"按正文顺序引用1到4句能直接证明回收的原文"}]}
+只引用揭晓答案或呈现结果的最短原文，保留句号等断句标点。若正文只是再次提到线索或问题，省略该条。没有回收则输出 {"hooksResolved":[]}。` : `${reviewContext}
 
 【本章计划埋设的伏笔】${plannedSet}
 【本章计划回收的伏笔】${plannedResolve}
 
 请通读本章正文，只依据正文实际内容回答，输出严格 JSON（不要 markdown、不要解释）：
 {"hooksSet":["本章实际新埋设、且账目中没有的伏笔，一句话概括。没有则空数组"],
-"hooksResolved":[{"id":"账目中的原始ID","evidence":"连续引用正文中给出答案或结果的原句，20-60字"}],
+"hooksResolved":[{"id":"账目中的原始ID","evidence":"按正文顺序引用给出答案或结果的1到4句原文，保留句号等断句标点"}],
 "characterUpdates":[{"name":"角色名","location":"章末所在位置","emotionalState":"章末情绪状态","goal":"当前目标","knownFacts":["本章后该角色确实知道的新增事实"],"unknownFacts":["本章后仍明确不知道的关键事实"],"knowledgeBoundary":"一句话说明该角色不能知道什么"}],
 "tagEvidence":[{"tag":"本章兑现的标签原名","evidence":"正文中体现该标签的具体动作、场景或关系变化"}]}
-规则：回收必须在正文揭晓答案或呈现线索带来的结果。仅再次提到物件、线索或问题不算回收。只统计本章实际发生的埋设与回收。characterUpdates 最多5个，tagEvidence必须给正文证据。${closureHooks ? '这是全书最后一章，只对所列伏笔核对回收证据。不要把尚无答案的伏笔判为已收。' : ''}`;
+规则：回收必须在正文揭晓答案或呈现线索带来的结果。仅再次提到物件、线索或问题不算回收。只统计本章实际发生的埋设与回收。characterUpdates 最多5个，tagEvidence必须给正文证据。`;
 
     const result = await streamGenerate(
       '你是严谨的小说连载审读员，只依据正文事实输出 JSON，不添加任何解释。',
@@ -1226,7 +1232,7 @@ ${hooksText || '（无）'}
       2500,
       180000,
       null,
-      { taskType: 'hook_audit' }
+      { taskType: 'hook_audit', jsonMode: Boolean(closureHooks) }
     );
     onUsage && onUsage('reasoning', result);
     const audit = parseJsonObject(result.content);
@@ -1250,7 +1256,6 @@ async function verifyBookEnding({ req, res, novel, chapterNumber, content, contr
   const verify = async (prepared, hooks) => {
     const verified = new Set();
     const evidence = [];
-    const comparable = prepared.finalContent.replace(/\s/g, '');
     for (let i = 0; i < hooks.length; i += 12) {
       signal?.throwIfAborted();
       const batch = hooks.slice(i, i + 12);
@@ -1259,8 +1264,8 @@ async function verifyBookEnding({ req, res, novel, chapterNumber, content, contr
       if (!review) return null;
       const ids = new Set(batch.map(hook => hook.id));
       for (const resolution of review.audit.hooksResolved) {
-        const quote = typeof resolution?.evidence === 'string' ? resolution.evidence.replace(/\s/g, '') : '';
-        if (ids.has(resolution?.id) && !verified.has(resolution.id) && quote.length >= 10 && comparable.includes(quote)) {
+        if (ids.has(resolution?.id) && !verified.has(resolution.id)
+          && matchHookResolutionEvidence(prepared.finalContent, resolution.evidence)) {
           verified.add(resolution.id);
           evidence.push(resolution);
         }
@@ -1399,13 +1404,22 @@ async function generateChapterDraft({ run, req, res, novel, systemPrompt, prompt
     },
     generate: async draft => {
       const thinking = createThinkingEmitter(res);
+      const writer = createChapterContinuationWriter(draft, onChunk);
       try {
-        return await streamGenerate(systemPrompt,
+        const result = await streamGenerate(systemPrompt,
           appendResumeInstruction(prompt + (includeEndingHistory ? buildEndingHistory(novel.chapters, chapterNumber) : ''), draft),
-          onChunk, run.controller.signal, resolveApiConfig(req.userModelConfig, 'writing'), 2,
+          writer.write, run.controller.signal, resolveApiConfig(req.userModelConfig, 'writing'), 2,
           temperature ?? getChapterTemperature(contract), maxTokens ?? getChapterOutputTokenLimit(contract.wordTarget), 900000,
-          thinking, { stitchOnTruncation: true, taskType: 'chapter_write' });
+          thinking, { stitchOnTruncation: true, requireTerminal: true, taskType: 'chapter_write' });
+        const added = writer.finish();
+        if (!added.trim() || result.finishReason === 'length' || result.finishReason === 'content_filter') {
+          throw Object.assign(new Error(`第${chapterNumber}章未收到完整的新正文，已保留草稿`), {
+            attempts: result.attempts, usage: result.usage, resumable: true, isApiError: true,
+          });
+        }
+        return result;
       } catch (error) {
+        writer.finish(true);
         if (error?.attempts || error?.usage) emitTokenUsage(res, novel, 'writing', error, chapterTokenStats);
         throw error;
       } finally { thinking.stop(); }
@@ -2205,9 +2219,10 @@ ${tmpl.dynamicPrompt}
         genResult = await generateChapterDraft({ run: generationRun, req, res, novel,
           systemPrompt: systemPrompt + styleSelection.block, prompt, chapterNumber: chNum, contract,
           checkpoint, readDraft: () => buffer, chapterTokenStats, onChunk: (chunk) => {
+            const offset = buffer.length;
             buffer += chunk;
             checkpoint.schedule('writing');
-            try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
+            try { res.write(`data: ${JSON.stringify({ type: 'content', chapterNumber: chNum, offset, content: chunk })}\n\n`); } catch {}
           },
         });
         await checkpoint.flush('reviewing');
@@ -2302,7 +2317,7 @@ ${tmpl.dynamicPrompt}
         try { res.write(`data: ${JSON.stringify({ type: 'quality_notice', chapterNumber: chNum, report: chapterResult.continuity })}\n\n`); } catch {}
       }
 
-      try { res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber: chNum, title: chapterResult.title, wordCount: chapterResult.wordCount })}\n\n`); } catch {}
+      try { res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber: chNum, title: chapterResult.title, wordCount: chapterResult.wordCount, content: chapterResult.content })}\n\n`); } catch {}
       await refreshGenerationMemory({ req, res, novel, signal: abortController.signal, throughChapter: chNum, chapterTokenStats });
       return chapterResult;
     }
@@ -2658,9 +2673,10 @@ router.post('/continue/:novelId', auth, async (req, res) => {
         contResult = await generateChapterDraft({ run: generationRun, req, res, novel,
           systemPrompt: systemPrompt + styleSelection.block, prompt, chapterNumber: chNum, contract,
           checkpoint, readDraft: () => buffer, chapterTokenStats, onChunk: (chunk) => {
+            const offset = buffer.length;
             buffer += chunk;
             checkpoint.schedule('writing');
-            try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
+            try { res.write(`data: ${JSON.stringify({ type: 'content', chapterNumber: chNum, offset, content: chunk })}\n\n`); } catch {}
           },
         });
         await checkpoint.flush('reviewing');
@@ -2752,7 +2768,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
         try { res.write(`data: ${JSON.stringify({ type: 'quality_notice', chapterNumber: chNum, report: chapterResult.continuity })}\n\n`); } catch {}
       }
 
-      try { res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber: chNum, title: chapterResult.title, wordCount: chapterResult.wordCount })}\n\n`); } catch {}
+      try { res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber: chNum, title: chapterResult.title, wordCount: chapterResult.wordCount, content: chapterResult.content })}\n\n`); } catch {}
       await refreshGenerationMemory({ req, res, novel, signal: abortController.signal, throughChapter: chNum, chapterTokenStats });
       return chapterResult;
     }
@@ -3179,9 +3195,10 @@ router.post('/continue-import', auth, async (req, res) => {
           prompt: userPrompt, chapterNumber, checkpoint, readDraft: () => chapterBuffer, chapterTokenStats,
           temperature: 0.85, maxTokens: 16384, includeEndingHistory: false,
           onChunk: (chunk) => {
+              const offset = chapterBuffer.length;
               chapterBuffer += chunk;
               checkpoint.schedule('writing');
-              try { res.write(`data: ${JSON.stringify({ type: 'content', content: chunk })}\n\n`); } catch {}
+              try { res.write(`data: ${JSON.stringify({ type: 'content', chapterNumber, offset, content: chunk })}\n\n`); } catch {}
           },
         });
         emitTokenUsage(res, novel, 'writing', result, chapterTokenStats);
@@ -3202,7 +3219,7 @@ router.post('/continue-import', auth, async (req, res) => {
       await refreshCommittedMemory({ req, res, novel, signal: abortController.signal, throughChapter: chapterNumber, chapterTokenStats });
       await settleGenerationRun(generationRun, 'completed', { lastCommittedChapter: chapterNumber, draft: '' });
 
-      res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber, title: savedChapter?.title, wordCount: savedChapter?.wordCount || 0 })}\n\n`);
+      res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber, title: savedChapter?.title, wordCount: savedChapter?.wordCount || 0, content: savedChapter?.content })}\n\n`);
       res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`);
       res.end();
     } catch (streamError) {

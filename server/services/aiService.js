@@ -5,6 +5,7 @@ const { resolveGenreContract } = require('../config/genreContracts');
 const { getServerRoute } = require('../config/modelCatalog');
 const { getRequestModelConfig } = require('./requestContext');
 const { buildSemanticContext, renderSemanticContext } = require('./semanticMemory');
+const { createChapterContinuationWriter } = require('./chapterStreamRecovery');
 const {
   resolveThinkingPolicy,
   thinkingFieldCandidates,
@@ -1058,6 +1059,7 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
     let fullContent = '';
     let providerUsage = null;
     let finishReason = null;
+    let providerDone = false;
     let malformedStreamFrames = 0;
     let reasoningChars = 0;
     let reasoningTokenEstimate = 0;
@@ -1242,7 +1244,7 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         if (!trimmed || trimmed.startsWith(':')) return;
         if (!isOllama && !trimmed.startsWith('data:')) return;
         const data = isOllama ? trimmed : trimmed.slice(5).trimStart();
-        if (data === '[DONE]') return;
+        if (data === '[DONE]') { providerDone = true; return; }
         let parsed;
         try { parsed = JSON.parse(data); } catch { malformedStreamFrames += 1; return; }
         const content = isOllama ? parsed.message?.content || '' : parsed.choices?.[0]?.delta?.content || '';
@@ -1255,6 +1257,7 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         }
         const reason = isOllama ? parsed.done_reason : parsed.choices?.[0]?.finish_reason;
         if (reason) finishReason = reason;
+        if (isOllama && parsed.done) providerDone = true;
         if (isOllama && parsed.done && (parsed.prompt_eval_count || parsed.eval_count)) {
           providerUsage = { prompt_tokens: parsed.prompt_eval_count, completion_tokens: parsed.eval_count };
         } else if (parsed.usage && typeof parsed.usage === 'object') providerUsage = parsed.usage;
@@ -1318,6 +1321,10 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         attempt -= 1; // 参数适配不计入重试次数
         await new Promise(r => setTimeout(r, 400));
         continue;
+      }
+
+      if (options.requireTerminal && fullContent.trim() && !providerDone && !finishReason) {
+        throw new Error('模型正文流未发送结束标记，正在从已保存的草稿恢复');
       }
 
       // 空输出检测：模型返回 200 但正文为空，视为失败并重试。
@@ -1385,6 +1392,8 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         let held = '';
         let flushing = false;
         let emitted = '';
+        const chapterWriter = options.taskType === 'chapter_write' && !jsonOutput
+          ? createChapterContinuationWriter(fullContent, onChunk) : null;
         const forward = (chunk) => {
           if (flushing) { emitted += chunk; if (onChunk) onChunk(chunk); return; }
           held += chunk;
@@ -1398,10 +1407,11 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         };
         try {
           const continued = await streamGenerate(
-            systemPrompt, continuationPrompt, forward, signal, apiConfig,
+            systemPrompt, continuationPrompt, chapterWriter?.write || forward, signal, apiConfig,
             0, temperature, Math.max(2048, thinkingPolicy.contentBudget),
             timeoutMs, onReasoning, { ...options, stitchOnTruncation: false }
           );
+          if (chapterWriter) emitted = chapterWriter.finish();
           // 流已结束但缓冲未满 300 字：此时才能判定重复前缀并补发。
           if (!flushing) {
             const overlap = continuationOverlap(held);
@@ -1425,6 +1435,7 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
           if (continued?.reasoningChars) totalReasoningChars += continued.reasoningChars;
           console.log(`[Stitch] 第 ${stitchedRounds} 轮补全完成，正文 ${fullContent.length} 字（继续状态：${finishReason || 'done'}）`);
         } catch (error) {
+          if (chapterWriter) emitted = chapterWriter.finish(true);
           // 续写失败不应让已产出的正文作废。若子调用已经流出一部分，
           // forward 已完成去重与透传，这里也把同一份 emitted 合并进返回值，
           // 保证调用方保存的内容与用户实际看到的内容一致。

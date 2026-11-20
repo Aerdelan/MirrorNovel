@@ -1476,7 +1476,7 @@ async function startGen() {
 
  const epoch = rememberAttempt(params)
  ownGenerationRequest = novelStore.startGeneration(params,
- (chunk) => { if (epoch !== generationEpoch) return; lastGenerationActivity = Date.now(); rawStreamingText.value += chunk; streamingText.value += chunk; scrollToBottom() },
+ (_chunk, text) => { if (epoch !== generationEpoch) return; lastGenerationActivity = Date.now(); rawStreamingText.value = text; streamingText.value = text; scrollToBottom() },
  (event) => {
  if (epoch !== generationEpoch) return
  lastGenerationActivity = Date.now()
@@ -1509,12 +1509,9 @@ async function startGen() {
  const issues = event.report?.issues?.join('；') || $t('generate.qualityFallback')
  genStatus.value = $t('generate.statusQualityNotice', { n: event.chapterNumber, issues })
  } else if (event.type === 'humanized') {
- // 服务器返回改写后文本，替换显示
- streamingText.value = event.content
  genStatus.value = $t('generate.statusRewritten', { n: event.chapterNumber })
  scrollToBottom()
  } else if (event.type === 'expert_revision') {
-  streamingText.value = event.content || streamingText.value
   genStatus.value = $t('generate.statusReviewed', { n: event.chapterNumber })
   scrollToBottom()
  } else if (event.type === 'completed') {
@@ -1528,10 +1525,6 @@ async function startGen() {
  } else if (event.type === 'disconnected') {
  genStatus.value = event.message || $t('common.streamDisconnected')
  followDisconnectedGeneration()
- } else if (event.type === 'draft_restored') {
- rawStreamingText.value = String(event.content || '')
- streamingText.value = rawStreamingText.value
- scrollToBottom()
  } else if (event.type === 'research_status') {
  if (event.state === 'start') researchHint.value = $t('generate.researchStatus.start')
  else if (event.state === 'done') {
@@ -1804,7 +1797,7 @@ async function startLNGen() {
 
  const epoch = rememberAttempt(params)
  ownGenerationRequest = novelStore.startGeneration(params,
- (chunk) => { if (epoch !== generationEpoch) return; lastGenerationActivity = Date.now(); lnStreamingText.value += chunk; lnScrollToBottom() },
+ (_chunk, text) => { if (epoch !== generationEpoch) return; lastGenerationActivity = Date.now(); lnStreamingText.value = text; lnScrollToBottom() },
  (event) => {
  if (epoch !== generationEpoch) return
  lastGenerationActivity = Date.now()
@@ -1825,7 +1818,6 @@ async function startLNGen() {
  const issues = event.report?.issues?.join('；') || $t('generate.qualityFallback')
  lnStatus.value = $t('generate.statusQualityNotice', { n: event.chapterNumber, issues })
  } else if (event.type === 'expert_revision') {
-  lnStreamingText.value = event.content || lnStreamingText.value
   lnStatus.value = $t('generate.statusReviewed', { n: event.chapterNumber })
  } else if (event.type === 'completed') {
  lnStatus.value = $t('generate.statusDone'); lnOk.value = true; lnGenerating.value = false
@@ -1838,9 +1830,6 @@ async function startLNGen() {
  } else if (event.type === 'disconnected') {
  lnStatus.value = event.message || $t('common.streamDisconnected')
  followDisconnectedGeneration(true)
- } else if (event.type === 'draft_restored') {
- lnStreamingText.value = String(event.content || '')
- lnScrollToBottom()
  } else if (event.type === 'error') {
  lnStatus.value = ' ' + (event.message || $t('generate.errGen')); lnGenerating.value = false
  notifyModelError(event.message)

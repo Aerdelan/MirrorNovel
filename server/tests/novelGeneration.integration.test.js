@@ -1118,7 +1118,10 @@ test('新书整本：先落结构化计划，再严格按章生成并回收伏�
 test('整本生成从开头和结尾移除旧章片段，补写无回收章号的伏笔后才完结', async () => {
   const oldEnding = require('./fixtures/repeatedWorkplaceEnding');
   const hook = '值班簿被撕去的末页';
-  const evidence = '值班簿被撕去的末页藏在信封夹层，原件上的印章证明是仓管员更改了交接时间。';
+  const firstQuote = '值班簿被撕去的末页藏在信封夹层';
+  const secondQuote = '原件上的印章证明是仓管员更改了交接时间';
+  const evidence = `${firstQuote}。${secondQuote}。`;
+  const payoff = `“${firstQuote}。”刘海柱把信封递给同事。“${secondQuote}。”`;
   const first = makeChapter('刘海柱发现值班簿少了一页并把空封套收起来', '仓库旧现场') + '\n\n' + oldEnding;
   const newOpening = '值班员刚把货架门锁上，刘海柱就递出那张出入证。为了让证据留在现场，他请两位同事同时签字，随即在监控下拆开信封。';
   const freshEnding = '值班员把签收表钉进公示栏。退赔款已经打进账上，等了三个月的司机把存根折进上衣口袋，推开玻璃门走了出去。'
@@ -1138,9 +1141,11 @@ test('整本生成从开头和结尾移除旧章片段，补写无回收章号�
     }
     if (call.options?.taskType === 'ending_hook_repair') {
       assert.ok(call.userPrompt.includes(hook));
-      return emitText([newOpening, body, evidence, freshEnding].join('\n\n'), null, call.signal);
+      return emitText([newOpening, body, payoff, freshEnding].join('\n\n'), null, call.signal);
     }
     if (call.kind === 'hookAudit' && call.userPrompt.includes('这是全书最后一章')) {
+      assert.equal(call.options.jsonMode, true);
+      assert.ok(!call.userPrompt.includes('characterUpdates'));
       closureAudits++;
       return emitText(JSON.stringify({ hooksResolved: [{ id: 'PLAN_1_' + hook, evidence }] }), null, call.signal);
     }
@@ -1156,11 +1161,12 @@ test('整本生成从开头和结尾移除旧章片段，补写无回收章号�
   assert.equal(novel.chapters.length, 2);
   const final = novel.chapters[1];
   assert.ok(!final.content.includes(oldEnding));
-  assert.ok(final.content.includes(evidence));
+  assert.ok(final.content.includes(payoff));
+  assert.ok(!final.content.includes(evidence));
   assert.equal(final.qualityReport.openingRepetition.sourceChapter, 1);
   assert.equal(final.qualityReport.endingRepetition.sourceChapter, 1);
   assert.equal(novel.foreshadowingLedger[0].targetChapter, 0);
-  assert.equal(novel.foreshadowingLedger[0].resolutionEvidence, evidence);
+  assert.equal(novel.foreshadowingLedger[0].resolutionEvidence, `${firstQuote} … ${secondQuote}`);
   assert.equal(novel.foreshadowingLedger[0].status, 'resolved');
   assert.ok(eventIndex(events, 'chapter_end', event => event.chapterNumber === 2) < eventIndex(events, 'completed'));
 });
@@ -1178,7 +1184,14 @@ test('整本续写可以为已完结的旧作品补收伏笔，证据未通过�
   const draft = makeChapter('证人打开了铁盒，把里面的东西放到窗边', '封条换新日期');
   state.chapterQueue = [draft];
   state.aiHandler = call => {
-    if (call.kind === 'hookAudit') return emitText(JSON.stringify({ hooksResolved: [] }), null, call.signal);
+    if (call.kind === 'hookAudit') {
+      const fragment = '证人打开了铁盒，把里面的东西放到窗边';
+      const later = '封条换新日期的第1个现场细节改变了人物的判断';
+      return emitText(JSON.stringify({ hooksResolved: [
+        { id: 'missing-key', evidence: `${fragment}。备用钥匙在铁盒底部。` },
+        { id: 'missing-key', evidence: `${later}。${fragment}。` },
+      ] }), null, call.signal);
+    }
     if (call.options?.taskType === 'ending_hook_repair') return emitText(draft, null, call.signal);
     return defaultAiHandler(call);
   };
@@ -2076,31 +2089,60 @@ test('章节实际字数偏短：执行完计划后自动补充，达到目标�
   assert.equal(state.aiCalls.filter(c => c.kind === 'chapter').length, 2);
 });
 
-test('正文流中途掉线：同任务从已保存前缀自动续接，不重复生成开头或插入章节', async () => {
+test('真实 HTTP 正文流提前关闭：整本生成恢复时去掉重发草稿，下一章从独立偏移开始', async t => {
   const content = makeChapter('林舟拿到原件并决定核对签名', '自动断点续接');
+  const next = makeChapter('苏晚走进车站，把寄存单换成出站记录', '月台调查');
+  state.planContent = makePlan([
+    { chapterNumber: 1, wordTarget: 600, coreEvent: '核对签名' },
+    { chapterNumber: 2, wordTarget: 600, coreEvent: '调查出站记录' },
+  ]);
+  const http = require('node:http');
+  let requests = 0;
+  const upstream = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      const round = ++requests;
+      const chunks = round === 1 ? [content.slice(0, 330)]
+        : round === 2 ? [content.slice(0, 200), content.slice(200)] : [next];
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      for (const text of chunks) {
+        res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: text } }] })}\n\n`);
+      }
+      if (round > 1) res.write('data: [DONE]\n\n');
+      res.end();
+    });
+  });
+  await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => upstream.close(resolve)));
   let writes = 0;
   state.aiHandler = async call => {
     if (call.kind !== 'chapter') return defaultAiHandler(call);
     writes++;
-    if (writes === 1) {
-      call.onChunk(content.slice(0, 330));
-      throw Object.assign(new Error('stream reset after prefix'), { resumable: true, isApiError: true,
-        usage: { prompt_tokens: 123, completion_tokens: 45 } });
+    if (writes === 2) {
+      assert.match(call.userPrompt, /【断点续写】/);
+      assert.ok(call.userPrompt.includes(content.slice(0, 330)));
+      assert.ok([...state.jobs.values()].some(job => job.draft === content.slice(0, 330)));
     }
-    assert.match(call.userPrompt, /【断点续写】/);
-    assert.ok(call.userPrompt.includes(content.slice(0, 330)));
-    assert.ok([...state.jobs.values()].some(job => job.draft === content.slice(0, 330)));
-    return emitText(content.slice(330), call.onChunk, call.signal);
+    if (writes === 3) assert.doesNotMatch(call.userPrompt, /【断点续写】/);
+    return realAiService.streamGenerate(call.systemPrompt, call.userPrompt, call.onChunk, call.signal,
+      { baseUrl: `http://127.0.0.1:${upstream.address().port}/v1`, model: 'chapter-test', disableThinking: true },
+      0, call.temperature, call.maxTokens, 10000, call.onReasoning, call.options);
   };
-  const { events } = await postSse('/generate', { novelTypeId: 'xianxia', targetWordCount: 600, mode: 'chapter' });
+  const { events } = await postSse('/generate', { novelTypeId: 'xianxia', targetWordCount: 1200,
+    mode: 'book', outline: '林舟调查失踪案并核对签名，苏晚从车站找到新的证词。', enableResearch: false });
   const book = getCreatedNovel(events);
-  assert.equal(events.at(-1).type, 'completed');
-  assert.equal(book.chapters.length, 1);
-  assert.equal(book.chapters[0].content, content);
-  assert.equal(events.filter(e => e.type === 'chapter_start').length, 1);
-  assert.equal(writes, 2);
+  assert.equal(events.at(-1).type, 'completed', events.at(-1).message);
+  assert.deepEqual(book.chapters.map(chapter => chapter.content), [content, next]);
+  const first = events.filter(e => e.type === 'content' && e.chapterNumber === 1);
+  const second = events.filter(e => e.type === 'content' && e.chapterNumber === 2);
+  assert.equal(first.map(e => e.content).join(''), content);
+  assert.equal(first[1].offset, 330);
+  assert.equal(second[0].offset, 0);
+  assert.equal(second.map(e => e.content).join(''), next);
+  assert.deepEqual(events.filter(e => e.type === 'chapter_end').map(e => e.content), [content, next]);
+  assert.equal(writes, 3);
   assert.ok(events.some(e => e.type === 'status' && /从断点自动续接/.test(e.message)));
-  assert.ok(book.tokenUsage.byRole.writing.inputTokens >= 123);
+  assert.ok(book.tokenUsage.byRole.writing.calls >= 3);
 });
 
 test('记忆持久化失败必须停止，不能误当附加模型失败继续下一章', async () => {

@@ -1610,6 +1610,28 @@ function updateCreativeState(novel, chapterNumber, content, contract, continuity
   return novel;
 }
 
+function matchHookResolutionEvidence(sourceContent, evidence) {
+  if (typeof evidence !== 'string') return '';
+  const quote = evidence.replace(/\s+/g, ' ').trim();
+  const comparable = String(sourceContent || '').replace(/\s/g, '');
+  if (quote.length > 300 || quote.replace(/[\s。！？!?]/g, '').length < 10) return '';
+  if (comparable.includes(quote.replace(/\s/g, ''))) return quote;
+
+  // An answer may span dialogue interrupted by narration. Each quoted fragment
+  // still has to appear verbatim and in the same order in the manuscript.
+  const excerpts = quote.split(/[。！？!?]+/)
+    .map(part => part.trim().replace(/^[“”"「」]+|[“”"「」]+$/g, '').trim()).filter(Boolean);
+  if (excerpts.length < 2 || excerpts.length > 4) return '';
+  let offset = 0;
+  for (const excerpt of excerpts) {
+    const fragment = excerpt.replace(/\s/g, '');
+    const position = comparable.indexOf(fragment, offset);
+    if (position === -1) return '';
+    offset = position + fragment.length;
+  }
+  return excerpts.join(' … ');
+}
+
 /**
  * 把模型章末自评（结构化 JSON）回填到账本与角色状态。
  * 自评失败时调用方直接跳过，本章保留启发式判定结果——这里只做"修正与补漏"：
@@ -1641,14 +1663,13 @@ function applyHookAudit(novel, chapterNumber, audit, sourceContent = '') {
     const openStage = hook && ['planned', 'seeded', 'reinforced', 'due'].includes(hook.stage);
     if (!hook || ['resolved', 'paid_off', 'abandoned'].includes(hook.status)
       || (!['pending', 'planned', 'seeded', 'reinforced', 'due'].includes(hook.status) && !openStage)) continue;
-    const evidence = compactAuditText(raw?.evidence, 300);
-    if (sourceContent && (evidence.length < 10
-      || !String(sourceContent).replace(/\s/g, '').includes(evidence.replace(/\s/g, '')))) continue;
+    const evidence = sourceContent ? matchHookResolutionEvidence(sourceContent, raw?.evidence) : '';
+    if (sourceContent && !evidence) continue;
     hook.status = 'resolved';
     hook.stage = 'paid_off';
     hook.resolvedChapter = Number(chapterNumber) || hook.resolvedChapter;
-    hook.resolution = compactAuditText(String(raw && raw.evidence || raw && raw.reason || hook.content)).slice(0, 120);
-    hook.resolutionEvidence = hook.resolution;
+    hook.resolution = (evidence || compactAuditText(raw?.evidence || raw?.reason || hook.content)).slice(0, 120);
+    hook.resolutionEvidence = evidence || hook.resolution;
     resolvedCount++;
   }
 
@@ -1769,6 +1790,7 @@ module.exports = {
   compressPreviousChapter,
   hookMatchScore,
   applyHookAudit,
+  matchHookResolutionEvidence,
   normalizeCharacterProfile,
   upsertCharacterProfile,
   buildCharacterContinuity,
