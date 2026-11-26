@@ -12,6 +12,7 @@ const { createStyleRevision, buildRevisionSampleBlock, freezeRevisionSnapshot } 
 const { loadActivePreferences } = require('../services/writingStyle');
 const { buildStyleContext } = require('../services/styleContext');
 const { captureGenerationInput, readGenerationInput } = require('../services/generationInput');
+const { MAX_BOOK_CHAPTERS, normalizeTargetChapterCount, confirmedBlueprintChapterCount, getFixedChapterCount } = require('../services/bookChapterCount');
 const { recoverChapterStream, createChapterContinuationWriter } = require('../services/chapterStreamRecovery');
 const WritingStyleRevision = require('../models/WritingStyleRevision');
 const { queueChapterVersion, archiveChapterVersion } = require('../services/chapterVersions');
@@ -19,6 +20,7 @@ const ChapterVersion = require('../models/ChapterVersion');
 const User = require('../models/User');
 const WritingPersona = require('../models/WritingPersona');
 const novelTypes = require('../config/novelTypes');
+const deslop = require('../config/deslop');
 const { resolveTypeSku, buildSkuCatalog } = require('../config/novelTypeSku');
 const { resolveTaxonomyContractKey } = require('../config/genreContracts');
 const { TIMEOUT } = require('../config/timeouts');
@@ -163,8 +165,12 @@ const {
 } = require('../services/novelContext');
 const { recordTokenUsage, usageSnapshot, callUsageStats } = require('../services/tokenUsage');
 const { localExpertGate, shouldAuditChapterHooks } = require('../services/generationGates');
-const { ensureDetailedLongFormPlan, planningWindow, adoptConfirmedChapterPlans } = require('../services/longFormPlanning');
-const { ensureSemanticMemory, invalidateSemanticMemory, buildSemanticContext, renderSemanticContext } = require('../services/semanticMemory');
+const { reviewChapterProgress } = require('../services/chapterProgress');
+const { readOutlineForeshadowing } = require('../services/outlineForeshadowing');
+const { findRepeatedEndingScene, findEndingContinuityConflict } = require('../services/endingGuard');
+const { ensureDetailedLongFormPlan, planningWindow, adoptConfirmedChapterPlans, constrainChapterPlan } = require('../services/longFormPlanning');
+const { ensureSemanticMemory, invalidateSemanticMemory, buildSemanticContext, renderSemanticContext, validChapterMemory, hash: hashSourceText } = require('../services/semanticMemory');
+const { createHookHistorySearch } = require('../services/hookHistory');
 const { saveNovelDoc } = require('../services/novelPersist');
 const { describeGenerationFailure, describeChapterFailure, redactError } = require('../services/generationError');
 const { processChapter } = require('../services/chapterToolchain');
@@ -191,11 +197,17 @@ const {
   updateCreativeState,
   renderPlanForContext,
   seedPlannedHooks,
+  importOutlineForeshadowing,
   applyHookAudit,
+  hookResolutionVerificationKey,
   matchHookResolutionEvidence,
+  matchStoryEndingEvidence,
+  hookMatchScore,
   getChapterOutputTokenLimit,
   assessStoryCompletion,
+  endingReopenExcerpt,
   openStoryHooks,
+  unconfirmedStoryHooks,
   auditChapterForCommit,
 } = require('../services/storyState');
 
@@ -351,6 +363,7 @@ function createDraftCheckpointer(run, chapterNumber, getDraft) {
         phase,
         leaseMs: GENERATION_LEASE_MS,
         ...(extra.lastCommittedChapter != null ? { lastCommittedChapter: extra.lastCommittedChapter } : {}),
+        ...(extra.draftReview !== undefined ? { draftReview: extra.draftReview } : {}),
       });
     }).catch((error) => {
       console.error(`[GenerationJob] 草稿 checkpoint 失败 ${run.key}:`, error.message);
@@ -381,6 +394,47 @@ function resumeDraftPhase(run) {
   if (!run?.job) return '';
   // Backward compatible with jobs created before `draftPhase` existed.
   return String(valueOf(run.job, 'draftPhase') || valueOf(run.job, 'phase') || '');
+}
+
+function endingHookKey(hook) {
+  return hashSourceText(JSON.stringify([hook.content, hook.setChapter, hook.targetChapter, hook.payoffPlan]));
+}
+
+function serializeEndingDraftReview(draft, review, pending, attemptedSceneHooks, originalLength) {
+  const hooks = new Map(pending.map(hook => [hook.id, hook]));
+  return {
+    sourceHash: hashSourceText(draft),
+    verificationVersion: 2,
+    evidence: review.evidence.filter(item => hooks.has(item.id))
+      .map(item => ({ id: item.id, evidence: item.evidence, hookKey: endingHookKey(hooks.get(item.id)) })),
+    endingVerification: review.endingVerification || null,
+    attemptedSceneHooks: [...(attemptedSceneHooks || [])],
+    ...(originalLength ? { originalLength } : {}),
+  };
+}
+
+function endingConflict(content, chapters, chapterNumber) {
+  const history = (chapters || []).filter(chapter => Number(chapter.chapterNumber) < chapterNumber);
+  return findEndingContinuityConflict(content, history) || findRepeatedEndingScene(content);
+}
+
+function describeEndingConflict(conflict) {
+  const reference = conflict.referenceChapter ? `第${conflict.referenceChapter}章` : '终章较早段落';
+  return `这里与${reference}已经写出的事件冲突或重复：“${conflict.excerpt}”；已有原文：“${conflict.referenceExcerpt}”。`;
+}
+
+function endingPriorScenes(chapters, chapterNumber) {
+  return (chapters || []).filter(chapter => Number(chapter.chapterNumber) < chapterNumber).slice(-3).map(chapter => {
+    const source = String(chapter.content || '').trim();
+    const excerpt = source.length <= 1150 ? source : [source.slice(0, 260), ...(validChapterMemory(chapter)?.events || [])
+      .filter(event => event?.evidence && source.includes(event.evidence)).slice(0, 2).map(event => event.evidence.slice(0, 180)),
+    source.slice(-500)].join('\n[…]\n');
+    return { chapterNumber: chapter.chapterNumber, excerpt };
+  });
+}
+
+function sendChapterRevision(res, chapterNumber, content) {
+  try { res.write(`data: ${JSON.stringify({ type: 'expert_revision', chapterNumber, content })}\n\n`); } catch {}
 }
 
 function appendResumeInstruction(prompt, draft) {
@@ -467,7 +521,7 @@ async function emitGenerationJobEvent(run, type, payload = {}) {
 async function clearCommittedJobDraft(run, highestChapter) {
   const draft = String(valueOf(run?.job, 'draft') || '');
   const chapterNumber = Number(valueOf(run?.job, 'chapterNumber') || 0);
-  if (!draft || !chapterNumber || chapterNumber > Number(highestChapter || 0)) return;
+  if (!draft || !chapterNumber || chapterNumber > Number(highestChapter || 0) || resumeDraftPhase(run) === 'closing_revision') return;
   let empty = '';
   const checkpoint = createDraftCheckpointer(run, chapterNumber, () => empty);
   await checkpoint.commit(highestChapter);
@@ -592,7 +646,9 @@ function shouldReviewBlueprintAtChapter(novel, chapterNumber) {
 async function createStoryBlueprintProposal({ user, modelConfig, novel, persona, signal, onUsage }) {
   if ((novel.storyBlueprintProposals || []).some((proposal) => proposal.status === 'pending')) return null;
   const chapterNumber = getHighestChapterNumber(novel);
-  const totalChapters = getTotalPlannedChapters(parseChapterPlan(novel.chapterPlanData || novel.chapterPlan || ''), novel.targetWordCount, chapterNumber);
+  const fixedChapterCount = getFixedChapterCount(novel);
+  const totalChapters = fixedChapterCount ?? getTotalPlannedChapters(readChapterPlan(novel), novel.targetWordCount, chapterNumber);
+  if (fixedChapterCount && chapterNumber >= fixedChapterCount) return null;
   const blueprint = ensureStoryBlueprint(novel, totalChapters);
   const { type: blueprintType } = resolveTypeContextFromNovel(novel);
   const requiredTags = getBlueprintTagChecklist(blueprintType);
@@ -717,6 +773,12 @@ function isFiniteChapterWordTarget(value) {
   return Number.isFinite(Number(value)) && Number(value) > 0;
 }
 
+function invalidTargetChapterCount(value) {
+  return value != null && value !== '' && normalizeTargetChapterCount(value) == null;
+}
+
+const targetChapterCountError = `目标章数必须是 1 到 ${MAX_BOOK_CHAPTERS} 的整数`;
+
 function getChapterTemperature(contract) {
   const tension = Number(contract?.emotion?.tension || 6);
   const value = Math.max(0.72, Math.min(0.86, 0.78 + (tension - 5) * 0.012));
@@ -742,25 +804,23 @@ ${styleAnchor || ''}
 ${contextFromDocs || '（故事开场，先建立人物当下处境。）'}`;
 }
 
-function buildChapterTail({ contract, planData, ch, novel, totalPlannedChapters, currentTotal, targetWordCount, styleAnchor, dynamicContext, variant }) {
+const CHAPTER_PROSE_ONLY = '请直接输出本章正文。';
+
+function buildChapterTail({ contract, planData, ch, novel, totalPlannedChapters, styleAnchor, dynamicContext, wordTargetReached }) {
+  const futurePlan = renderPlanForContext(planData, ch + 1);
   return `
 ${dynamicContext ? `【本章动态承接上下文】
 ${dynamicContext}
 ` : ''}
-【后续计划摘要】
-${renderPlanForContext(planData, ch) || '按故事主线自然推进。'}
+${futurePlan ? `【后续章节计划，供衔接参考】\n${futurePlan}\n` : ''}
+${renderStoryBlueprintForContext(novel, ch, totalPlannedChapters)}
 
 ${renderChapterContract(contract)}
 
-${renderStoryBlueprintForContext(novel, ch, totalPlannedChapters)}
-
 ${styleAnchor ? '【本章防漂移复核】上方“长篇文风防漂移锚点”仍是最高文风权威；近期章节只提供事实，不得沿用其中已经通用化、冷静化或同质化的措辞。' : ''}
 
-当前总字数：${currentTotal}/${targetWordCount}。即使总字数已经达到目标，也必须完成本章计划。${contract.closing
-    ? '这是计划终章。用人物行动回答未决问题，写出结局的实际后果。'
-    : '后续章节按原定顺序继续。'}
-写作要求：
-${variant}`;
+${wordTargetReached ? '即使总字数已经达到目标，也必须完成本章计划。\n' : ''}
+${CHAPTER_PROSE_ONLY}`;
 }
 
 // 记账 + 通过 SSE 向前端披露累计 token 用量。记账失败不影响生成主流程。
@@ -971,6 +1031,29 @@ function applyChapterRevision(novel, chapterNumber, content, { source = 'manual'
   chapter.wordCount = finalContent.length;
   chapter.generatedAt = new Date();
   chapter.qualityReport = { ...qualityReport, score: continuity.score, issues: continuity.issues, eventSignature: continuity.eventSignature, revisions: revisions.slice(-12) };
+  if (originalContent !== finalContent) {
+    for (const savedChapter of novel.chapters) {
+      const report = savedChapter.qualityReport;
+      if (report?.progressVerification && (Number(savedChapter.chapterNumber) === chapterNumber
+        || report.progressVerification.evidence?.some(item => item.chapterNumber === chapterNumber))) {
+        delete report.progressVerification;
+      }
+    }
+  }
+  const fixedChapterCount = getFixedChapterCount(novel);
+  if (originalContent !== finalContent && fixedChapterCount) {
+    let reopened = false;
+    for (const hook of novel.foreshadowingLedger || []) {
+      if (Number(hook.resolvedChapter) !== chapterNumber
+        || (!['resolved', 'paid_off'].includes(hook.status) && hook.stage !== 'paid_off')
+        || matchHookResolutionEvidence(finalContent, hook.resolutionEvidence)) continue;
+      Object.assign(hook, { status: 'pending', stage: 'due', resolvedChapter: 0, resolution: '', resolutionEvidence: '' });
+      reopened = true;
+    }
+    if (reopened) novel.markModified('foreshadowingLedger');
+    if (chapterNumber === fixedChapterCount) delete chapter.qualityReport.endingVerification;
+    if (reopened || chapterNumber === fixedChapterCount) novel.status = 'paused';
+  }
   novel.currentWordCount = getCompletedWordCount(novel);
   rebuildNovelContextDocs(novel);
   novel.markModified('chapters');
@@ -1107,19 +1190,18 @@ async function checkGeneratedEnding({ req, res, novel, chapterNumber, content, s
   return { ...ending, openingReport: opening.report };
 }
 
-function prepareChapterContent(novel, chapterNumber, rawContent) {
+function prepareChapterContent(chapterNumber, rawContent) {
   let finalContent = String(rawContent || '').trim();
   let toolchainReport = {};
 
   if (finalContent.length > 100) {
     try {
       const result = processChapter(finalContent, {
-        doDeAI: true,
+        doDeAI: false,
         doPunctuation: true,
         doAutoFormat: true,
         doHumanize: false,
         doRhythmRandomize: false,
-        genre: novel.novelTypeId || '',
       });
       finalContent = String(result.text || '').trim();
       toolchainReport = result.report || {};
@@ -1131,8 +1213,10 @@ function prepareChapterContent(novel, chapterNumber, rawContent) {
   return { finalContent, toolchainReport };
 }
 
-function finalizeGeneratedChapter({ novel, chapterNumber, rawContent, contract, protagonistName, status = 'generating', prepared }) {
-  const { finalContent, toolchainReport } = prepared || prepareChapterContent(novel, chapterNumber, rawContent);
+function finalizeGeneratedChapter({ novel, chapterNumber, rawContent, contract, protagonistName, status = 'generating', prepared, progressVerification }) {
+  const fixedChapterCount = getFixedChapterCount(novel);
+  if (fixedChapterCount && chapterNumber > fixedChapterCount) throw new Error(`本书锁定 ${fixedChapterCount} 章，未保存超出计划的章节`);
+  const { finalContent, toolchainReport } = prepared || prepareChapterContent(chapterNumber, rawContent);
   if (finalContent.length < 80) throw new Error('本章生成内容过短，未保存为正式章节');
   if ((novel.chapters || []).some((chapter) => Number(chapter.chapterNumber) === Number(chapterNumber))) {
     throw new Error(`第${chapterNumber}章已存在，已阻止重复写入`);
@@ -1165,6 +1249,7 @@ function finalizeGeneratedChapter({ novel, chapterNumber, rawContent, contract, 
       toolchain: toolchainReport,
       contractAudit: commitAudit,
       tagAudit: novel._lastTagAudit || null,
+      ...(progressVerification ? { progressVerification } : {}),
     },
   });
   updateCreativeState(novel, chapterNumber, finalContent, contract, continuity);
@@ -1173,6 +1258,7 @@ function finalizeGeneratedChapter({ novel, chapterNumber, rawContent, contract, 
   novel.currentChapterIndex = Math.max(Number(novel.currentChapterIndex || 0), Number(chapterNumber));
   novel.status = status;
   novel.markModified('chapters');
+  novel.markModified('characterBible');
   novel.markModified('foreshadowingLedger');
   novel.markModified('emotionCurve');
   novel.markModified('recentEventSignatures');
@@ -1185,137 +1271,920 @@ function finalizeGeneratedChapter({ novel, chapterNumber, rawContent, contract, 
  * 用语义理解修正启发式判定的漏回收（措辞改写、隐式回收），并补录计划外伏笔、更新角色状态。
  * 任何失败（超时/解析失败/异常）都静默返回 null——本章保留启发式判定结果，绝不阻塞主流程。
  */
-async function auditChapterHooks({ user, modelConfig, novel, chapterNumber, content, contract, signal, onUsage, closureHooks }) {
+function splitHookEvidenceExcerpts(text) {
+  return text.split(/(?<=[。！？!?])|\r?\n/)
+    .flatMap(part => part.match(/[\s\S]{1,180}/gu) || []).map(part => part.trim()).filter(Boolean);
+}
+
+async function auditChapterHooks({ req, res, novel, chapterNumber, content, contract, signal, onUsage, closureHooks, endingRequirements, compact = false }) {
   try {
     const text = String(content || '').trim();
     if (!text || (!closureHooks && text.length < 200)) return null;
+    const fixedChapterCount = getFixedChapterCount(novel);
     const activeHooks = openStoryHooks(novel.foreshadowingLedger, chapterNumber);
-    const openHooks = (closureHooks || activeHooks.sort((a, b) => {
-      const priority = hook => (hook.targetChapter > 0 && hook.targetChapter <= chapterNumber ? 0 : 1);
-      return priority(a) - priority(b) || Number(a.setChapter || 0) - Number(b.setChapter || 0);
-    }).slice(0, 12));
+    const reviewableHooks = activeHooks.filter(hook => !hook.payoffPlan || !fixedChapterCount || Number(hook.targetChapter) <= chapterNumber);
+    const upcomingHooks = !closureHooks && fixedChapterCount ? activeHooks
+      .filter(hook => hook.payoffPlan && Number(hook.targetChapter) > chapterNumber)
+      .sort((a, b) => Number(b.setChapter || 0) - Number(a.setChapter || 0)).slice(0, 16) : [];
+    const suggestedIds = new Set((contract?.suggestedResolutionHooks || []).map(hook => hook.id));
+    const priority = hook => Number(hook.targetChapter) === chapterNumber ? 0
+      : Number(hook.targetChapter) > 0 && Number(hook.targetChapter) < chapterNumber ? 1 : suggestedIds.has(hook.id) ? 2 : 3;
+    const openHooks = closureHooks || reviewableHooks
+      .map(hook => ({ hook, priority: priority(hook), relevance: fixedChapterCount ? hookMatchScore(hook.content, text) : 0 }))
+      .sort((a, b) => a.priority - b.priority || b.relevance - a.relevance
+        || Number(b.hook.setChapter || 0) - Number(a.hook.setChapter || 0))
+      .slice(0, 12).map(({ hook }) => hook);
     const hooksText = openHooks
-      .map((item) => `- id:${item.id} 内容：${String(item.content || '').slice(0, 200)}（第${item.setChapter || '?'}章埋设${item.targetChapter ? `，计划第${item.targetChapter}章回收` : ''}）`)
+      .map((item, index) => `- ${compact ? `H${index + 1}` : `id:${item.id}`} 内容：${String(item.content || '').slice(0, 200)}（第${item.setChapter || '?'}章埋设${item.targetChapter ? `，计划第${item.targetChapter}章回收` : ''}）${item.payoffPlan ? `；计划答案与结果：${item.payoffPlan}` : ''}`)
       .join('\n');
     const plannedSet = (contract?.setHooks || []).join('；') || '无';
     const plannedResolve = (contract?.resolveHooks || []).join('；') || '无';
+    const currentProposals = !closureHooks && fixedChapterCount ? unconfirmedStoryHooks(novel.foreshadowingLedger, chapterNumber) : [];
 
+    const excerpts = compact ? splitHookEvidenceExcerpts(text) : [];
     const reviewContext = `【本章正文】
-${text}
+${compact ? excerpts.map((part, index) => `[${index + 1}] ${part}`).join('\n') : text}
 
 【当前所有未回收伏笔账目】
 ${hooksText || '（无）'}`;
-    const prompt = closureHooks ? `${reviewContext}
+    const reviewScope = contract?.closing ? '这是全书最后一章。' : contract?.closingWindow ? '这是全书收束阶段的一章。' : '这是计划中的伏笔回收章。';
+    const prompt = compact ? `${reviewContext}
 
-这是全书最后一章。只核对所列伏笔，输出 JSON 对象，唯一字段为 hooksResolved：
-{"hooksResolved":[{"id":"账目的原始ID","evidence":"按正文顺序引用1到4句能直接证明回收的原文"}]}
-只引用揭晓答案或呈现结果的最短原文，保留句号等断句标点。若正文只是再次提到线索或问题，省略该条。没有回收则输出 {"hooksResolved":[]}。` : `${reviewContext}
+${reviewScope}根据编号正文核对所列伏笔。若本章直接揭晓了该伏笔的答案或呈现其结果，逐行填写伏笔号和证据编号，例如 H1=3,4。每条选1到4个编号，按原文顺序，合计不超过300字。仅再次提到线索或问题的行省略。没有回收时写 NONE。只写编号，不要抄正文或输出 JSON。${endingRequirements ? `
+【终局目标与前文场景】${JSON.stringify(endingRequirements)}
+前文场景只供核对阶段目标中已经发生的动作，终章应展示这些行动的结果，无须重演动作。另写一行 E=5|8,9，竖线左边是本章证明主线得到具体结果的编号，右边是本章证明结果已影响人物或世界、出现最终状态的编号。如果本章写回了前文已解决的核心冲突、仍有重大悬念或找不到两类证据，写 E=NONE。` : ''}` : closureHooks ? `${reviewContext}
+
+${reviewScope}核对所列伏笔，输出 JSON 对象：
+{"hooksResolved":[{"id":"账目的原始ID","evidence":"按正文顺序引用1到4句能直接证明回收的原文"}]${endingRequirements ? ',"ending":{"conclusionEvidence":"主线冲突得到结果的原句","settledStateEvidence":"写明结果造成的后果或新的稳定状态的原句"},"endingIssue":"只有结局有缺口时填写具体缺失事件"' : ''}}
+只引用揭晓答案或呈现结果的最短原文，保留句号等断句标点。若正文只是再次提到线索或问题，省略该条。没有回收时 hooksResolved 为空数组。${endingRequirements ? `
+【终局目标与前文场景】${JSON.stringify(endingRequirements)}
+以这里的主线目标为验收范围。前文场景只供核对阶段目标中已经发生的动作，终章应展示这些行动的结果，无须重演动作。核对本章是否写出了具体结果，结果是否已经影响人物或世界，是否把已经着落的核心状态写回了未解决，以及是否仍有阻止主线完结的重大悬念。开放式余韵可以保留。若有缺口，将 ending 写为 null，并在 endingIssue 指出具体缺口，若与前文冲突则点明对应的动作或结果。若通过，endingIssue 留空。证据必须从本章正文原样复制。` : ''}` : `${reviewContext}
 
 【本章计划埋设的伏笔】${plannedSet}
 【本章计划回收的伏笔】${plannedResolve}
+${currentProposals.length ? `【本章待核实的伏笔候选项】\n${currentProposals.map(hook => `- ${hook.id}｜${hook.content}`).join('\n')}\n用正文证据核实候选项是否真的引出了尚未回答的情节问题，成立时在 hooksSet 中填候选项 id；普通事件、省略的安排和本章已经解答的问题不登记。\n` : ''}
+${upcomingHooks.length ? `【已登记但尚未到回收章的伏笔】\n${upcomingHooks.map(hook => `- ${hook.id}｜${hook.content}`).join('\n')}\n再次出现、换个名称或增加细节都属于既有伏笔，勿重复登记，也不要提早宣布回收。\n` : ''}
 
 请通读本章正文，只依据正文实际内容回答，输出严格 JSON（不要 markdown、不要解释）：
-{"hooksSet":["本章实际新埋设、且账目中没有的伏笔，一句话概括。没有则空数组"],
+{"hooksSet":[${fixedChapterCount ? '{"id":"已有候选项 id；全新伏笔留空","content":"本章首次埋设、会影响后续剧情且尚无答案的具体问题","evidence":"本章直接埋下该问题的连续原句"}' : '"本章实际新埋设、且账目中没有的伏笔，一句话概括。没有则空数组"'}],
 "hooksResolved":[{"id":"账目中的原始ID","evidence":"按正文顺序引用给出答案或结果的1到4句原文，保留句号等断句标点"}],
 "characterUpdates":[{"name":"角色名","location":"章末所在位置","emotionalState":"章末情绪状态","goal":"当前目标","knownFacts":["本章后该角色确实知道的新增事实"],"unknownFacts":["本章后仍明确不知道的关键事实"],"knowledgeBoundary":"一句话说明该角色不能知道什么"}],
 "tagEvidence":[{"tag":"本章兑现的标签原名","evidence":"正文中体现该标签的具体动作、场景或关系变化"}]}
-规则：回收必须在正文揭晓答案或呈现线索带来的结果。仅再次提到物件、线索或问题不算回收。只统计本章实际发生的埋设与回收。characterUpdates 最多5个，tagEvidence必须给正文证据。`;
+规则：回收必须在正文揭晓答案或呈现线索带来的结果。仅再次提到物件、线索或问题不算回收。只有会影响后续选择、因果或结局的明确未决问题才补入账本；气氛、动作细节和猜测不单独登记。只统计本章实际发生的埋设与回收。characterUpdates 最多5个，tagEvidence必须给正文证据。`;
 
     const result = await streamGenerate(
-      '你是严谨的小说连载审读员，只依据正文事实输出 JSON，不添加任何解释。',
+      compact ? '你是严谨的小说连载审读员，只依据正文事实输出指定格式的证据编号行。' : '你是严谨的小说连载审读员，只依据正文事实输出 JSON，不添加任何解释。',
       prompt,
       null,
       signal || null,
-      resolveApiConfig(modelConfig || user?.modelConfig, 'reasoning'),
+      resolveApiConfig(req.userModelConfig || req.user?.modelConfig, 'reasoning'),
       0,
       0.2,
-      2500,
+      compact ? (endingRequirements ? 1200 : 800) : endingRequirements ? 2400 : 1800,
       180000,
       null,
-      { taskType: 'hook_audit', jsonMode: Boolean(closureHooks) }
+      { taskType: 'hook_audit', jsonMode: !compact && Boolean(closureHooks || fixedChapterCount) }
     );
     onUsage && onUsage('reasoning', result);
+    if (compact) {
+      if (result.finishReason === 'length') return null;
+      const audit = parseNumberedHookReview(result.content, text, excerpts, openHooks, endingRequirements);
+      return audit ? { audit } : null;
+    }
     const audit = parseJsonObject(result.content);
     if (closureHooks) return result.finishReason !== 'length' && Array.isArray(audit?.hooksResolved) ? { audit } : null;
     if (!audit || (!Array.isArray(audit.hooksSet) && !Array.isArray(audit.hooksResolved) && !Array.isArray(audit.characterUpdates) && !Array.isArray(audit.tagEvidence))) return null;
-    const applied = applyHookAudit(novel, chapterNumber, audit, text);
+    if (fixedChapterCount) {
+      const hooksById = new Map(openHooks.map(hook => [hook.id, hook]));
+      const proposalsById = new Map(currentProposals.map(hook => [hook.id, hook]));
+      const claims = [];
+      for (const item of Array.isArray(audit.hooksResolved) ? audit.hooksResolved : []) {
+        const hook = hooksById.get(item?.id);
+        const evidence = matchHookResolutionEvidence(text, item?.evidence);
+        if (hook && evidence) claims.push({ hook, chapterNumber, evidence, source: text, item });
+      }
+      for (const item of Array.isArray(audit.hooksSet) ? audit.hooksSet : []) {
+        const hook = item?.id ? proposalsById.get(item.id) : { content: item?.content };
+        const evidence = matchHookResolutionEvidence(text, item?.evidence);
+        if (hook?.content && evidence) claims.push({ hook, chapterNumber, evidence, source: text, item, setup: true });
+      }
+      audit.hooksResolved = [];
+      audit.hooksSet = [];
+      for (let index = 0; index < claims.length; index += 6) {
+        const batch = claims.slice(index, index + 6);
+        const decisions = await verifyHookClaims({ req, res, novel, signal, claims: batch, onUsage, taskType: 'chapter_hook_audit_confirm' });
+        for (const [offset, accepted] of decisions || []) {
+          if (!accepted) continue;
+          const { item, evidence, setup } = batch[offset];
+          (setup ? audit.hooksSet : audit.hooksResolved).push({ ...item, evidence });
+        }
+      }
+    }
+    const applied = applyHookAudit(novel, chapterNumber, audit, text, { verified: Boolean(fixedChapterCount) });
     console.log(`[HookAudit] 第${chapterNumber}章自评：回收${applied.resolved}条、补录${applied.added}条、角色状态${applied.characters}个`);
     return { audit, applied };
   } catch (error) {
     if (signal?.aborted || error?.name === 'AbortError') throw error;
+    if (error?.attempts || error?.usage) onUsage?.('reasoning', error);
+    if (closureHooks && error?.code === 'AI_PROVIDER_QUOTA') throw endingReviewQuota(error);
     console.warn(`[HookAudit] 第${chapterNumber}章自评失败（保留启发式结果）:`, error.message);
     return null;
   }
 }
 
-async function verifyBookEnding({ req, res, novel, chapterNumber, content, contract, signal, chapterTokenStats, systemPrompt }) {
-  if (!contract.closing) return { content, verifiedHooks: [] };
-  const pending = openStoryHooks(novel.foreshadowingLedger, chapterNumber);
-  if (!pending.length) return { content, verifiedHooks: [] };
-  const onUsage = (role, stats) => emitTokenUsage(res, novel, role, stats, chapterTokenStats);
-  const verify = async (prepared, hooks) => {
-    const verified = new Set();
-    const evidence = [];
-    for (let i = 0; i < hooks.length; i += 12) {
+function endingReviewQuota(error) {
+  return Object.assign(error, { code: 'ENDING_HOOKS_UNRESOLVED', resumable: true });
+}
+
+function parseNumberedHookReview(output, source, excerpts, hooks, endingRequirements) {
+  const lines = String(output || '').trim().replace(/^```(?:text)?\s*|\s*```$/gi, '').trim().split(/\r?\n/);
+  if (!lines[0]) return null;
+  const audit = { hooksResolved: [] };
+  const hookIds = new Set();
+  let noHooksResolved = false;
+  const readEvidence = value => numberedHookEvidence(source, selectNumberedExcerpts(value, excerpts));
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (/^NONE$/i.test(line)) {
+      if (noHooksResolved || hookIds.size) return null;
+      noHooksResolved = true;
+      continue;
+    }
+    const hook = /^H(\d+)\s*[=:：]\s*(.+)$/i.exec(line);
+    if (hook) {
+      const item = hooks[Number(hook[1]) - 1];
+      const evidence = readEvidence(hook[2]);
+      if (noHooksResolved || !item || !evidence || hookIds.has(item.id)) return null;
+      hookIds.add(item.id);
+      audit.hooksResolved.push({ id: item.id, evidence });
+      continue;
+    }
+    const ending = /^E\s*[=:：]\s*(.+)$/i.exec(line);
+    if (!ending || !endingRequirements || Object.hasOwn(audit, 'ending')) return null;
+    if (/^NONE$/i.test(ending[1])) {
+      audit.ending = null;
+      continue;
+    }
+    const parts = ending[1].split(/[|｜]/).map(part => part.trim());
+    if (parts.length !== 2) return null;
+    const [conclusionEvidence, settledStateEvidence] = parts.map(readEvidence);
+    if (!conclusionEvidence || !settledStateEvidence) return null;
+    audit.ending = { conclusionEvidence, settledStateEvidence };
+  }
+  if (endingRequirements && !Object.hasOwn(audit, 'ending')) return null;
+  return noHooksResolved || hookIds.size || endingRequirements ? audit : null;
+}
+
+function selectNumberedExcerpts(value, excerpts) {
+  if (!/^\d+(?:\s*[,，]\s*\d+){0,3}$/.test(value)) return [];
+  const indices = value.split(/[,，]/).map(Number);
+  if (indices.some((id, index) => !excerpts[id - 1] || (index > 0 && id <= indices[index - 1]))) return [];
+  return indices.map(id => excerpts[id - 1]);
+}
+
+function numberedHookEvidence(source, selected) {
+  if (!selected.length) return null;
+  const quote = selected.join('');
+  if (matchHookResolutionEvidence(source, quote)) return quote;
+  // Preserve exact source fragments when the supporting sentences have intervening prose.
+  const separated = selected.join('。');
+  return matchHookResolutionEvidence(source, separated) ? separated : null;
+}
+
+function hookProofContext(source, evidence) {
+  const compact = String(source || '').replace(/\s+/g, ' ');
+  const fragment = String(evidence || '').split(' … ')[0];
+  const start = compact.indexOf(fragment);
+  return start < 0 ? '' : compact.slice(Math.max(0, start - 110), start + fragment.length + 160).trim();
+}
+
+async function verifyHookClaims({ req, res, novel, signal, claims, onUsage, taskType = 'historical_hook_audit_confirm', stopOnQuota = false }) {
+  const reportUsage = result => onUsage ? onUsage('reasoning', result) : emitTokenUsage(res, novel, 'reasoning', result);
+  const scheduled = claims.some(claim => claim.hook.payoffPlan)
+    ? readOutlineForeshadowing(novel.outline, getFixedChapterCount(novel)) : [];
+  const entries = claims.map(({ hook, chapterNumber, evidence, source, setup }, index) => {
+    const plan = hook.payoffPlan && scheduled.find(item => item.plan === String(hook.payoffPlan).trim());
+    const progress = (plan?.progressChapters || []).filter(number => number < chapterNumber);
+    const priorChapters = (novel.chapters || []).filter(chapter => progress.includes(Number(chapter.chapterNumber)));
+    const prior = priorChapters.length ? createHookHistorySearch(priorChapters, chapterNumber)({
+      ...hook, setChapter: hook.setChapter, content: `${hook.content} ${hook.payoffPlan}`,
+    }).slice(0, 3) : [];
+    const context = hookProofContext(source, evidence);
+    return `H${index + 1}｜${setup ? '新伏笔' : '未解问题'}：${hook.content}\n第${chapterNumber}章所引原文：${evidence}`
+      + `${context && context !== evidence ? `\n引文相邻正文：${context}` : ''}`
+      + `${hook.payoffPlan ? `\n计划答案与结果（用于核对，不是正文证据）：${hook.payoffPlan}` : ''}`
+      + prior.map(item => `\n第${item.chapterNumber}章前置进展原文：${item.text}`).join('');
+  });
+  try {
+    const result = await streamGenerate('你负责核实故事正文支持的伏笔埋设和回收。',
+      `逐条检查原文。未解问题：本章引文必须实际回答该问题或写出计划中截至本章应出现的结果。相邻正文用于判清否定、猜测与指代，前置进展原文可以证明早前已经写出的因果步骤。计划文本不是正文证据，前置进展也不能替代本章应写的结果。重提物件、继续调查、相似动作或回答另一个问题，判 NO。新伏笔：原文必须明确留下会影响人物后续行动、主要因果或结局的未解问题。天气、气氛、日常器物状态、单次动作和凭空推测，不单独登记。只输出逐行的编号和 YES 或 NO，例如 H1=NO。\n\n${entries.join('\n\n')}`,
+      null, signal, resolveApiConfig(req.userModelConfig || req.user?.modelConfig, 'reasoning'), 0, 0.1, 700, 90000, null,
+      { taskType });
+    reportUsage(result);
+    if (['length', 'content_filter'].includes(result.finishReason)) return null;
+    const lines = String(result.content || '').trim().replace(/^```(?:text|plaintext)?\s*|\s*```$/gi, '').trim().split(/\r?\n/);
+    const decisions = new Map();
+    for (const line of lines) {
+      const decision = /^H(\d+)\s*[=:：]\s*(YES|NO)$/i.exec(line.trim().replace(/^[-*]\s+/, ''));
+      if (!decision) continue;
+      const index = Number(decision[1]) - 1;
+      if (!claims[index]) continue;
+      const accepted = decision[2].toUpperCase() === 'YES';
+      if (decisions.has(index) && decisions.get(index) !== accepted) return null;
+      decisions.set(index, accepted);
+    }
+    return decisions.size === claims.length ? decisions : null;
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    if (error?.attempts || error?.usage) reportUsage(error);
+    if ((stopOnQuota || taskType === 'ending_hook_audit_confirm') && error?.code === 'AI_PROVIDER_QUOTA') throw endingReviewQuota(error);
+    return null;
+  }
+}
+
+async function auditHistoricalHookBatch({ req, res, novel, signal, batch, chapters, finalReview }) {
+  const excerpts = [];
+  const entries = batch.map(({ hook, sources }, index) => {
+    const excerptsByChapter = sources.map(({ chapterNumber, excerpts: sourceWindows }) => {
+      return `第${chapterNumber}章原文节选\n${sourceWindows.map(sentence => {
+        excerpts.push({ index, chapterNumber, sentence });
+        return `[${excerpts.length}] ${sentence.replace(/\s+/g, ' ')}`;
+      }).join('\n')}`;
+    });
+    return `H${index + 1}（第${hook.setChapter}章埋设） ${hook.content}\n${excerptsByChapter.join('\n')}`;
+  });
+  let result;
+  try {
+    result = await streamGenerate('你是小说伏笔审读员，只依据已保存的正文判断伏笔是否已经回收。',
+      `逐条核对伏笔下方的候选章节，每条输出一行。只有该章明确揭晓这一条的答案、或写出这条线索造成的实际结果，才填写形如 H1=2 的一行。普通重提、相似的其他悬念、铺垫、尚未兑现的计划不算证据。优先选一个能独立说明答案的原文窗口。同章编号可能包含重叠正文，勿重复引用同一句。如需要组合，只选该伏笔下同一章的1至4个编号，合计不超过300字。某条没有可核实的答案时写 H1=NONE；所有条都无法证实时可只写一行 NONE。只写编号行，不要解释。\n\n${entries.join('\n\n')}`,
+      null, signal, resolveApiConfig(req.userModelConfig, 'reasoning'), 0, 0.2, 1600, 90000, null,
+      { taskType: 'historical_hook_audit' });
+    emitTokenUsage(res, novel, 'reasoning', result);
+  } catch (error) {
+    // A provider can abort its own timed-out request without cancelling the book.
+    if (signal?.aborted) throw error;
+    if (error?.attempts || error?.usage) emitTokenUsage(res, novel, 'reasoning', error);
+    if (finalReview && error?.code === 'AI_PROVIDER_QUOTA') throw endingReviewQuota(error);
+    return false;
+  }
+  if (result.finishReason === 'length' || result.finishReason === 'content_filter') return false;
+  const claims = [];
+  const output = String(result.content || '').trim().replace(/^```(?:text|plaintext)?\s*|\s*```$/gi, '').trim();
+  const lines = output.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const noEvidence = lines.length === 1 && /^NONE$/i.test(lines[0]);
+  if (!noEvidence && lines.some(line => /^NONE$/i.test(line))) return false;
+  const reviewed = new Set();
+  const explicitNegatives = new Set();
+  for (const line of noEvidence ? [] : lines) {
+    const match = /^H(\d+)\s*[=:：]\s*(.+)$/i.exec(line.replace(/^[-*]\s+/, ''));
+    if (!match) continue;
+    const index = Number(match[1]) - 1;
+    const hook = batch[index]?.hook;
+    if (!hook || reviewed.has(index)) {
+      explicitNegatives.delete(index);
+      continue;
+    }
+    if (/^NONE$/i.test(match[2])) {
+      reviewed.add(index);
+      explicitNegatives.add(index);
+      continue;
+    }
+    const selected = selectNumberedExcerpts(match[2], excerpts);
+    if (!selected.length) continue;
+    const chapterNumber = selected[0].chapterNumber;
+    if (selected.some(item => item.index !== index || item.chapterNumber !== chapterNumber)) continue;
+    const source = chapters.get(chapterNumber)?.content;
+    const evidence = numberedHookEvidence(source, selected.map(item => item.sentence));
+    if (!evidence) continue;
+    claims.push({ hook, chapterNumber, evidence, source });
+    reviewed.add(index);
+  }
+  let resolved = 0;
+  if (claims.length) {
+    const decisions = await verifyHookClaims({ req, res, novel, signal, claims, stopOnQuota: finalReview });
+    for (const [index, accepted] of decisions || []) {
+      if (!accepted) continue;
+      const { hook, chapterNumber, evidence, source } = claims[index];
+      resolved += applyHookAudit(novel, chapterNumber, { hooksResolved: [{ id: hook.id, evidence }] }, source, { verified: true }).resolved;
+    }
+  }
+  const checked = noEvidence ? batch : [...explicitNegatives].map(index => batch[index]);
+  if (checked.length) {
+    for (const { hook, reviewKey } of checked) hook.historicalReviewKey = reviewKey;
+    novel.markModified?.('foreshadowingLedger');
+  }
+  return checked.length > 0 || resolved > 0;
+}
+
+async function revalidatePlannedPayoffs({ req, res, novel, signal, chapters, chapterNumber: beforeChapter, limit }) {
+  const finalReview = limit === Infinity;
+  const candidates = (novel.foreshadowingLedger || []).filter(hook => Boolean(hook.payoffPlan)
+    && (['resolved', 'paid_off'].includes(hook.status) || hook.stage === 'paid_off'))
+    .map(hook => {
+      const chapterNumber = Number(hook.resolvedChapter);
+      const source = chapters.get(chapterNumber)?.content;
+      const evidence = matchHookResolutionEvidence(source, hook.resolutionEvidence);
+      const key = hookResolutionVerificationKey(hook, chapterNumber, evidence, source);
+      return { hook, chapterNumber, source, evidence, key };
+    }).filter(claim => claim.chapterNumber !== beforeChapter && (!claim.key || claim.hook.resolutionVerificationKey !== claim.key))
+    .slice(0, limit);
+  const reopen = ({ hook }) => {
+    Object.assign(hook, { status: 'pending', stage: 'due', resolvedChapter: undefined, resolution: undefined,
+      resolutionEvidence: undefined, resolutionVerificationKey: undefined, historicalReviewKey: undefined });
+  };
+  const questionable = candidates.filter(claim => claim.key && claim.chapterNumber >= Number(claim.hook.targetChapter));
+  const invalid = candidates.filter(claim => !claim.key || claim.chapterNumber < Number(claim.hook.targetChapter));
+  if (invalid.length) {
+    invalid.forEach(reopen);
+    novel.markModified('foreshadowingLedger');
+    await saveNovelDoc(novel);
+  }
+  for (let index = 0; index < questionable.length; index += 6) {
+    const batch = questionable.slice(index, index + 6);
+    const decisions = await verifyHookClaims({ req, res, novel, signal, claims: batch,
+      taskType: finalReview ? 'ending_hook_audit_confirm' : 'chapter_hook_audit_confirm' });
+    if (!decisions) {
+      if (finalReview) throw Object.assign(new Error('终章复核暂未能核实旧版账本中已回收的计划伏笔。已保存的正文和草稿会保留。'),
+        { code: 'ENDING_HOOKS_UNRESOLVED', resumable: true });
+      break;
+    }
+    for (const [position, accepted] of decisions) {
+      const claim = batch[position];
+      if (accepted) claim.hook.resolutionVerificationKey = claim.key;
+      else reopen(claim);
+    }
+    novel.markModified('foreshadowingLedger');
+    await saveNovelDoc(novel);
+  }
+}
+
+async function reconcileHistoricalHooks({ req, res, novel, chapterNumber, signal, limit = Infinity }) {
+  const chapters = new Map((novel.chapters || []).filter(chapter => Number(chapter.chapterNumber) < chapterNumber)
+    .map(chapter => [Number(chapter.chapterNumber), chapter]));
+  await revalidatePlannedPayoffs({ req, res, novel, signal, chapters, chapterNumber, limit });
+  const hooks = openStoryHooks(novel.foreshadowingLedger, chapterNumber)
+    .filter(hook => Number(hook.setChapter) > 0 && Number(hook.setChapter) < chapterNumber - 1
+      && (!Number(hook.targetChapter) || Number(hook.targetChapter) < chapterNumber) && chapters.has(Number(hook.setChapter)));
+  if (!hooks.length) return;
+  const selectSources = createHookHistorySearch([...chapters.values()], chapterNumber, { evidenceWindows: true });
+  const candidates = hooks.map(hook => {
+    const searchStart = Math.max(Number(hook.setChapter), (Number(hook.targetChapter) || 0) - 1);
+    const sources = selectSources({ content: hook.content, setChapter: searchStart });
+    const reviewKey = hashSourceText(JSON.stringify([endingHookKey(hook), sources]));
+    return { hook, sources, reviewKey };
+  }).filter(({ hook, sources, reviewKey }) => sources.length && hook.historicalReviewKey !== reviewKey)
+    .sort((first, second) => Number(Boolean(first.hook.historicalReviewKey)) - Number(Boolean(second.hook.historicalReviewKey))
+      || Number(first.hook.setChapter) - Number(second.hook.setChapter))
+    .slice(0, limit);
+  if (!candidates.length) return;
+  try { res.write(`data: ${JSON.stringify({ type: 'status', message: `正在从已保存章节核对 ${candidates.length} 条伏笔的回收证据...` })}\n\n`); } catch {}
+  const heartbeat = setInterval(() => { try { res.write(': hook-history-heartbeat\n\n'); } catch {} }, 10000);
+  heartbeat.unref?.();
+  try {
+    for (let index = 0; index < candidates.length; index += 12) {
       signal?.throwIfAborted();
-      const batch = hooks.slice(i, i + 12);
-      const review = await auditChapterHooks({ modelConfig: req.userModelConfig, novel, chapterNumber,
-        content: prepared.finalContent, contract, signal, onUsage, closureHooks: batch });
-      if (!review) return null;
+      const reviewed = await Promise.allSettled([candidates.slice(index, index + 6), candidates.slice(index + 6, index + 12)]
+        .filter(batch => batch.length).map(batch => auditHistoricalHookBatch({ req, res, novel, signal, batch, chapters, finalReview: limit === Infinity })));
+      if (reviewed.some(result => result.status === 'fulfilled' && result.value)) await saveNovelDoc(novel);
+      const failed = reviewed.find(result => result.status === 'rejected');
+      if (failed) throw failed.reason;
+    }
+  } finally {
+    clearInterval(heartbeat);
+  }
+}
+
+async function addEndingScenes({ req, res, novel, chapterNumber, content, prepared, checked, contract, signal, systemPrompt,
+  verify, onUsage, saveProgress, onProgress, attemptedSceneHooks, reviewConclusion, batchSize, lengthLimit }) {
+  const settledAt = content.lastIndexOf(checked.endingVerification.settledStateEvidence);
+  const stableSource = prepared.finalContent.replace(/\s+/g, '');
+  const boundary = [settledAt > 0 ? content.lastIndexOf('\n\n', settledAt) : -1, content.lastIndexOf('\n\n')]
+    .find(offset => offset > 0 && stableSource.endsWith(content.slice(offset).replace(/\s+/g, '')));
+  if (boundary === undefined) return null;
+  const closing = content.slice(boundary).trim();
+  const normalizedClosing = closing.replace(/\s+/g, '');
+  const preservesClosing = text => text.replace(/\s+/g, '').endsWith(normalizedClosing);
+  let head = content.slice(0, boundary).trimEnd();
+  const evidence = checked.evidence.slice();
+  let endingVerification = checked.endingVerification;
+  const added = new Set();
+  const sourceChapters = new Map((novel.chapters || []).map(chapter => [Number(chapter.chapterNumber), chapter.content]));
+  // Preserve the conclusion while addressing a manageable number of
+  // obligations in each candidate scene. Each useful insertion is checkpointed.
+  for (let index = 0; index < Math.min(checked.missing.length, 12); index += batchSize) {
+    signal?.throwIfAborted();
+    const available = lengthLimit - head.length - closing.length - 4;
+    if (available < 80) break;
+    const batch = checked.missing.slice(index, index + batchSize);
+    for (const hook of batch) attemptedSceneHooks.add(hook.id);
+    onProgress(`正在补写终章原有结尾之前的场景（本次核对 ${batch.length} 条伏笔）...`);
+    const hooksText = batch.map(hook => {
+      const setup = matchHookResolutionEvidence(sourceChapters.get(Number(hook.setChapter)), hook.setupEvidence);
+      return `- 第${hook.setChapter || '?'}章：${hook.content}${hook.payoffPlan ? `，计划答案：${hook.payoffPlan}` : ''}${setup ? `\n埋设原文：${setup}` : ''}`;
+    }).join('\n');
+    const prompt = `在下方两个相邻片段之间补写一个短场景。仅输出要插入的小说正文，约400至900字。不重写、复述或预先演出后一个片段。维持故事已经确定的因果和人物关系，使用对话和行动写出伏笔的具体答案或结果，无关联的线索可以留在下一场，不制造新谜题。\n【本章目标】${contract.coreEvent}\n【插入点之前】\n${head.slice(-1400)}\n【插入点之后】\n${closing.slice(0, 1400)}\n【本次要处理的伏笔】\n${hooksText}`;
+    const thinking = createThinkingEmitter(res);
+    let result;
+    try {
+      const recentResults = novel.chapters.slice(-2).map(chapter => `第${chapter.chapterNumber}章：${String(chapter.content || '').slice(-850)}`).join('\n');
+      const scenePrompt = `${prompt}\n【近两章已保存的结果，需要保持】\n${recentResults}\n本次最多只写 ${Math.min(1800, available)} 字。`;
+      result = await streamGenerate(systemPrompt, scenePrompt, null, signal, resolveApiConfig(req.userModelConfig, 'writing'),
+        0, 0.56, 2400, 120000, thinking, { taskType: 'ending_scene_repair', requireTerminal: true });
+      onUsage('writing', result);
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      if (error?.attempts || error?.usage) onUsage('writing', error);
+      if (error?.code === 'AI_PROVIDER_QUOTA') throw endingReviewQuota(error);
+      continue;
+    } finally { thinking.stop(); }
+    const scene = String(result.content || '').trim();
+    if (['length', 'content_filter'].includes(result.finishReason) || scene.length < 80 || scene.length > Math.min(1800, available)) continue;
+    if (findRepeatedEndingScene(scene, `${head}\n\n${closing}`)) continue;
+    const candidate = [head, scene, closing].join('\n\n');
+    const compiled = prepareChapterContent(chapterNumber, candidate);
+    if (!preservesClosing(compiled.finalContent)
+      || !evidence.every(item => matchHookResolutionEvidence(compiled.finalContent, item.evidence))
+      || !matchStoryEndingEvidence(compiled.finalContent, endingVerification)
+      || endingConflict(compiled.finalContent, novel.chapters, chapterNumber)) continue;
+    try {
+      assertDistinctOpening(compiled.finalContent, novel.chapters || [], chapterNumber);
+      assertDistinctEnding(compiled.finalContent, novel.chapters || [], chapterNumber);
+    } catch (error) {
+      if (['CHAPTER_OPENING_REPEATED', 'CHAPTER_ENDING_REPEATED'].includes(error?.code)) continue;
+      throw error;
+    }
+    const scenePrepared = prepareChapterContent(chapterNumber, scene);
+    const review = await verify(scenePrepared, batch, null, null);
+    if (review.invalidReview) continue;
+    const newEvidence = review.evidence.filter(item => matchHookResolutionEvidence(compiled.finalContent, item.evidence));
+    if (!newEvidence.length) continue;
+    const revisedEnding = (await reviewConclusion(compiled, { endingVerification })).endingVerification;
+    if (!revisedEnding) continue;
+    endingVerification = revisedEnding;
+    head += '\n\n' + scene;
+    prepared = compiled;
+    for (const item of newEvidence) {
+      added.add(item.id);
+      evidence.push(item);
+    }
+    await saveProgress(candidate, { evidence, endingVerification });
+  }
+  return added.size ? { content: head + '\n\n' + closing, prepared,
+    review: { evidence, endingVerification, missing: checked.missing.filter(hook => !added.has(hook.id)) } } : null;
+}
+
+async function repairEndingParagraphs({ req, res, signal, systemPrompt, content, checked, endingRequirements, onUsage }) {
+  const parts = content.split(/(\r?\n[ \t]*\r?\n)/);
+  const paragraphs = parts.filter((_, index) => index % 2 === 0);
+  const excerpt = checked.endingGuardIssue?.excerpt;
+  const reopenedParagraph = excerpt ? paragraphs.findLastIndex(paragraph => paragraph.replace(/\s+/g, ' ').includes(excerpt.replace(/\s+/g, ' ')))
+    : paragraphs.findIndex(paragraph => endingReopenExcerpt(paragraph));
+  const targets = reopenedParagraph >= 0 ? [reopenedParagraph] : paragraphs.map((_, index) => index);
+  const annotated = targets.map(index => `[${index + 1}] ${paragraphs[index]}`).join('\n\n');
+  const proof = reopenedParagraph >= 0
+    ? checked.evidence.filter(item => matchHookResolutionEvidence(paragraphs[reopenedParagraph], item.evidence))
+    : checked.evidence;
+  const nearby = reopenedParagraph >= 0
+    ? `\n【相邻段落与末尾，供核对，保持原样】\n${paragraphs[reopenedParagraph - 1] || ''}\n${paragraphs[reopenedParagraph + 1] || ''}\n${paragraphs.at(-1)}`
+    : '';
+  const system = systemPrompt + '\n你正在修订小说。只返回指定的段落替换数据。';
+  const prompt = `只修订终章里与确定结局冲突的段落。具体问题：${checked.endingIssue}
+【结局要求】${JSON.stringify(endingRequirements)}
+确保旧冲突在正文中已有实际结果。把误写成当前危机的往事交代清楚，删去不属于本故事的新悬念和调查任务。保持人物与已确定世界规则，不能编造新敌人、新威胁或新任务。不要复述前章。下列已核实的原文不能改写或删除：\n${proof.map(item => item.evidence).join('\n')}${nearby}
+【本次可改段落】\n${annotated}
+只输出 JSON 对象 {"changes":[{"paragraph":${targets[0] + 1},"text":"修改后的完整段落"}]}。最多改 ${Math.min(12, targets.length)} 段，编号须来自可改段落，删除一段时 text 写空字符串。保持其余正文。\n`;
+  const thinking = createThinkingEmitter(res);
+  try {
+    const result = await streamGenerate(system, prompt, null, signal, resolveApiConfig(req.userModelConfig, 'writing'),
+      0, 0.35, 4200, 150000, thinking, { taskType: 'ending_paragraph_repair', requireTerminal: true, jsonMode: true });
+    onUsage('writing', result);
+    if (['length', 'content_filter'].includes(result.finishReason)) return '';
+    const changes = parseJsonObject(result.content)?.changes;
+    if (!Array.isArray(changes) || !changes.length || changes.length > Math.min(12, targets.length)) return '';
+    const eligible = new Set(targets.map(index => index + 1));
+    const selected = new Set();
+    for (const change of changes) {
+      const number = Number(change?.paragraph);
+      if (!Number.isInteger(number) || !eligible.has(number) || selected.has(number)
+        || typeof change.text !== 'string' || change.text.length > 1800) return '';
+      selected.add(number);
+      parts[(number - 1) * 2] = change.text.trim();
+    }
+    return parts.join('').trim();
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    if (error?.attempts || error?.usage) onUsage('writing', error);
+    if (error?.code === 'AI_PROVIDER_QUOTA') throw endingReviewQuota(error);
+    return '';
+  } finally { thinking.stop(); }
+}
+
+async function verifyBookEnding({ req, res, novel, chapterNumber, content, contract, signal, chapterTokenStats, systemPrompt,
+  saveReviewedDraft, draftReview, reviewOnly = false }) {
+  const pending = contract.mandatoryResolutionHooks ?? (contract.closing ? openStoryHooks(novel.foreshadowingLedger, chapterNumber) : []);
+  const endingRequirements = contract.requireEndingVerification ? {
+    ...contract.endingRequirements,
+    priorScenes: endingPriorScenes(novel.chapters, chapterNumber),
+  } : null;
+  if (!pending.length && !endingRequirements) return { content, verifiedHooks: [] };
+  const label = contract.closing ? '终章' : `第${chapterNumber}章`;
+  const onUsage = (role, stats) => emitTokenUsage(res, novel, role, stats, chapterTokenStats);
+  const previous = draftReview?.sourceHash === hashSourceText(content) ? draftReview : null;
+  const plannedLength = Math.max(0, Number(contract.wordTarget) || 0);
+  const originalLength = Number(previous?.originalLength) > 0 ? previous.originalLength
+    : previous && plannedLength ? Math.min(content.length, Math.max(2000, Math.ceil(plannedLength * 1.5))) : content.length;
+  const baselineLength = Math.max(originalLength, plannedLength);
+  const lengthLimit = endingRequirements ? baselineLength + Math.max(1600, Math.min(4000, Math.ceil(baselineLength * 0.65))) : Infinity;
+  const attemptedSceneHooks = new Set(Array.isArray(previous?.attemptedSceneHooks) ? previous.attemptedSceneHooks : []);
+  const saveProgress = async (draft, review) => {
+    if (endingRequirements) await saveReviewedDraft?.(draft, 'ending_review',
+      serializeEndingDraftReview(draft, review, pending, attemptedSceneHooks, originalLength));
+  };
+  const verify = async (prepared, hooks, previousReview, reviewEnding = endingRequirements, acceptedEvidence = []) => {
+    const endingGuardIssue = endingRequirements && endingConflict(prepared.finalContent, novel.chapters, chapterNumber);
+    if (endingGuardIssue) reviewEnding = null;
+    const proofSource = endingRequirements && endingReopenExcerpt(prepared.finalContent)
+      ? prepared.finalContent.split(/\n\s*\n/).filter(paragraph => !endingReopenExcerpt(paragraph)).join('\n\n')
+      : prepared.finalContent;
+    const evidence = acceptedEvidence.filter(item => matchHookResolutionEvidence(proofSource, item.evidence))
+      .map(item => ({ id: item.id, evidence: item.evidence }));
+    const verified = new Set(evidence.map(item => item.id));
+    const confirmedOnResume = evidence.length;
+    const unmatchedCitations = new Set();
+    const unreviewed = new Set();
+    const previousEvidence = new Map((previousReview?.evidence || []).map(item => [item.id, item]));
+    let endingVerification = null;
+    let endingIssue = endingGuardIssue ? describeEndingConflict(endingGuardIssue) : '';
+    let endingCitationInvalid = false;
+    let invalidReview = false;
+    const recordEnding = audit => {
+      const reopened = endingReopenExcerpt(prepared.finalContent);
+      if (reopened) {
+        endingVerification = null;
+        endingCitationInvalid = false;
+        endingIssue = `终章原文把已达成的结局写回了进行中的冲突：“${reopened}”。`;
+        return;
+      }
+      const auditIssue = String(audit.endingIssue || '').trim();
+      endingVerification = auditIssue ? null : matchStoryEndingEvidence(prepared.finalContent, audit.ending);
+      // A positive follow-up review can reuse earlier verified quotes that
+      // survived the rewrite. An explicit rejection must still block.
+      if (!endingVerification && audit.ending && !audit.endingIssue) {
+        endingVerification = matchStoryEndingEvidence(prepared.finalContent, previousReview?.endingVerification);
+      }
+      endingCitationInvalid = Boolean(!endingVerification && audit.ending && !audit.endingIssue);
+      endingIssue = endingVerification ? '' : auditIssue.slice(0, 180)
+        || (endingCitationInvalid ? '结局或最终状态的引文无法在正文中逐句定位。' : '正文缺少可核实的主线结果或结果发生后的场景。');
+    };
+    const recordHooks = (batch, audit) => {
       const ids = new Set(batch.map(hook => hook.id));
-      for (const resolution of review.audit.hooksResolved) {
-        if (ids.has(resolution?.id) && !verified.has(resolution.id)
-          && matchHookResolutionEvidence(prepared.finalContent, resolution.evidence)) {
-          verified.add(resolution.id);
-          evidence.push(resolution);
+      for (const resolution of audit.hooksResolved) {
+        if (!ids.has(resolution?.id) || verified.has(resolution.id)) continue;
+        const confirmed = [resolution, previousEvidence.get(resolution.id)]
+          .find(item => matchHookResolutionEvidence(proofSource, item?.evidence));
+        if (!confirmed) {
+          unmatchedCitations.add(resolution.id);
+          continue;
+        }
+        verified.add(confirmed.id);
+        evidence.push(confirmed);
+      }
+    };
+    const reviewBatch = async (batch, endingTargets, preferCompact = false, recordUnreviewed = true) => {
+      signal?.throwIfAborted();
+      const auditOptions = { req, res, novel, chapterNumber,
+        content: prepared.finalContent, contract, signal, onUsage, closureHooks: batch, endingRequirements: endingTargets };
+      const initial = preferCompact ? null : await auditChapterHooks(auditOptions);
+      if (initial) {
+        if (endingTargets) recordEnding(initial.audit);
+        recordHooks(batch, initial.audit);
+        return true;
+      }
+      // Reask failed batches with source numbers. Keep evidence already checked
+      // in other batches even if a later provider response is unusable.
+      let reviewed = true;
+      for (let start = 0; start < Math.max(batch.length, endingTargets ? 1 : 0); start += 4) {
+        signal?.throwIfAborted();
+        const subset = batch.slice(start, start + 4);
+        const ending = start === 0 ? endingTargets : null;
+        const retry = await auditChapterHooks({ ...auditOptions, closureHooks: subset, endingRequirements: ending, compact: true });
+        if (!retry) {
+          reviewed = false;
+          if (recordUnreviewed) for (const hook of subset) unreviewed.add(hook.id);
+          continue;
+        }
+        if (ending) recordEnding(retry.audit);
+        recordHooks(subset, retry.audit);
+      }
+      return reviewed;
+    };
+    const reviewHooks = hooks.filter(hook => !verified.has(hook.id));
+    const separateEnding = Boolean(reviewEnding && hooks.length > 24);
+    if (separateEnding && !await reviewBatch([], reviewEnding)) invalidReview = true;
+    for (let i = 0; i < Math.max(reviewHooks.length, reviewEnding && !separateEnding ? 1 : 0); i += separateEnding ? 24 : 12) {
+      const batch = reviewHooks.slice(i, i + 12);
+      const endingTargets = i === 0 && !separateEnding ? reviewEnding : null;
+      const calls = [reviewBatch(batch, endingTargets)];
+      if (separateEnding && reviewHooks.length > i + 12) calls.push(reviewBatch(reviewHooks.slice(i + 12, i + 24), null));
+      const outcomes = await Promise.allSettled(calls);
+      const failure = outcomes.find(outcome => outcome.status === 'rejected');
+      if (failure) throw failure.reason;
+      if (!outcomes.every(outcome => outcome.value)) invalidReview = true;
+    }
+    const missing = hooks.filter(hook => !verified.has(hook.id));
+    const hasUnmatchedCitation = missing.some(hook => unmatchedCitations.has(hook.id));
+    const shouldFocus = hooks.length > 1 || hasUnmatchedCitation || contract.closingWindow;
+    const focusedHooks = shouldFocus
+      ? (missing.length <= 3 ? missing : missing.filter(hook => hook.payoffPlan).slice(0, 3))
+      : [];
+    if (!invalidReview && (endingCitationInvalid || focusedHooks.length)) {
+      // Re-examine a small number of disputed quotes before rewriting a scene.
+      await reviewBatch(focusedHooks, endingCitationInvalid ? reviewEnding : null, hasUnmatchedCitation || contract.closingWindow, false);
+    }
+    if ((endingRequirements || (getFixedChapterCount(novel) && contract.verifyHookResolution)) && evidence.length > confirmedOnResume) {
+      const hooksById = new Map(hooks.map(hook => [hook.id, hook]));
+      for (let i = confirmedOnResume; i < evidence.length; i += 6) {
+        const group = evidence.slice(i, i + 6);
+        const claims = group.map(item => ({ hook: hooksById.get(item.id), chapterNumber, evidence: item.evidence, source: proofSource }));
+        const decisions = await verifyHookClaims({ req, res, novel, signal, claims, onUsage, taskType: 'ending_hook_audit_confirm' });
+        for (let index = 0; index < group.length; index++) {
+          if (decisions?.get(index)) continue;
+          verified.delete(group[index].id);
+          if (!decisions?.has(index)) {
+            invalidReview = true;
+            unreviewed.add(group[index].id);
+          }
         }
       }
     }
-    return { evidence, missing: hooks.filter(hook => !verified.has(hook.id)) };
+    return { evidence: evidence.filter(item => verified.has(item.id)), missing: hooks.filter(hook => !verified.has(hook.id)),
+      endingVerification, endingIssue, endingGuardIssue, invalidReview, unreviewed };
   };
   const report = message => { try { res.write(`data: ${JSON.stringify({ type: 'status', message })}\n\n`); } catch {} };
-  const blocked = hooks => Object.assign(new Error(`终章尚未核实回收 ${hooks.length} 条伏笔（${hooks.slice(0, 5).map(hook => hook.content).join('、')}）。草稿已保留，继续生成时会重新核对终章。`), { code: 'ENDING_HOOKS_UNRESOLVED' });
-  report(`正在核对终章中的 ${pending.length} 条待回收伏笔...`);
-  let prepared = prepareChapterContent(novel, chapterNumber, content);
-  let checked = await verify(prepared, pending);
-  if (!checked) throw blocked(pending);
-  if (!checked.missing.length) return { content, prepared, verifiedHooks: checked.evidence };
+  const blocked = (hooks, missingEnding, invalidReview = false, endingIssue = '') => {
+    const reason = invalidReview ? '复核未返回有效结果' : [
+      hooks.length ? `尚未核实回收 ${hooks.length} 条伏笔（${hooks.slice(0, 5).map(hook => hook.content).join('、')}）` : '',
+      missingEnding ? `尚未核实主线结局或最终状态${endingIssue ? `（${endingIssue}）` : ''}` : '',
+    ].filter(Boolean).join('；');
+    return Object.assign(new Error(`${label}${reason}。草稿已保留，继续生成时会重新核对。`), { code: 'ENDING_HOOKS_UNRESOLVED', resumable: true });
+  };
+  const needsEnding = result => Boolean(endingRequirements && !result?.endingVerification);
+  report(`正在核对${label}的 ${pending.length} 条待回收伏笔${endingRequirements ? '和主线结局' : ''}...`);
+  await saveReviewedDraft?.(content);
+  let prepared = prepareChapterContent(chapterNumber, content);
+  const pendingById = new Map(pending.map(hook => [hook.id, hook]));
+  const accepted = (previous?.verificationVersion === 2 && Array.isArray(previous.evidence) ? previous.evidence : []).filter(item => item
+    && pendingById.has(item.id) && item.hookKey === endingHookKey(pendingById.get(item.id)));
+  const savedEnding = endingRequirements && pending.length > 12 && !endingReopenExcerpt(prepared.finalContent)
+    && !endingConflict(prepared.finalContent, novel.chapters, chapterNumber)
+    ? matchStoryEndingEvidence(prepared.finalContent, previous?.endingVerification) : null;
+  let checked = await verify(prepared, pending, previous, savedEnding ? null : endingRequirements, accepted);
+  if (savedEnding) {
+    checked.endingVerification = savedEnding;
+    if (!checked.missing.length && !checked.invalidReview) {
+      checked = await verify(prepared, pending, previous, endingRequirements, checked.evidence);
+    }
+  }
+  if (!checked.missing.length && !needsEnding(checked) && !checked.invalidReview) return { content, prepared, verifiedHooks: checked.evidence, endingVerification: checked.endingVerification };
+  if (reviewOnly) throw blocked(checked.missing, needsEnding(checked), checked.invalidReview, checked.endingIssue);
+  await saveProgress(content, checked);
+  const reviewConclusion = (candidate, priorReview) => verify(candidate, [], priorReview, endingRequirements);
 
-  report(`终章还有 ${checked.missing.length} 条伏笔未回收，正在补写回收情节...`);
-  const prompt = `修订下列终章，输出完整终章正文。保留已写成的结局、已回收伏笔、世界规则和人物选择。通过具体场景揭晓下列伏笔的答案或结果，让结果进入终局。禁止再埋新悬念，禁止以列表、解释或总结代替正文。开头直接写上一章之后的新动作，保留章末的稳定局面。
+  if (contract.closing && endingRequirements && needsEnding(checked)
+    && (checked.endingGuardIssue || (!checked.invalidReview && pending.length > 12 && checked.evidence.length))) {
+    report('正在定点修订与终局冲突的段落...');
+    const candidate = await repairEndingParagraphs({ req, res, signal, systemPrompt, content, checked, endingRequirements, onUsage });
+    if (!candidate || candidate === content || candidate.length > Math.max(lengthLimit, content.length)) {
+      throw blocked(checked.missing, true, false, checked.endingIssue);
+    }
+    const compiled = prepareChapterContent(chapterNumber, candidate);
+    if (!checked.evidence.every(item => matchHookResolutionEvidence(compiled.finalContent, item.evidence))) {
+      throw blocked(checked.missing, true, false, checked.endingIssue);
+    }
+    const revisedEnding = await reviewConclusion(compiled, checked);
+    const fixed = revisedEnding.endingVerification;
+    if (!fixed) {
+      const correctedReopen = endingReopenExcerpt(prepared.finalContent) && !endingReopenExcerpt(compiled.finalContent);
+      const occurrences = (text, excerpt) => text.replace(/\s+/g, ' ').split(excerpt.replace(/\s+/g, ' ')).length - 1;
+      const correctedGuard = checked.endingGuardIssue
+        && occurrences(compiled.finalContent, checked.endingGuardIssue.excerpt) < occurrences(prepared.finalContent, checked.endingGuardIssue.excerpt)
+        && (!revisedEnding.endingGuardIssue || prepared.finalContent.includes(revisedEnding.endingGuardIssue.excerpt));
+      const finalParagraph = prepared.finalContent.split(/\n\s*\n/).at(-1).trim();
+      if ((correctedReopen || correctedGuard) && compiled.finalContent.endsWith(finalParagraph)) {
+        await saveProgress(candidate, { ...checked, endingVerification: null });
+        throw blocked(checked.missing, true, revisedEnding.invalidReview, revisedEnding.endingIssue);
+      }
+      throw blocked(checked.missing, true, false, checked.endingIssue);
+    }
+    content = candidate;
+    prepared = compiled;
+    checked.endingVerification = fixed;
+    checked.endingIssue = '';
+    checked.endingGuardIssue = null;
+    await saveProgress(content, checked);
+    if (!checked.missing.length && !checked.invalidReview) return { content, prepared, verifiedHooks: checked.evidence, endingVerification: fixed };
+  }
+
+  if (contract.closing && endingRequirements && pending.length > 12 && checked.endingVerification) {
+    const deferUnknown = checked.invalidReview && pending.length > 24;
+    if (checked.invalidReview && !deferUnknown) throw blocked(checked.missing, needsEnding(checked), true);
+    const reviewable = checked.missing.filter(hook => !checked.unreviewed.has(hook.id));
+    const triedAll = reviewable.every(hook => attemptedSceneHooks.has(hook.id));
+    if (triedAll) attemptedSceneHooks.clear();
+    const batchSize = triedAll && reviewable.length <= 4 ? 1 : 4;
+    reviewable.sort((a, b) => Number(attemptedSceneHooks.has(a.id)) - Number(attemptedSceneHooks.has(b.id)));
+    const review = { ...checked, missing: reviewable };
+    const expanded = await addEndingScenes({ req, res, novel, chapterNumber, content, prepared, checked: review, contract, signal,
+      systemPrompt, verify, onUsage, saveProgress, onProgress: report, attemptedSceneHooks, reviewConclusion, batchSize, lengthLimit });
+    if (expanded) {
+      const remaining = [...expanded.review.missing, ...checked.missing.filter(hook => checked.unreviewed.has(hook.id))];
+      if (remaining.length) {
+        await saveProgress(expanded.content, expanded.review);
+        throw blocked(remaining, false);
+      }
+      // Recheck the complete result before it can become a saved chapter.
+      checked = await verify(expanded.prepared, pending, expanded.review, endingRequirements, expanded.review.evidence);
+      if (checked.missing.length || needsEnding(checked) || checked.invalidReview) throw blocked(checked.missing, needsEnding(checked), checked.invalidReview, checked.endingIssue);
+      return { content: expanded.content, prepared: expanded.prepared, verifiedHooks: checked.evidence, endingVerification: checked.endingVerification };
+    }
+    await saveProgress(content, checked);
+    throw blocked(checked.missing, false, checked.invalidReview);
+  }
+  if (checked.invalidReview) throw blocked(checked.missing, needsEnding(checked), true);
+  const repairHooks = contract.closing && pending.length > 24 && needsEnding(checked) ? [] : checked.missing;
+  report(`正在补写${label}缺少的${repairHooks.length ? '伏笔回收' : ''}${needsEnding(checked) ? (repairHooks.length ? '和主线结局' : '主线结局') : ''}情节...`);
+  const prompt = `修订下列${label}，输出完整本章正文。保留已回收伏笔、世界规则和人物选择。通过具体场景揭晓下列伏笔的答案或结果。禁止再埋新悬念，禁止以列表、解释或总结代替正文。开头直接写上一章之后的新动作。${endingRequirements ? `主线结局必须写明核心冲突的具体结果、结果造成的后果，以及结尾时的状态。终局目标：${JSON.stringify(endingRequirements)}` : contract.closing ? '保留章末的稳定局面。' : '保留本章应完成的核心事件，把后续章节的行动留给后续。'}
+【上一章已经结束的位置】${contract.previousEnd || '（故事开场）'}
+【本章定稿计划】${contract.coreEvent || ''}
+${contract.requiredScenes?.length ? `【本章仍须保留的场景】\n${contract.requiredScenes.join('\n')}\n` : ''}当前草稿与本章计划冲突时，按本章计划恢复缺失的事件。终局目标里的阶段动作如果已在前文场景完成，本章写它的实际后果。下面每条待回收伏笔都要写出出现过哪些细节、现在谁做了什么、结果如何，让读者能在本章直接看到计划答案。
 【尚未回收的伏笔】
-${checked.missing.map(hook => `- 第${hook.setChapter || '?'}章：${hook.content}`).join('\n')}
+${repairHooks.map(hook => `- 第${hook.setChapter || '?'}章：${hook.content}${hook.payoffPlan ? `；计划答案与结果：${hook.payoffPlan}` : ''}`).join('\n') || '本轮只补齐主线结局。已写出的伏笔答案继续保留，其他条目分场景另行处理。'}
 【已确认的回收证据，修订时保留】
 ${checked.evidence.map(item => item.evidence).join('\n')}
-【终章当前草稿】
+${checked.endingVerification ? `【已确认的主线结果和最终状态，修订时保留】\n${Object.values(checked.endingVerification).join('\n')}\n` : ''}${checked.endingIssue ? `【需要补齐的结局情节】\n${checked.endingIssue}\n` : ''}
+【${label}当前草稿】
 ${content}`;
   const thinking = createThinkingEmitter(res);
   let revision;
   try {
     revision = await streamGenerate(systemPrompt, prompt, null, signal, resolveApiConfig(req.userModelConfig, 'writing'),
-      0, 0.65, getChapterOutputTokenLimit(Math.max(contract.wordTarget, content.length * 1.25)), 300000, thinking,
-      { taskType: 'ending_hook_repair' });
+      0, 0.65, getChapterOutputTokenLimit(Math.min(lengthLimit, Math.max(plannedLength, content.length * 1.25))), 300000, thinking,
+      { taskType: 'ending_hook_repair', requireTerminal: true });
     onUsage('writing', revision);
   } catch (error) {
     if (error?.attempts || error?.usage) onUsage('writing', error);
     if (signal?.aborted || error?.name === 'AbortError') throw error;
+    if (endingRequirements && error?.code === 'AI_PROVIDER_QUOTA') throw endingReviewQuota(error);
     console.warn('[HookAudit] 终章补写失败:', redactError(error.message));
-    throw blocked(checked.missing);
+    throw blocked(checked.missing, needsEnding(checked), false, checked.endingIssue);
   } finally { thinking.stop(); }
   const revised = String(revision?.content || '').trim();
-  if (revision?.finishReason === 'length' || revised.length < content.length * 0.8) throw blocked(checked.missing);
-  prepared = prepareChapterContent(novel, chapterNumber, revised);
-  checked = await verify(prepared, pending);
-  if (!checked || checked.missing.length) throw blocked(checked?.missing || pending);
-  return { content: revised, prepared, verifiedHooks: checked.evidence };
+  // Shorter replacements can fix a long, off-plan draft. Bound the minimum
+  // by this chapter's own target and use evidence to verify the actual fix.
+  const minimumLength = Math.min(content.length * 0.8, Math.max(250, (Number(contract.wordTarget) || 0) * 0.6));
+  if (['length', 'content_filter'].includes(revision?.finishReason) || !revised || revised.length < minimumLength || revised.length > lengthLimit) {
+    throw blocked(checked.missing, needsEnding(checked), false, checked.endingIssue);
+  }
+  prepared = prepareChapterContent(chapterNumber, revised);
+  const conflict = endingRequirements && endingConflict(prepared.finalContent, novel.chapters, chapterNumber);
+  if (conflict) throw blocked(checked.missing, true, false, describeEndingConflict(conflict));
+  const preservesPriorProof = checked.evidence.every(item => matchHookResolutionEvidence(prepared.finalContent, item.evidence))
+    && (!checked.endingVerification || matchStoryEndingEvidence(prepared.finalContent, checked.endingVerification));
+  if (preservesPriorProof) await saveReviewedDraft?.(revised);
+  const revisedCheck = await verify(prepared, pending, checked, endingRequirements, checked.evidence);
+  const newProofIds = new Set(revisedCheck.evidence.map(item => item.id));
+  const lostProof = checked.evidence.some(item => !newProofIds.has(item.id)
+    && !matchHookResolutionEvidence(prepared.finalContent, item.evidence));
+  if (lostProof || (checked.endingVerification && needsEnding(revisedCheck))) {
+    await saveReviewedDraft?.(content);
+    await saveProgress(content, checked);
+    throw blocked(checked.missing, needsEnding(checked), false, checked.endingIssue);
+  }
+  if (!preservesPriorProof) await saveReviewedDraft?.(revised);
+  if (revisedCheck.missing.length || needsEnding(revisedCheck) || revisedCheck.invalidReview) {
+    await saveProgress(revised, revisedCheck);
+    throw blocked(revisedCheck.missing, needsEnding(revisedCheck), revisedCheck.invalidReview, revisedCheck.endingIssue);
+  }
+  return { content: revised, prepared, verifiedHooks: revisedCheck.evidence, endingVerification: revisedCheck.endingVerification };
 }
 
-function prepareCreativeState(novel) {  initializeCreativeState(novel);
-  const planData = parseChapterPlan(
-    novel.chapterPlanData && Array.isArray(novel.chapterPlanData.chapters)
+function chapterProgressRepairRange(content, anchors = []) {
+  const maxReplace = Math.min(600, Math.floor(content.length / 3));
+  for (const { excerpt, replace } of anchors) {
+    const offset = content.indexOf(excerpt);
+    if (offset < 0 || content.indexOf(excerpt, offset + 1) >= 0) continue;
+    const start = offset === 0 ? 0 : content.lastIndexOf('\n', offset - 1) + 1;
+    const newline = content.indexOf('\n', offset + excerpt.length);
+    const end = newline < 0 ? content.length : newline - Number(content[newline - 1] === '\r');
+    if (!replace) return { start: end, end };
+    if (end - start <= maxReplace) return { start, end };
+  }
+  // Without a precise location, make room for the missing action before the
+  // original closing paragraph. A single-paragraph draft can only be extended.
+  const lastParagraphStart = content.lastIndexOf('\n') + 1;
+  const start = lastParagraphStart || content.length;
+  return { start, end: start };
+}
+
+async function verifyGeneratedChapter(options) {
+  const closure = await verifyBookEnding(options);
+  const { req, res, novel, chapterNumber, contract, signal, chapterTokenStats, systemPrompt, saveReviewedDraft } = options;
+  const checkpoint = contract.progressCheckpoint;
+  if (!checkpoint) return closure;
+
+  const label = checkpoint.phaseGoal ? `第${chapterNumber}章（${checkpoint.title || '当前篇章'}收尾）` : `第${chapterNumber}章`;
+  const status = message => { try { res.write(`data: ${JSON.stringify({ type: 'status', message })}\n\n`); } catch {} };
+  const blocked = issue => Object.assign(new Error(`${label}剧情进度校验未通过。${issue}。草稿已保留，可继续生成重试。`), {
+    code: 'CHAPTER_PROGRESS_BLOCKED', resumable: true,
+  });
+  const request = async (system, prompt, role, taskType, maxTokens, temperature) => {
+    try {
+      const result = await streamGenerate(system, prompt, null, signal, resolveApiConfig(req.userModelConfig, role),
+        0, temperature, maxTokens, role === 'writing' ? 300000 : 180000, null,
+        { taskType, requireTerminal: true, stitchOnTruncation: false });
+      emitTokenUsage(res, novel, role, result, chapterTokenStats);
+      return result;
+    } catch (error) {
+      if (error?.attempts || error?.usage) emitTokenUsage(res, novel, role, error, chapterTokenStats);
+      if (signal?.aborted || isAbortError(error)) throw error;
+      console.warn('[ChapterProgress]', taskType, redactError(error.message));
+      return null;
+    }
+  };
+  const review = (prepared, repairContext) => reviewChapterProgress({ checkpoint, chapters: novel.chapters, chapterNumber,
+    content: prepared.finalContent, repairContext,
+    request: prompt => request('你是小说剧情进度审读员。依据实际场景核对目标，严格按要求输出证据编号。',
+      prompt, 'reasoning', 'chapter_progress_review', 1200, 0.1),
+  });
+
+  status(`正在核对${label}的剧情进度...`);
+  await saveReviewedDraft(closure.content, 'chapter_progress_review');
+  const prepared = closure.prepared || prepareChapterContent(chapterNumber, closure.content);
+  const checked = await review(prepared);
+  if (checked.passed) return { ...closure, prepared, progressVerification: checked };
+  if (checked.invalid) throw blocked(checked.issue);
+
+  const source = prepared.finalContent;
+  const { start, end } = chapterProgressRepairRange(source, checked.repairAnchors);
+  const before = source.slice(0, start);
+  const current = source.slice(start, end);
+  const after = source.slice(end);
+  const maxLength = Math.min(900, source.length - 1, Math.max(80, Math.floor(source.length * 0.35), current.length + 120));
+  if (maxLength < 1) throw blocked(checked.issue);
+  const earnedEvidence = (checked.evidence || []).filter(item => item.chapterNumber === chapterNumber).map(item => item.excerpt);
+  const payoffEvidence = closure.verifiedHooks.map(hook => hook.evidence);
+  const preserve = [...new Set([
+    ...earnedEvidence.filter(excerpt => current.includes(excerpt)),
+    ...(!checked.continuityConflict ? payoffEvidence.filter(quote => matchHookResolutionEvidence(current, quote)) : []),
+  ])];
+  status(`正在补修${label}缺少的剧情片段...`);
+  const repairPrompt = `补齐小说正文中缺少的剧情进展。只输出${current ? '指定段落的替换正文' : '要插入的一小段正文'}，最多 ${maxLength} 字。沿用当前叙述视角、人物语气和已经发生的事实。用符合前后因果的动作或反应写出缺少的结果。前后段落保持原样，衔接处直接推进。
+【缺少的剧情进展】${checked.issue}
+${checked.continuityConflict ? `【必须沿用的已保存事实】\n第${checked.continuityConflict.past.chapterNumber}章原文：${checked.continuityConflict.past.excerpt}\n只修订本章的冲突写法，不能改动前章事实。\n` : ''}
+【本章目标】${checkpoint.chapterGoal || contract.coreEvent}
+${checkpoint.phaseGoal ? `【本篇章预定的阶段结果】${checkpoint.phaseGoal}\n` : ''}${preserve.length ? `【指定段落中必须保留的原文】\n${preserve.join('\n')}\n` : ''}【修订处之前的正文】
+${before.slice(-900) || contract.previousEnd}
+${current ? `【指定段落】\n${current}\n` : ''}【修订处之后的正文】
+${after.slice(0, 900) || '（章末）'}`;
+  const revision = await request(systemPrompt, repairPrompt, 'writing', 'chapter_progress_repair', getChapterOutputTokenLimit(maxLength), 0.55);
+  const passage = String(revision?.content || '').trim().replace(/^```(?:text)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/i, '$1').trim();
+  if (!passage || passage.length > maxLength || ['length', 'content_filter'].includes(revision?.finishReason)) throw blocked(checked.issue);
+  const patch = prepareChapterContent(chapterNumber, passage).finalContent;
+  if (!patch || patch.length > maxLength || source.includes(patch)) throw blocked(checked.issue);
+
+  const newline = source.includes('\r\n') ? '\r\n' : '\n';
+  const gap = newline.repeat(2);
+  const leadingSeparator = before.endsWith(gap) ? '' : before.endsWith(newline) ? newline : gap;
+  const trailingSeparator = after.startsWith(gap) ? '' : after.startsWith(newline) ? newline : gap;
+  const beforeGap = !current && before ? leadingSeparator : '';
+  const afterGap = !current && after ? trailingSeparator : '';
+  const revised = [before, beforeGap, patch, afterGap, after].join('');
+  if (!earnedEvidence.every(excerpt => revised.includes(excerpt))) throw blocked(checked.issue);
+  const changedPayoff = payoffEvidence.some(quote => !matchHookResolutionEvidence(revised, quote));
+  if (changedPayoff && !checked.continuityConflict) throw blocked(checked.issue);
+  assertDistinctOpening(revised, novel.chapters, chapterNumber);
+  assertDistinctEnding(revised, novel.chapters, chapterNumber);
+  const compiled = { ...prepared, finalContent: revised };
+  const revisedCheck = await review(compiled, { before: before.slice(-600), revised: patch, after: after.slice(0, 600) });
+  if (!revisedCheck.passed) throw blocked(revisedCheck.issue);
+  if (changedPayoff) {
+    const checkedPayoffs = await verifyBookEnding({ ...options, content: revised, saveReviewedDraft: undefined, reviewOnly: true });
+    return { ...checkedPayoffs, prepared: compiled, progressVerification: revisedCheck };
+  }
+  return { ...closure, content: revised, prepared: compiled, progressVerification: revisedCheck };
+}
+
+function readChapterPlan(novel) {
+  return parseChapterPlan(
+    novel.chapterPlanData && Array.isArray(novel.chapterPlanData.chapters) && novel.chapterPlanData.chapters.length
       ? novel.chapterPlanData
       : (novel.chapterPlan || '')
   );
+}
+
+function prepareCreativeState(novel, planData = readChapterPlan(novel)) {
+  initializeCreativeState(novel);
   seedPlannedHooks(novel, planData);
   if (!novel.recentEventSignatures.length && (novel.chapters || []).length) {
     novel.recentEventSignatures = novel.chapters
@@ -1325,6 +2194,7 @@ function prepareCreativeState(novel) {  initializeCreativeState(novel);
   }
   novel.chapterPlanData = planData;
   novel.markModified('chapterPlanData');
+  novel.markModified('characterBible');
   novel.markModified('recentEventSignatures');
   return planData;
 }
@@ -1339,12 +2209,13 @@ async function refreshSemanticMemory({ req, res, novel, signal, throughChapter =
   try {
     await ensureSemanticMemory({
       novel, throughChapter,
+      retryInvalidAfterChapters: getFixedChapterCount(novel) >= 16 ? 6 : 0,
       request: async (task, prompt) => {
         try {
           return await streamGenerate(
             task.startsWith('chapter_memory') ? '你是小说逐章语义记忆整理员，只处理已经写出的事实。' : '你是小说累计阶段记忆编辑，只合并已有事实记忆。',
             prompt, null, signal, resolveApiConfig(req.userModelConfig, 'reasoning'),
-            1, 0.2, task.startsWith('chapter_memory') ? 5000 : 6500, 180000, null, { taskType: task }
+            1, 0.2, task.startsWith('chapter_memory') ? 5000 : 6500, 180000, null, { taskType: task, jsonMode: true }
           );
         } catch (error) {
           if (error?.attempts || error?.usage) emitTokenUsage(res, novel, 'reasoning', error, chapterTokenStats);
@@ -1359,7 +2230,7 @@ async function refreshSemanticMemory({ req, res, novel, signal, throughChapter =
       onProgress: message => { try { res.write(`data: ${JSON.stringify({ type: 'status', message })}\n\n`); } catch {} },
     });
   } catch (error) {
-    if (persistenceError || signal?.aborted || isAbortError(error)) throw persistenceError || error;
+    if (persistenceError || signal?.aborted) throw persistenceError || error;
     console.warn('[Memory] 更新失败:', error?.name || 'Error', /^[A-Za-z0-9_.-]{1,80}$/.test(String(error?.code || '')) ? error.code : 'MEMORY_UPDATE_FAILED');
     const failure = new Error('剧情语义记忆更新未成功，已保留已写章节和上一版记忆，请稍后继续重试');
     failure.code = 'SEMANTIC_MEMORY_REQUIRED';
@@ -1445,8 +2316,17 @@ async function refreshCommittedMemory(options) {
 }
 
 async function prepareDetailedChapterPlan({ req, res, novel, planData, ch, totalPlannedChapters, signal, generationRun }) {
-  if (adoptConfirmedChapterPlans(novel, planData, ch)) await saveNovelDoc(novel);
+  if (adoptConfirmedChapterPlans(novel, planData, ch)) {
+    seedPlannedHooks(novel, planData);
+    await saveNovelDoc(novel);
+  }
   const missing = planningWindow(novel, planData, ch, totalPlannedChapters);
+  if (totalPlannedChapters === getFixedChapterCount(novel)) {
+    const phaseStart = novel.storyBlueprint?.phases?.some(phase => Number(phase.startChapter) === ch);
+    if (ch === totalPlannedChapters || (ch > 2 && (missing.length || phaseStart))) {
+      await reconcileHistoricalHooks({ req, res, novel, chapterNumber: ch, signal, limit: ch === totalPlannedChapters ? Infinity : 6 });
+    }
+  }
   if (!missing.length) return true;
   try { res.write(`data: ${JSON.stringify({ type: 'status', message: `正在细化第${missing[0]}-${missing.at(-1)}章的具体剧情计划...` })}\n\n`); } catch {}
   const heartbeat = setInterval(() => {
@@ -1460,7 +2340,7 @@ async function prepareDetailedChapterPlan({ req, res, novel, planData, ch, total
       requestPlan: (prompt) => streamGenerate(
         '你是一位专业的小说章节规划师。你只负责细化已确认蓝图下的后续章节，不改变原有故事方向。',
         prompt, null, signal, resolveApiConfig(req.userModelConfig, 'reasoning'),
-        1, 0.65, 8192, 180000, null, { taskType: 'rolling_plan' }
+        1, 0.65, 8192, 180000, null, { taskType: 'rolling_plan', jsonMode: true }
       ),
       onUsage: (result) => emitTokenUsage(res, novel, 'reasoning', result),
     });
@@ -1484,6 +2364,19 @@ async function prepareDetailedChapterPlan({ req, res, novel, planData, ch, total
 }
 
 function ensureExecutableChapterPlan(novel, targetWordCount) {
+  const fixedChapterCount = getFixedChapterCount(novel);
+  if (fixedChapterCount) {
+    let plan = readChapterPlan(novel);
+    if (!plan.chapters.length && !String(novel.outline || '').trim()) return plan;
+    const blueprint = ensureStoryBlueprint(novel, fixedChapterCount);
+    if (importOutlineForeshadowing(blueprint, novel.outline, fixedChapterCount)) novel.markModified('storyBlueprint');
+    plan = constrainChapterPlan(novel, plan, fixedChapterCount, { targetWords: targetWordCount });
+    novel.targetChapterCount = fixedChapterCount;
+    novel.chapterPlan = JSON.stringify(plan);
+    ensureRollingPlanCoverage(novel, Math.min(fixedChapterCount, getHighestChapterNumber(novel) + 1), fixedChapterCount, plan);
+    novel.markModified('chapterPlan');
+    return prepareCreativeState(novel, plan);
+  }
   let plan = prepareCreativeState(novel);
   if (!plan.chapters.length) {
     if (!String(novel.outline || '').trim()) return plan;
@@ -1548,11 +2441,70 @@ function ensureExecutableChapterPlan(novel, targetWordCount) {
   return plan;
 }
 
+function assessBookCompletion(novel, planData, targetWordCount) {
+  const fixedChapterCount = getFixedChapterCount(novel);
+  return assessStoryCompletion(novel, planData, targetWordCount, { fixedChapterCount, requireEndingVerification: Boolean(fixedChapterCount) });
+}
+
+function bookCompletionBlockers(completion, fixedChapterCount) {
+  const blockers = [];
+  if (!fixedChapterCount && !completion.wordTargetReached) blockers.push(`当前 ${completion.currentWords}/${completion.wordTarget} 字，仍未达到目标字数`);
+  if (completion.missingChapters.length) blockers.push(`缺少计划内章节 ${completion.missingChapters.slice(0, 12).join('、')}`);
+  if (completion.unexpectedChapters.length) blockers.push(`现有章节与锁定的 ${fixedChapterCount} 章不一致`);
+  if (completion.unresolvedHooks.length) blockers.push(`仍有 ${completion.unresolvedHooks.length} 条伏笔未回收`);
+  if (fixedChapterCount && !completion.endingVerified) blockers.push('终章尚未通过结局复核');
+  return blockers.join('；');
+}
+
+async function repairCommittedEnding({ req, res, novel, chapterNumber, planData, generationRun, systemPrompt }) {
+  await reconcileHistoricalHooks({ req, res, novel, chapterNumber, signal: generationRun.controller.signal });
+  const saved = novel.chapters.find(chapter => Number(chapter.chapterNumber) === chapterNumber);
+  const history = novel.chapters.filter(chapter => Number(chapter.chapterNumber) < chapterNumber);
+  const contract = buildChapterContract({ novel, chapterNumber, totalChapters: chapterNumber, planData,
+    closingBook: true, requireEndingVerification: true, currentWords: getCompletedWordCount(novel) - saved.wordCount,
+    targetWords: novel.targetWordCount, previousChapter: history.at(-1) });
+  const previouslyPaid = novel.foreshadowingLedger.filter(hook => Number(hook.resolvedChapter) === chapterNumber
+    && (['resolved', 'paid_off'].includes(hook.status) || hook.stage === 'paid_off'));
+  contract.mandatoryResolutionHooks.push(...previouslyPaid);
+  let buffer = resumeDraftPhase(generationRun) === 'closing_revision' ? resumeDraftFor(generationRun, chapterNumber) : '';
+  const checkpoint = createDraftCheckpointer(generationRun, chapterNumber, () => buffer);
+  const savedReview = serializeEndingDraftReview(saved.content, {
+    evidence: previouslyPaid.filter(hook => hook.resolutionVerificationKey
+      && hook.resolutionVerificationKey === hookResolutionVerificationKey(hook, chapterNumber, hook.resolutionEvidence, saved.content))
+      .map(hook => ({ id: hook.id, evidence: hook.resolutionEvidence })),
+    endingVerification: endingReopenExcerpt(saved.content) ? null : saved.qualityReport?.endingVerification,
+  }, contract.mandatoryResolutionHooks, []);
+  const closure = await verifyBookEnding({ req, res, novel, chapterNumber, contract, systemPrompt,
+    content: buffer || saved.content, signal: generationRun.controller.signal, chapterTokenStats: {},
+    draftReview: valueOf(generationRun.job, 'draftReview') || savedReview,
+    saveReviewedDraft: async (draft, _phase, draftReview) => {
+      buffer = draft;
+      await checkpoint.flush('closing_revision', { draftReview });
+    },
+  });
+  const finalContent = closure.prepared.finalContent;
+  assertDistinctOpening(finalContent, history, chapterNumber);
+  assertDistinctEnding(finalContent, history, chapterNumber);
+  if (finalContent !== saved.content) applyChapterRevision(novel, chapterNumber, finalContent, { source: 'ending_repair' });
+  for (const hook of previouslyPaid) {
+    hook.status = 'pending';
+    hook.stage = 'due';
+  }
+  applyHookAudit(novel, chapterNumber, { hooksResolved: closure.verifiedHooks }, finalContent, { verified: true });
+  saved.qualityReport = { ...saved.qualityReport, endingVerification: closure.endingVerification };
+  novel.markModified('chapters');
+  await saveNovelDoc(novel);
+  buffer = '';
+  await checkpoint.commit(chapterNumber);
+  await emitGenerationJobEvent(generationRun, 'chapter_committed', { chapterNumber, wordCount: saved.wordCount });
+  res.write(`data: ${JSON.stringify({ type: 'chapter_end', chapterNumber, title: saved.title, wordCount: saved.wordCount, content: saved.content })}\n\n`);
+}
+
 async function extendBookPlanAtBoundary({ novel, planData, chapterNumber, totalChapters, targetWordCount, extensions, res }) {
   // Models can return a short batch of plans or consistently undershoot their
   // chapter word targets. Expand at a committed boundary, never rewrite an
   // existing card/ending or synthesize a plan without the user's outline.
-  if (chapterNumber !== totalChapters || extensions >= 3
+  if (getFixedChapterCount(novel) || chapterNumber !== totalChapters || extensions >= 3
     || getCompletedWordCount(novel) >= targetWordCount || !String(novel.outline || '').trim()) return null;
   const extended = ensureExecutableChapterPlan(novel, targetWordCount);
   const nextTotal = getTotalPlannedChapters(extended, targetWordCount, chapterNumber);
@@ -1581,6 +2533,8 @@ router.post('/generate-outline', auth, async (req, res) => {
   try {
     const { novelTypeId, protagonistName, worldSetting, targetWordCount, personaId, chapterWordTarget, typeSku } = req.body;
     if (!novelTypeId && !typeSku) return res.status(400).json({ message: '请选择小说类型' });
+    if (invalidTargetChapterCount(req.body.targetChapterCount)) return res.status(400).json({ message: targetChapterCountError });
+    const targetChapterCount = normalizeTargetChapterCount(req.body.targetChapterCount);
 
     const { type, skuAxes } = resolveTypeContext(req.body);
 
@@ -1589,12 +2543,12 @@ router.post('/generate-outline', auth, async (req, res) => {
     const persona = withSkuAxes(rawPersona, skuAxes);
     // 大纲按每章字数估算章数并给出对应的大章节奏指导。
     const chapterWords = normalizeChapterWordTarget(chapterWordTarget);
-    outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona, chapterWords, type);
+    outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona, chapterWords, type, undefined, targetChapterCount);
     outlinePrompt += buildReferencePrompt(await prepareReferenceContext(req.userId, req.body));
 
     const systemPrompt = `你是一位专业的小说大纲策划师。${buildPersonaPrompt(persona, { includeDeslop: false })}`;
 
-    const outlineRequirements = getOutlineRequirements(targetWordCount, chapterWords);
+    const outlineRequirements = getOutlineRequirements(targetWordCount, chapterWords, targetChapterCount);
 
     // SSE 流式输出：推送思考/正文进度，总截止时间覆盖所有截断续写。
     res.writeHead(200, {
@@ -1691,11 +2645,12 @@ router.post('/generate-blueprint', auth, async (req, res) => {
   try {
     const { novelTypeId, protagonistName, worldSetting, targetWordCount, outline, personaId, chapterWordTarget, typeSku } = req.body || {};
     if ((!novelTypeId && !typeSku) || !String(outline || '').trim()) return res.status(400).json({ message: '请先提供小说类型和大纲' });
+    if (invalidTargetChapterCount(req.body?.targetChapterCount)) return res.status(400).json({ message: targetChapterCountError });
     const { type: resolvedType, skuAxes } = resolveTypeContext(req.body);
     const target = Number(targetWordCount) || 50000;
     const chapterWords = normalizeChapterWordTarget(chapterWordTarget);
     const persona = withSkuAxes(await resolveNovelPersona(req.userId, null, personaId), skuAxes);
-    const totalChapters = Math.max(1, Math.ceil(target / chapterWords));
+    const totalChapters = normalizeTargetChapterCount(req.body?.targetChapterCount) ?? Math.max(1, Math.ceil(target / chapterWords));
     const requirements = blueprintRequirements(totalChapters);
     const requiredTags = getBlueprintTagChecklist(resolvedType);
     const rollingEnd = requirements.rollingChapterCount;
@@ -1774,6 +2729,7 @@ ${String(outline).slice(0, 60000)}
         worldSetting: worldSetting || '', outline: String(outline), targetWordCount: target,
         storyBible: {}, plotThreads: [], storyBlueprint: {} };
       const blueprint = normalizeProposedBlueprint(rawBlueprint, draft, totalChapters);
+      importOutlineForeshadowing(blueprint, draft.outline, totalChapters);
       Object.assign(blueprint, { tagChecklist: requiredTags, version: 1, lastReviewedChapter: 0,
         autoReviewEnabled: false, emailReminderEnabled: true });
       const validation = validateStoryBlueprint(blueprint, totalChapters, { expectedArcCount: requirements.arcCount, requiredTags });
@@ -1844,6 +2800,12 @@ router.post('/generate', auth, async (req, res) => {
 
     const mode = req.body.mode || 'book';
     const isBook = mode === 'book';
+    if (isBook && invalidTargetChapterCount(req.body.targetChapterCount)) return res.status(400).json({ message: targetChapterCountError });
+    const blueprintChapterCount = isBook ? confirmedBlueprintChapterCount(storyBlueprint) : null;
+    const targetChapterCount = isBook ? normalizeTargetChapterCount(req.body.targetChapterCount) ?? blueprintChapterCount : null;
+    if (blueprintChapterCount && blueprintChapterCount !== targetChapterCount) {
+      return res.status(400).json({ message: `目标章数为 ${targetChapterCount} 章，已提交蓝图覆盖 ${blueprintChapterCount} 章，请先按目标章数更新蓝图` });
+    }
     const expertMode = req.body.expertMode === true || req.body.expertMode === 'true' || req.body.expertMode === 1;
     // 联网取材：默认开启；用户粘贴的链接始终优先抓取（即使未配搜索密钥）。
     const enableResearch = req.body.enableResearch === undefined
@@ -1861,6 +2823,7 @@ router.post('/generate', auth, async (req, res) => {
       typeSku: typeSku && typeof typeSku === 'object' ? typeSku : undefined,
       protagonistName: protagonistName || '', worldSetting: worldSetting || '',
       targetWordCount,
+      targetChapterCount,
       chapterWordTarget,
       expertMode,
       generationRequestId,
@@ -1871,7 +2834,7 @@ router.post('/generate', auth, async (req, res) => {
       // planText. Recover only that authored content before the shared validator.
       const { normalizeBlueprintPlans } = await import('../../shared/blueprintPlan.mjs');
       storyBlueprint = normalizeBlueprintPlans(storyBlueprint);
-      const totalBlueprintChapters = Math.max(1, Math.ceil(targetWordCount / chapterWordTarget));
+      const totalBlueprintChapters = targetChapterCount ?? Math.max(1, Math.ceil(targetWordCount / chapterWordTarget));
       const normalizedBlueprint = normalizeProposedBlueprint(storyBlueprint, novel, totalBlueprintChapters);
       const requiredTags = getBlueprintTagChecklist(type);
       if (requiredTags.length) normalizedBlueprint.tagChecklist = requiredTags;
@@ -1963,7 +2926,7 @@ ${tmpl.dynamicPrompt}
     } catch (e) {
       console.warn('冻结风格版本失败（已跳过，正文生成不受影响）:', e.message);
     }
-    novel.generationInput = captureGenerationInput({ ...req.body, targetWordCount, chapterWordTarget, mode, expertMode, enableResearch, researchLinks,
+    novel.generationInput = captureGenerationInput({ ...req.body, targetWordCount, targetChapterCount, chapterWordTarget, mode, expertMode, enableResearch, researchLinks,
       storyBlueprint: storyBlueprint ? novel.storyBlueprint : null });
     novel.generationContext = systemPrompt;
     generationPhase = 'saving_novel';
@@ -1991,7 +2954,7 @@ ${tmpl.dynamicPrompt}
 
     // SSE（先发，让客户端知道连接已建立）
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive', 'X-Accel-Buffering': 'no' });
-    res.write(`data: ${JSON.stringify({ type: 'novel_created', novelId: novel._id })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'novel_created', novelId: novel._id, targetChapterCount })}\n\n`);
     res.write(`data: ${JSON.stringify({ type: 'generation_job', jobId: valueOf(generationRun.job, 'jobId'), status: 'running' })}\n\n`);
 
     // ====== 循环生成（提前声明，让close handler可以引用） ======
@@ -2047,7 +3010,7 @@ ${tmpl.dynamicPrompt}
     let outlineHb = null;
     if (isBook && !outline) {
       res.write(`data: ${JSON.stringify({ type: 'status', message: '正在根据您的设定生成创作大纲（大部头作品可能需要10分钟以上）...' })}\n\n`);
-      const outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona, chapterWordTarget, type, researchBlock);
+      const outlinePrompt = buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona, chapterWordTarget, type, researchBlock, targetChapterCount);
       try {
         outlineHb = setInterval(() => {
           try { res.write(': outline-heartbeat\n\n'); } catch { clearInterval(outlineHb); }
@@ -2063,7 +3026,7 @@ ${tmpl.dynamicPrompt}
           resolveApiConfig(req.userModelConfig, 'outline'),
           2,
           0.82,
-          getOutlineRequirements(targetWordCount, chapterWordTarget).outputTokens,
+          getOutlineRequirements(targetWordCount, chapterWordTarget, targetChapterCount).outputTokens,
           TIMEOUT.OUTLINE,
           null,
           // 整本链路的大纲同样开启截断自动续写，与单大纲生成保持相同轮数。
@@ -2098,7 +3061,8 @@ ${tmpl.dynamicPrompt}
     // 初始化一份保守的动态故事蓝图。它只复述用户已确认的信息，不增加
     // 隐形剧情；后续细化必须通过书内提案确认。
     generationPhase = 'blueprint';
-    ensureStoryBlueprint(novel, Math.max(1, Math.ceil(targetWordCount / chapterWordTarget)));
+    const blueprint = ensureStoryBlueprint(novel, targetChapterCount ?? Math.max(1, Math.ceil(targetWordCount / chapterWordTarget)));
+    if (targetChapterCount) importOutlineForeshadowing(blueprint, novel.outline, targetChapterCount);
     novel.markModified('storyBlueprint');
     await saveNovelDoc(novel);
 
@@ -2110,7 +3074,8 @@ ${tmpl.dynamicPrompt}
     if (isBook && outline) {
       try {
         res.write(`data: ${JSON.stringify({ type: 'status', message: '正在制定章节计划表...' })}\n\n`);
-        const planPrompt = buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, persona, novel.storyBlueprint, chapterWordTarget, type);
+        const initialBatchEnd = targetChapterCount ? Math.min(targetChapterCount, 24) : undefined;
+        const planPrompt = buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, persona, novel.storyBlueprint, chapterWordTarget, type, targetChapterCount, initialBatchEnd);
 
         // 用 AbortController 施加超时 + 心跳保证连接不断。
         // 思考型线路（reasoning 路由）思考阶段可能远超旧 45s/150s 预算，
@@ -2130,10 +3095,10 @@ ${tmpl.dynamicPrompt}
           planPrompt, null, combineAbortSignals(planController.signal, abortController.signal),
           resolveApiConfig(req.userModelConfig, 'reasoning'),
           1, 0.82,
-          typeof getChapterPlanOutputTokens === 'function' ? getChapterPlanOutputTokens(targetWordCount, chapterWordTarget) : 16384,
+          typeof getChapterPlanOutputTokens === 'function' ? getChapterPlanOutputTokens(targetWordCount, chapterWordTarget, targetChapterCount, initialBatchEnd) : 16384,
           planTimeoutMs,
           null,
-          { taskType: 'rolling_plan' }
+          { taskType: 'rolling_plan', jsonMode: true }
         ).finally(() => { clearTimeout(planTimeout); clearInterval(heartbeat); });
 
         emitTokenUsage(res, novel, 'reasoning', planResult);
@@ -2143,12 +3108,10 @@ ${tmpl.dynamicPrompt}
           novel.chapterPlan = chapterPlan;
           const parsedPlan = parseChapterPlan(chapterPlan);
           novel.chapterPlanData = parsedPlan;
-          initializeCreativeState(novel);
-          seedPlannedHooks(novel, parsedPlan);
-          novel.markModified('chapterPlanData');
-          await saveNovelDoc(novel);
-          const planChCount = parsedPlan.chapters.length || (chapterPlan.match(/第\d+章/g) || []).length;
-          res.write(`data: ${JSON.stringify({ type: 'status', message: `章节计划已制定（共 ${planChCount} 章）` })}\n\n`);
+          if (!targetChapterCount) {
+            const planChCount = parsedPlan.chapters.length || (chapterPlan.match(/第\d+章/g) || []).length;
+            res.write(`data: ${JSON.stringify({ type: 'status', message: `章节计划已制定（共 ${planChCount} 章）` })}\n\n`);
+          }
         } else {
           console.warn('章节计划表生成为空内容，将暂停整本生成');
         }
@@ -2163,11 +3126,16 @@ ${tmpl.dynamicPrompt}
     // 正文生成始终从同一份结构化创作状态开始，兼容旧作品的纯文本计划。
     generationPhase = 'creative_state';
     if (chapterPlan) novel.chapterPlan = chapterPlan;
-    let planData = prepareCreativeState(novel);
+    let planData = readChapterPlan(novel);
     // 章节计划的 JSON 可能为空、被截断或无法解析。只要用户已经确认了
     // 故事蓝图，就可以像“继续生成”一样使用保守的本地执行计划，避免
     // 首次生成在 0 字处直接暂停。没有蓝图的旧 API 调用仍保留严格校验。
-    if (isBook && String(outline || '').trim() && (targetWordCount >= 100000 || hasConfirmedBlueprint || planData.chapters.length)) {
+    if (targetChapterCount) {
+      planData = ensureExecutableChapterPlan(novel, targetWordCount);
+      if (planData.chapters.length) {
+        res.write(`data: ${JSON.stringify({ type: 'status', message: `全书锁定 ${targetChapterCount} 章，逐批细化剧情并按计划生成` })}\n\n`);
+      }
+    } else if (isBook && String(outline || '').trim() && (targetWordCount >= 100000 || hasConfirmedBlueprint || planData.chapters.length)) {
       const beforePlanEnd = planData.chapters.reduce((max, chapter) => Math.max(max, Number(chapter.chapterNumber || 0)), 0);
       const beforePlanCount = planData.chapters.length;
       planData = ensureExecutableChapterPlan(novel, targetWordCount);
@@ -2179,7 +3147,7 @@ ${tmpl.dynamicPrompt}
         res.write(`data: ${JSON.stringify({ type: 'status', message })}\n\n`);
         await saveNovelDoc(novel);
       }
-    }
+    } else planData = prepareCreativeState(novel, planData);
     await saveNovelDoc(novel);
 
     // 整本生成必须建立在可机读章节计划上。计划生成失败时暂停，避免退化为无约束长循环。
@@ -2215,7 +3183,7 @@ ${tmpl.dynamicPrompt}
       const styleSelection = buildRevisionSampleBlock(novel.styleRevisionSnapshot, chNum);
 
       let genResult = null;
-      if (!(buffer && ['reviewing', 'draft_complete'].includes(resumedPhase))) {
+      if (!(buffer && ['reviewing', 'draft_complete', 'ending_review', 'chapter_progress_review'].includes(resumedPhase))) {
         genResult = await generateChapterDraft({ run: generationRun, req, res, novel,
           systemPrompt: systemPrompt + styleSelection.block, prompt, chapterNumber: chNum, contract,
           checkpoint, readDraft: () => buffer, chapterTokenStats, onChunk: (chunk) => {
@@ -2233,7 +3201,7 @@ ${tmpl.dynamicPrompt}
 
       let chapterContent = buffer;
       let expertReview = null;
-      if (expertMode) {
+      if (expertMode && !['ending_review', 'chapter_progress_review'].includes(resumedPhase)) {
         const gate = localExpertGate(buffer);
         if (gate.gate) {
           console.log(`[Expert] 第${chNum}章本地质检通过（${gate.reason}），跳过推理审稿`);
@@ -2259,14 +3227,17 @@ ${tmpl.dynamicPrompt}
         req, res, novel, chapterNumber: chNum, content: chapterContent,
         systemPrompt: systemPrompt + styleSelection.block, signal: abortController.signal, chapterTokenStats,
       });
-      const closure = await verifyBookEnding({ req, res, novel, chapterNumber: chNum, content: endingCheck.content, contract,
-        systemPrompt: systemPrompt + styleSelection.block, signal: abortController.signal, chapterTokenStats });
+      const saveReviewedDraft = async (draft, phase = 'ending_review', draftReview) => {
+        const changed = draft !== buffer;
+        buffer = draft;
+        await checkpoint.flush(phase, { draftReview });
+        if (changed) sendChapterRevision(res, chNum, draft);
+      };
+      const closure = await verifyGeneratedChapter({ req, res, novel, chapterNumber: chNum, content: endingCheck.content, contract,
+        systemPrompt: systemPrompt + styleSelection.block, signal: abortController.signal, chapterTokenStats, saveReviewedDraft,
+        draftReview: valueOf(generationRun.job, 'draftReview') });
       chapterContent = closure.content;
-      if (endingCheck.report || endingCheck.openingReport || chapterContent !== buffer) {
-        buffer = chapterContent;
-        await checkpoint.flush('draft_complete');
-        try { res.write(`data: ${JSON.stringify({ type: 'expert_revision', chapterNumber: chNum, content: chapterContent })}\n\n`); } catch {}
-      }
+      if (chapterContent !== buffer) await saveReviewedDraft(chapterContent, 'draft_complete');
       const chapterResult = finalizeGeneratedChapter({
         novel,
         chapterNumber: chNum,
@@ -2274,8 +3245,11 @@ ${tmpl.dynamicPrompt}
         contract,
         protagonistName,
         prepared: closure.prepared,
+        progressVerification: closure.progressVerification,
       });
-      if (closure.verifiedHooks.length) applyHookAudit(novel, chNum, { hooksResolved: closure.verifiedHooks }, chapterResult.content);
+      if (closure.verifiedHooks.length) applyHookAudit(novel, chNum, { hooksResolved: closure.verifiedHooks }, chapterResult.content,
+        { verified: contract.verifyHookResolution });
+      if (closure.endingVerification) novel.chapters.at(-1).qualityReport.endingVerification = closure.endingVerification;
       if (endingCheck.openingReport) novel.chapters.at(-1).qualityReport.openingRepetition = endingCheck.openingReport;
       if (endingCheck.report) novel.chapters[novel.chapters.length - 1].qualityReport.endingRepetition = endingCheck.report;
       if (styleSelection.record) {
@@ -2290,13 +3264,13 @@ ${tmpl.dynamicPrompt}
       // 章末结构化自评：语义级修正伏笔回收/补录并更新角色状态，失败静默保留启发式结果
       // 零 token 预筛：无可对账伏笔且正文无新悬念时跳过这次推理调用。
       const auditGate = shouldAuditChapterHooks({ novel, contract, content: chapterResult.content });
-      if (!closure.verifiedHooks.length && auditGate.audit) {
+      if (!contract.requireEndingVerification && auditGate.audit && (!contract.closing || !closure.verifiedHooks.length)) {
         await auditChapterHooks({
-          user: req.user, modelConfig: req.userModelConfig, novel, chapterNumber: chNum, content: chapterResult.content,
+          req, res, novel, chapterNumber: chNum, content: chapterResult.content,
           contract, signal: abortController.signal,
           onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats, chapterTokenStats),
         });
-      } else if (!closure.verifiedHooks.length) {
+      } else if (!contract.requireEndingVerification && !closure.verifiedHooks.length) {
         console.log(`[HookAudit] 第${chNum}章跳过自评：${auditGate.reason}`);
       }
       // 伏笔审计也是本章成本的一部分，必须在审计之后再生成章节快照，
@@ -2327,7 +3301,7 @@ ${tmpl.dynamicPrompt}
       await refreshGenerationMemory({ req, res, novel, signal: abortController.signal });
       if (isBook) {
         // ====== 整本模式：严格按结构化章节计划创作 ======
-        let totalPlannedChapters = getTotalPlannedChapters(planData, targetWordCount);
+        let totalPlannedChapters = targetChapterCount ?? getTotalPlannedChapters(planData, targetWordCount);
         let planExtensions = 0;
 
         for (let ch = 1; ch <= totalPlannedChapters; ch++) {
@@ -2347,6 +3321,7 @@ ${tmpl.dynamicPrompt}
             chapterNumber: ch,
             totalChapters: totalPlannedChapters,
             closingBook: true,
+            requireEndingVerification: Boolean(targetChapterCount),
             planData,
             currentWords: currentTotal,
             targetWords: targetWordCount,
@@ -2374,13 +3349,9 @@ ${tmpl.dynamicPrompt}
           const chPrompt = `${buildStableChapterHead({ typeName: type.name, protagonistName, worldSetting, styleAnchor: styleContinuityAnchor, contextFromDocs: executionContext.stableContext })}
 ${buildChapterTail({
             contract, planData, ch, novel, totalPlannedChapters,
-            currentTotal, targetWordCount, styleAnchor: styleContinuityAnchor,
+            styleAnchor: styleContinuityAnchor,
             dynamicContext: executionContext.dynamicContext,
-            variant: `1. 只完成本章的唯一核心事件，并让因果、人物选择和章末状态自然衔接。
-2. 用具体动作、感官和可见后果推进，不复述前情，不用抽象总结代替戏剧动作。
-3. 对话应符合角色认知、关系和当下情绪，保留潜台词与停顿，但不要靠随机吐槽、走神或口头禅伪造人味。
-4. 段落与句长随场景自然变化；沉重题材的喘息只能服务关系、信息或伏笔，不能突兀搞笑。
-5. 不输出章节标题、提纲、说明或“【未完待续】”标签；收尾执行契约中的收尾要求，开头可衔接上一章末尾但不复刻它的收尾。`,
+            wordTargetReached: currentTotal >= targetWordCount,
           })}`;
 
           await generateOneChapter(ch, chPrompt, contract);
@@ -2409,16 +3380,13 @@ ${buildChapterTail({
           return;
         }
 
-        const finalCompletion = assessStoryCompletion(novel, planData, targetWordCount);
+        const finalCompletion = assessBookCompletion(novel, planData, targetWordCount);
         if (!finalCompletion.complete) {
           novel.status = 'paused';
           await saveNovelDoc(novel);
           await settleGenerationRun(generationRun, 'paused', { phase: 'plan_required', lastCommittedChapter: getHighestChapterNumber(novel) });
-          const blockers = [];
-          if (!finalCompletion.wordTargetReached) blockers.push(`当前 ${finalCompletion.currentWords}/${finalCompletion.wordTarget} 字，仍未达到目标字数`);
-          if (finalCompletion.missingChapters.length) blockers.push(`尚未执行计划第 ${finalCompletion.missingChapters.join('、')} 章`);
-          if (finalCompletion.unresolvedHooks.length) blockers.push(`仍有 ${finalCompletion.unresolvedHooks.length} 条计划伏笔未回收`);
-          try { res.write(`data: ${JSON.stringify({ type: 'plan_needs_extension', message: `${blockers.join('；')}。已暂停，请扩展或修订章节计划后继续。` })}\n\n`); res.end(); } catch {}
+          const blockers = bookCompletionBlockers(finalCompletion, targetChapterCount);
+          try { res.write(`data: ${JSON.stringify({ type: 'plan_needs_extension', message: `${blockers}。已暂停，可继续处理未完成的章节或结局。` })}\n\n`); res.end(); } catch {}
           return;
         }
 
@@ -2426,7 +3394,7 @@ ${buildChapterTail({
         novel.status = 'completed';
         await saveNovelDoc(novel);
         await settleGenerationRun(generationRun, 'completed', { lastCommittedChapter: getHighestChapterNumber(novel), draft: '' });
-        res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount, targetChapterCount })}\n\n`);
         res.end();
 
       } else {
@@ -2442,7 +3410,7 @@ ${buildChapterTail({
         });
         // 单章模式同样走分层大纲：大纲中段已由章节契约与剧情脉络承载，不必逐字重发。
         const singleChapterOutline = renderOutlineForContext(outline, 1, getTotalPlannedChapters(planData, targetWordCount));
-        const userPrompt = `${buildInitialPrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, mode, singleChapterOutline, persona, type)}\n\n${renderChapterContract(contract)}\n\n${styleContinuityAnchor}\n\n请只输出正文，用具体事件和人物选择完成这章，不输出标题、提纲或“【未完待续】”标签。`;
+        const userPrompt = `${buildInitialPrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, mode, singleChapterOutline, persona, type)}\n\n${renderChapterContract(contract)}\n\n${styleContinuityAnchor}\n\n${CHAPTER_PROSE_ONLY}`;
         await generateOneChapter(1, userPrompt, contract);
 
         generationDone = true;
@@ -2464,7 +3432,8 @@ ${buildChapterTail({
       await saveNovelDoc(novel);
       const resumable = isAbort || streamError?.resumable === true;
       await settleGenerationRun(generationRun, resumable ? 'paused' : 'failed', {
-        phase: isAbort ? 'paused' : (resumable ? 'stream_interrupted' : 'failed'),
+        phase: isAbort ? 'paused' : streamError?.code === 'ENDING_HOOKS_UNRESOLVED' ? 'ending_review'
+          : streamError?.code === 'CHAPTER_PROGRESS_BLOCKED' ? 'chapter_progress_review' : (resumable ? 'stream_interrupted' : 'failed'),
         error: resumable ? null : { message: streamError?.message || 'Generation failed' },
         lastCommittedChapter: getHighestChapterNumber(novel),
       });
@@ -2518,10 +3487,16 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       return res.status(404).json({ message: '小说不存在' });
     }
 
+    const targetChapterCount = getFixedChapterCount(novel);
+    if (targetChapterCount && getHighestChapterNumber(novel) > targetChapterCount) {
+      return res.status(409).json({ message: `当前作品已超过锁定的 ${targetChapterCount} 章，现有章节已保留。请校对现有章节范围后再续写。` });
+    }
     if (novel.status === 'completed') {
       const targetCount = Number(novel.targetWordCount) || 50000;
       const finishingHooks = req.body.mode === 'book' && openStoryHooks(novel.foreshadowingLedger, getHighestChapterNumber(novel) + 1).length;
-      if (getCompletedWordCount(novel) >= targetCount && !finishingHooks) {
+      const complete = targetChapterCount ? assessBookCompletion(novel, readChapterPlan(novel), targetCount).complete
+        : getCompletedWordCount(novel) >= targetCount && !finishingHooks;
+      if (complete) {
         return res.status(400).json({ message: '小说已生成完成' });
       }
       console.log(`[Continue] 小说 ${novel._id} 恢复续写以补齐字数或回收伏笔`);
@@ -2552,7 +3527,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       throw error;
     }
 
-    const mode = req.body.mode || 'chapter'; // 'chapter' | 'book'
+    const mode = targetChapterCount && getHighestChapterNumber(novel) === targetChapterCount ? 'book' : req.body.mode || 'chapter';
     const persona = await resolveNovelPersona(req.userId, novel);
 
     // 系统提示词
@@ -2576,9 +3551,11 @@ router.post('/continue/:novelId', auth, async (req, res) => {
     const researchMarker = '【联网取材参考';
     const researchIndex = cachedSystemPrompt.indexOf(researchMarker);
     const cachedResearch = researchIndex >= 0 ? cachedSystemPrompt.slice(researchIndex) : '';
+    const naturalVoice = deslop.styleFloorPrompt.trim();
+    const cachedVoice = cachedSystemPrompt.includes(naturalVoice) ? '' : `\n\n${naturalVoice}`;
     const systemPrompt = novel.typeSku
       ? `${currentSystemPrompt}${referencePrompt}${cachedResearch ? `\n\n${cachedResearch}` : ''}`
-      : `${cachedSystemPrompt}\n\n${buildGenreContract(novel.novelTypeId || novel.novelTypeName, contType)}`;
+      : `${cachedSystemPrompt}\n\n${buildGenreContract(novel.novelTypeId || novel.novelTypeName, contType)}${cachedVoice}`;
     if (novel.typeSku && novel.generationContext !== systemPrompt) novel.generationContext = systemPrompt;
     const typeName = novel.novelTypeName || '未知';
     const protagonistName = novel.protagonistName || '';
@@ -2595,9 +3572,9 @@ router.post('/continue/:novelId', auth, async (req, res) => {
     );
     let planData = ensureExecutableChapterPlan(novel, targetWordCount);
     const highestChapter = getHighestChapterNumber(novel);
-    const completionAtResume = assessStoryCompletion(novel, planData, targetWordCount);
+    const completionAtResume = assessBookCompletion(novel, planData, targetWordCount);
     const pendingAtResume = openStoryHooks(novel.foreshadowingLedger, highestChapter + 1);
-    const needsClosingChapter = mode === 'book' && highestChapter > 0 && completionAtResume.wordTargetReached
+    const needsClosingChapter = !targetChapterCount && mode === 'book' && highestChapter > 0 && completionAtResume.wordTargetReached
       && !completionAtResume.missingChapters.length && pendingAtResume.length > 0;
     if (needsClosingChapter) {
       // The prior ending is already published. Preserve it and plan exactly
@@ -2632,7 +3609,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       'X-Accel-Buffering': 'no',
     });
 
-    res.write(`data: ${JSON.stringify({ type: 'continue_start', novelId: novel._id })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'continue_start', novelId: novel._id, targetChapterCount })}\n\n`);
     res.write(`data: ${JSON.stringify({ type: 'generation_job', jobId: valueOf(generationRun.job, 'jobId'), status: 'running' })}\n\n`);
     if (needsClosingChapter) {
       res.write(`data: ${JSON.stringify({ type: 'status', message: `正在安排终章回收 ${pendingAtResume.length} 条尚未解决的伏笔...` })}\n\n`);
@@ -2669,7 +3646,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       const styleSelection = buildRevisionSampleBlock(novel.styleRevisionSnapshot, chNum);
 
       let contResult = null;
-      if (!(buffer && ['reviewing', 'draft_complete'].includes(resumedPhase))) {
+      if (!(buffer && ['reviewing', 'draft_complete', 'ending_review', 'chapter_progress_review'].includes(resumedPhase))) {
         contResult = await generateChapterDraft({ run: generationRun, req, res, novel,
           systemPrompt: systemPrompt + styleSelection.block, prompt, chapterNumber: chNum, contract,
           checkpoint, readDraft: () => buffer, chapterTokenStats, onChunk: (chunk) => {
@@ -2686,7 +3663,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
 
       let chapterContent = buffer;
       let expertReview = null;
-      if (novel.expertMode) {
+      if (novel.expertMode && !['ending_review', 'chapter_progress_review'].includes(resumedPhase)) {
         const gate = localExpertGate(buffer);
         if (gate.gate) {
           console.log(`[Expert] 第${chNum}章本地质检通过（${gate.reason}），跳过推理审稿`);
@@ -2712,14 +3689,17 @@ router.post('/continue/:novelId', auth, async (req, res) => {
         req, res, novel, chapterNumber: chNum, content: chapterContent,
         systemPrompt: systemPrompt + styleSelection.block, signal: abortController.signal, chapterTokenStats,
       });
-      const closure = await verifyBookEnding({ req, res, novel, chapterNumber: chNum, content: endingCheck.content, contract,
-        systemPrompt: systemPrompt + styleSelection.block, signal: abortController.signal, chapterTokenStats });
+      const saveReviewedDraft = async (draft, phase = 'ending_review', draftReview) => {
+        const changed = draft !== buffer;
+        buffer = draft;
+        await checkpoint.flush(phase, { draftReview });
+        if (changed) sendChapterRevision(res, chNum, draft);
+      };
+      const closure = await verifyGeneratedChapter({ req, res, novel, chapterNumber: chNum, content: endingCheck.content, contract,
+        systemPrompt: systemPrompt + styleSelection.block, signal: abortController.signal, chapterTokenStats, saveReviewedDraft,
+        draftReview: valueOf(generationRun.job, 'draftReview') });
       chapterContent = closure.content;
-      if (endingCheck.report || endingCheck.openingReport || chapterContent !== buffer) {
-        buffer = chapterContent;
-        await checkpoint.flush('draft_complete');
-        try { res.write(`data: ${JSON.stringify({ type: 'expert_revision', chapterNumber: chNum, content: chapterContent })}\n\n`); } catch {}
-      }
+      if (chapterContent !== buffer) await saveReviewedDraft(chapterContent, 'draft_complete');
       const chapterResult = finalizeGeneratedChapter({
         novel,
         chapterNumber: chNum,
@@ -2727,8 +3707,11 @@ router.post('/continue/:novelId', auth, async (req, res) => {
         contract,
         protagonistName,
         prepared: closure.prepared,
+        progressVerification: closure.progressVerification,
       });
-      if (closure.verifiedHooks.length) applyHookAudit(novel, chNum, { hooksResolved: closure.verifiedHooks }, chapterResult.content);
+      if (closure.verifiedHooks.length) applyHookAudit(novel, chNum, { hooksResolved: closure.verifiedHooks }, chapterResult.content,
+        { verified: contract.verifyHookResolution });
+      if (closure.endingVerification) novel.chapters.at(-1).qualityReport.endingVerification = closure.endingVerification;
       if (endingCheck.openingReport) novel.chapters.at(-1).qualityReport.openingRepetition = endingCheck.openingReport;
       if (endingCheck.report) novel.chapters[novel.chapters.length - 1].qualityReport.endingRepetition = endingCheck.report;
       if (styleSelection.record) {
@@ -2743,13 +3726,13 @@ router.post('/continue/:novelId', auth, async (req, res) => {
       // 章末结构化自评：语义级修正伏笔回收/补录并更新角色状态，失败静默保留启发式结果
       // 零 token 预筛：无可对账伏笔且正文无新悬念时跳过这次推理调用。
       const auditGate = shouldAuditChapterHooks({ novel, contract, content: chapterResult.content });
-      if (!closure.verifiedHooks.length && auditGate.audit) {
+      if (!contract.requireEndingVerification && auditGate.audit && (!contract.closing || !closure.verifiedHooks.length)) {
         await auditChapterHooks({
-          user: req.user, modelConfig: req.userModelConfig, novel, chapterNumber: chNum, content: chapterResult.content,
+          req, res, novel, chapterNumber: chNum, content: chapterResult.content,
           contract, signal: abortController.signal,
           onUsage: (role, stats) => emitTokenUsage(res, novel, role, stats, chapterTokenStats),
         });
-      } else if (!closure.verifiedHooks.length) {
+      } else if (!contract.requireEndingVerification && !closure.verifiedHooks.length) {
         console.log(`[HookAudit] 第${chNum}章跳过自评：${auditGate.reason}`);
       }
       const chapterTokens = summarizeChapterTokens(chapterTokenStats);
@@ -2774,7 +3757,6 @@ router.post('/continue/:novelId', auth, async (req, res) => {
     }
 
     try {
-      await refreshGenerationMemory({ req, res, novel, signal: abortController.signal });
       if (mode === 'book') {
         // ====== 整本模式：循环生成多章直到目标字数 ======
         if (!planData.chapters.length) {
@@ -2787,19 +3769,24 @@ router.post('/continue/:novelId', auth, async (req, res) => {
           return;
         }
 
-        const beforeCompletion = assessStoryCompletion(novel, planData, targetWordCount);
+        let beforeCompletion = assessBookCompletion(novel, planData, targetWordCount);
+        if (targetChapterCount && !beforeCompletion.complete && !beforeCompletion.missingChapters.length && !beforeCompletion.unexpectedChapters.length) {
+          await repairCommittedEnding({ req, res, novel, chapterNumber: targetChapterCount, planData, generationRun, systemPrompt });
+          beforeCompletion = assessBookCompletion(novel, planData, targetWordCount);
+        }
         if (beforeCompletion.complete) {
           generationDone = true;
           novel.status = 'completed';
           await saveNovelDoc(novel);
           await settleGenerationRun(generationRun, 'completed', { lastCommittedChapter: getHighestChapterNumber(novel), draft: '' });
-          res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount, targetChapterCount })}\n\n`);
           res.end();
           return;
         }
 
+        await refreshGenerationMemory({ req, res, novel, signal: abortController.signal });
         const startCh = getHighestChapterNumber(novel) + 1;
-        let totalPlannedChapters = getTotalPlannedChapters(planData, targetWordCount, startCh - 1);
+        let totalPlannedChapters = targetChapterCount ?? getTotalPlannedChapters(planData, targetWordCount, startCh - 1);
         let planExtensions = 0;
         if (planData.chapters.length && startCh > totalPlannedChapters) {
           const completion = beforeCompletion;
@@ -2829,6 +3816,7 @@ router.post('/continue/:novelId', auth, async (req, res) => {
             chapterNumber: ch,
             totalChapters: totalPlannedChapters,
             closingBook: true,
+            requireEndingVerification: Boolean(targetChapterCount),
             planData,
             currentWords: curTotal,
             targetWords: targetWordCount,
@@ -2853,12 +3841,9 @@ router.post('/continue/:novelId', auth, async (req, res) => {
           const chPrompt = `${buildStableChapterHead({ typeName, protagonistName, worldSetting, styleAnchor: styleContinuityAnchor, contextFromDocs: executionContext.stableContext })}
 ${buildChapterTail({
             contract, planData, ch, novel, totalPlannedChapters,
-            currentTotal: curTotal, targetWordCount, styleAnchor: styleContinuityAnchor,
+            styleAnchor: styleContinuityAnchor,
             dynamicContext: executionContext.dynamicContext,
-            variant: `1. 只完成本章唯一核心事件，推进至少一条主线或关系线，不复述已有剧情。
-2. 通过行动、因果和人物选择衔接上一章；避免百科式解释、空泛升华和流水账。
-3. 对话要符合人物认知与关系，有潜台词和自然停顿，但不靠随机吐槽或突兀搞笑制造人味。
-4. 重题材的喘息内容必须带来关系、信息或伏笔变化；不输出标题、提纲或“【未完待续】”标签。`,
+            wordTargetReached: curTotal >= targetWordCount,
           })}`;
 
           await generateOneChapter(ch, chPrompt, contract);
@@ -2907,17 +3892,14 @@ ${buildChapterTail({
           try { res.write(`data: ${JSON.stringify({ type: 'paused', message: `当前 ${getCompletedWordCount(novel)}/${targetWordCount} 字，已暂停，可再次点击续写` })}\n\n`); res.end(); } catch {}
           return;
         }
-        const finalCompletion = assessStoryCompletion(novel, planData, targetWordCount);
+        const finalCompletion = assessBookCompletion(novel, planData, targetWordCount);
         if (!finalCompletion.complete) {
           novel.status = 'paused';
           await saveNovelDoc(novel);
           generationDone = true;
           await settleGenerationRun(generationRun, 'paused', { phase: 'plan_required', lastCommittedChapter: getHighestChapterNumber(novel) });
-          const blockers = [];
-          if (!finalCompletion.wordTargetReached) blockers.push(`当前 ${finalCompletion.currentWords}/${finalCompletion.wordTarget} 字，仍未达到目标字数`);
-          if (finalCompletion.missingChapters.length) blockers.push(`尚未执行计划第 ${finalCompletion.missingChapters.join('、')} 章`);
-          if (finalCompletion.unresolvedHooks.length) blockers.push(`仍有 ${finalCompletion.unresolvedHooks.length} 条计划伏笔未回收`);
-          try { res.write(`data: ${JSON.stringify({ type: 'plan_needs_extension', message: `${blockers.join('；')}。已暂停，请扩展或修订章节计划后继续。` })}\n\n`); res.end(); } catch {}
+          const blockers = bookCompletionBlockers(finalCompletion, targetChapterCount);
+          try { res.write(`data: ${JSON.stringify({ type: 'plan_needs_extension', message: `${blockers}。已暂停，可继续处理未完成的章节或结局。` })}\n\n`); res.end(); } catch {}
           return;
         }
 
@@ -2925,17 +3907,21 @@ ${buildChapterTail({
         novel.status = 'completed';
         await saveNovelDoc(novel);
         await settleGenerationRun(generationRun, 'completed', { lastCommittedChapter: getHighestChapterNumber(novel), draft: '' });
-        res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount, targetChapterCount })}\n\n`);
         res.end();
 
       } else {
         // ====== 单章模式：复用整本生成的契约、质量与持久化逻辑 ======
+        await refreshGenerationMemory({ req, res, novel, signal: abortController.signal });
         const chapterNumber = getHighestChapterNumber(novel) + 1;
-        const totalPlannedChapters = getTotalPlannedChapters(planData, targetWordCount, chapterNumber - 1);
+        const totalPlannedChapters = targetChapterCount ?? getTotalPlannedChapters(planData, targetWordCount, chapterNumber - 1);
+        if (targetChapterCount && !await prepareDetailedChapterPlan({ req, res, novel, planData, ch: chapterNumber, totalPlannedChapters, signal: abortController.signal, generationRun })) return;
         const contract = buildChapterContract({
           novel,
           chapterNumber,
           totalChapters: totalPlannedChapters,
+          closingBook: Boolean(targetChapterCount),
+          requireEndingVerification: Boolean(targetChapterCount),
           planData,
           currentWords: getCompletedWordCount(novel),
           targetWords: targetWordCount,
@@ -2943,7 +3929,8 @@ ${buildChapterTail({
         });
         // 单章续写同样按进度分层注入大纲，避免长篇大纲整份重发。
         const singleChapterOutline = renderOutlineForContext(outline, chapterNumber, totalPlannedChapters);
-        const userPrompt = `${buildContinuePrompt(novel._id, novel, persona, singleChapterOutline)}\n\n${renderChapterContract(contract)}\n\n${styleContinuityAnchor}\n\n仅输出正文。严格承接上一章，完成本章唯一核心事件；用人物行动和具体后果推进，不输出标题、提纲或“【未完待续】”标签。`;
+        const notes = targetChapterCount && typeof req.body.notes === 'string' ? req.body.notes.trim().slice(0, 2000) : '';
+        const userPrompt = `${buildContinuePrompt(novel._id, novel, persona, singleChapterOutline)}\n\n${renderChapterContract(contract)}\n\n${styleContinuityAnchor}${notes ? `\n\n【补充写作要求】在遵守本章计划的前提下执行：${notes}` : ''}\n\n${CHAPTER_PROSE_ONLY}`;
         await generateOneChapter(chapterNumber, userPrompt, contract);
 
         if (abortController.signal.aborted) {
@@ -2955,12 +3942,12 @@ ${buildChapterTail({
         }
 
         generationDone = true;
-        // completed 事件表示本次单章请求完成；作品仍可继续追加后续章节。
-        novel.status = 'paused';
+        // completed 事件表示本次请求完成，固定章数的作品也可能在本章完结。
+        novel.status = targetChapterCount && assessBookCompletion(novel, planData, targetWordCount).complete ? 'completed' : 'paused';
         await saveNovelDoc(novel);
         await settleGenerationRun(generationRun, 'completed', { lastCommittedChapter: getHighestChapterNumber(novel), draft: '' });
 
-        res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'completed', novelId: novel._id, totalWordCount: novel.currentWordCount, targetChapterCount })}\n\n`);
         res.end();
       }
     } catch (streamError) {
@@ -2973,7 +3960,8 @@ ${buildChapterTail({
       generationDone = true;
       const resumable = isAbort || streamError?.resumable === true;
       await settleGenerationRun(generationRun, resumable ? 'paused' : 'failed', {
-        phase: isAbort ? 'paused' : (resumable ? 'stream_interrupted' : 'failed'),
+        phase: isAbort ? 'paused' : streamError?.code === 'ENDING_HOOKS_UNRESOLVED' ? 'ending_review'
+          : streamError?.code === 'CHAPTER_PROGRESS_BLOCKED' ? 'chapter_progress_review' : (resumable ? 'stream_interrupted' : 'failed'),
         error: resumable ? null : { message: streamError?.message || 'Generation failed' },
         lastCommittedChapter: getHighestChapterNumber(novel),
       });
@@ -3018,6 +4006,7 @@ router.post('/continue-import', auth, async (req, res) => {
     if (novelId) {
       novel = await Novel.findOne({ _id: novelId, userId: req.userId });
       if (!novel) return res.status(404).json({ message: '原小说不存在' });
+      if (getFixedChapterCount(novel)) return res.status(409).json({ message: '这部作品已有固定章节计划，请从作品的继续生成入口按计划续写。' });
       isAppend = true;
     } else {
       const novelTitle = title || `续写：${typeName}小说`;
@@ -3260,9 +4249,13 @@ router.post('/continue-import', auth, async (req, res) => {
 router.get('/bookshelf', auth, async (req, res) => {
   try {
     const novels = await Novel.find({ userId: req.userId })
-      .select('-chapters -generationInput')
+      .select('-chapters')
       .sort({ updatedAt: -1 });
-    res.json(novels);
+    res.json(novels.map(novel => {
+      const { generationInput, ...view } = novel.toObject();
+      view.targetChapterCount = getFixedChapterCount({ targetChapterCount: view.targetChapterCount, generationInput });
+      return view;
+    }));
   } catch (error) {
     res.status(500).json({ message: '获取书架失败' });
   }
@@ -3344,7 +4337,7 @@ router.get('/:novelId/blueprint', auth, async (req, res) => {
   try {
     const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
     if (!novel) return res.status(404).json({ message: '小说不存在' });
-    const total = getTotalPlannedChapters(parseChapterPlan(novel.chapterPlanData || novel.chapterPlan || ''), novel.targetWordCount);
+    const total = getFixedChapterCount(novel) ?? getTotalPlannedChapters(readChapterPlan(novel), novel.targetWordCount);
     ensureStoryBlueprint(novel, total);
     if (!Array.isArray(novel.storyBlueprintProposals)) novel.storyBlueprintProposals = [];
     await saveNovelDoc(novel);
@@ -3358,7 +4351,7 @@ router.put('/:novelId/blueprint/settings', auth, async (req, res) => {
   try {
     const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
     if (!novel) return res.status(404).json({ message: '小说不存在' });
-    const total = getTotalPlannedChapters(parseChapterPlan(novel.chapterPlanData || novel.chapterPlan || ''), novel.targetWordCount);
+    const total = getFixedChapterCount(novel) ?? getTotalPlannedChapters(readChapterPlan(novel), novel.targetWordCount);
     const blueprint = ensureStoryBlueprint(novel, total);
     if (req.body?.autoReviewEnabled !== undefined) blueprint.autoReviewEnabled = Boolean(req.body.autoReviewEnabled);
     if (req.body?.emailReminderEnabled !== undefined) blueprint.emailReminderEnabled = Boolean(req.body.emailReminderEnabled);
@@ -3394,11 +4387,12 @@ router.post('/:novelId/blueprint/proposals/:proposalId/decision', auth, async (r
   try {
     const novel = await Novel.findOne({ _id: req.params.novelId, userId: req.userId });
     if (!novel) return res.status(404).json({ message: '小说不存在' });
+    if (await rejectBusyNovelMutation(res, novel._id)) return;
     const proposal = (novel.storyBlueprintProposals || []).find((item) => item.id === req.params.proposalId);
     if (!proposal) return res.status(404).json({ message: '剧情蓝图提案不存在' });
     if (!['apply', 'reject'].includes(req.body?.decision)) return res.status(400).json({ message: '无效的提案操作' });
     if (proposal.status !== 'pending') return res.status(400).json({ message: '该提案已经处理过了' });
-    const total = getTotalPlannedChapters(parseChapterPlan(novel.chapterPlanData || novel.chapterPlan || ''), novel.targetWordCount);
+    const total = getFixedChapterCount(novel) ?? getTotalPlannedChapters(readChapterPlan(novel), novel.targetWordCount);
     if (req.body.decision === 'apply') {
       applyStoryBlueprint(novel, proposal.proposedBlueprint, total);
       novel.storyBlueprint.lastAppliedAt = new Date();
@@ -3484,6 +4478,7 @@ router.get('/:novelId', auth, async (req, res) => {
     if (!novel) {
       return res.status(404).json({ message: '小说不存在' });
     }
+    const targetChapterCount = getFixedChapterCount(novel);
     // Repair missing titles and our old fallback placeholders locally. During
     // generation, return a repaired copy so a read cannot overwrite chapters
     // that another worker is currently committing.
@@ -3491,6 +4486,7 @@ router.get('/:novelId', auth, async (req, res) => {
       const view = novel.toObject();
       repairDuplicateChapters(view);
       ensureChapterTitles(view);
+      view.targetChapterCount = targetChapterCount;
       return res.json(view);
     }
     const repairedChapters = repairDuplicateChapters(novel);
@@ -3500,7 +4496,7 @@ router.get('/:novelId', auth, async (req, res) => {
       try { await novel.save(); }
       catch (error) { if (error?.name !== 'VersionError') throw error; }
     }
-    res.json(novel);
+    res.json({ ...novel.toObject(), targetChapterCount });
   } catch (error) {
     res.status(500).json({ message: '获取小说详情失败' });
   }
@@ -3646,12 +4642,26 @@ router.delete('/:novelId/chapter/:chapterNumber', auth, async (req, res) => {
     const chNum = Number(req.params.chapterNumber);
     const idx = novel.chapters.findIndex(c => c.chapterNumber === chNum);
     if (idx === -1) return res.status(404).json({ message: '章节不存在' });
+    const targetChapterCount = getFixedChapterCount(novel);
+    if (targetChapterCount && chNum !== getHighestChapterNumber(novel)) {
+      return res.status(409).json({ message: '固定章节计划只支持删除最新一章，请在原位编辑其他章节。' });
+    }
 
     const removed = novel.chapters.splice(idx, 1)[0];
     novel.currentWordCount = Math.max(0, novel.currentWordCount - (removed.wordCount || 0));
-    // 重排章节号
-    novel.chapters.forEach((c, i) => { c.chapterNumber = i + 1; });
-    novel.currentChapterIndex = novel.chapters.length;
+    if (targetChapterCount) {
+      novel.status = 'paused';
+      novel.foreshadowingLedger = (novel.foreshadowingLedger || []).filter(hook => Number(hook.setChapter) !== chNum || hook.status === 'planned');
+      for (const hook of novel.foreshadowingLedger) {
+        if (Number(hook.resolvedChapter) !== chNum) continue;
+        Object.assign(hook, { status: 'pending', stage: 'due', resolvedChapter: 0, resolution: '', resolutionEvidence: '' });
+      }
+      novel.emotionCurve = (novel.emotionCurve || []).filter(item => Number(item.chapterNumber) !== chNum);
+      novel.recentEventSignatures = novel.chapters.slice(-5).map(chapter => extractEventSignature(chapter.content)).filter(Boolean);
+    } else {
+      novel.chapters.forEach((chapter, index) => { chapter.chapterNumber = index + 1; });
+    }
+    novel.currentChapterIndex = getHighestChapterNumber(novel);
     rebuildNovelContextDocs(novel);
     await saveNovelDoc(novel);
     res.json({ message: '章节已删除', chapters: novel.chapters, currentWordCount: novel.currentWordCount, currentChapterIndex: novel.currentChapterIndex });
@@ -3691,6 +4701,10 @@ router.post('/:novelId/continue-chapter/:chapterNumber', auth, async (req, res) 
     if (!novel) return res.status(404).json({ message: '小说不存在' });
     const chNum = Number(req.params.chapterNumber);
     if (!Number.isSafeInteger(chNum) || chNum < 1) return res.status(400).json({ message: '章节号无效' });
+    const targetChapterCount = getFixedChapterCount(novel);
+    if (targetChapterCount && (chNum >= targetChapterCount || !novel.chapters.some(chapter => Number(chapter.chapterNumber) === chNum))) {
+      return res.status(409).json({ message: '固定章数作品的新章节和终章必须从继续生成入口按计划处理。' });
+    }
     const { wordCount, notes } = req.body;
 
     generationRun = reserveGenerationRun(novel._id, 'novel');
@@ -4005,7 +5019,6 @@ router.post('/match-templates', auth, async (req, res) => {
 });
 
 // ====== 去AI味 ======
-const deslop = require('../config/deslop');
 
 // 对文本进行去AI味处理
 router.post('/deslop', auth, async (req, res) => {

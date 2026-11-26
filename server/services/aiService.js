@@ -6,6 +6,8 @@ const { getServerRoute } = require('../config/modelCatalog');
 const { getRequestModelConfig } = require('./requestContext');
 const { buildSemanticContext, renderSemanticContext } = require('./semanticMemory');
 const { createChapterContinuationWriter } = require('./chapterStreamRecovery');
+const { getClosingWindowStart } = require('./storyState');
+const { normalizeTargetChapterCount } = require('./bookChapterCount');
 const {
   resolveThinkingPolicy,
   thinkingFieldCandidates,
@@ -462,10 +464,14 @@ function normalizeChapterWordTarget(value) {
   return Math.max(2000, Math.min(20000, Math.round(target)));
 }
 
-function getOutlineRequirements(targetWordCount, chapterWordTarget) {
+function getOutlineRequirements(targetWordCount, chapterWordTarget, targetChapterCount) {
   const target = Math.max(10000, Math.min(10000000, Number(targetWordCount) || 50000));
-  const scale = Math.min(1, Math.max(0, (target - 50000) / 950000));
-  const phaseCount = target <= 50000 ? 4 : Math.max(5, Math.min(12, Math.ceil(4 + scale * 8)));
+  const fixed = normalizeTargetChapterCount(targetChapterCount);
+  const chapterWords = normalizeChapterWordTarget(chapterWordTarget);
+  const estChapters = fixed || Math.max(1, Math.ceil(target / chapterWords));
+  const scaleWords = fixed ? Math.max(target, estChapters * 3000) : target;
+  const scale = Math.min(1, Math.max(0, (scaleWords - 50000) / 950000));
+  const phaseCount = scaleWords <= 50000 ? 4 : Math.max(5, Math.min(12, Math.ceil(4 + scale * 8)));
   const nodeCount = Math.max(12, Math.min(80, Math.round(14 + scale * 56)));
   const characterCount = Math.max(8, Math.min(40, Math.round(10 + scale * 30)));
   // 超长篇需要更大的总角色池，但不能强迫模型一次性给四十人写完整档案；
@@ -478,29 +484,37 @@ function getOutlineRequirements(targetWordCount, chapterWordTarget) {
   const configuredTokens = Number(process.env.AI_OUTLINE_MAX_TOKENS);
   const outputTokens = Number.isFinite(configuredTokens) && configuredTokens >= MIN_CONTENT_TOKENS
     ? Math.min(MAX_GENERATION_TOKENS, Math.floor(configuredTokens)) : 131072;
-  const chapterWords = normalizeChapterWordTarget(chapterWordTarget);
-  const estChapters = Math.max(1, Math.ceil(target / chapterWords));
+  if (fixed) {
+    return { target, phaseCount: Math.min(phaseCount, estChapters), nodeCount: Math.min(nodeCount, estChapters * 2),
+      characterCount: Math.min(characterCount, estChapters + 2), coreCharacterCount: Math.min(coreCharacterCount, estChapters + 1),
+      subplotCount: Math.min(subplotCount, Math.floor(estChapters / 3)), outlineChars, outputTokens, chapterWords, estChapters };
+  }
   return { target, phaseCount, nodeCount, characterCount, coreCharacterCount, subplotCount, outlineChars, outputTokens, chapterWords, estChapters };
 }
 
-function buildOutlineSpec(targetWordCount, chapterWordTarget) {
-  const requirements = getOutlineRequirements(targetWordCount, chapterWordTarget);
+function buildOutlineSpec(requirements, fixed) {
+  const chapterLimit = requirements.estChapters;
+  const closingStart = getClosingWindowStart(chapterLimit);
+  const hookCount = Math.max(8, Math.round(requirements.nodeCount * 0.45));
+  const subplotTarget = requirements.subplotCount ? `至少${requirements.subplotCount}条可交叉推进的支线` : '聚焦主线与主要人物';
   const chapterPacing = requirements.chapterWords >= 6000
     ? `本书每章约${requirements.chapterWords}字，属于大章节奏：每个关键节点应承载完整的信息链（现场/线索→推理或冲突→新问题），不要把一个大章拆成多个重复场景，也不要压缩成流水账。`
     : `本书每章约${requirements.chapterWords}字，保持紧凑节奏：每个关键节点对应明确的场景推进，避免一章内塞入过多事件。`;
-  return `【按目标字数动态规划的规模】
-目标约${requirements.target}字，预计需要${requirements.estChapters}章（每章约${requirements.chapterWords}字）。不要套用固定模板，必须完成：${requirements.phaseCount}个剧情阶段、约${requirements.nodeCount}个关键节点、${requirements.coreCharacterCount}名核心常驻角色、全书约${requirements.characterCount}名有明确功能的主要/阶段配角、至少${requirements.subplotCount}条可交叉推进的支线。规模必须随目标字数增长，但不要在开篇一次性塞满总角色池：阶段配角只在其所属阶段首次出现并获得档案。
+  return `【全书规划规模】
+目标约${requirements.target}字，${fixed ? `全书固定${chapterLimit}章` : `预计需要${chapterLimit}章`}（每章约${requirements.chapterWords}字）。根据故事安排${requirements.phaseCount}个剧情阶段、约${requirements.nodeCount}个关键节点、${requirements.coreCharacterCount}名核心常驻角色、全书约${requirements.characterCount}名有明确功能的主要/阶段配角，${subplotTarget}。避免套用固定模板。阶段配角在其所属阶段首次出现并获得档案。
 ${chapterPacing}
+${fixed ? `剧情节点、支线结果和伏笔回收均安排在第1至${chapterLimit}章。` : ''}
+${closingStart < chapterLimit ? `预留第${closingStart}章到第${chapterLimit}章为终局，按章完成主要揭晓、冲突解决及结果落地。第${chapterLimit}章呈现最终结果与人物的新处境。` : `第${chapterLimit}章内安排主要揭晓、冲突解决和具体后果。`}
 
 【输出内容要求 — 信息密度优先，长度是结果不是目标】
 1. 故事主线：写清起因、阶段性目标、因果链、主要反转、终局代价与结局落点，不能只写一句复仇/成长概括。
 2. 核心冲突：拆出外部目标、内部选择、关系冲突、资源限制和不断升级的阻力。
 3. 角色规划：先完整设计${requirements.coreCharacterCount}名核心常驻角色；其余约${Math.max(0, requirements.characterCount - requirements.coreCharacterCount)}名阶段配角按剧情阶段分组，只写进入阶段、独立目标、不可替代功能和退出/转化方式，不得为了凑数量一次性罗列姓名。所有原创角色必须使用原创姓名，禁止借用、微调或拼接现有动漫、轻小说、漫画、游戏、影视角色全名。
-4. 人物声音表：为每名核心常驻角色分别写常用词汇范围、句子长短、礼貌/称呼习惯、遇到冲突时会说什么和刻意不说什么、情绪失控后的语言变化。至少给出一组同场对话的差异示例；禁止所有人都冷静、完整、讲逻辑，也禁止只靠口头禅区分人物。
+4. 人物声音表：在【人物声音表】下用“姓名：”单独起一行，逐行写常用词汇范围、句子长短、礼貌/称呼习惯、冲突反应、回避点和情绪失控后的语言变化。各项写可在不同处境下沿用的说话习惯。在表末单独给一组同场对话的差异示例；禁止所有人都冷静、完整、讲逻辑，也禁止只靠口头禅区分人物。
 5. 剧情阶段：严格写${requirements.phaseCount}个阶段。每阶段列出阶段目标、阻力、人物关系变化、主线推进、支线交叉点、阶段反转和进入下一阶段的条件。
-6. 支线与人物关系网：至少${requirements.subplotCount}条支线。每条写发起人物、独立目标、与主线的连接、至少两个转折、可能的误导、回收节点和最终状态。
-7. 关键节点：至少${requirements.nodeCount}个，按预计章节范围排列（全书约${requirements.estChapters}章）。每个节点必须写清：触发条件→参与人物→具体事件→信息变化→后果与对下一节点的推动；禁止只列结果不写因果。
-8. 伏笔与回收表：列出不少于${Math.max(8, Math.round(requirements.nodeCount * 0.45))}组伏笔，标明埋设阶段、表面解释、真实含义和回收阶段，禁止只写“后续揭晓”。
+6. 支线与人物关系网：${requirements.subplotCount ? `至少${requirements.subplotCount}条支线。每条写发起人物、独立目标、与主线的连接、至少两个转折、可能的误导、回收节点和最终状态。` : '集中描述关系如何随主线行动发生变化。'}
+7. 关键节点：至少${requirements.nodeCount}个，按章节范围排列。每个节点必须写清：触发条件→参与人物→具体事件→信息变化→后果与对下一节点的推动；禁止只列结果不写因果。
+8. 伏笔与回收表：${fixed && chapterLimit < 9 ? '按剩余篇幅设置能够在书内回收的伏笔。' : `列出不少于${hookCount}组伏笔。`}逐一标明埋设章、表面解释、真实含义和回收章，禁止只写“后续揭晓”。
 9. 结局方向：说明主线、主要支线、人物弧线和核心悬念如何分别收束；允许保留余波，但不能只写“主角成功”。
 
 【反重复约束】
@@ -510,9 +524,10 @@ ${chapterPacing}
 直接输出大纲正文，不要解释生成过程。`;
 }
 
-function buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona, chapterWordTarget, resolvedType, researchBlock) {
+function buildOutlinePrompt(novelTypeId, protagonistName, worldSetting, targetWordCount, persona, chapterWordTarget, resolvedType, researchBlock, targetChapterCount) {
   const type = resolvedType || novelTypes.find(t => t.id === novelTypeId);
-  const requirements = getOutlineRequirements(targetWordCount, chapterWordTarget);
+  const requirements = getOutlineRequirements(targetWordCount, chapterWordTarget, targetChapterCount);
+  const fixed = normalizeTargetChapterCount(targetChapterCount);
   const researchSection = researchBlock
     ? `\n以下是联网取材得到的事实参考资料，请在不违背主角设定与世界观的前提下，将其融入大纲的时代背景、专业细节与情节节点（与本书设定冲突时以本书为准，不得照搬原文）：\n${researchBlock}\n`
     : '';
@@ -525,9 +540,9 @@ ${buildGenreStyleContract(novelTypeId, type)}
 ${typeMeta ? `${typeMeta}\n` : ''}${toneHint ? `${toneHint}\n` : ''}${type?.tagContract ? `${type.tagContract}\n` : ''}
 主角名字：${protagonistName || '未设定'}
 世界观设定：${worldSetting || '由你自由发挥'}
-目标总字数：约${requirements.target}字（预计${requirements.estChapters}章，每章约${requirements.chapterWords}字）
+目标总字数：约${requirements.target}字（${fixed ? '固定' : '预计'}${requirements.estChapters}章，每章约${requirements.chapterWords}字）
 ${researchSection}
-${buildOutlineSpec(targetWordCount, chapterWordTarget)}
+${buildOutlineSpec(requirements, fixed)}
 
 请按以下格式输出大纲：
 
@@ -596,14 +611,14 @@ ${typeMeta ? `\n${typeMeta}\n` : ''}${type?.tagContract ? `\n${type.tagContract}
 
 ${continuityNote}
 
-请从第一章开始，保持风格统一，全局规划好剧情走向。每章结束时标注【未完待续】。`;
+请从第一章开始。`;
 }
 
 function buildContinuePrompt(novelId, novel, persona = novel?.writingPersonaSnapshot, outlineOverride) {
   const chapterContext = buildChapterContext(novel.chapters, novel.contextMemory);
   // outlineOverride：调用方按写作进度渲染的分层大纲（见 renderOutlineForContext），
   // 避免单章续写把整份长篇大纲逐字重发。未传入时保持旧行为。
-  const outlineText = outlineOverride || novel.outline || '';
+  const outlineText = outlineOverride ?? (novel.outline || '');
   const outlineNote = outlineText ? `\n【创作大纲】\n${outlineText}\n` : '';
 
   return `请继续创作这部小说。${buildPersonaPrompt(persona)}
@@ -618,14 +633,7 @@ ${'='.repeat(40)}
 ${chapterContext}
 ${'='.repeat(40)}
 
-续写要求：
-1. 仔细阅读上述所有内容，理解剧情的整体走向
-2. 注意尚未回收的伏笔，在后续章节中要合理回收
-3. 保持人物性格和风格的一致性
-4. 剧情衔接要自然，不要跳跃或矛盾
-5. 如有大纲请严格遵循大纲方向
-
-请从第${novel.currentChapterIndex + 1}章开始续写。每章结束时标注【未完待续】。`;
+请从第${novel.currentChapterIndex + 1}章开始，承接已写场景的结果，沿用已建立的人物声线。按大纲中对应的章节推进，尚未到期的伏笔留在后续安排。`;
 }
 
 /**
@@ -1538,7 +1546,10 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         });
         fieldCandidates = buildCandidates(thinkingPolicy);
         candidateIndex = 0;
+        briefThinkingNote = false;
         console.warn(`[额度] 上游按预留额度拒绝请求（原 max_tokens≈${previousBudget}），改用更小预算重试：max_tokens≈${thinkingPolicy.maxTokens}，已关闭思考`);
+        // Budget negotiation gets one request even when transient retries are disabled.
+        attempt--;
         continue;
       }
       // ② Key 错误 / 模型名或地址错这类配置问题，重试不会自愈，直接抛出可读原因；
@@ -1546,7 +1557,7 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
       // 错误里带上"当前线路"，一眼看出是哪个端点在报错（避免"以为在用 A、其实连的是 B"）
       let routeHost = config.baseUrl;
       try { routeHost = new URL(config.baseUrl).host } catch {}
-      const configError = describeConfigError(e.message);
+      const configError = quotaRejected ? '上游账户余额/额度不足，请检查当前线路的可用额度' : describeConfigError(e.message);
       const shrinkNote = quotaRejected && quotaShrinkTried ? '（已尝试更小的输出预算仍被拒）' : '';
       if (configError) {
         const configErr = new Error(`${configError} —— 当前线路：${config.model} @ ${routeHost}${shrinkNote}`);
@@ -1555,6 +1566,7 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
         // 这种无从下手的兜底文案 —— 额度不足、Key 错误等都会被这一句吃掉。
         configErr.isApiError = true;
         configErr.statusCode = e?.statusCode || 0;
+        if (quotaRejected) configErr.code = 'AI_PROVIDER_QUOTA';
         throw attachTelemetry(configErr);
       }
       if (attempt < retries) {
@@ -1589,26 +1601,31 @@ async function streamGenerate(systemPrompt, userPrompt, onChunk, signal, apiConf
 /**
  * 构建章节计划表（细化到每一章的事件、伏笔、字数）
  */
-function getChapterPlanOutputTokens(targetWordCount, chapterWordTarget) {
+function getChapterPlanOutputTokens(targetWordCount, chapterWordTarget, targetChapterCount, initialBatchEnd) {
   const chapterWords = normalizeChapterWordTarget(chapterWordTarget);
-  const chapters = Math.max(10, Math.ceil((Number(targetWordCount) || 50000) / chapterWords));
+  const fixed = normalizeTargetChapterCount(targetChapterCount);
+  const totalChapters = fixed || Math.max(10, Math.ceil((Number(targetWordCount) || 50000) / chapterWords));
+  const chapters = fixed && Number.isSafeInteger(initialBatchEnd) && initialBatchEnd > 0 ? Math.min(totalChapters, initialBatchEnd) : totalChapters;
   return Math.max(16384, Math.min(120000, Math.ceil(chapters * 135)));
 }
 
-function buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, persona, storyBlueprint, chapterWordTarget, resolvedType) {
+function buildChapterPlan(outline, targetWordCount, protagonistName, worldSetting, persona, storyBlueprint, chapterWordTarget, resolvedType, targetChapterCount, initialBatchEnd) {
   // 兼容两种历史调用形态：旧形态第 5 位是一个已废弃的上下文参数
   // (outline, target, proto, world, unusedContext, persona, blueprint)，
   // 新形态是 (outline, target, proto, world, persona, blueprint, chapterWordTarget, resolvedType)。
   // 第 7 位是数字即新形态，否则按旧形态重排（此时第 8 位只可能是类型对象）。
-  if (arguments.length >= 7 && typeof arguments[6] !== 'number') {
+  if (arguments.length >= 7 && arguments.length < 9 && typeof arguments[6] !== 'number') {
     storyBlueprint = arguments[6];
     persona = arguments[5];
     chapterWordTarget = undefined;
     resolvedType = (arguments.length >= 8 && arguments[7] && typeof arguments[7] === 'object') ? arguments[7] : undefined;
   }
   const chapterWords = normalizeChapterWordTarget(chapterWordTarget);
-  const estChapters = Math.max(10, Math.ceil(targetWordCount / chapterWords));
-  const plannedBreaths = Math.max(1, Math.round(estChapters * 0.09));
+  const fixed = normalizeTargetChapterCount(targetChapterCount);
+  const estChapters = fixed || Math.max(10, Math.ceil((Number(targetWordCount) || 50000) / chapterWords));
+  const batchEnd = fixed && Number.isSafeInteger(initialBatchEnd) && initialBatchEnd > 0 ? Math.min(estChapters, initialBatchEnd) : estChapters;
+  const closingStart = getClosingWindowStart(estChapters);
+  const plannedBreaths = Math.max(fixed ? 0 : 1, Math.round(estChapters * 0.09));
   // 章节字数带宽：3000 字时为 2000-4200（与旧口径一致），大章按比例放宽。
   const wordBandLow = Math.max(1200, Math.floor(chapterWords * 0.67));
   const wordBandHigh = Math.ceil(chapterWords * 1.4);
@@ -1652,7 +1669,8 @@ function buildChapterPlan(outline, targetWordCount, protagonistName, worldSettin
   const planToneHint = renderTonePlanHint(resolvedType);
   let planPrompt = `你是一位专业的小说章节规划师。请根据以下素材制定一份详细的章节计划表。${buildPersonaPrompt(persona, { includeDeslop: false })}
 
-目标：约${targetWordCount}字，预计${estChapters}章（每章约${chapterWords}字）
+目标：约${targetWordCount}字，${fixed ? '全书固定' : '预计'}${estChapters}章（每章约${chapterWords}字）
+${batchEnd < estChapters ? `本次仅制定第1至第${batchEnd}章的执行卡。全书的阶段边界、揭晓、回收和终局仍按第${estChapters}章完结安排。` : ''}
 
 素材：
 主角：${protagonistName || '未设定'}
@@ -1669,13 +1687,13 @@ ${outline || '无大纲，请自行规划故事'}`;
 {"version":1,"phases":["开端：建立危机"],"chapters":[[1,3000,"收到匿名来信","旧钥匙","","林舟、苏晚","主线推进",5,"雨夜来信","开端","苏晚的隐瞒","两人从合作转为互相试探","","校园、搞笑","林舟想藏信却越描越黑；苏晚用短句追问，林舟慌乱跑题","午休教室","禁止霸总式命令、禁止全员理性说明"]]}
 
 关键规则：
-1. 必须完整输出第 1 至第 ${estChapters} 章，不能省略、不能用“其余同理”。每个核心事件限 18-42 个汉字，其他字符串尽量短。
+1. 必须完整输出第 1 至第 ${batchEnd} 章，不能省略、不能用“其余同理”。每个核心事件限 18-42 个汉字，其他字符串尽量短。
 2. 每章只能有一个核心事件；相邻章节不得重复。章节角色只可使用：主线推进、关系推进、信息揭示、喘息推进、收束。
-3. 伏笔设置后，必须在后续章的回收字段写出同一名称；最后一章必须是“收束”。没有伏笔或角色请使用空字符串。
+3. 同一伏笔在埋设与回收字段使用同一名称。将回收分配到对应剧情出现的章节，第${closingStart}章起集中完成剩余伏笔和人物关系的收束。第${estChapters}章必须是“收束”，以具体场景呈现核心冲突结果、人物选择和后果。终局只推进已建立的矛盾，不再埋设需要后续章节回答的伏笔。没有伏笔或角色请使用空字符串。
 4. 张力是 1-10；连续 3 章不得都高于 7；全书约安排 ${plannedBreaths} 个喘息推进章，但位置和形式必须由当前人物压力、关系状态、题材和前后事件决定，禁止固定每隔 N 章安排，也禁止所有作品使用同一种日常模板。
 5. 喘息推进章不是无意义凑字数：必须让关系、信息、记忆、物件、支线或伏笔发生可见变化；可以是生活、旅途、工作、仪式、梦境、共同空间或题材特有的低压场景，但只能选择适合本书世界和人物的形式。
 6. 每条蓝图支线至少要有进入章节、一次中段变化和回收/转化章节；阶段反转必须落到具体章节，不能只写在 phases 总述。
-7. 每章目标字数 ${wordBandLow}-${wordBandHigh}，总章数约 ${estChapters} 章。最后一个字段必须给出 4-12 个汉字的章节短标题，具体、有画面感、不得重复，不要包含“第X章”。
+7. 每章目标字数 ${wordBandLow}-${wordBandHigh}，全书${fixed ? '固定' : '约'} ${estChapters} 章。章节短标题字段必须给出 4-12 个汉字，具体、有画面感、不得重复，不要包含“第X章”。
 8. 两名以上主要角色同场时，核心事件或关系变化必须体现各自不同的当场目的与反应方式；后续正文严格沿用大纲中的人物声音表，不能把所有人的台词统一成冷静、完整、讲逻辑的说明句。
 9. 蓝图已有对应内容时，最后四个字段不得为空：必须把 tagCommitments、characterBeats、requiredScenes、forbiddenDrift 转译成当章可执行约束；尤其不能把题材标签只写在 phases 总述。${chapterPacing}`;
 

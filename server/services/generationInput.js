@@ -1,3 +1,5 @@
+const { getFixedChapterCount } = require('./bookChapterCount');
+
 // Store only creation controls, never request headers, model routes or keys.
 function captureGenerationInput(body = {}) {
   const text = value => typeof value === 'string' ? value : '';
@@ -10,6 +12,7 @@ function captureGenerationInput(body = {}) {
     typeSku: sku ? { channel: text(sku.channel), category: text(sku.category), theme: text(sku.theme), elements: strings(sku.elements), personas: strings(sku.personas), tones: strings(sku.tones), cp: text(sku.cp) } : null,
     protagonistName: text(body.protagonistName), worldSetting: text(body.worldSetting),
     targetWordCount: Number(body.targetWordCount) || 50000,
+    targetChapterCount: body.mode === 'chapter' ? null : getFixedChapterCount({ generationInput: body }),
     chapterWordTarget: Number(body.chapterWordTarget) || 3000,
     mode: body.mode === 'chapter' ? 'chapter' : 'book',
     expertMode: body.expertMode === true || body.expertMode === 'true' || body.expertMode === 1,
@@ -28,6 +31,7 @@ function readGenerationInput(novel) {
     novelTypeId: novel.novelTypeId, typeSku: novel.typeSku,
     protagonistName: novel.protagonistName, worldSetting: novel.worldSetting,
     targetWordCount: novel.targetWordCount, chapterWordTarget: novel.chapterWordTarget,
+    targetChapterCount: getFixedChapterCount(novel),
     expertMode: novel.expertMode, outline: novel.outline, personaId: novel.writingPersonaId,
     referenceIds: (novel.referenceStyleSnapshot || []).map(ref => String(ref.referenceId || '')).filter(Boolean),
     referenceExamplesEnabled: (novel.referenceStyleSnapshot || []).some(ref => ref.keyExcerpts?.length),

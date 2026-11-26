@@ -9,6 +9,27 @@ function providerStream(frames) {
     ? { done: false, value: new TextEncoder().encode(frames[index++]) } : { done: true } }) } };
 }
 
+test('a quota rejection really retries with a lower budget when transient retries are disabled', async (t) => {
+  const budgets = [];
+  const refused = () => ({ ok: false, status: 402, text: async () => '{"error":{"message":"insufficient balance"}}' });
+  let alwaysRefuse = false;
+  t.mock.method(global, 'fetch', async (_url, { body }) => {
+    budgets.push(JSON.parse(body).max_tokens);
+    if (alwaysRefuse || budgets.length === 1) return refused();
+    return providerStream(['data: {"choices":[{"delta":{"content":"NONE"},"finish_reason":"stop"}]}\n\n']);
+  });
+  const run = () => streamGenerate('system', '复核', null, null,
+    { baseUrl: 'https://quota-review.test/v1', model: 'test', disableThinking: true }, 0, 0.2, 4000);
+  const result = await run();
+  assert.equal(result.content, 'NONE');
+  assert.equal(result.attempts[0].retryReason, 'quota_budget_shrink');
+  assert.ok(budgets[1] < budgets[0]);
+  budgets.length = 0;
+  alwaysRefuse = true;
+  await assert.rejects(run(), error => error.code === 'AI_PROVIDER_QUOTA' && error.statusCode === 402 && error.attempts.length === 2);
+  assert.equal(budgets.length, 2);
+});
+
 test('chapter EOF without a completion marker surfaces the exact draft for recovery', async (t) => {
   const chunk = '关闭连接前已经发出的正文';
   t.mock.method(global, 'fetch', async () => providerStream([
@@ -539,6 +560,21 @@ test('per-chapter word target scales outline and plan prompts for long-form myst
 
   // 计划输出预算也按每章字数缩放：50 章大章计划的 token 上限低于 167 章默认计划。
   assert.ok(getChapterPlanOutputTokens(500000, 10000) < getChapterPlanOutputTokens(500000, 3000));
+});
+
+test('fixed chapter counts drive the outline and both full and rolling chapter plans', () => {
+  const requirements = getOutlineRequirements(500000, 10000, 100);
+  assert.equal(requirements.estChapters, 100);
+  assert.equal(getOutlineRequirements(500000, 10000, 1).phaseCount, 1);
+  const outline = buildOutlinePrompt('mystery', '林舟', '旧城', 500000, null, 10000, null, null, 100);
+  assert.match(outline, /全书固定100章/);
+  assert.match(outline, /第86章到第100章为终局/);
+  const shortPlan = buildChapterPlan('旧案', 500000, '林舟', '旧城', null, null, 10000, null, 1);
+  assert.match(shortPlan, /完整输出第 1 至第 1 章/);
+  const firstBatch = buildChapterPlan('旧案', 500000, '林舟', '旧城', null, null, 10000, null, 100, 24);
+  assert.match(firstBatch, /完整输出第 1 至第 24 章/);
+  assert.match(firstBatch, /终局仍按第100章完结安排/);
+  assert.ok(getChapterPlanOutputTokens(500000, 10000, 500) > getChapterPlanOutputTokens(500000, 10000, 500, 24));
 });
 
 test('genre contracts differentiate deep narrative behavior', () => {

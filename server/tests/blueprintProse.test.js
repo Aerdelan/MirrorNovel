@@ -17,6 +17,29 @@ test('prose blueprint preserves paragraphs and literal punctuation without requi
   assert.deepEqual(parsed.phases[0].tagCommitments, ['职场']);
 });
 
+test('prose blueprint accepts explicit one-chapter phases and keeps bare execution cards separate', () => {
+  const body = '傅小满找到母亲的旧船票，决定带着船票去找港钟守夜人。';
+  const overview = parseBlueprintProse(`【故事主线】\n${body}\n【篇章｜第1章｜旧船票】\n${body}`, 'mainArc').parsed;
+  assert.equal(overview.mainArc, body);
+  assert.deepEqual(overview.phases.map(({ title, startChapter, endChapter }) => ({ title, startChapter, endChapter })),
+    [{ title: '旧船票', startChapter: 1, endChapter: 1 }]);
+  assert.deepEqual(overview.chapters, []);
+
+  const bareHeading = `【第1章｜旧船票】\n${body}`;
+  const singlePhase = parseBlueprintProse(bareHeading, 'phase').parsed;
+  assert.equal(singlePhase.phase.planText, body);
+  assert.equal(singlePhase.phase.startChapter, 1);
+  assert.equal(singlePhase.phase.endChapter, 1);
+  assert.equal(parseBlueprintProse(bareHeading, 'phases').reason, 'invalid_text');
+  assert.equal(parseBlueprintProse(`【执行章1｜旧船票】\n${body}`, 'phase').reason, 'invalid_text');
+
+  const execution = parseBlueprintProse(bareHeading, 'chapters').parsed;
+  assert.equal(execution.chapters[0].chapterNumber, 1);
+  assert.equal(execution.chapters[0].planText, body);
+  assert.deepEqual(execution.phases, []);
+  assert.equal(parseBlueprintProse(`【篇章｜第1章｜旧船票】\n${body}`, 'chapters').reason, 'invalid_text');
+});
+
 test('prose blueprint completes all three stages, persists and reaches chapter prompts and contracts', async () => {
   const source = fixture(), calls = [], usages = [];
   const raw = await generateBlueprintParts({ context: '夜班交接大纲', totalChapters: 60, arcCount: 10, rollingEnd: 20,

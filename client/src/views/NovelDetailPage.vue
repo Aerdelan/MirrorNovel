@@ -13,7 +13,7 @@
  <div class="summary-row"><span class="summary-label">{{ $t('novelDetail.type') }}</span><span>{{ novel?.novelTypeName }}</span></div>
  <div class="summary-row"><span class="summary-label">{{ $t('generate.stepChar') }}</span><span>{{ novel?.protagonistName|| $t('novelDetail.unknown') }}</span></div>
  <div class="summary-row"><span class="summary-label">{{ $t('novelDetail.wordCount') }}</span><span>{{ $t('novelDetail.outOf', { current: novel?.currentWordCount, target: novel?.targetWordCount }) }}</span></div>
- <div class="summary-row"><span class="summary-label">{{ $t('novelDetail.chapterCount') }}</span><span>{{ novel?.currentChapterIndex||0 }} {{ $t('novelDetail.chapter') }}</span></div>
+ <div class="summary-row"><span class="summary-label">{{ $t('novelDetail.chapterCount') }}</span><span>{{ fixedChapterCount ? $t('novelDetail.chapterProgress', { current: novel.chapters?.length || 0, target: fixedChapterCount }) : $t('novelDetail.chaptersCount', { n: novel?.currentChapterIndex || 0 }) }}</span></div>
  <div class="summary-row"><span class="summary-label">{{ $t('novelDetail.status') }}</span><span class="status-badge" :class="novel?.status">{{ statusMap[novel?.status] }}</span></div>
  <div v-if="bookTokenUsage" class="summary-row"><span class="summary-label">{{ $t('novelDetail.tokenUsage') }}</span><span class="token-total">{{ $t('novelDetail.input') }} {{ formatTokenCount(bookTokenUsage.inputTokens) }} / {{ $t('novelDetail.output') }} {{ formatTokenCount(bookTokenUsage.outputTokens) }}<span v-if="bookTokenUsage.cacheSavedTokens > 0" class="token-cache">（{{ $t('novelDetail.cacheHit') }} {{ formatTokenCount(bookTokenUsage.cacheSavedTokens) }}）</span><span v-if="novel?.outlineTokenUsage" class="token-sub">｜{{ $t('novelDetail.outlineLabel') }}：{{ $t('novelDetail.input') }} {{ formatTokenCount(novel.outlineTokenUsage.inputTokens) }} / {{ $t('novelDetail.output') }} {{ formatTokenCount(novel.outlineTokenUsage.outputTokens) }}</span></span></div>
  </div>
@@ -80,11 +80,11 @@
  <Teleport to="body">
  <div v-if="showGenSettings" class="gen-overlay" @click.self="showGenSettings=false">
  <div class="gen-modal">
- <h3>️ {{ $t('novelDetail.genSettingsTitle') }}</h3>
- <div class="gf"><label>{{ $t('continue.wordCount') }}</label>
+ <h3>{{ $t(needsEndingReview ? 'novelDetail.recheckEnding' : 'novelDetail.genSettingsTitle') }}</h3>
+ <div v-if="!fixedChapterCount" class="gf"><label>{{ $t('continue.wordCount') }}</label>
  <input v-model.number="genWordCount" class="input" type="number" min="500" max="8000" step="500" />
  </div>
- <div class="gf"><label>{{ $t('novelDetail.genNotesLabel') }}</label>
+ <div v-if="!needsEndingReview" class="gf"><label>{{ $t('novelDetail.genNotesLabel') }}</label>
  <textarea v-model="genNotes" class="textarea" rows="3" :placeholder="$t('novelDetail.genNotesPlaceholder')"></textarea>
  </div>
  <div class="gf-acts">
@@ -147,6 +147,7 @@
  <span class="generating-indicator"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
  </div>
  <div class="streaming-content" ref="streamingRef">
+ <div v-if="chapterGenerationStatus" role="status">{{ chapterGenerationStatus }}</div>
  <div v-if="!chapterStreamingText && isContinuing" style="color:#8a8f98;font-size:13px;margin-bottom:8px;">
   {{ chapterThinkingLen > 0
      ? $t('bookshelf.thinking', { words: chapterThinkingLen, seconds: chapterThinkingElapsed })
@@ -209,7 +210,7 @@
  <div class="chapter-actions">
  <button class="btn-ch action-edit" :disabled="chapterActionBusy || generationBlocked" @click="openEdit(chapter)">{{ $t('novelDetail.btnEdit') }}</button>
  <button class="btn-ch" @click="loadVersions(chapter)">{{ $t('novelDetail.versionsTitle') }}</button>
- <button class="btn-ch action-del" :disabled="chapterActionBusy || generationBlocked" @click="confirmDeleteChapter(chapter)"> {{ chapterActionBusy === `delete:${chapter.chapterNumber}` ? $t('common.loading') : $t('common.delete') }}</button>
+ <button v-if="!fixedChapterCount || Number(chapter.chapterNumber) === lastChapterNum" class="btn-ch action-del" :disabled="chapterActionBusy || generationBlocked" @click="confirmDeleteChapter(chapter)"> {{ chapterActionBusy === `delete:${chapter.chapterNumber}` ? $t('common.loading') : $t('common.delete') }}</button>
  <button class="btn-ch action-deslop" :disabled="chapterActionBusy || generationBlocked" @click="deslopChapter(chapter)"> {{ chapterActionBusy === `deslop:${chapter.chapterNumber}` ? $t('common.loading') : $t('novelDetail.chapterActionDeslop') }}</button>
  <button class="btn-ch action-keywords" :disabled="chapterActionBusy || generationBlocked" @click="generateKeywords(chapter)"> {{ chapterActionBusy === `keywords:${chapter.chapterNumber}` ? $t('novelDetail.chapterActionAnalyzing') : $t('novelDetail.chapterActionKeywords') }}</button>
  <button v-if="isLastUnfinished(index)" class="btn-ch action-gen" :disabled="chapterActionBusy || generationBlocked" @click="openGenSettings(chapter.chapterNumber)">{{ $t('novelDetail.btnContinue') }}</button>
@@ -218,8 +219,8 @@
  </div>
  </div>
 
- <div v-if="allChaptersComplete" class="card">
- <button class="btn btn-primary btn-block" :disabled="generationBlocked || !!chapterActionBusy" @click="openGenSettings(nextChapterNum)"> {{ $t('novelDetail.generateChapter', { n: nextChapterNum }) }}</button>
+ <div v-if="fixedChapterCount ? canContinueFromPlan : allChaptersComplete" class="card">
+ <button class="btn btn-primary btn-block" :disabled="generationBlocked || !!chapterActionBusy" @click="continueNextChapter">{{ fixedChapterCount ? $t(needsEndingReview ? 'novelDetail.recheckEnding' : 'novelDetail.resumePlannedBook') : $t('novelDetail.generateChapter', { n: nextChapterNum }) }}</button>
  </div>
 
  <div v-if="novel" class="card" style="margin-top:8px;">
@@ -261,6 +262,7 @@ import { useNovelStore } from '../stores/novel'
 import { useStyleRevisionsStore } from '../stores/styleRevisions'
 import { useI18n } from '../composables/useI18n'
 import { formatBlueprintText } from '../utils/blueprintText'
+import { createChapterStream } from '../utils/chapterStream'
 import { useNovelGeneration } from '../composables/useNovelGeneration'
 import { useEditDraft } from '../composables/useEditDraft'
 
@@ -388,6 +390,17 @@ function formatTokenCount(value) {
   return String(number)
 }
 const nextChapterNum = computed(() => lastChapterNum.value + 1)
+const fixedChapterCount = computed(() => Number(novel.value?.targetChapterCount) || 0)
+const needsEndingReview = computed(() => {
+ if (!fixedChapterCount.value || lastChapterNum.value !== fixedChapterCount.value) return false
+ const final = novel.value.chapters.find(chapter => Number(chapter.chapterNumber) === fixedChapterCount.value)
+ const hasOpenHook = novel.value.foreshadowingLedger?.some(hook => hook && hook.setupStatus !== 'unconfirmed' && hook.stage !== 'paid_off'
+  && !['resolved', 'paid_off', 'abandoned'].includes(hook.status)
+  && (hook.status !== 'planned' || Number(hook.setChapter || 0) <= fixedChapterCount.value))
+ return novel.value.status !== 'completed' || !final?.qualityReport?.endingVerification || Boolean(hasOpenHook)
+})
+const canContinueFromPlan = computed(() => nextChapterNum.value <= fixedChapterCount.value || needsEndingReview.value)
+const chapterGenerationStatus = ref('')
 const generationActionPending = ref(false)
 const pausePending = ref(false)
 let detailVisible = true
@@ -408,12 +421,17 @@ const generationLabel = computed(() => {
  const n = Number(generationJob.value?.chapterNumber || continuingChapter.value || 0)
  return n > 0 ? $t('novelDetail.generationProgress', { n, words: Number(generationJob.value?.draftLength || chapterStreamingText.value.length || 0) }) : $t('novelDetail.generationBackground')
 })
-watch(() => ({ novelId: String(route.params.id || ''), busy: generationBusy.value, blocked: generationBlocked.value || !!chapterActionBusy.value, label: generationLabel.value, unavailable: generationUnavailable.value, pausing: pausePending.value || generationJob.value?.status === 'pause_requested' }), value => emit('generation-state', value), { immediate: true })
+watch(() => ({ novelId: String(route.params.id || ''), busy: generationBusy.value, blocked: generationBlocked.value || !!chapterActionBusy.value, label: generationLabel.value, unavailable: generationUnavailable.value, pausing: pausePending.value || generationJob.value?.status === 'pause_requested', chapterLimitReached: Boolean(fixedChapterCount.value && !canContinueFromPlan.value), needsEndingReview: needsEndingReview.value }), value => emit('generation-state', value), { immediate: true })
 watch(generationBusy, busy => { if (busy) showGenSettings.value = false })
-defineExpose({ continueNextChapter: () => openGenSettings(nextChapterNum.value), pauseGeneration })
-const isLastChapterUnfinished = computed(() => { if (!novel.value || novel.value.status !== 'paused') return false; return novel.value.chapters.length > 0 })
+defineExpose({ continueNextChapter, pauseGeneration })
+const isLastChapterUnfinished = computed(() => { if (fixedChapterCount.value || !novel.value || novel.value.status !== 'paused') return false; return novel.value.chapters.length > 0 })
 const allChaptersComplete = computed(() => { if (!novel.value) return false; return novel.value.status === 'completed' || novel.value.status === 'paused' })
-function isLastUnfinished(index) { if (!novel.value || novel.value.status !== 'paused') return false; return index === novel.value.chapters.length - 1 }
+function isLastUnfinished(index) { return isLastChapterUnfinished.value && index === novel.value.chapters.length - 1 }
+
+function continueNextChapter() {
+ if (fixedChapterCount.value && !canContinueFromPlan.value) return
+ return openGenSettings(needsEndingReview.value ? fixedChapterCount.value : nextChapterNum.value)
+}
 
 async function loadNovel() {
  const id = route.params.id
@@ -687,22 +705,32 @@ async function confirmGenSettings() {
 
 async function startChapterGen(chapterNum, wc, notes) {
  if (generationBusy.value || !generation.ready.value) return
+ if (fixedChapterCount.value) {
+  if (!canContinueFromPlan.value) return
+  chapterNum = needsEndingReview.value ? fixedChapterCount.value : nextChapterNum.value
+ }
  const id = String(route.params.id)
  const run = loadRunId
  const current = () => run === loadRunId && id === String(route.params.id)
  isContinuing.value = true; continuingChapter.value = chapterNum; chapterStreamingText.value = ''; chapterThinkingLen.value = 0; chapterThinkingElapsed.value = 0
+ chapterGenerationStatus.value = ''
  startChapterThinkingTicker()
  const token = localStorage.getItem('token')
  const sse = useSSE()
- sse.openSSE(`/api/novel/${id}/continue-chapter/${chapterNum}`, { wordCount: wc, notes }, {
+ const stream = createChapterStream()
+ const url = fixedChapterCount.value ? `/api/novel/continue/${id}` : `/api/novel/${id}/continue-chapter/${chapterNum}`
+ const payload = fixedChapterCount.value ? { mode: needsEndingReview.value ? 'book' : 'chapter', notes } : { wordCount: wc, notes }
+ sse.openSSE(url, payload, {
   token,
-  onContent: (content) => { if (current()) chapterStreamingText.value += content },
+  onStatus: (message) => { if (current()) chapterGenerationStatus.value = message },
   onEvent: (d) => {
    if (!current()) return
+   if (stream.apply(d)) chapterStreamingText.value = stream.text
    if (d.type === 'thinking') {
     chapterThinkingLen.value = d.length || 0
     if (d.elapsedMs) chapterThinkingElapsed.value = Math.round(d.elapsedMs / 1000)
    }
+   else if (d.type === 'plan_needs_extension' && detailVisible) alert(d.message || $t('bookshelf.alertPlanMissing'))
    else if (d.type === 'completed' || d.type === 'chapter_continued' || d.type === 'paused') { generation.ready.value = false; isContinuing.value = false; refreshNovel() }
   },
   onError: (message) => { if (!current()) return; generation.ready.value = false; isContinuing.value = false; stopChapterThinkingTicker(); if (detailVisible) alert($t('novelDetail.errGenFailed') + message) },
@@ -762,6 +790,7 @@ function onFeedbackSaved() {
 
 async function confirmDeleteChapter(ch) {
  if (generationBlocked.value || chapterActionBusy.value) return
+ if (fixedChapterCount.value && Number(ch.chapterNumber) !== lastChapterNum.value) return
  if (!confirm($t('novelDetail.confirmDeleteChapter', { n: ch.chapterNumber }))) return
  chapterActionBusy.value = `delete:${ch.chapterNumber}`
  try {

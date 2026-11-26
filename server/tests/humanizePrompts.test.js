@@ -59,6 +59,9 @@ test('active writing prompts prioritize voice, causality and scene-driven rhythm
   // 去AI味底线：只放真正的 AI 特征，不掺杂风格强制
   assert.match(deslop.styleFloorPrompt, /去AI味底线/);
   assert.match(deslop.styleFloorPrompt, /升华句与事后总结/);
+  assert.match(deslop.styleFloorPrompt, /两人都知道的背景可以带过/);
+  assert.match(deslop.styleFloorPrompt, /话说到足以让对方回应或行动，就接着写对方怎么做/);
+  assert.match(deslop.styleFloorPrompt, /动作已经写清的决定，接着写人物怎么做/);
 
   // 工艺指南：从属风格档案，叙述者与幽默改为条件式，不得再有一刀切禁令
   assert.match(deslop.craftGuidePrompt, /叙事工艺指南/);
@@ -97,6 +100,8 @@ test('genre system prompts keep the shared narrative contract', () => {
   for (const prompt of [fallback, webNovel, lightNovel]) {
     assert.match(prompt, /作者声线/);
     assert.match(prompt, /场景/);
+    assert.match(prompt, /像平时说话那样，把眼前发生的事讲清楚/);
+    assert.match(prompt, /按各自的脾气和关系开口/);
     assertNoLegacyNoise(prompt);
   }
 
@@ -116,6 +121,7 @@ test('style profile renders from persona axes and outranks the craft guide', () 
   // 风格档案块被渲染，且位于通用工艺指南之前（风格权威高于工艺指南）
   assert.match(withPersona, /【本书风格档案/);
   assert.ok(withPersona.indexOf('本书风格档案') < withPersona.indexOf('叙事工艺指南'));
+  assert.match(withPersona, /叙述沿用本书声线/);
   // 高幽默/介入叙述者被授权，不再被旧的绝对禁令压制
   assert.doesNotMatch(withPersona, /禁止随机走神、无关观察、强行吐槽/);
 

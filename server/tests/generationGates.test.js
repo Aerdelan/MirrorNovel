@@ -110,6 +110,13 @@ test('仅 planned 伏笔不触发自评：尚未写入正文，模型无法对�
   assert.equal(result.audit, false, result.reason);
 });
 
+test('本章候选伏笔单独触发证据复核，旧候选不触发', () => {
+  const novel = { foreshadowingLedger: [{ id: 'PLAN_3_a', status: 'planned', setupStatus: 'unconfirmed', setChapter: 3 }] };
+  const content = realisticChapter(400);
+  assert.equal(shouldAuditChapterHooks({ novel, contract: { chapterNumber: 3 }, content }).audit, true);
+  assert.equal(shouldAuditChapterHooks({ novel, contract: { chapterNumber: 4 }, content }).audit, false);
+});
+
 test('契约要求回收伏笔时必须自评', () => {
   const result = shouldAuditChapterHooks({
     novel: { foreshadowingLedger: [] },

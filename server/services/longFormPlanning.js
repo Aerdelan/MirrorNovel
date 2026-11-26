@@ -1,7 +1,9 @@
 const {
-  parseChapterPlan, isPlaceholderChapterTitle,
-  renderStoryBlueprintForContext,
+  parseChapterPlan, isPlaceholderChapterTitle, buildFallbackChapterPlan,
+  getClosingWindowStart, openStoryHooks, renderStoryBlueprintForContext, seedPlannedHooks, MODEL_ROLLING_PLAN,
 } = require('./storyState');
+const { getFixedChapterCount } = require('./bookChapterCount');
+const { validChapterMemory } = require('./semanticMemory');
 
 const BATCH_SIZE = 8;
 const LOCAL_FALLBACK = '本地兜底计划';
@@ -12,8 +14,30 @@ function needsDetailedPlan(chapter) {
     || (chapter.raw === LOCAL_FALLBACK && GENERIC_EVENT.test(chapter.coreEvent));
 }
 
+function constrainChapterPlan(novel, planData, targetChapterCount, { targetWords, chapterWordTarget } = {}) {
+  const planned = new Map();
+  for (const chapter of planData.chapters || []) {
+    const number = Number(chapter.chapterNumber);
+    if (!Number.isSafeInteger(number) || number < 1 || number > targetChapterCount || planned.has(number)) continue;
+    planned.set(number, chapter);
+  }
+  const fallback = planned.size < targetChapterCount
+    ? buildFallbackChapterPlan(novel, { targetWords, chapterWordTarget, totalChapters: targetChapterCount })
+    : null;
+  const written = new Set((novel.chapters || []).map(chapter => Number(chapter.chapterNumber)));
+  const chapters = Array.from({ length: targetChapterCount }, (_, index) => {
+    const number = index + 1;
+    const chapter = planned.get(number) || fallback.chapters[index];
+    return number === targetChapterCount && !written.has(number)
+      ? { ...chapter, chapterRole: '收束', setHooks: [] }
+      : chapter;
+  });
+  const phases = planData.phases?.length ? planData.phases : (fallback?.phases || []);
+  return { ...planData, chapters, phases };
+}
+
 function planningWindow(novel, plan, chapterNumber, totalChapters) {
-  if (!(Number(novel.targetWordCount) >= 100000)) return [];
+  if (!(Number(novel.targetWordCount) >= 100000 || getFixedChapterCount(novel) >= BATCH_SIZE * 2)) return [];
   const byNumber = new Map((plan.chapters || []).map(chapter => [Number(chapter.chapterNumber), chapter]));
   const activePhase = (novel.storyBlueprint?.phases || []).find(phase => chapterNumber >= Number(phase.startChapter) && chapterNumber <= Number(phase.endChapter));
   const activeSubphase = (activePhase?.subphases || []).find(phase => chapterNumber >= Number(phase.startChapter) && chapterNumber <= Number(phase.endChapter));
@@ -94,6 +118,27 @@ function outlineForPlanning(outline, start, end) {
   return `${outline.slice(0, 4000)}\n【第${start}-${end}章对应的大纲原文】\n${excerpts.join('\n')}\n【大纲末段】\n${outline.slice(-2000)}`;
 }
 
+function renderRecentEventEvidence(chapters) {
+  return chapters.flatMap(chapter => {
+    const memory = validChapterMemory(chapter);
+    if (!memory) return [];
+    const source = String(chapter.content || '');
+    const excerpts = [];
+    for (const event of memory.events) {
+      const evidence = String(event?.evidence || '').trim();
+      if (!evidence || evidence.length > 180 || excerpts.some(excerpt => excerpt.includes(evidence))) continue;
+      const offset = source.indexOf(evidence);
+      if (offset < 0) continue;
+      // Keep the action following the extract as well. An object is often
+      // identified in one sentence and changes hands in the next paragraph.
+      const excerpt = source.slice(Math.max(0, offset - 40), offset + evidence.length + 160).trim();
+      excerpts.push(excerpt);
+      if (excerpts.length === 2) break;
+    }
+    return excerpts.map(excerpt => `第${chapter.chapterNumber}章：${excerpt}`);
+  }).join('\n\n');
+}
+
 /** Refine only future placeholder cards. This never approves blueprint changes
  * or changes authored plans/committed chapters. No model call is needed when
  * a concrete plan already exists, including at a resumed batch boundary. */
@@ -105,12 +150,35 @@ async function ensureDetailedLongFormPlan({ novel, planData, chapterNumber, tota
   if (numbers.some(number => number <= completed)) throw new Error('禁止覆盖已完成章节的计划');
   const start = numbers[0];
   const end = numbers.at(-1);
+  const closingStart = getClosingWindowStart(totalChapters);
+  const hookKey = content => String(content || '').replace(/\s/g, '');
+  const scheduledPayoffs = new Map(openStoryHooks(novel.foreshadowingLedger, totalChapters + 1)
+    .filter(hook => hookKey(hook.content) && Number.isSafeInteger(Number(hook.targetChapter))
+      && Number(hook.targetChapter) >= Math.max(start, Number(hook.setChapter) || 0))
+    .map(hook => [hookKey(hook.content), hook]));
+  const batchPayoffs = [...scheduledPayoffs.values()].filter(hook => Number(hook.targetChapter) <= end);
+  const describePayoff = hook => `- ${String(hook.content || '').slice(0, 200)}${hook.targetChapter ? `（原定第${hook.targetChapter}章）` : ''}`;
+  const scheduledPlan = batchPayoffs.length
+    ? `【本批须按章兑现的伏笔】\n将回收动作纳入指定章的 coreEvent 或 requiredScenes，resolveHooks 保留原名。\n${batchPayoffs.map(hook => `${describePayoff(hook)}${hook.payoffPlan ? `：${String(hook.payoffPlan).slice(0, 200)}` : ''}`).join('\n')}`
+    : '';
+  const closingHooks = end >= closingStart
+    ? openStoryHooks(novel.foreshadowingLedger, start)
+      .filter(hook => !batchPayoffs.includes(hook)).slice(0, 32).map(describePayoff)
+      .join('\n')
+    : '';
+  const closingPlan = end >= closingStart
+    ? `第${closingStart}至${totalChapters}章是终局，按因果顺序把仍待回收的线索、主要关系和人物选择分配到多章。终局章的 setHooks 为空；为第${totalChapters}章预留核心冲突的具体结果与结果发生后的场景。${end === totalChapters ? `本批包含终章，必须在第${totalChapters}章明确全书结局。` : ''}${closingHooks ? `\n【其他待回收伏笔】\n${closingHooks}` : ''}`
+    : `第${closingStart}至${totalChapters}章负责全书终局。此批只完成所在阶段的目标，明确后续仍需兑现的线索。`;
   const previous = (novel.chapters || []).filter(chapter => Number(chapter.chapterNumber) < start).slice(-3);
+  const recentEventEvidence = renderRecentEventEvidence(previous);
   const outlineContext = outlineForPlanning(String(novel.outline || ''), start, end);
   const prompt = `细化未来第${start}-${end}章的执行计划，只输出这${numbers.length}章的 JSON。
 你是在执行已确认大纲，不是在提出新的故事蓝图。不得改写已发生事实、终局、人物动机或用户已定章节。
 每章必须有不同的具体核心事件，写清谁采取什么行动、遇到什么阻力、造成什么新结果。后一章承接前章结果，不能用天气、上班日期或通用的“推进主线”凑章节。
 按指定章号落实本批次内的转折和伏笔。后续节点留待对应章节，阶段末章须达到已确认的离开条件。
+setHooks 只写本章要埋下、以后需要给出答案的疑问。行动、线索推进和已说明的事实写入 coreEvent，不单独登记；同一伏笔前后的登记名称保持一致。
+${scheduledPlan}
+${closingPlan}
 每章给出2-16字短标题，标题概括该章独有冲突或结果，不能摘取正文首句。不要输出正文。
 【原始大纲】
 ${outlineContext}
@@ -120,6 +188,7 @@ ${renderStoryBlueprintForContext(novel, start, totalChapters)}
 ${String(novel.chapterSummaryDoc || '').slice(-6000)}
 【最近已完成章节】
 ${previous.map(chapter => `第${chapter.chapterNumber}章 ${chapter.title || ''}\n${String(chapter.content || '').slice(-900)}`).join('\n')}
+${recentEventEvidence ? `【已完成章节的关键动作原文】\n下面的原文来自已保存正文。涉及交接、位置或已发生结果时按正文决定当前状态；如本批需要再次改变，须安排对应的交接或变化原因。\n${recentEventEvidence}\n` : ''}
 ${draft ? `【第${start}章已有待恢复草稿】\n${String(draft).slice(0, 600)}\n${String(draft).slice(-1400)}\n本章计划必须遵循上述草稿已经展开的事件，不得另起情节或推翻草稿。` : ''}
 【阶段记忆】
 ${String(novel.contextMemory?.checkpointSummary || '').slice(0, 3000)}
@@ -147,9 +216,23 @@ ${[...(novel.contextMemory?.facts || []), ...(novel.contextMemory?.openLoops || 
   // sparse model response erase the approved stage's voice/tags/drift guards.
   for (const [number, chapter] of replacements) {
     const existing = planned.get(number) || {};
-    const merged = { ...existing, ...chapter, raw: '模型分批细化计划' };
-    for (const field of ['tagCommitments', 'requiredScenes', 'forbiddenDrift', 'setHooks', 'resolveHooks', 'characters']) {
-      merged[field] = [...new Set([...(existing[field] || []), ...(chapter[field] || [])])];
+    const merged = { ...existing, ...chapter, raw: MODEL_ROLLING_PLAN };
+    for (const field of ['tagCommitments', 'requiredScenes', 'forbiddenDrift', 'setHooks', 'characters']) {
+      const additions = field === 'setHooks' && number >= closingStart ? [] : (chapter[field] || []);
+      merged[field] = [...new Set([...(existing[field] || []), ...additions])];
+    }
+    merged.resolveHooks = [...new Set([
+      ...(existing.resolveHooks || []),
+      ...batchPayoffs.filter(hook => Number(hook.targetChapter) === number).map(hook => hook.content),
+      ...(chapter.resolveHooks || []).filter(content => !scheduledPayoffs.has(hookKey(content))),
+    ])];
+    const inheritedHooks = new Set(existing.setHooks || []);
+    const previousProposals = existing.modelHookProposals || (existing.raw === MODEL_ROLLING_PLAN ? [...inheritedHooks] : []);
+    merged.modelHookProposals = [...new Set([...previousProposals, ...merged.setHooks.filter(hook => !inheritedHooks.has(hook))])];
+    if (number === totalChapters) {
+      merged.chapterRole = '收束';
+      merged.setHooks = [];
+      merged.modelHookProposals = [];
     }
     merged.characterBeat = [existing.characterBeat, chapter.characterBeat].filter(Boolean).join('；');
     merged.wordTarget = Number(existing.wordTarget) || Number(chapter.wordTarget) || Number(novel.chapterWordTarget) || 3000;
@@ -158,6 +241,7 @@ ${[...(novel.contextMemory?.facts || []), ...(novel.contextMemory?.openLoops || 
   planData.chapters = [...planned.values()].sort((a, b) => Number(a.chapterNumber) - Number(b.chapterNumber));
   novel.chapterPlanData = planData;
   novel.chapterPlan = JSON.stringify(planData);
+  seedPlannedHooks(novel, planData);
   // The rolling window may contain synthetic placeholders. Keep its concrete
   // execution event in agreement with the newly detailed durable plan.
   for (const card of novel.storyBlueprint?.rollingPlan?.chapters || []) {
@@ -166,8 +250,8 @@ ${[...(novel.contextMemory?.facts || []), ...(novel.contextMemory?.openLoops || 
     card.title = chapter.title;
     card.purpose = chapter.coreEvent;
   }
-  for (const field of ['chapterPlanData', 'chapterPlan', 'storyBlueprint']) novel.markModified?.(field);
+  for (const field of ['chapterPlanData', 'chapterPlan', 'storyBlueprint', 'foreshadowingLedger']) novel.markModified?.(field);
   return true;
 }
 
-module.exports = { needsDetailedPlan, planningWindow, adoptConfirmedChapterPlans, validateDetailedPlan, ensureDetailedLongFormPlan };
+module.exports = { constrainChapterPlan, needsDetailedPlan, planningWindow, adoptConfirmedChapterPlans, validateDetailedPlan, ensureDetailedLongFormPlan };

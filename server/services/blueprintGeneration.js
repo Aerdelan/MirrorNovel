@@ -1,5 +1,6 @@
 const { inspectStructuredPayload } = require('./blueprintPayload');
 const { prosePrompt, parseBlueprintProse } = require('./blueprintProse');
+const { getClosingWindowStart } = require('./storyState');
 
 const requireText = value => typeof value === 'string' && value.trim();
 const hasItems = value => Array.isArray(value) && value.length > 0;
@@ -41,7 +42,7 @@ function rangeErrors(rows, start, end, label = '') {
   return errors;
 }
 
-function stageErrors(stage, label = '阶段', tagOptional = false) {
+function stageErrors(stage, label = '阶段', tagOptional = false, terminal = false) {
   if (typeof stage?.planText === 'string') {
     if (stage.planText.trim().length < 40) return [`${label}剧情规划内容过短，需写出具体事件、人物选择和结果`];
     return requireText(stage.title) && requireText(stage.goal) ? [] : [`${label}缺少篇章标题或剧情内容`];
@@ -51,6 +52,7 @@ function stageErrors(stage, label = '阶段', tagOptional = false) {
     if (!requireText(stage?.[field])) errors.push(`${label}缺少${field}`);
   }
   for (const field of STAGE_ARRAYS) {
+    if (terminal && field === 'unresolvedQuestions' && Array.isArray(stage?.[field]) && !stage[field].length) continue;
     // 未选任何标签时没有可兑现的标签，模型省略 tagCommitments 是合理的；
     // 若仍然写了，就按字符串数组照常校验，不放宽内容标准。
     if (field === 'tagCommitments' && tagOptional) {
@@ -90,12 +92,13 @@ function overviewErrors(parsed, totalChapters, arcCount, requiredTags) {
 
 // When otherwise valid phases omit these two arrays, request only the missing
 // content. Never invent placeholders or copy a parent's plan into its children.
-function planPhaseRepair(parsed, errors) {
+function planPhaseRepair(parsed, errors, totalChapters) {
   if (!errors.length || !errors.every(error => /缺少(?:foreshadowing|unresolvedQuestions)$/.test(error))) return null;
   const targets = [];
   for (const phase of parsed.phases) {
     for (const stage of [phase, ...phase.subphases]) {
-      const fields = ['foreshadowing', 'unresolvedQuestions'].filter(field => !hasItems(stage[field]));
+      const fields = ['foreshadowing', 'unresolvedQuestions'].filter(field => !hasItems(stage[field])
+        && !(field === 'unresolvedQuestions' && Number(stage.endChapter) === totalChapters && Array.isArray(stage[field])));
       if (fields.length) targets.push({ phaseStartChapter: Number(phase.startChapter),
         subphaseStartChapter: stage === phase ? null : Number(stage.startChapter),
         fields, stage, parentForeshadowing: phase.foreshadowing,
@@ -107,7 +110,7 @@ function planPhaseRepair(parsed, errors) {
 以下篇章和小阶段的其他内容已通过校验。只为每个目标补充fields列出的字段，必须符合原始大纲、目标阶段的事件和父篇章的伏笔安排。
 目标清单（必须逐项完整覆盖）：${JSON.stringify(targets)}
 返回一个完整JSON对象：{"repairs":[{"phaseStartChapter":1,"subphaseStartChapter":1,"foreshadowing":[{"name":"具体伏笔","setupChapter":1,"progressChapters":[],"payoffChapter":6,"plan":"本小阶段如何埋设、推进或回收这条伏笔"}],"unresolvedQuestions":["本阶段具体的未决问题"]}]}。
-phaseStartChapter和subphaseStartChapter必须与目标清单一致；修复篇章本身时subphaseStartChapter为null。每个目标只输出一次，只输出其fields要求补充的字段。每个数组至少1项，不能用空数组或“无”“待补充”等占位；foreshadowing每项必须有非空name和plan。不得输出phases、改写标题、章节范围或其他已通过的内容。`,
+phaseStartChapter和subphaseStartChapter必须与目标清单一致；修复篇章本身时subphaseStartChapter为null。每个目标只输出一次，只输出其fields要求补充的字段。每个数组至少1项；全书末章的unresolvedQuestions可用空数组。不能用“无”“待补充”等占位；foreshadowing每项必须有非空name和plan。不得输出phases、改写标题、章节范围或其他已通过的内容。`,
     apply(payload) {
       if (!Array.isArray(payload.repairs) || payload.repairs.length !== targets.length) {
         return { parsed, errors: [`repairs必须逐项覆盖全部${targets.length}个修复目标`] };
@@ -136,6 +139,8 @@ phaseStartChapter和subphaseStartChapter必须与目标清单一致；修复篇�
 async function generateBlueprintParts({ context, totalChapters, arcCount, rollingEnd, requiredTags = [],
   request, onUsage, onStatus, onFailure, signal, outputStyle = 'json' }) {
   const tagOptional = requiredTags.length === 0;
+  const closingStart = getClosingWindowStart(totalChapters);
+  const planningContext = `${context}\n\n【全书收束安排】第${closingStart}至${totalChapters}章处理终局。将主线结果、人物选择的后果和重要伏笔回收分配到具体章号。所有重要问题须在第${totalChapters}章及以前给出答案，终章落在结果发生后的具体场景。`;
   const aborted = () => {
     if (signal?.aborted) { const error = new Error('aborted'); error.name = 'AbortError'; throw error; }
   };
@@ -146,8 +151,8 @@ async function generateBlueprintParts({ context, totalChapters, arcCount, rollin
       aborted();
       onStatus?.(`蓝图 ${step}/3：${name}${repair ? '（仅补齐缺失字段）' : attempt ? '（仅修复本块）' : ''}...`);
       const prompt = outputStyle === 'prose'
-        ? prosePrompt({ context, instruction, name, field, failure, requiredTags })
-        : `${context}\n\n【本次仅执行的分块任务】\n${repair ? repair.instruction : instruction}
+        ? prosePrompt({ context: planningContext, instruction, name, field, failure, requiredTags })
+        : `${planningContext}\n\n【本次仅执行的分块任务】\n${repair ? repair.instruction : instruction}
 本次只输出上面要求的一个JSON对象，不能输出整份三级蓝图、其他分块、解释或代码围栏。
 ${failure && !repair ? `【上次本块校验失败】${JSON.stringify(failure.errors)}\n从头返回本块完整的JSON对象，保留要求的顶层字段 ${field}。各字段只写必要细节，优先保证字段完整和JSON闭合。` : ''}`;
       const result = await request({ name, prompt, attempt, maxTokens });
@@ -299,7 +304,7 @@ lockedFacts必须显式返回字符串数组，只摘取用户大纲已明确的
     const validatePhase = (phase, anchor) => {
       const { startChapter, endChapter } = anchor;
       const label = `第${startChapter}-${endChapter}章篇章`;
-      const errors = stageErrors(phase, label, tagOptional);
+      const errors = stageErrors(phase, label, tagOptional, Number(endChapter) === totalChapters);
       if (Number(phase?.startChapter) !== Number(startChapter) || Number(phase?.endChapter) !== Number(endChapter)) {
         errors.push(`${label}范围被改写（实际为第${phase?.startChapter ?? '?'}-${phase?.endChapter ?? '?'}章）`);
       }
@@ -309,7 +314,8 @@ lockedFacts必须显式返回字符串数组，只摘取用户大纲已明确的
       } else {
         if (subphases.length > 8) errors.push(`${label}的subphases不能超过8个`);
         errors.push(...rangeErrors(subphases, Number(startChapter), Number(endChapter), `${label}的小阶段范围`));
-        subphases.forEach((subphase, i) => errors.push(...stageErrors(subphase, `${label}的小阶段${i + 1}`, tagOptional)));
+        subphases.forEach((subphase, i) => errors.push(...stageErrors(subphase, `${label}的小阶段${i + 1}`, tagOptional,
+          Number(subphase?.endChapter) === totalChapters)));
       }
       const commitments = [phase?.tagCommitments, ...subphases.map(item => item?.tagCommitments)].flat().join('、');
       const assignedTags = Array.isArray(anchor.tagCommitments) ? anchor.tagCommitments.join('、') : '';
@@ -355,17 +361,18 @@ lockedFacts必须显式返回字符串数组，只摘取用户大纲已明确的
 不可改写事实：${JSON.stringify(outline.lockedFacts)}
 ${previous ? `上一批最后一个篇章的衔接约束：${JSON.stringify({ title: previous.title, endChapter: previous.endChapter, exitCondition: previous.exitCondition, unresolvedQuestions: previous.unresolvedQuestions })}\n` : ''}相邻篇章的进入条件要承接前一篇章的离开条件。
 ${next ? `下一已确定篇章的衔接约束：${JSON.stringify({ title: next.title, startChapter: next.startChapter, entryCondition: next.entryCondition })}\n本批末尾必须衔接上述进入条件，不得改写已保留篇章。` : ''}
+${end === totalChapters ? '本批含终局篇章，分别写出主线冲突的结果、关键伏笔的答案和主要人物的归宿。' : ''}
 phases数组必须恰好包含${anchors.length}个篇章，按以下范围逐项输出，不能合并或只输出第一个：${JSON.stringify(anchors.map(({ title, startChapter, endChapter }) => ({ title, startChapter, endChapter })))}。
 返回结构示例（仅演示一个篇章元素的字段，实际数组必须填齐上述${anchors.length}个篇章）：${JSON.stringify({ phases: [{ ...stageExample, subphases: [stageExample] }] })}。
 跨度较长的篇章，用现有reversal标明关键选择发生在第几章及其结果，用exitCondition写清阶段末章的新局面。伏笔用已有章号字段安排埋设与回收，优先沿用大纲已定的章号。
 每个篇章的subphases连续覆盖本篇章，通常2个，章数不足时1个，最多8个。篇章及每一个subphase都必须逐一填写这些字段：${STAGE_ARRAYS.join('、')}、entryCondition、exitCondition。
-尤其注意：父篇章有foreshadowing和unresolvedQuestions不代表小阶段可以省略。每个小阶段必须单独填写非空foreshadowing数组（每项含name、plan及相应章号）和非空unresolvedQuestions字符串数组，具体说明它如何埋设、推进或回收伏笔，以及仍需解答的问题。
+每个小阶段分别填写foreshadowing数组（每项含name、plan及相应章号）和unresolvedQuestions字符串数组，说明它如何埋设、推进或回收伏笔。结束章号是全书末章时，篇章和小阶段的unresolvedQuestions均可用空数组，写清问题的答案和结果。
 各数组优先写1-2项直接相关的内容，保留分配的全部标签及其原名。各条写简短具体的事件和约束，避免在篇章和小阶段重复描述。未选标签时tagCommitments可为空。不要写执行卡。`, parsed => {
         if (!Array.isArray(parsed.phases) || parsed.phases.length !== anchors.length) {
           return [`篇章数量不符：要求${anchors.length}个，实际${Array.isArray(parsed.phases) ? parsed.phases.length : 0}个`];
         }
         return parsed.phases.flatMap((phase, index) => validatePhase(phase, anchors[index]));
-      }, 32000, split, planPhaseRepair, recoverPartial);
+      }, 32000, split, (parsed, errors) => planPhaseRepair(parsed, errors, totalChapters), recoverPartial);
   };
   const { phases } = await generatePhases(outline.phases);
 
@@ -380,6 +387,7 @@ phases数组必须恰好包含${anchors.length}个篇章，按以下范围逐项
     return task(3, `执行卡第${start}-${end}章`, 'chapters',
       `只编写第${start}-${end}章，共${end - start + 1}张执行卡，不写其他章节。已确定主线：${outline.mainArc}
 必须遵守的相关篇章：${JSON.stringify(relevant)}
+${end === totalChapters ? `第${totalChapters}章的章末局面要写明主线结果、人物归宿与具体后果。` : ''}
 ${previous.length ? `已完成执行卡的实际进展：${JSON.stringify(previous.map(card => ({ chapterNumber: card.chapterNumber, title: card.title, purpose: card.purpose, exitHook: card.exitHook })))}\n` : ''}返回{"chapters":[{"chapterNumber":${start},"title":"具体短标题","purpose":"本章新发生的状态变化","tagCommitments":["标签+兑现方式"],"characterBeats":[{"character":"角色","goal":"目标","conflict":"冲突","change":"变化","voiceGuard":"声线"}],"requiredScenes":["场景"],"relationshipChange":"关系变化","foreshadowingActions":["伏笔动作"],"exitHook":"新的章末局面"}]}。
 chapterNumber必须连续，每张卡承接前一章的局面，标题和核心事件不能重复。篇章转折和伏笔按已定章号兑现。每个数组写1-2项最相关的内容，未选标签时tagCommitments可为空。`, parsed => {
         if (!Array.isArray(parsed.chapters) || parsed.chapters.length !== end - start + 1) {

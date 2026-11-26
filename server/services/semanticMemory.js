@@ -3,6 +3,7 @@ const { createHash } = require('node:crypto');
 const VERSION = 2;
 const STAGE_SIZE = 6;
 const CHUNK_CHARS = 14000;
+const MAX_EVIDENCE_SNIPPETS = 24;
 const list = value => Array.isArray(value) ? value : [];
 const hash = text => createHash('sha256').update(String(text || '')).digest('hex');
 const normalize = text => String(text || '').replace(/\s+/g, ' ').trim();
@@ -69,12 +70,27 @@ function validChapterMemory(chapter) {
     && Array.isArray(memory.events) && memory.events.length > 0 ? memory : null;
 }
 
-function validateChapterPart(content, source, prefix, knownLoops) {
+function buildEvidenceSnippets(source) {
+  const candidates = [...new Set(source.split(/(?<=[。！？!?；;])|\r?\n/)
+    .flatMap(sentence => sentence.match(/[\s\S]{1,240}/gu) || [])
+    .map(snippet => snippet.trim()).filter(snippet => normalize(snippet).length >= 4))];
+  if (candidates.length <= MAX_EVIDENCE_SNIPPETS) return candidates;
+  return Array.from({ length: MAX_EVIDENCE_SNIPPETS }, (_, index) =>
+    candidates[Math.round(index * (candidates.length - 1) / (MAX_EVIDENCE_SNIPPETS - 1))]);
+}
+
+function validateChapterPart(content, source, prefix, knownLoops, assignedEvidence = []) {
   const data = parseJson(content);
   const summary = requiredText(data.summary, '章节总结', 1200);
   if (summary.length < 20) throw new Error('章节总结信息不足');
   const evidence = row => {
-    const quote = requiredText(row?.evidence, '正文证据', 500);
+    let selected = row?.evidence;
+    if (assignedEvidence.length && row?.evidenceId !== undefined) {
+      const id = typeof row.evidenceId === 'string' && /^\d+$/.test(row.evidenceId) ? Number(row.evidenceId) : row.evidenceId;
+      if (!Number.isSafeInteger(id) || id < 1 || id > assignedEvidence.length) throw new Error('正文证据编号无效');
+      selected = assignedEvidence[id - 1];
+    }
+    const quote = requiredText(selected, '正文证据', 500);
     if (normalize(quote).length < 4 || !normalize(source).includes(normalize(quote))) throw new Error('记忆证据不在本段正文中');
     return quote;
   };
@@ -111,18 +127,25 @@ function collectLedger(chapters) {
   return { facts: [...facts.values()], openLoops: [...loops.values()], characters: [...characters.values()] };
 }
 
-async function validatedRequest(request, task, prompt, validate, onUsage) {
+async function validatedRequest(request, task, prompt, validate, onUsage, evidenceSource) {
   let reason = '';
+  const retryGuidance = task === 'chapter_memory'
+    ? '这次只需提炼 1–3 条关键已发生事件，每条证据复制正文中连续的一小段原文。其余数组凡无把握引用准确原文的条目都省略。'
+    : '';
   for (let attempt = 0; attempt < 2; attempt++) {
-    const result = await request(task, prompt + (reason ? `\n上次校验失败：${reason}。请重新输出完整 JSON，不能编造证据。` : ''));
+    const snippets = reason && evidenceSource ? buildEvidenceSnippets(evidenceSource) : [];
+    const guidance = snippets.length
+      ? `这次只需提炼 1–3 条关键已发生事件。优先从表中选择与事件直接相关的 evidenceId，例如 {"text":"关键行动及其结果","evidenceId":1}。程序会把编号还原为原文。表中没有对应片段时，可以照录连续的原文 evidence。其余数组可以省略。\n【原文证据编号表】\n${JSON.stringify(snippets.map((text, index) => ({ evidenceId: index + 1, text })))}`
+      : retryGuidance;
+    const result = await request(task, prompt + (reason ? `\n上次校验失败：${reason}。请重新输出完整 JSON，不能编造证据。${guidance}` : ''));
     onUsage?.(result);
-    try { return validate(result?.content); }
+    try { return validate(result?.content, snippets); }
     catch (error) { reason = error instanceof SyntaxError ? 'JSON 不完整或无法解析' : error.message; }
   }
-  throw memoryError(`语义记忆校验失败：${reason}`);
+  throw Object.assign(memoryError(`语义记忆校验失败：${reason}`), { invalidModelResult: true });
 }
 
-async function summarizeChapter(chapter, priorChapters, request, onUsage) {
+async function summarizeChapter(chapter, priorChapters, request, onUsage, selectEvidenceOnRetry) {
   const source = String(chapter.content || '');
   if (!source.trim()) throw memoryError('章节正文为空，无法总结');
   const sourceHash = hash(source);
@@ -144,7 +167,8 @@ ${chunks[index]}
 只返回 JSON：{"summary":"200-500字，概括已发生事件与章末状态，不写天气流水账","events":[{"text":"行动、冲突和结果","evidence":"正文原句"}],"facts":[{"text":"已证实事实","evidence":"正文原句"}],"characters":[{"name":"姓名","state":"本段结束时状态/关系/目标","evidence":"正文原句"}],"openLoops":[{"text":"尚未解决的问题","evidence":"正文原句"}],"resolvedLoops":[{"id":"已有问题ID","evidence":"正文确实回收的原句"}]}。
 events 1-10条，facts不超过12条，characters不超过10条，openLoops不超过8条，resolvedLoops不超过10条；没有的数组填写 []。`;
     const part = await validatedRequest(request, 'chapter_memory', prompt,
-      content => validateChapterPart(content, chunks[index], prefix, knownLoops), onUsage);
+      (content, snippets) => validateChapterPart(content, chunks[index], prefix, knownLoops, snippets),
+      onUsage, selectEvidenceOnRetry ? chunks[index] : undefined);
     parts.push(part);
     for (const loop of part.openLoops) { pending.push(loop); knownLoops.add(loop.id); }
   }
@@ -188,26 +212,49 @@ function semanticSummaryDoc(chapters) {
 }
 
 /** Persist L1 chapter summaries independently, then merge six chapters into
- * cumulative L2 memory. Failed calls never replace a valid previous snapshot.
+ * cumulative L2 memory. A deferred validation failure allows other chapters
+ * to save their L1 summaries while the next L2 batch waits for verified prose.
  * Old works are upgraded lazily from saved prose, without any DB migration. */
-async function ensureSemanticMemory({ novel, throughChapter = Infinity, request, onUsage, persist = async () => {}, onProgress, forceStage = false }) {
+async function ensureSemanticMemory({ novel, throughChapter = Infinity, request, onUsage, persist = async () => {}, onProgress, forceStage = false, retryInvalidAfterChapters = 0 }) {
   const chapters = list(novel.chapters).filter(chapter => Number(chapter.chapterNumber) <= throughChapter && String(chapter.content || '').trim())
     .sort((a, b) => Number(a.chapterNumber) - Number(b.chapterNumber));
   if (!chapters.length) return { updated: false, chapters: 0, stages: 0 };
+  const deferInvalid = Number.isSafeInteger(retryInvalidAfterChapters) && retryInvalidAfterChapters > 0;
+  const latestChapterNumber = Number(chapters.at(-1).chapterNumber);
+  let hasDeferredChapter = false;
   let summarized = 0;
   let stages = 0;
   for (let index = 0; index < chapters.length; index++) {
     const chapter = chapters[index];
     if (validChapterMemory(chapter)) continue;
-    onProgress?.(`正在总结第${chapter.chapterNumber}章的剧情事实（${index + 1}/${chapters.length}）...`);
     const capturedHash = hash(chapter.content);
-    const memory = await summarizeChapter(chapter, chapters.slice(0, index), request, onUsage);
+    const retry = chapter.memorySummary?.validationRetry;
+    if (deferInvalid && retry?.sourceHash === capturedHash && latestChapterNumber < retry.afterChapter) {
+      hasDeferredChapter = true;
+      continue;
+    }
+    onProgress?.(`正在总结第${chapter.chapterNumber}章的剧情事实（${index + 1}/${chapters.length}）...`);
+    let memory, validationFailure;
+    try {
+      memory = await summarizeChapter(chapter, chapters.slice(0, index), request, onUsage, deferInvalid);
+    } catch (error) {
+      if (!deferInvalid || !error?.invalidModelResult) throw error;
+      validationFailure = error;
+    }
     if (hash(chapter.content) !== capturedHash) throw memoryError('正文在总结期间发生修订，请重新更新记忆');
-    chapter.memorySummary = memory;
+    if (memory) {
+      chapter.memorySummary = memory;
+      summarized++;
+    } else {
+      hasDeferredChapter = true;
+      chapter.memorySummary = { ...chapter.memorySummary, validationRetry: {
+        sourceHash: capturedHash, afterChapter: latestChapterNumber + retryInvalidAfterChapters,
+      } };
+      onProgress?.(`第${chapter.chapterNumber}章的语义记忆待补齐（${validationFailure.message}），继续整理后续已保存章节。`);
+    }
     const indexInNovel = novel.chapters.indexOf(chapter);
     novel.markModified?.(`chapters.${indexInNovel}.memorySummary`);
     await persist();
-    summarized++;
   }
   let base = checkpointIsCurrent(novel.contextMemory, chapters) ? novel.contextMemory : {
     version: VERSION, checkpointChapter: 0, checkpointSummary: '', sourceHashes: [],
@@ -216,6 +263,7 @@ async function ensureSemanticMemory({ novel, throughChapter = Infinity, request,
   let pending = chapters.filter(chapter => Number(chapter.chapterNumber) > Number(base.checkpointChapter || 0));
   while (pending.length >= STAGE_SIZE || (forceStage && pending.length)) {
     const batch = pending.slice(0, STAGE_SIZE);
+    if (batch.some(chapter => !validChapterMemory(chapter))) break;
     const end = Number(batch.at(-1).chapterNumber);
     const covered = chapters.filter(chapter => Number(chapter.chapterNumber) <= end);
     const ledger = collectLedger(covered);
@@ -264,16 +312,15 @@ async function ensureSemanticMemory({ novel, throughChapter = Infinity, request,
     stages++;
     pending = pending.slice(batch.length);
   }
-  // A book with fewer than six chapters has full L1 semantic summaries; there
-  // is no need to fabricate an L2 checkpoint or pay for a merge every chapter.
+  // Save metadata independently of whether enough verified chapters can merge.
   let metadataChanged = false;
-  if (novel.contextMemory !== base) {
+  if (novel.contextMemory !== base && !hasDeferredChapter) {
     novel.contextMemory = base;
     novel.markModified?.('contextMemory');
     metadataChanged = true;
   }
   const document = semanticSummaryDoc(chapters.slice(-8));
-  if (novel.chapterSummaryDoc !== document) {
+  if (novel.chapterSummaryDoc !== document && (!hasDeferredChapter || document)) {
     novel.chapterSummaryDoc = document;
     novel.markModified?.('chapterSummaryDoc');
     metadataChanged = true;

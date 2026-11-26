@@ -1,0 +1,403 @@
+{
+  "provider": {
+    "apiBase": "https://ai.space.opencsg.com/v1",
+    "model": "qwen3.8-flash"
+  },
+  "startedAt": "2026-11-25T06:05:34.500Z",
+  "worker": {
+    "startedAt": "2026-11-25T08:31:07.186Z",
+    "finishedAt": "2026-11-25T12:57:01.174Z",
+    "code": 2,
+    "signal": null
+  },
+  "structural": {
+    "directory": "D:\\MirrorNovel\\tmp\\live-book-100-retest-2026-11-25T06-05-34-473Z",
+    "stage": "book",
+    "status": "paused",
+    "target": 100,
+    "saved": 99,
+    "savedOrder": true,
+    "completedEvent": false,
+    "chapterEndEvents": 99,
+    "uniqueChapterEndEvents": 99,
+    "endsCoverInOrder": false,
+    "pass": false,
+    "completedAt": "2026-11-25T12:57:01.133Z",
+    "lastEvent": {
+      "type": "error",
+      "message": "终章复核未返回有效结果。草稿已保留，继续生成时会重新核对。"
+    },
+    "activeJobs": [
+      {
+        "status": "paused",
+        "phase": "ending_review",
+        "next": 100,
+        "lastCommittedChapter": 99,
+        "draftChars": 12458
+      }
+    ],
+    "modelRequests": {
+      "rolling_plan": 20,
+      "chapter_write": 101,
+      "chapter_progress_review": 146,
+      "chapter_memory": 320,
+      "hook_audit": 256,
+      "stage_memory": 29,
+      "ending_hook_repair": 1,
+      "chapter_progress_repair": 1,
+      "historical_hook_audit": 20,
+      "historical_hook_audit_confirm": 7,
+      "ending_hook_audit_confirm": 35,
+      "ending_scene_repair": 36
+    },
+    "resumes": 30,
+    "assistedEvents": [],
+    "generationErrors": {
+      "count": 28,
+      "last": "终章复核未返回有效结果。草稿已保留，继续生成时会重新核对。"
+    },
+    "memoryWarnings": {
+      "count": 68,
+      "last": "第99章的语义记忆待补齐（语义记忆校验失败：记忆证据不在本段正文中），继续整理后续已保存章节。"
+    },
+    "completion": {
+      "complete": false,
+      "currentWords": 150379,
+      "wordTarget": 150000,
+      "wordTargetReached": true,
+      "missingChapters": [
+        100
+      ],
+      "unexpectedChapters": [],
+      "unresolvedHooks": [
+        "裴远舟哼错的旋律",
+        "老陶知道后区唯一一台打孔编码机器的位置但拒绝告知，且警告林见夏不要再找他",
+        "票正面的工单号对应的是后区管线维护而非灯具检修，为何以灯具检修名义进入后区",
+        "后区三年前调走装订机的真实用途——后区不做档案、报表手抄，为何需要一台打孔装订机",
+        "打孔针是否用于记忆提取——林见夏直接询问老陶，老陶未口头否认，仅以指甲划桌面的声响回应",
+        "B-7-03锁体上的油膜带有稀释枣汁气味，非机械润滑油——谁涂的、为何涂",
+        "后区装订机针尖角度被人为从出厂偏右改为偏左，具体是谁动的手",
+        "温小满离职前最后一周，有人以默认校验位来取空白页，此人身份未明",
+        "纪鸢激活门时消耗了多少记忆（她指尖发白的原因）",
+        "门后阶梯第七级以下的水位何时退去",
+        "裴远舟'忘了下一句'是记忆问题还是旋律本身有断裂",
+        "第二道检修门激活的代价是否比第一道更大",
+        "贺兰青'从东段绕'是否可行（留第31章）",
+        "侧灯底座螺纹孔内出现管件接头断裂时崩出的焊渣，该金属丝不应存在于灯具检修位置，是谁放置、如何与管件接头产生关联尚未回答",
+        "金属丝是谁在何时塞入螺纹孔的",
+        "阿螺'修过弯头但记不清方向'的记忆缺失范围有多大",
+        "阿螺被标记从未入职的具体时间与操作者",
+        "第四个弯处三通消失是被物理改动还是阿螺记忆本身有误",
+        "装置后方窄管是谁修的、为何不在任何图纸上",
+        "软管另一端通向地下哪个接口（为第40章完整验证铺垫）",
+        "阿螺被暂停搬运工作是谁的操作、与'从未入职'标记是否同一指令",
+        "温小满找到的纸质签名能否作为户籍恢复依据",
+        "直通管壁内侧存在一道新划痕，方向从里往外，疑似有物体或人从管内被拖出，拖拽者身份与目的不明",
+        "日志第七行末尾的纸是被刀切掉的（非水冲），第七行之后转轮刻度线仍在延伸，是谁切的、为何切在第七行",
+        "纪鸢纸条'别查了'的真实含义：是怕连累团队，还是她自己已经查到什么但无法说",
+        "方岐调职的具体时间与原因：副手说'没交代过'，暗示方岐离开与调查窗口关闭有关",
+        "程也工号出现在操作日志中：确认执行者身份，但指令链上端（谁授权程也扩大化）仍未闭合",
+        "纪鸢母亲'如果电车停了我们就都没了'：这句话是纪鸢主动让渡的动机源头，但母亲是否说过其他内容、纪鸢是否只记住了这一句",
+        "裴远舟把'无维护人员'划掉改'待分配'：他拒绝接受林见夏被系统抹除，但措辞仍是体制内的，暗示他站在规则与同伴之间的缝隙里",
+        "温小满的工号账号被'自动回收'——是谁或什么系统触发了回收，是否与当前调查或更广泛的户籍清除机制有关",
+        "裴远舟编号异常标记的校验位格式与空户籍编号相同——他是被篡改还是被误标？",
+        "纪鸢记忆加速流失的具体剩余容量是多少？（留至第56章）",
+        "温小满指出旋律对应的编号位于东段集市第三排摊位、去年冬天被标「从未住过」，但具体编号数字未在正文中给出，该编号与裴远舟残留旋律的完整因果链仍待闭合。",
+        "七张纸质户籍底联为何被退回而非销毁——谁授权了'纸面存档'这一冗余备份（待第62章温如故字迹线索时回收）",
+        "温如故被冻结比协议启动早十一天，是谁在协议之前就开始操作",
+        "纪鸢恢复的是'动作记忆'而非'人物记忆'，她的记忆恢复路径是什么（后续章节需要持续追踪）",
+        "白婆婆第七张照片（空巷路灯）与温如故编号的关联是否意味着温如故曾住在第七号站台附近",
+        "纪鸢敲灯杆底座两下是什么意思（后续章节需要解释或自然消解）",
+        "方岐继任者是谁、是否会制造新阻力",
+        "不用记忆引信的灯具回路具体需要什么替代结构",
+        "钟离鹤未转完的第二圈椅子意味着他仍握有未交出的权限",
+        "林见夏'先拆东西'指向的具体拆解对象与时限",
+        "钟离鹤'程序审查'的实际时限（埋设72→回收78）",
+        "谐振腔频率匹配件尚未找到来源（埋设74→回收75）",
+        "纪鸢'触片拧反'的主动开口（埋设77→回收80关系重建）",
+        "林见夏工位底板三个接线孔（B-7-03-115/119/123）底部存在一道旧划痕，方向与螺丝刀旋转一致且已被铜锈覆盖——谁曾在何时打开过这些接线孔、目的是什么",
+        "温小满发现的三个缺失编号（097、103、114）与老陶牛皮纸信封纸条背面的序列号段完全重合，老陶与这批纸质原始档案缺失有何关联"
+      ],
+      "endingVerified": false
+    },
+    "ledger": {
+      "entries": 142,
+      "resolved": 42,
+      "matchingProofs": 42,
+      "invalidPayoffs": [],
+      "unconfirmed": 53,
+      "abandoned": 0,
+      "resolvedInTerminal": 0,
+      "plannedPayoffs": [
+        {
+          "name": "票背双孔",
+          "expected": 96,
+          "status": "resolved",
+          "actual": 96,
+          "aliases": []
+        },
+        {
+          "name": "空户籍编号",
+          "expected": 94,
+          "status": "resolved",
+          "actual": 94,
+          "aliases": []
+        },
+        {
+          "name": "裴远舟哼错的旋律",
+          "expected": 100,
+          "status": "pending",
+          "aliases": []
+        },
+        {
+          "name": "逆走水表",
+          "expected": 93,
+          "status": "resolved",
+          "actual": 93,
+          "aliases": []
+        },
+        {
+          "name": "林见夏的隔间被标记为\"空置\"",
+          "expected": 96,
+          "status": "resolved",
+          "actual": 96,
+          "aliases": [
+            {
+              "id": "PLAN_11_林见夏的隔间被标记为空置",
+              "status": "resolved",
+              "actual": 12,
+              "expected": 0
+            }
+          ]
+        },
+        {
+          "name": "第七号站台灯具被\"用他的手法\"重新损坏",
+          "expected": 85,
+          "status": "resolved",
+          "actual": 85,
+          "aliases": [
+            {
+              "id": "PLAN_14_第七号站台灯具被用他的手法重新损坏",
+              "status": "resolved",
+              "actual": 26,
+              "expected": 0
+            }
+          ]
+        },
+        {
+          "name": "纪鸢说\"你修灯的样子挺好看的\"",
+          "expected": 99,
+          "status": "resolved",
+          "actual": 99,
+          "aliases": []
+        },
+        {
+          "name": "白婆婆的旧户籍照片",
+          "expected": 94,
+          "status": "resolved",
+          "actual": 94,
+          "aliases": []
+        },
+        {
+          "name": "老陶说\"你比我手稳\"",
+          "expected": 79,
+          "status": "resolved",
+          "actual": 79,
+          "aliases": []
+        },
+        {
+          "name": "贺兰青把干粮放在工具包侧袋",
+          "expected": 84,
+          "status": "resolved",
+          "actual": 84,
+          "aliases": []
+        },
+        {
+          "name": "温小满口袋里叠好的纸",
+          "expected": 96,
+          "status": "resolved",
+          "actual": 96,
+          "aliases": []
+        },
+        {
+          "name": "钟离鹤的调度室椅子",
+          "expected": 99,
+          "status": "resolved",
+          "actual": 99,
+          "aliases": []
+        },
+        {
+          "name": "引信座内的刻痕（林见夏自己的笔迹）",
+          "expected": 86,
+          "status": "resolved",
+          "actual": 86,
+          "aliases": []
+        }
+      ]
+    },
+    "progress": {
+      "auditedChapters": 99,
+      "phaseEnds": [
+        10,
+        20,
+        30,
+        40,
+        50,
+        60,
+        70,
+        80,
+        90
+      ],
+      "phaseEndsMissingAudit": [],
+      "invalidProgressReferences": []
+    },
+    "repeatedBodies": [],
+    "checkedRepeatedEdges": true,
+    "repeatedEdges": [],
+    "terminal": null,
+    "tail": [
+      {
+        "number": 95,
+        "title": "第95章 押金退还",
+        "chars": 743
+      },
+      {
+        "number": 96,
+        "title": "第96章 干净的车票",
+        "chars": 652
+      },
+      {
+        "number": 97,
+        "title": "第97章 程也离场",
+        "chars": 498
+      },
+      {
+        "number": 98,
+        "title": "第98章 椅子推正",
+        "chars": 1136
+      },
+      {
+        "number": 99,
+        "title": "第99章 她记得他是谁",
+        "chars": 561
+      }
+    ]
+  },
+  "unsavedTerminalDraft": {
+    "chapter": 100,
+    "chars": 12458,
+    "lastError": "终章复核未返回有效结果。草稿已保留，继续生成时会重新核对。",
+    "verifiedEvidenceInDraft": 29,
+    "minUnverifiedReported": 18,
+    "sceneRepairResponses": 36,
+    "endingModelErrors": [
+      {
+        "task": "hook_audit",
+        "message": "AI API 请求失败，所有重试均已耗尽",
+        "at": "2026-11-25T12:56:27.442Z"
+      },
+      {
+        "task": "hook_audit",
+        "message": "AI API 请求失败，所有重试均已耗尽",
+        "at": "2026-11-25T12:56:27.520Z"
+      },
+      {
+        "task": "hook_audit",
+        "message": "AI API 请求失败，所有重试均已耗尽",
+        "at": "2026-11-25T12:56:27.626Z"
+      },
+      {
+        "task": "hook_audit",
+        "message": "AI API 请求失败，所有重试均已耗尽",
+        "at": "2026-11-25T12:56:27.705Z"
+      },
+      {
+        "task": "hook_audit",
+        "message": "AI API 请求失败，所有重试均已耗尽",
+        "at": "2026-11-25T12:56:27.803Z"
+      },
+      {
+        "task": "hook_audit",
+        "message": "AI API 请求失败，所有重试均已耗尽",
+        "at": "2026-11-25T12:56:27.877Z"
+      },
+      {
+        "task": "hook_audit",
+        "message": "AI API 请求失败，所有重试均已耗尽",
+        "at": "2026-11-25T12:56:27.990Z"
+      },
+      {
+        "task": "hook_audit",
+        "message": "AI API 请求失败，所有重试均已耗尽",
+        "at": "2026-11-25T12:56:43.913Z"
+      },
+      {
+        "task": "hook_audit",
+        "message": "AI API 请求失败，所有重试均已耗尽",
+        "at": "2026-11-25T12:56:44.004Z"
+      },
+      {
+        "task": "hook_audit",
+        "message": "AI API 请求失败，所有重试均已耗尽",
+        "at": "2026-11-25T12:56:44.094Z"
+      },
+      {
+        "task": "hook_audit",
+        "message": "AI API 请求失败，所有重试均已耗尽",
+        "at": "2026-11-25T12:56:44.169Z"
+      },
+      {
+        "task": "hook_audit",
+        "message": "AI API 请求失败，所有重试均已耗尽",
+        "at": "2026-11-25T12:56:44.263Z"
+      },
+      {
+        "task": "hook_audit",
+        "message": "AI API 请求失败，所有重试均已耗尽",
+        "at": "2026-11-25T12:56:44.334Z"
+      },
+      {
+        "task": "hook_audit",
+        "message": "AI API 请求失败，所有重试均已耗尽",
+        "at": "2026-11-25T12:56:44.434Z"
+      },
+      {
+        "task": "hook_audit",
+        "message": "AI API 请求失败，所有重试均已耗尽",
+        "at": "2026-11-25T12:57:00.377Z"
+      },
+      {
+        "task": "hook_audit",
+        "message": "AI API 请求失败，所有重试均已耗尽",
+        "at": "2026-11-25T12:57:00.497Z"
+      },
+      {
+        "task": "hook_audit",
+        "message": "AI API 请求失败，所有重试均已耗尽",
+        "at": "2026-11-25T12:57:00.592Z"
+      },
+      {
+        "task": "hook_audit",
+        "message": "AI API 请求失败，所有重试均已耗尽",
+        "at": "2026-11-25T12:57:00.694Z"
+      },
+      {
+        "task": "hook_audit",
+        "message": "AI API 请求失败，所有重试均已耗尽",
+        "at": "2026-11-25T12:57:00.791Z"
+      },
+      {
+        "task": "hook_audit",
+        "message": "AI API 请求失败，所有重试均已耗尽",
+        "at": "2026-11-25T12:57:00.895Z"
+      },
+      {
+        "task": "hook_audit",
+        "message": "AI API 请求失败，所有重试均已耗尽",
+        "at": "2026-11-25T12:57:01.001Z"
+      }
+    ],
+    "providerQuotaFallbacks": 21,
+    "providerQuotaFallbackExample": "[额度] 上游按预留额度拒绝请求（原 max_tokens≈10692），改用更小预算重试：max_tokens≈1024，已关闭思考"
+  }
+}

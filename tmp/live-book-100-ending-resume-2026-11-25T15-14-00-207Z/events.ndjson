@@ -1,0 +1,6 @@
+{"at":"2026-11-25T15:14:29.426Z","stage":"book","kind":"request","endpoint":"/continue/novel-1"}
+{"at":"2026-11-25T15:14:29.632Z","stage":"book","kind":"model_start","role":"reasoning","task":"ending_hook_audit_confirm","inputChars":5178,"startTime":"2026-11-25T15:14:29.632Z"}
+{"at":"2026-11-25T15:14:29.651Z","stage":"book","kind":"event","type":"continue_start","targetChapterCount":100}
+{"at":"2026-11-25T15:14:29.652Z","stage":"book","kind":"event","type":"generation_job"}
+{"at":"2026-11-25T15:14:29.914Z","stage":"book","kind":"model_error","role":"reasoning","task":"ending_hook_audit_confirm","inputChars":5178,"startTime":"2026-11-25T15:14:29.632Z","ms":281,"message":"上游账户余额/额度不足，请检查当前线路的可用额度 —— 当前线路：qwen3.8-flash @ ai.space.opencsg.com（已尝试更小的输出预算仍被拒）","usage":{"prompt_tokens":13262,"completion_tokens":0,"reasoning_tokens":0,"prompt_cache_hit_tokens":0,"estimated_attempts":2,"total_tokens":13262,"estimated":true}}
+{"at":"2026-11-25T15:14:29.977Z","stage":"book","kind":"event","type":"error","message":"上游账户余额/额度不足，请检查当前线路的可用额度 —— 当前线路：qwen3.8-flash @ ai.space.opencsg.com（已尝试更小的输出预算仍被拒）"}

@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { isDeepStrictEqual } = require('node:util');
 const GenerationJob = require('../models/GenerationJob');
 
 const DEFAULT_LEASE_MS = 30_000;
@@ -99,7 +100,7 @@ function normalizeTokenUsageDelta(delta) {
 }
 
 const EVENT_TEXT_KEYS = new Set([
-  'content', 'draft', 'text', 'output', 'chaptercontent', 'partialcontent', 'generatedtext',
+  'content', 'draft', 'draftreview', 'text', 'output', 'chaptercontent', 'partialcontent', 'generatedtext',
 ]);
 
 function sanitizeEventPayload(value, depth = 0) {
@@ -337,6 +338,8 @@ async function checkpointGenerationJob(input, options = {}) {
     leaseUntil: new Date(now.getTime() + leaseMs),
     updatedAt: now,
   };
+  if (!set.draft) set.draftReview = null;
+  else if (input.draftReview !== undefined) set.draftReview = input.draftReview;
   if (input.phase != null) {
     set.phase = String(input.phase);
     set.draftPhase = String(input.phase);
@@ -368,7 +371,8 @@ async function checkpointGenerationJob(input, options = {}) {
   const current = await Model.findOne({ jobId, fencingToken, leaseOwner, draftSeq });
   if (
     current
-    && plainValue(current, 'draftCheckpointHash') === checkpointHash('replace', draftSeq, input.draft)
+    && plainValue(current, 'draftCheckpointHash') === set.draftCheckpointHash
+    && (set.draftReview === undefined || isDeepStrictEqual(plainValue(current, 'draftReview') ?? null, set.draftReview))
   ) return current;
   throw new StaleLeaseError(jobId);
 }
@@ -460,6 +464,7 @@ async function finalizeGenerationJob(input, options = {}) {
   };
   if (input.tokenUsage != null) set.tokenUsage = input.tokenUsage;
   if (input.draft != null) set.draft = String(input.draft);
+  if (set.draft === '') set.draftReview = null;
   const update = {
     $set: set,
     $unset: { leaseKey: '', leaseOwner: '', leaseUntil: '' },

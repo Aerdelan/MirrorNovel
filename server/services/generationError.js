@@ -44,7 +44,7 @@ function describeChapterFailure(error, fallback) {
   if (error?.code === 'CHAPTER_OPENING_REPEATED') {
     return `检测到开头与第${Number(error.repetition?.chapterNumber) || '?'}章大段重复，自动修订未通过。生成已暂停，草稿已保留。`;
   }
-  if (error?.code === 'ENDING_HOOKS_UNRESOLVED') return redactError(error.message);
+  if (['ENDING_HOOKS_UNRESOLVED', 'CHAPTER_PROGRESS_BLOCKED'].includes(error?.code)) return redactError(error.message);
   if (error?.code === 'CHAPTER_CONTRACT_BLOCKED') {
     return `章节校验未通过：${redactError((error.commitAudit?.blockers || []).join('；') || error.message)}。草稿已保留，可调整设置后继续`;
   }

@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const {
+  MODEL_ROLLING_PLAN,
   parseChapterPlan,
   deriveChapterTitle,
   resolveChapterTitle,
@@ -14,7 +15,9 @@ const {
   seedPlannedHooks,
   getAdaptiveChapterWordTarget,
   getChapterOutputTokenLimit,
+  getClosingWindowStart,
   assessStoryCompletion,
+  matchHookResolutionEvidence,
   ensureStoryBlueprint,
   ensureRollingPlanCoverage,
   blueprintRequirements,
@@ -57,6 +60,35 @@ test('drift guards preserve quoted tag lists and full sentences in plans and con
   assert.ok(contract.forbiddenDrift.includes(rule));
   assert.equal(contract.forbiddenDrift.includes('轻松日常'), false);
   assert.match(renderChapterContract(contract), /日系校园、轻松日常、多女主\/后宫/);
+});
+
+test('chapter voice profiles keep complete per-character rules and survive a later chapter without beats', () => {
+  const sceneVoice = '先问还有谁没到，才说自己害怕；和朋友说话会用反问';
+  const novel = makeNovel({
+    protagonistName: '傅小满',
+    outline: '【人物声音表】\n傅小满：\n句长：遇到急事用短句，平常会慢慢讲。\n沈鹿：\n常用词汇：完了完了、好冷好冷好冷。\n称呼习惯：叫傅小满“小满”。\n陆鸣：\n声线：爱拿船上的事作比方。\n【剧情阶段】',
+    storyBlueprint: { phases: [{ startChapter: 1, endChapter: 1, characterBeats: [
+      { character: '沈鹿', goal: '找到同伴', change: '愿意求助', voiceGuard: sceneVoice },
+    ] }] },
+  });
+  const planData = parseChapterPlan({ chapters: [
+    { chapterNumber: 1, coreEvent: '傅小满听沈鹿说起夜校', characterBeat: '傅小满[目标=找到灯；声线=问完就动手，遇事很少补解释；对朋友也直说]' },
+    { chapterNumber: 2, coreEvent: '傅小满和沈鹿一起去找灯' },
+  ] });
+  const first = buildChapterContract({ novel, planData, chapterNumber: 1, totalChapters: 2 });
+  assert.match(first.characterContinuity.find(line => line.startsWith('沈鹿：')), /先问还有谁没到，才说自己害怕；和朋友说话会用反问/);
+  assert.match(first.characterContinuity.find(line => line.startsWith('傅小满：')), /问完就动手，遇事很少补解释；对朋友也直说/);
+  assert.doesNotMatch(renderChapterContract(first), /好冷好冷好冷/);
+  assert.ok(novel.characterBible.find(profile => profile.name === '沈鹿').voiceRules.some(rule => rule.includes('好冷好冷好冷')));
+  assert.ok(!first.characterContinuity.some(line => line.startsWith('陆鸣：')));
+  updateCreativeState(novel, 1, '沈鹿答应傅小满一起找灯。', first);
+  assert.deepEqual(novel.characterBible.map(profile => profile.name).sort(), ['沈鹿', '陆鸣', '傅小满'].sort());
+
+  const reloaded = JSON.parse(JSON.stringify(novel));
+  const second = buildChapterContract({ novel: reloaded, planData, chapterNumber: 2, totalChapters: 2 });
+  assert.match(renderChapterContract(second), /傅小满：[^\n]+句长：遇到急事用短句/);
+  assert.match(renderChapterContract(second), /沈鹿：[^\n]+称呼习惯：叫傅小满“小满”/);
+  assert.ok(second.characterContinuity.some(line => line.includes(sceneVoice)));
 });
 
 test('campus prose passes both intact and previously fragmented semantic drift guards', () => {
@@ -161,6 +193,14 @@ test('fallback plan and output budget honor a per-chapter word target for long-f
   })) };
   const firstTarget = getAdaptiveChapterWordTarget({ planData, chapterNumber: 1, currentWords: 0, targetWords: 100000 });
   assert.ok(firstTarget >= 8000, `大章计划的字数目标被截短了：${firstTarget}`);
+});
+
+test('fallback plans cover exactly the requested chapter range in a fixed-length book', () => {
+  const novel = makeNovel({ targetWordCount: 900000, chapterWordTarget: 2000 });
+  const tail = buildFallbackChapterPlan(novel, { startChapter: 96, totalChapters: 100 });
+  assert.deepEqual(tail.chapters.map(chapter => chapter.chapterNumber), [96, 97, 98, 99, 100]);
+  assert.equal(tail.chapters.at(-1).chapterRole, '收束');
+  assert.deepEqual(buildFallbackChapterPlan(novel, { startChapter: 101, totalChapters: 100 }).chapters, []);
 });
 
 test('late fallback chapters inherit SKU style tags and active blueprint voice constraints', () => {
@@ -367,6 +407,222 @@ test('story completion requires target words, every plan chapter, and required h
   assert.equal(result.complete, true);
 });
 
+test('a fixed-length book completes at chapter 100 only with every chapter and evidenced ending', () => {
+  const conclusionEvidence = '林舟当众交出原始账册，旧案随即获准重审。';
+  const settledStateEvidence = '仓库改用公开登记，受害的司机终于领回赔款。';
+  const finalChapter = { chapterNumber: 100, wordCount: 200, content: `${conclusionEvidence}\n\n${settledStateEvidence}`, qualityReport: {} };
+  const novel = makeNovel({
+    targetWordCount: 300000,
+    chapters: [...Array.from({ length: 99 }, (_, index) => ({ chapterNumber: index + 1, wordCount: 200 })), finalChapter],
+  });
+  const plan = { chapters: [] };
+  const options = { fixedChapterCount: 100, requireEndingVerification: true };
+  const assess = () => assessStoryCompletion(novel, plan, undefined, options);
+  assert.equal(assess().complete, false);
+  finalChapter.qualityReport.endingVerification = { conclusionEvidence, settledStateEvidence: '正文里从未出现过的结局证据。' };
+  assert.equal(assess().endingVerified, false);
+  finalChapter.qualityReport.endingVerification.settledStateEvidence = settledStateEvidence;
+  assert.equal(assess().wordTargetReached, false);
+  assert.equal(assess().complete, true);
+  novel.foreshadowingLedger.push({ id: 'terminal-setup', content: '本应在第一百章兑现的新线索', setChapter: 100, status: 'planned' });
+  assert.deepEqual(assess().unresolvedHooks, ['本应在第一百章兑现的新线索']);
+  assert.equal(assess().complete, false);
+  novel.foreshadowingLedger.pop();
+  novel.chapters.splice(50, 1, { chapterNumber: 101, wordCount: 200 });
+  assert.deepEqual(assess().missingChapters, [51]);
+  assert.deepEqual(assess().unexpectedChapters, [101]);
+  assert.equal(assess().complete, false);
+});
+
+test('the closing window distributes old payoffs before the final chapter', () => {
+  const novel = makeNovel({
+    storyBlueprint: { mainArc: '调查港口旧案', phases: [{ startChapter: 1, endChapter: 100,
+      exitCondition: '货运赔偿制度公开执行', unresolvedQuestions: ['仍需续写的港口新案'] }],
+    rollingPlan: { startChapter: 99, endChapter: 100, chapters: [
+      { chapterNumber: 100, purpose: '收到最后一份赔款回执', exitHook: '一名陌生人留下下一桩案子的委托书' },
+    ] } },
+    foreshadowingLedger: Array.from({ length: 28 }, (_, index) => ({
+      id: `hook-${index}`, content: `伏笔${index}`, setChapter: index + 1, targetChapter: index % 2 ? 100 : 0, status: 'pending',
+    })),
+  });
+  const build = chapterNumber => buildChapterContract({ novel, chapterNumber, totalChapters: 100,
+    closingBook: true, requireEndingVerification: true });
+  assert.equal(getClosingWindowStart(100), 86);
+  assert.deepEqual(build(85).mandatoryResolutionHooks, []);
+  for (let chapterNumber = 86; chapterNumber < 100; chapterNumber++) {
+    const contract = build(chapterNumber);
+    assert.equal(contract.requireEndingVerification, false);
+    assert.equal(contract.endingStyle.label, '兑现阶段后果');
+    assert.deepEqual(contract.mandatoryResolutionHooks, []);
+    assert.ok(contract.suggestedResolutionHooks.length <= 2);
+    for (const hook of contract.suggestedResolutionHooks) {
+      assert.ok(contract.resolveHooks.includes(hook.content));
+      hook.status = 'resolved';
+    }
+  }
+  const ending = build(100);
+  assert.equal(ending.requireEndingVerification, true);
+  assert.ok(ending.mandatoryResolutionHooks.length <= 2);
+  assert.deepEqual(ending.setHooks, []);
+  assert.equal(ending.endingRequirements.finalState, '货运赔偿制度公开执行');
+  assert.doesNotMatch(renderChapterContract(ending), /仍需续写的港口新案|下一桩案子的委托书/);
+  assert.doesNotMatch(renderStoryBlueprintForContext(novel, 100, 100), /仍需续写的港口新案|下一桩案子的委托书/);
+  const finalState = '港口赔款按新制度到账，工友回到码头继续生活';
+  const detailed = buildChapterContract({ novel, chapterNumber: 100, totalChapters: 100, closingBook: true,
+    requireEndingVerification: true, planData: { chapters: [{ chapterNumber: 100, coreEvent: finalState,
+      raw: MODEL_ROLLING_PLAN }] } });
+  assert.equal(detailed.endingRequirements.finalState, finalState);
+  assert.equal(detailed.blueprintExitHook, finalState);
+  assert.equal(detailed.blueprintExitCondition, '');
+  assert.doesNotMatch(renderChapterContract(detailed), /终局须落到的局面：货运赔偿制度公开执行/);
+});
+
+test('timed blueprint hooks enter the ledger, retain distinct IDs, and follow a revised payoff deadline', () => {
+  const shared = '港口调度室里的两张日期完全相同的值班记录';
+  const hooks = ['甲', '乙'].map(letter => ({ name: `${shared}${letter}`, setupChapter: 2, payoffChapter: 16 }));
+  const novel = makeNovel({ storyBlueprint: { phases: [{ startChapter: 1, endChapter: 20,
+    foreshadowing: hooks, subphases: [{ startChapter: 1, endChapter: 10, foreshadowing: hooks }] }] } });
+  const plan = { chapters: [] };
+  seedPlannedHooks(novel, plan);
+  seedPlannedHooks(novel, plan);
+  assert.equal(novel.foreshadowingLedger.length, 2);
+  assert.equal(new Set(novel.foreshadowingLedger.map(hook => hook.id)).size, 2);
+  const contract = buildChapterContract({ novel, chapterNumber: 2, totalChapters: 20, planData: plan });
+  assert.deepEqual(contract.setHooks, hooks.map(hook => hook.name));
+  updateCreativeState(novel, 2, '两张值班记录把同一位调度员放在了相距二十里的两个值班室。', contract, {});
+  assert.ok(novel.foreshadowingLedger.every(hook => hook.status === 'pending'));
+  hooks[0].payoffChapter = 18;
+  seedPlannedHooks(novel, plan);
+  assert.equal(novel.foreshadowingLedger[0].targetChapter, 18);
+});
+
+test('confirmed outline payoffs keep their final deadline and runtime additions need source evidence', () => {
+  const { applyHookAudit, importOutlineForeshadowing } = require('../services/storyState');
+  const contractOutline = '【伏笔与回收表】\n伏笔1：票背双孔\n埋设章：第3章（发现一张奇怪车票）\n回收章：第58章（还原原因），第96章（撤销打孔流程）';
+  const novel = makeNovel({ targetChapterCount: 100, storyBlueprint: { phases: [{ startChapter: 1, endChapter: 100 }] } });
+  assert.equal(importOutlineForeshadowing(novel.storyBlueprint, contractOutline, 100), true);
+  seedPlannedHooks(novel, parseChapterPlan({ chapters: [
+    { chapterNumber: 3, setHooks: ['票背双孔'] }, { chapterNumber: 58, resolveHooks: ['票背双孔'] },
+  ] }));
+  const [hook] = novel.foreshadowingLedger;
+  const evidence = '林见夏当众拆掉打孔器，宣布所有旧车票都可公开复查。';
+  assert.equal(hook.targetChapter, 96);
+  assert.equal(applyHookAudit(novel, 58, { hooksResolved: [{ id: hook.id, evidence }] }, evidence).resolved, 0);
+  assert.equal(applyHookAudit(novel, 96, { hooksResolved: [{ id: hook.id, evidence }] }, evidence).resolved, 1);
+  assert.equal(applyHookAudit(novel, 96, { hooksSet: [{ content: '没有证据的补录', evidence: '正文不存在的引文' }] }, evidence).added, 0);
+  assert.equal(importOutlineForeshadowing(novel.storyBlueprint, contractOutline, 100), false);
+});
+
+test('the approved outline replaces quoted variants without moving the original payoff deadline', () => {
+  const { importOutlineForeshadowing } = require('../services/storyState');
+  const name = '林见夏的隔间被标记为"空置"';
+  const outline = `【伏笔与回收表】\n伏笔1：${name}\n埋设章：第11章（租房登记异常）\n回收章：第96章（公示名单恢复林见夏的名字）`;
+  const novel = makeNovel({ targetChapterCount: 100, outline, storyBlueprint: {
+    phases: [{ startChapter: 1, endChapter: 100, subphases: [{ startChapter: 11, endChapter: 20,
+      foreshadowing: [{ name: '林见夏的隔间被标记为“空置”', setupChapter: 11, payoffChapter: 19 }] }] }],
+  } });
+  assert.equal(importOutlineForeshadowing(novel.storyBlueprint, outline, 100), true);
+  assert.deepEqual(novel.storyBlueprint.phases[0].subphases[0].foreshadowing, []);
+
+  const plan = parseChapterPlan({ chapters: [
+    { chapterNumber: 11, setHooks: ['林见夏的隔间被标记为空置'] },
+    { chapterNumber: 19, resolveHooks: ['林见夏的隔间被标记为「空置」'] },
+  ] });
+  seedPlannedHooks(novel, plan);
+  assert.equal(novel.foreshadowingLedger.length, 1);
+  assert.equal(novel.foreshadowingLedger[0].content, name);
+  assert.equal(novel.foreshadowingLedger[0].targetChapter, 96);
+  const build = chapterNumber => buildChapterContract({ novel, chapterNumber, totalChapters: 100, planData: plan,
+    closingBook: true, requireEndingVerification: true });
+  assert.deepEqual(build(11).setHooks, [name]);
+  assert.deepEqual(build(19).resolveHooks, []);
+  assert.deepEqual(build(96).mandatoryResolutionHooks.map(hook => hook.content), [name]);
+});
+
+test('legacy early credits for quote aliases preserve setup and progress without paying the canonical hook', () => {
+  const { openStoryHooks } = require('../services/storyState');
+  const apartment = '林见夏的隔间被标记为"空置"';
+  const lamp = '第七号站台灯具被“用他的手法”重新损坏';
+  const setup = '房东翻过租客登记本，指给林见夏看那一栏空置标记。';
+  const novel = makeNovel({ targetChapterCount: 100, chapters: [{ chapterNumber: 11, content: setup }],
+    storyBlueprint: { phases: [{ startChapter: 1, endChapter: 100, foreshadowing: [
+      { name: apartment, setupChapter: 11, payoffChapter: 96, plan: '公示名单恢复林见夏的名字。' },
+      { name: lamp, setupChapter: 14, payoffChapter: 85, plan: '找出系统借维护者完成抹名确认的机制。' },
+    ] }] }, foreshadowingLedger: [
+      { id: 'old-apartment', content: '林见夏的隔间被标记为空置', setChapter: 11, targetChapter: 0,
+        status: 'resolved', stage: 'paid_off', resolvedChapter: 12, setupEvidence: setup,
+        progressEvidence: ['他带来两年前的租约。'], resolutionEvidence: '该编号无登记记录。' },
+      { id: 'canonical-apartment', content: apartment, setChapter: 11, targetChapter: 96,
+        payoffPlan: '公示名单恢复林见夏的名字。', status: 'planned', stage: 'planned' },
+      { id: 'old-lamp', content: '第七号站台灯具被用他的手法重新损坏', setChapter: 14, targetChapter: 0,
+        status: 'resolved', stage: 'paid_off', resolvedChapter: 26, setupEvidence: '灯坏的位置和他的拆装痕迹吻合。',
+        resolutionEvidence: '换了七号侧灯的保险丝。', resolutionVerificationKey: 'obsolete' },
+    ] });
+  const plan = { chapters: [] };
+  seedPlannedHooks(novel, plan);
+  seedPlannedHooks(novel, plan);
+  assert.deepEqual(novel.foreshadowingLedger.map(hook => hook.id), ['canonical-apartment', 'old-lamp']);
+  assert.deepEqual(openStoryHooks(novel.foreshadowingLedger, 30).map(hook => hook.targetChapter), [96, 85]);
+  const [room, station] = novel.foreshadowingLedger;
+  assert.equal(room.setupEvidence, setup);
+  assert.deepEqual(room.progressEvidence, ['他带来两年前的租约。']);
+  assert.notEqual(room.status, 'resolved');
+  assert.equal(station.content, lamp);
+  assert.equal(station.status, 'pending');
+  assert.equal(station.resolutionEvidence, '');
+  assert.equal(station.resolutionVerificationKey, undefined);
+});
+
+test('middle chapters suggest mature evidenced carryover without making it a chapter gate', () => {
+  const novel = makeNovel({ chapters: [{ chapterNumber: 4, content: '档案盒里滑出旧码头的编号单。' }],
+    foreshadowingLedger: [
+      { id: 'old', content: '旧码头编号', setChapter: 4, status: 'pending', stage: 'reinforced', setupEvidence: '档案盒里滑出旧码头的编号单。' },
+      { id: 'rumor', content: '尚无证据的传闻', setChapter: 4, status: 'pending', setupStatus: 'unconfirmed' },
+      { id: 'future', content: '调度员的录音', setChapter: 4, targetChapter: 90, status: 'pending', payoffPlan: '在仲裁上公布原录音。' },
+    ] });
+  const planData = { chapters: [{ chapterNumber: 35, coreEvent: '核对旧码头编号', resolveHooks: ['调度员的“录音”'] }] };
+  const contract = buildChapterContract({ novel, chapterNumber: 35, totalChapters: 100, planData,
+    closingBook: true, requireEndingVerification: true });
+  assert.deepEqual(contract.suggestedResolutionHooks.map(hook => hook.id), ['old']);
+  assert.deepEqual(contract.mandatoryResolutionHooks, []);
+  assert.doesNotMatch(renderChapterContract(contract), /本章应回收伏笔：旧码头编号/);
+  assert.match(renderChapterContract(contract), /有自然衔接的场景，可顺势回收：旧码头编号/);
+  assert.equal(contract.resolveHooks.some(hook => hook.includes('录音')), false);
+  assert.equal(novel.foreshadowingLedger[2].targetChapter, 90);
+});
+
+test('hook verification keys are persisted only for trusted decisions and bound to exact source and plan', () => {
+  const { applyHookAudit, hookResolutionVerificationKey } = require('../services/storyState');
+  const evidence = '钟离鹤在众人注视下签字，把单方授权移交给仲裁席。';
+  const source = `${evidence}\n他把椅子推回桌边。`;
+  const makeHook = () => ({ id: 'authority', content: '转椅', setChapter: 50, targetChapter: 99, status: 'pending', payoffPlan: '交出权限。' });
+  const audit = { hooksResolved: [{ id: 'authority', evidence, resolutionVerificationKey: 'model-forged' }] };
+  const verified = makeNovel({ targetChapterCount: 100, foreshadowingLedger: [makeHook()] });
+  applyHookAudit(verified, 99, audit, source, { verified: true });
+  const [saved] = verified.foreshadowingLedger;
+  assert.equal(saved.resolutionVerificationKey, hookResolutionVerificationKey(saved, 99, evidence, source));
+  assert.match(saved.resolutionVerificationKey, /^[a-f0-9]{64}$/);
+  assert.notEqual(saved.resolutionVerificationKey, hookResolutionVerificationKey(saved, 99, evidence, source + '灯熄了。'));
+  assert.notEqual(saved.resolutionVerificationKey, hookResolutionVerificationKey({ ...saved, payoffPlan: '保留权限。' }, 99, evidence, source));
+  const unverified = makeNovel({ targetChapterCount: 100, foreshadowingLedger: [makeHook()] });
+  applyHookAudit(unverified, 99, audit, source);
+  assert.equal(unverified.foreshadowingLedger[0].resolutionVerificationKey, undefined);
+});
+
+test('stored discontiguous hook evidence revalidates in exact manuscript order', () => {
+  const first = '林见夏在票背找到档案柜编号B7';
+  const second = '旧车票归还给了原来的乘客';
+  const source = `${first}。她叫车站管理员过来作证。${second}。`;
+  const stored = matchHookResolutionEvidence(source, `${first}。${second}。`);
+
+  assert.equal(stored, `${first} … ${second}`);
+  assert.equal(matchHookResolutionEvidence(source, stored), stored);
+  assert.equal(matchHookResolutionEvidence(source, `${second} … ${first}`), '');
+  assert.equal(matchHookResolutionEvidence(source, stored.replace('B7', 'b7')), '');
+  assert.equal(matchHookResolutionEvidence(source, stored.replace('乘客', '管理员')), '');
+  assert.equal(matchHookResolutionEvidence(source, stored.replace(' … ', '...')), '');
+});
+
 test('planned foreshadowing cannot resolve before its target chapter', () => {
   const hookText = '铜钥匙上的裂纹';
   const planData = parseChapterPlan({
@@ -417,6 +673,65 @@ test('planned foreshadowing cannot resolve before its target chapter', () => {
   );
   assert.equal(hook.status, 'resolved');
   assert.equal(hook.resolvedChapter, 4);
+});
+
+test('fixed-book rolling plans preserve unscheduled proposals without creating completion blockers', () => {
+  const { applyHookAudit, extractEventSignature, MODEL_ROLLING_PLAN, openStoryHooks, unconfirmedStoryHooks } = require('../services/storyState');
+  const setup = '许岚把封套翻过来，封口下压着一枚刻了陌生姓氏的钥匙。';
+  const novel = makeNovel({ targetChapterCount: 4, chapters: [{ chapterNumber: 2, content: setup }],
+    foreshadowingLedger: [{ id: 'PLAN_2_封套', content: '封套里为什么藏着钥匙', setChapter: 2, targetChapter: 0,
+      status: 'pending', stage: 'seeded', setupEvidence: extractEventSignature(setup).slice(0, 160) }] });
+  const plan = parseChapterPlan({ chapters: [
+    { chapterNumber: 2, raw: MODEL_ROLLING_PLAN, setHooks: ['封套里为什么藏着钥匙', '档案室更换值班人', '作者保留的线索', '已有回收章的线索'],
+      modelHookProposals: ['封套里为什么藏着钥匙', '档案室更换值班人', '已有回收章的线索'] },
+    { chapterNumber: 4, resolveHooks: ['已有回收章的线索'] },
+  ] });
+  seedPlannedHooks(novel, plan);
+  assert.equal(novel.foreshadowingLedger.length, 4);
+  const proposals = unconfirmedStoryHooks(novel.foreshadowingLedger, 2);
+  assert.deepEqual(proposals.map(item => item.content), ['封套里为什么藏着钥匙', '档案室更换值班人']);
+  assert.deepEqual(openStoryHooks(novel.foreshadowingLedger, 4).map(item => item.content), ['作者保留的线索', '已有回收章的线索']);
+  const [key] = proposals;
+  assert.equal(applyHookAudit(novel, 2, { hooksSet: [{ id: key.id, content: key.content, evidence: '正文从来没出现过这个证据' }] }, setup).added, 0);
+  assert.equal(applyHookAudit(novel, 2, { hooksResolved: [{ id: key.id, evidence: setup }] }, setup).resolved, 0);
+  assert.equal(applyHookAudit(novel, 2, { hooksSet: [{ id: key.id, content: key.content, evidence: setup }] }, setup).added, 1);
+  seedPlannedHooks(novel, plan);
+  assert.equal(key.setupStatus, 'confirmed');
+  assert.equal(key.setupEvidence, setup);
+  assert.equal(openStoryHooks(novel.foreshadowingLedger, 4).includes(key), true);
+});
+
+test('chapter contracts keep whole hook labels and review only proven legacy rolling fragments', () => {
+  const { extractEventSignature, MODEL_ROLLING_PLAN, openStoryHooks } = require('../services/storyState');
+  const setup = '许岚把旧册翻开，纸边有一道很深的折痕。她把封套举到灯下，看见背面有一枚陌生的水印。';
+  const signature = extractEventSignature(setup).slice(0, 160);
+  const fullLabel = '旧册折痕，封套水印、邮票号码；旧名单';
+  const plan = parseChapterPlan({ chapters: [
+    { chapterNumber: 2, raw: MODEL_ROLLING_PLAN, setHooks: [fullLabel] },
+    { chapterNumber: 4, resolveHooks: [fullLabel] },
+  ] });
+  const makeBook = fixed => makeNovel({ targetChapterCount: fixed ? 4 : null,
+    chapters: [{ chapterNumber: 2, content: setup }], foreshadowingLedger: [
+      { id: 'FH_2_fragment', content: '旧册折痕', setChapter: 2, status: 'pending', setupEvidence: signature },
+      { id: 'FH_2_specific', content: '封套水印', setChapter: 2, status: 'pending', setupEvidence: '她把封套举到灯下，看见背面有一枚陌生的水印。' },
+      { id: 'FH_2_timed', content: '邮票号码', setChapter: 2, targetChapter: 4, status: 'pending', setupEvidence: signature },
+      { id: 'FH_2_paid', content: '旧名单', setChapter: 2, status: 'resolved', setupEvidence: signature, resolutionEvidence: setup },
+    ] });
+  const linked = makeBook(true);
+  seedPlannedHooks(linked, plan);
+  const [fragment, evidenced, scheduled, paid] = linked.foreshadowingLedger;
+  assert.equal(fragment.setupStatus, 'unconfirmed');
+  assert.equal(fragment.status, 'pending');
+  assert.equal(fragment.setupEvidence, signature);
+  assert.equal(openStoryHooks(linked.foreshadowingLedger, 4).includes(fragment), false);
+  assert.equal(evidenced.setupStatus, undefined);
+  assert.equal(scheduled.setupStatus, undefined);
+  assert.equal(paid.resolutionEvidence, setup);
+  assert.deepEqual(buildChapterContract({ novel: linked, chapterNumber: 2, totalChapters: 4, planData: plan }).setHooks, [fullLabel]);
+  assert.equal(buildChapterContract({ novel: linked, chapterNumber: 4, totalChapters: 4, planData: plan }).resolveHooks.includes(fullLabel), true);
+  const nonfixed = makeBook(false);
+  seedPlannedHooks(nonfixed, plan);
+  assert.equal(nonfixed.foreshadowingLedger[0].setupStatus, undefined);
 });
 
 test('checkChapterContinuity reports repeated events and produces a deterministic quality report', () => {
@@ -583,6 +898,8 @@ test('three-level blueprint validates arc coverage, subphases, tags and rolling 
     },
   };
   assert.deepEqual(blueprintRequirements(100), { arcCount: 10, rollingChapterCount: 20 });
+  blueprint.phases.at(-1).unresolvedQuestions = [];
+  blueprint.phases.at(-1).subphases.at(-1).unresolvedQuestions = [];
   const valid = validateStoryBlueprint(blueprint, 100, { requiredTags: ['日系校园', '搞笑'] });
   assert.equal(valid.valid, true, valid.errors.join('；'));
   const broken = structuredClone(blueprint);

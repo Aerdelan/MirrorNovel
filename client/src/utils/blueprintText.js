@@ -43,25 +43,37 @@ function formatForeshadowing(item, l) {
   return [oneLine(item?.name) || l.untitled, `${l.setup}=${Number(item?.setupChapter) || 0}`, `${l.progress}=${list(item?.progressChapters).join(',') || 0}`, `${l.payoff}=${Number(item?.payoffChapter) || 0}`, `${l.plan}=${oneLine(item?.plan) || l.none}`].join('｜')
 }
 function pushPlanDetails(lines, stage, planText, l) {
-  // Prose editing must also retain any real, separately supplied constraints.
-  // Empty optional collections are omitted instead of displayed as “暂无”.
-  for (const [label, values] of [
-    [l.goal, [stage.goal]], [l.obstacle, [stage.obstacle]], [l.reversal, [stage.reversal]],
-    [l.entry, [stage.entryCondition]], [l.exit, [stage.exitCondition]], [l.threads, stage.threads],
-    [l.chapterPurpose, [stage.purpose]], [l.relationship, [stage.relationshipChange]], [l.exitHook, [stage.exitHook]],
+  const meaningful = value => value && ![l.none, '暂无', 'None'].includes(value)
+  const primaryLabel = stage.chapterNumber ? l.chapterPurpose : l.goal
+  const primarySummary = planText.split('\n').find(line => line.trim())?.slice(0, stage.chapterNumber ? 360 : 420)
+  const scalars = stage.chapterNumber
+    ? [[l.chapterPurpose, stage.purpose], [l.relationship, stage.relationshipChange], [l.exitHook, stage.exitHook]]
+    : [[l.goal, stage.goal], [l.obstacle, stage.obstacle], [l.reversal, stage.reversal], [l.entry, stage.entryCondition], [l.exit, stage.exitCondition]]
+  const collections = [
     [l.tags, stage.tagCommitments], [l.characters, list(stage.characterBeats).map(item => formatCharacterBeat(item, l))],
-    [l.scenes, stage.requiredScenes], [l.forbidden, stage.forbiddenDrift],
-    [l.foreshadowing, list(stage.foreshadowing).map(item => formatForeshadowing(item, l))],
-    [l.unresolved, stage.unresolvedQuestions], [l.foreshadowingActions, stage.foreshadowingActions],
-  ]) {
-    const extra = list(values).map(oneLine).filter(value => value && ![l.none, '暂无', 'None'].includes(value) && !planText.includes(value))
-    if (extra.length) lines.push(`${label}：${extra.join('；')}`)
+    [l.scenes, stage.requiredScenes],
+    ...(stage.chapterNumber ? [[l.foreshadowingActions, stage.foreshadowingActions]]
+      : [[l.threads, stage.threads], [l.forbidden, stage.forbiddenDrift],
+        [l.foreshadowing, list(stage.foreshadowing).map(item => formatForeshadowing(item, l))], [l.unresolved, stage.unresolvedQuestions]]),
+  ]
+  for (const [label, value] of scalars) {
+    const text = oneLine(value)
+    if (meaningful(text) && !(label === primaryLabel && text === oneLine(primarySummary))) lines.push(`${label}：${text}`)
+  }
+  for (const [label, values] of collections) {
+    const entries = list(values).map(oneLine).filter(meaningful)
+    if (entries.length) pushList(lines, label, entries, l.none)
   }
 }
-function pushStage(lines, stage, heading, l) {
+function pushStage(lines, stage, heading, l, parentPlan = '') {
   lines.push('', `【${heading}】`)
   const planText = blueprintPlanText(stage)
-  if (planText) { lines.push(`${l.planText}：`, planText); pushPlanDetails(lines, stage, planText, l); return }
+  if (planText) {
+    const authored = Boolean(oneLine(stage.planText))
+    pushPlanDetails(lines, stage, authored ? planText : '', l)
+    if (authored && planText !== parentPlan) lines.push(`${l.planText}：`, planText)
+    return
+  }
   lines.push(`${l.goal}：${oneLine(stage?.goal) || l.none}`)
   lines.push(`${l.obstacle}：${oneLine(stage?.obstacle) || l.none}`)
   lines.push(`${l.reversal}：${oneLine(stage?.reversal) || l.none}`)
@@ -91,10 +103,10 @@ export function formatBlueprintText(blueprint, t) {
     const start = Math.max(1, Number(phase?.startChapter) || 1)
     const end = Math.max(start, Number(phase?.endChapter) || start)
     pushStage(lines, phase, `${l.phase} ${phaseIndex + 1}｜${rangeText(t, start, end)}｜${oneLine(phase?.title) || l.untitled}`, l)
-    list(phase?.subphases).filter(subphase => !phase.planText || subphase.planText !== phase.planText).forEach((subphase, subIndex) => {
+    list(phase?.subphases).forEach((subphase, subIndex) => {
       const subStart = Math.max(start, Number(subphase?.startChapter) || start)
       const subEnd = Math.max(subStart, Number(subphase?.endChapter) || subStart)
-      pushStage(lines, subphase, `${l.subphase} ${phaseIndex + 1}.${subIndex + 1}｜${rangeText(t, subStart, subEnd)}｜${oneLine(subphase?.title) || l.untitled}`, l)
+      pushStage(lines, subphase, `${l.subphase} ${phaseIndex + 1}.${subIndex + 1}｜${rangeText(t, subStart, subEnd)}｜${oneLine(subphase?.title) || l.untitled}`, l, blueprintPlanText(phase))
     })
   })
   const rolling = blueprint.rollingPlan
@@ -108,7 +120,12 @@ export function formatBlueprintText(blueprint, t) {
     list(rolling.chapters).forEach((chapter) => {
       lines.push('', `【${l.rollingChapter} ${Number(chapter?.chapterNumber) || start}｜${oneLine(chapter?.title) || l.untitled}】`)
       const planText = blueprintPlanText(chapter)
-      if (planText) { lines.push(`${l.planText}：`, planText); pushPlanDetails(lines, chapter, planText, l); return }
+      if (planText) {
+        const authored = Boolean(oneLine(chapter.planText))
+        pushPlanDetails(lines, chapter, authored ? planText : '', l)
+        if (authored) lines.push(`${l.planText}：`, planText)
+        return
+      }
       lines.push(`${l.chapterPurpose}：${oneLine(chapter?.purpose) || l.none}`)
       pushList(lines, l.tags, chapter?.tagCommitments, l.none)
       pushList(lines, l.characters, list(chapter?.characterBeats).map((item) => formatCharacterBeat(item, l)), l.none)
@@ -152,6 +169,7 @@ function keyedPart(parts, names) {
 }
 function parseCharacterBeat(value, n, none) {
   const parts = value.split(/[｜|]/).map((item) => item.trim())
+  if (parts.length === 1) return value
   const clean = (item) => none.has(item) ? '' : item
   return { character: clean(parts[0] || ''), goal: clean(keyedPart(parts, n.goal)), conflict: clean(keyedPart(parts, n.conflict)), change: clean(keyedPart(parts, n.change)), voiceGuard: clean(keyedPart(parts, n.voice)) }
 }
@@ -190,12 +208,17 @@ export function parseBlueprintText(text, currentBlueprint = {}, t) {
   const result = { ...currentBlueprint, blueprintLevel: 3, mainArc: '', lockedFacts: [], tagChecklist: [], phases: [], rollingPlan: null }
   let section = '', arc = null, stage = null, rollingChapter = null, collection = '', planTarget = null
   const clear = () => { collection = ''; planTarget = null }
+  const parseItem = (value, key) => {
+    if (key === 'characterBeats') return parseCharacterBeat(value, n, n.none)
+    if (key === 'foreshadowing') return parseForeshadowing(value, n, n.none)
+    return value
+  }
   const setCollection = (line, target, definitions) => {
     for (const [key, names] of definitions) {
       const lead = afterLabel(line, names)
       if (lead !== null) {
         collection = key
-        if (lead && !n.none.has(lead)) target[key].push(lead)
+        if (lead && !n.none.has(lead)) target[key].push(parseItem(lead, key))
         return true
       }
     }
@@ -253,13 +276,22 @@ export function parseBlueprintText(text, currentBlueprint = {}, t) {
     if (collection && line.startsWith('- ')) {
       const value = line.slice(2).trim()
       if (!value || n.none.has(value)) continue
-      if (collection === 'characterBeats') target[collection].push(parseCharacterBeat(value, n, n.none))
-      else if (collection === 'foreshadowing') target[collection].push(parseForeshadowing(value, n, n.none))
-      else target[collection].push(value)
+      target[collection].push(parseItem(value, collection))
     }
   }
   if (!result.mainArc.trim()) throw new Error(typeof t === 'function' ? t('generate.errBlueprintMainArc') : '请保留“故事主线”段落')
   if (!result.phases.length) throw new Error(typeof t === 'function' ? t('generate.errBlueprintPhases') : '至少需要一个全书级篇章')
+  const sameRange = (left, right) => left.startChapter === right.startChapter && left.endChapter === right.endChapter
+  for (const phase of result.phases) {
+    const originalPhase = list(currentBlueprint.phases).find(item => sameRange(item, phase))
+    const inheritedPlan = originalPhase && blueprintPlanText(originalPhase)
+    if (!phase.planText || !inheritedPlan) continue
+    for (const subphase of phase.subphases) {
+      if (!subphase.planText && list(originalPhase.subphases).some(item => sameRange(item, subphase) && blueprintPlanText(item) === inheritedPlan)) {
+        subphase.planText = phase.planText
+      }
+    }
+  }
   for (const item of [...result.phases, ...result.phases.flatMap(phase => phase.subphases || []), ...list(result.rollingPlan?.chapters)]) {
     if (!item.planText) continue
     item.planText = item.planText.trim()

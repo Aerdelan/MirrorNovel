@@ -1,0 +1,37 @@
+{
+  "out": "D:\\MirrorNovel\\tmp\\live-arc-local-repair-2026-11-24T07-50-39-790Z",
+  "terminal": "completed",
+  "status": "paused",
+  "count": 1,
+  "restored": true,
+  "initialPassed": false,
+  "repaired": true,
+  "initialLength": 502,
+  "prefixLength": 394,
+  "suffixLength": 108,
+  "firstParagraphUnchanged": true,
+  "lastParagraphUnchanged": true,
+  "intactParagraphs": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "originalParagraphCount": 4,
+  "finalParagraphCount": 5,
+  "removedChars": 0,
+  "insertedChars": 130,
+  "acceptedProof": true,
+  "reviews": [
+    "CHAPTER=NONE|蓝色法院印章未盖（[2]明确\"方框仍是空的\"），保全令未交付顾岚，值班簿未正式获得保全；可补写于[2]之后\nPHASE=NONE|同上，印章未盖、保全令未交付、值班簿未正式保全；可补写于[2]之后",
+    "CHAPTER=4\nPHASE=4"
+  ],
+  "proof": [
+    {
+      "chapterNumber": 1,
+      "excerpt": "林泉从抽屉里摸出印章，在印泥上转了半圈，对准保全令末端的方框按下去。蓝色油墨洇开，盖住空白。他把纸折好，连同一小截骑缝纸推过柜台。顾岚接过来，拇指压住印章边缘，纸面还带着印泥的湿意。林泉用红笔在簿脊画了一道横线，把值班簿搁进证物柜，柜门合上时铜锁弹了一下。"
+    }
+  ],
+  "patch": "林泉从抽屉里摸出印章，在印泥上转了半圈，对准保全令末端的方框按下去。蓝色油墨洇开，盖住空白。他把纸折好，连同一小截骑缝纸推过柜台。顾岚接过来，拇指压住印章边缘，纸面还带着印泥的湿意。林泉用红笔在簿脊画了一道横线，把值班簿搁进证物柜，柜门合上时铜锁弹了一下。",
+  "newDraftCalls": 0
+}

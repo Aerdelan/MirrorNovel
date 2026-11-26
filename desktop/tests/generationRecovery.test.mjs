@@ -45,7 +45,7 @@ test('stalled generation checks the server, survives offline reload, restores or
   })
   const catalog = buildSkuCatalog(), category = catalog.tree.female[0]
   const input = { novelTypeId: '原始选定类型', gender: 'female', typeSku: { channel: 'female', category: category.id, theme: category.themes?.[0]?.id || '', elements: [], personas: [], tones: [], cp: 'single' },
-   protagonistName: '回填主角', worldSetting: '最初的世界设定', mode: 'book', targetWordCount: 900000, chapterWordTarget: 5000, expertMode: true,
+   protagonistName: '回填主角', worldSetting: '最初的世界设定', mode: 'book', targetWordCount: 900000, targetChapterCount: 180, chapterWordTarget: 5000, expertMode: true,
    outline: '建书前确认的大纲。', storyBlueprint: { mainArc: '最初确认的主线', phases: [{ name: '开篇', startChapter: 1, endChapter: 180, goal: '找到信件' }] },
    personaId: '', referenceIds: [], referenceExamplesEnabled: false, structurePattern: '原始结构', enableResearch: true, researchLinks: ['https://example.test/original'] }
   const original = { _id: 'original-book', title: '待重新编辑的书', novelTypeId: 'test', novelTypeName: '测试', status: 'paused', targetWordCount: 900000, currentWordCount: 100, currentChapterIndex: 1, chapters: [{ chapterNumber: 1, content: '原书章节不能覆盖。' }], outline: '生成后改过的大纲' }
@@ -83,10 +83,11 @@ test('stalled generation checks the server, survives offline reload, restores or
   await page.getByRole('button', { name: '重新编辑', exact: true }).click()
   await page.getByText('已回填建书时的全部初始信息。编辑后将生成一本新书，原书及章节不会被覆盖。', { exact: true }).waitFor()
   assert.equal(await page.getByPlaceholder('故事主角名字').inputValue(), input.protagonistName)
+  assert.equal(await page.getByLabel('全书章数').inputValue(), '180')
   assert.equal(await page.getByPlaceholder('描述故事的世界观、背景设定、特殊规则等（可选）').inputValue(), input.worldSetting)
   assert.equal(await page.getByPlaceholder('可选，不填则由AI自动生成大纲').inputValue(), input.outline)
   assert.equal(await page.locator('.word-count-input input').inputValue(), '900000')
-  assert.equal(await page.locator('.chapter-words-input input').inputValue(), '5000')
+  assert.equal(await page.getByRole('spinbutton', { name: '每章字数 字/章' }).inputValue(), '5000')
   assert.equal((await page.locator('.gender-tabs button.active').textContent()).trim(), '女频')
   assert.match(await page.locator('.blueprint-text-editor').inputValue(), /最初确认的主线/)
   const generate = page.locator('.generate-page > button.btn-lg')
@@ -125,6 +126,7 @@ test('stalled generation checks the server, survives offline reload, restores or
   assert.equal(generated[1].protagonistName, '编辑后的主角')
   assert.equal(generated[1].outline, input.outline)
   assert.equal(generated[1].chapterWordTarget, 5000)
+  assert.equal(generated[1].targetChapterCount, 180)
   assert.equal(generated[1].expertMode, true)
   assert.deepEqual(generated[1].researchLinks, input.researchLinks)
   assert.notEqual(generated[0].clientRequestId, generated[1].clientRequestId)

@@ -63,7 +63,7 @@
  </div>
  <div class="novel-meta">
  <span> {{ novel.currentWordCount }} / {{ novel.targetWordCount }} {{ $t('generate.wordShort') }}</span>
- <span> {{ novel.currentChapterIndex || 0 }} {{ $t('novelDetail.chapter') }}</span>
+ <span>{{ novel.targetChapterCount ? $t('novelDetail.chapterProgress', { current: novel.currentChapterIndex || 0, target: novel.targetChapterCount }) : $t('novelDetail.chaptersCount', { n: novel.currentChapterIndex || 0 }) }}</span>
  <span> {{ formatTime(novel.updatedAt) }}</span>
  </div>
  <div class="novel-actions" @click.stop>
@@ -97,14 +97,14 @@
  <div v-if="continueDialogNovel" class="continue-overlay" @click.self="continueDialogNovel=null">
  <div class="continue-modal">
  <h3>{{ $t('bookshelf.writeMode') }} {{ continueDialogNovel?.title }}</h3>
- <p class="continue-desc">{{ $t('bookshelf.progress', { current: continueDialogNovel?.currentWordCount || 0, target: continueDialogNovel?.targetWordCount || 0 }) }}</p>
+ <p class="continue-desc">{{ continueDialogNovel.targetChapterCount ? $t('novelDetail.chapterProgress', { current: continueDialogNovel.currentChapterIndex || 0, target: continueDialogNovel.targetChapterCount }) : $t('bookshelf.progress', { current: continueDialogNovel.currentWordCount || 0, target: continueDialogNovel.targetWordCount || 0 }) }}</p>
  <div class="continue-options">
  <button class="continue-option primary" @click="startBookContinue(continueDialogNovel)" :disabled="isContinuing">
  <span class="option-icon"></span>
  <span class="option-text">{{ $t('bookshelf.continueBook') }}</span>
- <span class="option-desc">{{ $t('bookshelf.continueBookDesc', { count: continueDialogNovel?.targetWordCount || 0 }) }}</span>
+ <span class="option-desc">{{ continueDialogNovel.targetChapterCount ? $t('bookshelf.continuePlannedBookDesc', { n: continueDialogNovel.targetChapterCount }) : $t('bookshelf.continueBookDesc', { count: continueDialogNovel.targetWordCount || 0 }) }}</span>
  </button>
- <button class="continue-option" @click="startChapterContinue(continueDialogNovel)" :disabled="isContinuing">
+ <button v-if="!continueDialogNovel.targetChapterCount" class="continue-option" @click="startChapterContinue(continueDialogNovel)" :disabled="isContinuing">
  <span class="option-icon"></span>
  <span class="option-text">{{ $t('bookshelf.continueChapter') }}</span>
  <span class="option-desc">{{ $t('bookshelf.continueChapterDesc') }}</span>
@@ -264,16 +264,14 @@ function isNovelActionBusy(novel, action) { return novelActionBusy.value === `${
 
 function isTokenExhaustedError(message) {
  if (!message) return false
- return message === 'TOKEN_EXHAUSTED' ||
- message.includes('Token') ||
- message.includes('token') ||
- /(余额不足|insufficient)/i.test(message)
+ return /TOKEN_EXHAUSTED|余额不足|额度不足|insufficient (?:quota|credits?|balance)/i.test(message)
 }
 
 async function startBookContinue(novel) {
  continueDialogNovel.value = null; isContinuing.value = true; isBookContinuing.value = true; continueProgressVisible.value = true
  continuingNovelId.value = novel._id
  currentContinueChapter.value = 0; continueWordCount.value = 0; continueThinkingCount.value = 0; continueThinkingSeconds.value = 0
+ let reportedError = false
  try {
  await novelStore.continueGeneration(novel._id, (chunk, fullText) => { continueWordCount.value = fullText.length }, (status) => {
  if (status.type === 'chapter_start') { currentContinueChapter.value = status.chapterNumber || 0; continueThinkingCount.value = 0; continueThinkingSeconds.value = 0; novelStore.fetchBookshelf().catch(() => {}) }
@@ -286,12 +284,18 @@ async function startBookContinue(novel) {
  if (status.type === 'token_exhausted') { stopContinueTracking(); novelStore.fetchBookshelf() }
  else if (status.type === 'plan_needs_extension') { stopContinueTracking(); alert(status.message || $t('bookshelf.alertPlanMissing')); novelStore.fetchBookshelf() }
  else if (status.type === 'disconnected') { continueProgressVisible.value = false; reconcileContinueJob(novel._id) }
- else if (status.type === 'completed' || status.type === 'paused' || status.type === 'error') { stopContinueTracking(); novelStore.fetchBookshelf() }
+ else if (status.type === 'error') {
+  stopContinueTracking(); novelStore.fetchBookshelf()
+  reportedError = true
+  if (isTokenExhaustedError(status.message)) alert($t('bookshelf.alertStopped'))
+  else alert($t('bookshelf.alertContinueFailed', { message: status.message || $t('common.requestFailed') }))
+ }
+ else if (['completed', 'paused', 'cancelled'].includes(status.type)) { stopContinueTracking(); novelStore.fetchBookshelf() }
  }, 'book')
  } catch (e) {
  stopContinueTracking()
- if (isTokenExhaustedError(e.message)) alert($t('bookshelf.alertStopped'))
- else if (e.message !== 'paused') alert($t('bookshelf.alertContinueFailed', { message: e.message }))
+ if (!reportedError && isTokenExhaustedError(e.message)) alert($t('bookshelf.alertStopped'))
+ else if (!reportedError && e.message !== 'paused') alert($t('bookshelf.alertContinueFailed', { message: e.message }))
  novelStore.fetchBookshelf()
  }
 }
@@ -346,7 +350,7 @@ async function restoreBackgroundGeneration() {
 }
 
 async function startChapterContinue(novel) {
- if (isContinuing.value) return
+ if (isContinuing.value || novel.targetChapterCount) return
  isContinuing.value = true
  continueDialogNovel.value = null
  try {

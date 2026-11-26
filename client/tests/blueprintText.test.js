@@ -14,7 +14,9 @@ test('prose blueprints survive preview and manual editing without losing the act
   assert.equal(text.split(plan).length - 1, 1, 'do not display the same implicit subphase twice')
   assert.ok(!text.includes('进入条件'))
   const edited = parseBlueprintText(text.replace('保留原始记录', '当众封存原始记录'), blueprint)
-  assert.equal(edited.phases[0].planText, plan.replace('保留原始记录', '当众封存原始记录') + '\n阶段目标：核对账本')
+  assert.equal(edited.phases[0].planText, plan.replace('保留原始记录', '当众封存原始记录'))
+  assert.equal(edited.phases[0].goal, '核对账本')
+  assert.equal(edited.phases[0].subphases[0].planText, edited.phases[0].planText)
   assert.equal(edited.rollingPlan.chapters[0].planText, card)
   assert.ok(edited.rollingPlan.chapters[0].purpose)
   assert.deepEqual(edited.tagChecklist, ['职场'])
@@ -42,8 +44,19 @@ test('an unchanged preview preserves existing constraints and unknown fields rat
   const confirmed = parseBlueprintText(formatBlueprintText(source), source)
   assert.deepEqual(confirmed, source)
   const edited = parseBlueprintText(formatBlueprintText(source).replace('来自城市钟楼', '来自钟楼地下室'), source)
-  assert.ok(edited.phases[0].planText.includes('回避妹妹的名字'))
-  assert.ok(edited.phases[0].planText.includes('废弃广播站'))
+  assert.equal(edited.phases[0].characterBeats[0].voiceGuard, '紧张时用短句，回避妹妹的名字')
+  assert.deepEqual(edited.phases[0].requiredScenes, ['废弃广播站'])
+})
+
+test('editing a long-book blueprint preserves each scheduled payoff and unfinished question', () => {
+  const planText = '电车抵达档案站，见夏查到乘车登记，从这里开始追踪注销章的去向。'
+  const hook = { name: '注销章', setupChapter: 61, progressChapters: [70, 82], payoffChapter: 93, plan: '用原始登记证明注销无效' }
+  const source = { mainArc: '查明乘客失踪案', phases: [{ title: '调查', startChapter: 61, endChapter: 100, planText,
+    subphases: [{ title: '找证', startChapter: 61, endChapter: 85, planText, foreshadowing: [hook], unresolvedQuestions: ['是谁取走注销章？'] }] }] }
+  const edited = parseBlueprintText(formatBlueprintText(source).replace('档案站', '档案楼'), source)
+  assert.deepEqual(edited.phases[0].subphases[0].foreshadowing, [hook])
+  assert.deepEqual(edited.phases[0].subphases[0].unresolvedQuestions, ['是谁取走注销章？'])
+  assert.equal(edited.phases[0].endChapter, 100)
 })
 
 test('placeholder-only fields cannot become an invented prose plan', () => {

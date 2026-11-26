@@ -15,9 +15,11 @@ const state = {
   planContent: '',
   outlineContent: '隔离测试大纲',
   aiHandler: null,
+  endingHookConfirmHandler: null,
   aiCalls: [],
   memoryCalls: [],
   memoryHandler: null,
+  postProcessChapter: null,
   useRealPersonaPrompt: false,
   lastSystemPromptArgs: null,
   saveFailureAt: 0,
@@ -39,9 +41,11 @@ function resetState() {
   state.planContent = '';
   state.outlineContent = '隔离测试大纲';
   state.aiHandler = null;
+  state.endingHookConfirmHandler = null;
   state.aiCalls = [];
   state.memoryCalls = [];
   state.memoryHandler = null;
+  state.postProcessChapter = null;
   state.useRealPersonaPrompt = false;
   state.lastSystemPromptArgs = null;
   state.saveFailureAt = 0;
@@ -210,6 +214,11 @@ const aiServiceMock = {
   getFriendlyErrorMessage: (error) => error?.message || 'mock error',
   streamGenerate: async (systemPrompt, userPrompt, onChunk, signal, apiConfig, retries, temperature, maxTokens, timeoutMs, onReasoning, options) => {
     const call = { systemPrompt, userPrompt, onChunk, signal, apiConfig, retries, temperature, maxTokens, timeoutMs, onReasoning, options };
+    if (['chapter_hook_audit_confirm', 'ending_hook_audit_confirm'].includes(options?.taskType)) {
+      if (state.endingHookConfirmHandler) return state.endingHookConfirmHandler(call);
+      const checks = [...userPrompt.matchAll(/^H(\d+)｜(?:未解问题|新伏笔)：/gm)];
+      return emitText(checks.map(([, number]) => `H${number}=YES`).join('\n'), null, signal);
+    }
     // Keep legacy creative-call assertions separate from the newly added
     // memory calls; both still return real-shaped usage into the same ledger.
     if (['chapter_memory', 'chapter_memory_compaction', 'stage_memory'].includes(options?.taskType)) {
@@ -247,7 +256,7 @@ mockModule('services/webSearchService.js', {
   _clearCache: () => {},
 });
 mockModule('services/chapterToolchain.js', {
-  processChapter: (text) => ({ text, report: { isolated: true } }),
+  processChapter: (text, options) => ({ text: state.postProcessChapter ? state.postProcessChapter(text, options) : text, report: { isolated: true } }),
 });
 mockModule('services/editorialEngine.js', {
   runEditorialPipeline: async () => ({ content: '' }),
@@ -327,6 +336,8 @@ const generationJobMock = {
     if (Number(input.draftSeq) > Number(job.draftSeq || 0)) {
       job.draftSeq = input.draftSeq;
       job.draft = String(input.draft || '');
+      if (!job.draft) job.draftReview = null;
+      else if (input.draftReview !== undefined) job.draftReview = clone(input.draftReview);
       job.chapterNumber = input.chapterNumber ?? job.chapterNumber;
       job.phase = input.phase || job.phase;
       job.draftPhase = input.phase || job.draftPhase;
@@ -339,7 +350,10 @@ const generationJobMock = {
     if (!job) throw new Error('stale');
     job.status = input.status;
     job.phase = input.phase || input.status;
-    if (input.draft != null) job.draft = String(input.draft);
+    if (input.draft != null) {
+      job.draft = String(input.draft);
+      if (!job.draft) job.draftReview = null;
+    }
     if (input.lastCommittedChapter != null) job.lastCommittedChapter = Math.max(job.lastCommittedChapter || 0, input.lastCommittedChapter);
     delete job.leaseOwner;
     return job;
@@ -527,7 +541,8 @@ test('初始蓝图：默认请求分段文本，63章无需英文键名或小阶
     assert.match(call.systemPrompt, /不输出JSON/);
     return emitText(prosePart(call.options.blueprintPart, blueprint), call.onChunk, call.signal);
   };
-  const { events } = await postSse('/generate-blueprint', { ...initialBlueprintBody, targetWordCount: 315000 });
+  const outline = `${initialBlueprintBody.outline}\n\n【伏笔与回收表】\n伏笔1：票背双孔\n埋设章：第3章（收票时发现双孔）。\n真实含义：每个孔对应一次更改。\n回收章：第18章（查到打孔工具），第60章（公开更改记录）。`;
+  const { events } = await postSse('/generate-blueprint', { ...initialBlueprintBody, targetWordCount: 315000, outline });
   const done = events.find(event => event.type === 'completed');
   assert.ok(done, events.find(event => event.type === 'error')?.message);
   assert.equal(done.validation.valid, true);
@@ -535,6 +550,12 @@ test('初始蓝图：默认请求分段文本，63章无需英文键名或小阶
   assert.equal(done.blueprint.phases.at(-1).endChapter, 63);
   assert.equal(done.blueprint.rollingPlan.chapters.length, 20);
   assert.ok(done.blueprint.phases[2].planText.includes('重新核对现场证据'));
+  assert.equal(done.blueprint.outlineForeshadowingImported, true);
+  const [hook] = done.blueprint.phases[0].foreshadowing;
+  assert.equal(hook.name, '票背双孔');
+  assert.equal(hook.setupChapter, 3);
+  assert.deepEqual(hook.progressChapters, [18]);
+  assert.equal(hook.payoffChapter, 60);
   assert.equal(done.tokenUsage.calls, 3);
   assert.equal(state.novels.size, 0);
 });
@@ -996,6 +1017,11 @@ test('180万字、每章8000字及联网取材、专家团可完成创建并进�
 test('新书单章：SSE、正文、质量状态和创作状态完整落库', async () => {
   const content = makeChapter('林舟决定在雨停前进入旧邮局寻找失踪证人的登记簿', '雨夜邮局');
   state.chapterQueue = [content];
+  let chapterFormatting;
+  state.postProcessChapter = (text, options) => {
+    chapterFormatting = options;
+    return text;
+  };
 
   const { response, events } = await postSse('/generate', {
     novelTypeId: 'xianxia',
@@ -1024,6 +1050,7 @@ test('新书单章：SSE、正文、质量状态和创作状态完整落库', as
   assert.equal(events.find((event) => event.type === 'chapter_end').title, novel.chapters[0].title);
   assert.equal(typeof novel.chapters[0].qualityReport.score, 'number');
   assert.deepEqual(novel.chapters[0].qualityReport.toolchain, { isolated: true });
+  assert.equal(chapterFormatting.doDeAI, false);
   assert.equal(novel.emotionCurve.length, 1);
   assert.equal(novel.recentEventSignatures.length, 1);
   assert.match(novel.chapterSummaryDoc, /第1章/);
@@ -1102,6 +1129,14 @@ test('新书整本：先落结构化计划，再严格按章生成并回收伏�
   assert.ok(eventIndex(events, 'novel_created') < eventIndex(events, 'status', (event) => event.message.includes('章节计划')));
   assert.ok(firstStart < firstEnd && firstEnd < secondStart && secondStart < secondEnd);
   assert.ok(secondEnd < eventIndex(events, 'completed'));
+
+  const [firstWriting, secondWriting] = state.aiCalls.filter(call => call.kind === 'chapter');
+  const futurePlan = firstWriting.userPrompt.match(/【后续章节计划，供衔接参考】\n([^\n]+)/)?.[1];
+  assert.match(futurePlan || '', /^第2章.*林舟用铜钥匙打开地下室暗门并找到证人/);
+  assert.match(firstWriting.userPrompt, /唯一核心事件：林舟在雨夜收到铜钥匙并决定追查失踪证人/);
+  assert.doesNotMatch(secondWriting.userPrompt, /【后续章节计划，供衔接参考】/);
+  assert.match(secondWriting.userPrompt, /本章应回收伏笔：铜钥匙上的裂纹/);
+  assert.match(firstWriting.userPrompt, /请直接输出本章正文。$/);
 
   const novel = getCreatedNovel(events);
   assert.equal(novel.status, 'completed');
@@ -1235,6 +1270,702 @@ test('新书整本：计划为空时暂停，不进入无约束正文循环', as
   assert.deepEqual(state.aiCalls.map((call) => call.kind), ['plan']);
 });
 
+test('固定章数从创建到完结：补齐遗漏计划卡，拒绝越界卡，目标字数不足也不追加章节', async () => {
+  const conclusionEvidence = '法院当庭确认旧案证据系伪造，撤销了对周宁的指控。';
+  const settledStateEvidence = '周宁取回钥匙，六年来第一次用自己的名字打开家门。';
+  state.planContent = makePlan([
+    { chapterNumber: 1, wordTarget: 600, coreEvent: '周宁取回法庭需要的交接记录' },
+    { chapterNumber: 3, wordTarget: 600, coreEvent: '越界事件不能进入正文', setHooks: ['越界的暗号'] },
+  ]);
+  state.chapterQueue = [makeChapter('周宁取回交接记录', '雨停后的档案馆'),
+    makeChapter('法官宣布庭审结论', '法院门外的台阶') + '\n' + conclusionEvidence + settledStateEvidence];
+  state.aiHandler = call => {
+    if (call.kind === 'hookAudit' && call.userPrompt.includes('这是全书最后一章')) {
+      return emitText(JSON.stringify({ hooksResolved: [], ending: { conclusionEvidence, settledStateEvidence } }), null, call.signal);
+    }
+    return defaultAiHandler(call);
+  };
+  const { events, raw } = await postSse('/generate', {
+    novelTypeId: 'xianxia', mode: 'book', targetChapterCount: 2, targetWordCount: 2200,
+    enableResearch: false, outline: '周宁调查伪证并证明自己的清白，取回家门钥匙。',
+  });
+  const novel = getCreatedNovel(events);
+  assert.equal(novel.status, 'completed', raw);
+  assert.equal(novel.targetChapterCount, 2);
+  assert.equal(novel.generationInput.targetChapterCount, 2);
+  assert.deepEqual(novel.chapterPlanData.chapters.map(chapter => chapter.chapterNumber), [1, 2]);
+  assert.deepEqual(novel.chapters.map(chapter => chapter.chapterNumber), [1, 2]);
+  assert.equal(novel.foreshadowingLedger.length, 0);
+  assert.ok(novel.currentWordCount < novel.targetWordCount);
+  assert.deepEqual(novel.chapters.at(-1).qualityReport.endingVerification, { conclusionEvidence, settledStateEvidence });
+});
+
+test('固定章数从第一篇章核验实际进度，拒绝整章替换，单章续写在原段后补写', async () => {
+  const firstProof = '周宁从柜员手里接过签有日期的交接记录。';
+  const phaseProof = '法官签发保全裁定，禁止销毁这份原始记录。';
+  const first = `${firstProof}\n\n${makeChapter('周宁辨认柜员手写签名', '锁着的档案柜')}`;
+  const opening = makeChapter('周宁带着记录来到法院', '等候区的长凳');
+  const waiting = '庭务员把他请到廊下，说法官还在翻那本记录。';
+  const ending = '从法院出来时，墙外的玉兰已经落了一地。周宁弯身拾起自己的伞。';
+  const draft = [opening, waiting, ending].join('\n\n');
+  const revised = [opening, waiting, phaseProof, ending].join('\n\n');
+  const laterHook = '交接记录上的第二个签名来自哪里';
+  state.chapterQueue = [first, draft];
+  state.planContent = makePlan([
+    { chapterNumber: 1, wordTarget: 600, coreEvent: '周宁取回有日期的交接记录', raw: '模型分批细化计划' },
+    { chapterNumber: 2, wordTarget: 600, coreEvent: '法院裁定保全原始记录' },
+    { chapterNumber: 3, wordTarget: 600, coreEvent: '周宁查找记录签署人' },
+    { chapterNumber: 4, wordTarget: 600, coreEvent: '周宁当庭呈交证据' },
+  ]);
+  let canRepair = false;
+  state.aiHandler = call => {
+    if (call.options?.taskType === 'chapter_progress_repair') {
+      assert.match(call.userPrompt, /要插入的一小段正文/);
+      assert.match(call.userPrompt, new RegExp(`${waiting}\\n【修订处之后的正文】`));
+      return emitText(canRepair ? phaseProof : revised, null, call.signal);
+    }
+    if (call.options?.taskType === 'chapter_progress_review') {
+      const numberOf = quote => call.userPrompt.split('\n').find(line => /^\[\d+\]/.test(line) && line.includes(quote))?.match(/^\[(\d+)\]/)?.[1];
+      if (call.userPrompt.includes('PHASE 篇章目标：')) {
+        const earlier = numberOf(firstProof);
+        assert.ok(earlier, '阶段审核必须包括本阶段已保存正文');
+        const finish = numberOf(phaseProof);
+        if (finish) {
+          assert.ok(call.userPrompt.includes('【本次修订相邻原文】'));
+          return emitText(`PHASE=${earlier},${finish}\nCHAPTER=${finish}`, null, call.signal);
+        }
+        const anchor = numberOf(waiting);
+        assert.ok(anchor);
+        return emitText(`PHASE=NONE|法官尚未签发保全裁定|${anchor}\nCHAPTER=NONE|本章停在等待裁定`, null, call.signal);
+      }
+      assert.match(call.userPrompt, /CHAPTER 本章目标：周宁取回有日期的交接记录/);
+      return emitText(`CHAPTER=${numberOf(firstProof)}`, null, call.signal);
+    }
+    return defaultAiHandler(call);
+  };
+  const started = await postSse('/generate', {
+    novelTypeId: 'xianxia', mode: 'book', targetChapterCount: 4, targetWordCount: 4000, enableResearch: false,
+    outline: '周宁取得记录，申请保全证据，再追查记录的共同签署人，最后上庭翻案。',
+    storyBlueprint: { blueprintLevel: 2, mainArc: '周宁以交接记录证明清白', phases: [
+      { title: '保全证据', startChapter: 1, endChapter: 2, exitCondition: '周宁凭交接记录取得法官签发的保全裁定',
+        foreshadowing: [{ name: laterHook, setupChapter: 1, payoffChapter: 4, plan: '庭审时辨明另一个签署人的身份。' }] },
+      { title: '翻案', startChapter: 3, endChapter: 4, exitCondition: '法院据此推翻原来的判决' },
+    ] },
+  });
+  const novel = getCreatedNovel(started.events);
+  assert.equal(novel.status, 'paused', started.raw);
+  assert.match(started.events.find(event => event.type === 'error')?.message || '', /保全证据收尾.*保全裁定.*草稿已保留/);
+  assert.deepEqual(novel.chapters.map(chapter => chapter.content), [first]);
+  assert.equal(novel.chapters[0].qualityReport.progressVerification.passed, true);
+  assert.equal(eventIndex(started.events, 'chapter_start', event => event.chapterNumber === 3), -1);
+  const job = [...state.jobs.values()].find(job => job.novelId === novel._id && job.status === 'paused');
+  assert.equal(job?.draft, draft);
+  assert.equal(job?.draftPhase, 'chapter_progress_review');
+
+  canRepair = true;
+  const continued = await postSse(`/continue/${novel._id}`, { mode: 'chapter' });
+  assert.ok(continued.events.some(event => event.type === 'draft_restored' && event.content === draft), continued.raw);
+  assert.deepEqual(novel.chapters.map(chapter => chapter.content), [first, revised]);
+  assert.deepEqual(novel.chapters[1].qualityReport.progressVerification.evidence.map(item => item.chapterNumber), [1, 2]);
+  const hook = novel.foreshadowingLedger.find(hook => hook.content === laterHook);
+  assert.equal(hook.targetChapter, 4);
+  assert.notEqual(hook.status, 'resolved');
+  assert.equal(state.aiCalls.filter(call => call.kind === 'chapter').length, 2);
+});
+
+test('第100章验收：分批回收、保留未通过的终章修订，恢复后不重写也不生成第101章', async () => {
+  const chapters = Array.from({ length: 98 }, (_, index) => ({ chapterNumber: index + 1, content: `档案工作记录 ${index + 1}。`, wordCount: 190 }));
+  const plan = chapters.map(chapter => ({ chapterNumber: chapter.chapterNumber, coreEvent: chapter.content, wordTarget: 600 }));
+  plan.push({ chapterNumber: 99, title: '仓库回条', coreEvent: '找到被隐藏的仓库回条', wordTarget: 600 },
+    { chapterNumber: 100, title: '旧案公判', coreEvent: '法庭撤销伪证判决并公开补偿安排', wordTarget: 600 },
+    { chapterNumber: 101, title: '越界续篇', coreEvent: '无效的超额章节', wordTarget: 600 });
+  const novel = await seedNovel({ status: 'paused', targetWordCount: 20400, targetChapterCount: 100, outline: '解决旧案并归还家产。',
+    chapters, chapterPlanData: { chapters: plan }, foreshadowingLedger: [
+      { id: 'receipt', setChapter: 1, targetChapter: 99, status: 'pending', content: '消失的仓库回条' },
+      { id: 'stamp', setChapter: 2, targetChapter: 100, status: 'pending', content: '两枚不同的蓝章' },
+    ],
+  });
+  const receipt = '检验员从墙后的铁柜底找到了被藏起来的原始回条。';
+  const stamp = '第二枚蓝章是财务处后来补盖的，与原始登记无关。';
+  const conclusionEvidence = '法庭依据原件撤销伪证判决，并要求归还周家的房屋。';
+  const settledStateEvidence = '周宁把新门锁的三把钥匙分给母亲、弟弟和自己。';
+  const draft = makeChapter('陪审团进入旧法庭', '卷宗送审的走廊');
+  const revised = draft + '\n\n' + stamp + conclusionEvidence + settledStateEvidence;
+  state.chapterQueue = [makeChapter('众人检查仓库', '厂房西门的封条') + '\n' + receipt, draft];
+  const finalReview = { hooksResolved: [{ id: 'stamp', evidence: stamp }], ending: { conclusionEvidence, settledStateEvidence } };
+  state.aiHandler = call => {
+    if (call.options?.taskType === 'ending_hook_repair') return emitText(revised, null, call.signal);
+    if (call.kind === 'hookAudit') {
+      if (call.userPrompt.includes('收束阶段的一章')) return emitText(JSON.stringify({ hooksResolved: [{ id: 'receipt', evidence: receipt }] }), null, call.signal);
+      if (call.userPrompt.includes('这是全书最后一章')) return emitText(JSON.stringify({ hooksResolved: [], ending: null }), null, call.signal);
+    }
+    return defaultAiHandler(call);
+  };
+  const failed = await postSse(`/continue/${novel._id}`, { mode: 'book' });
+  assert.equal(novel.status, 'paused', failed.raw);
+  assert.equal(novel.chapters.length, 99);
+  assert.equal(novel.foreshadowingLedger[0].status, 'resolved');
+  assert.equal(novel.foreshadowingLedger[0].resolvedChapter, 99);
+  assert.match(failed.events.find(event => event.type === 'error')?.message || '', /主线结局/);
+  state.aiHandler = call => {
+    assert.equal(call.kind, 'hookAudit', '终章断点应复用修订稿，只调用验收');
+    assert.ok(call.userPrompt.includes(settledStateEvidence));
+    return emitText(JSON.stringify(finalReview), null, call.signal);
+  };
+  const resumed = await postSse(`/continue/${novel._id}`, { mode: 'chapter' });
+  assert.equal(novel.status, 'completed', resumed.raw);
+  assert.equal(novel.chapters.length, 100);
+  assert.equal(novel.chapters.at(-1).content, revised);
+  assert.deepEqual(novel.chapters.at(-1).qualityReport.endingVerification, { conclusionEvidence, settledStateEvidence });
+  assert.ok(novel.foreshadowingLedger.every(hook => hook.status === 'resolved'));
+  assert.equal((await postSse(`/continue/${novel._id}`, { mode: 'book' })).response.status, 400);
+  assert.equal((await postSse(`/${novel._id}/continue-chapter/101`, {})).response.status, 409);
+  assert.equal((await fetch(`${baseUrl}/${novel._id}/chapter/99`, { method: 'DELETE' })).status, 409);
+  assert.equal((await fetch(`${baseUrl}/${novel._id}/chapter/100`, { method: 'DELETE' })).status, 200);
+  assert.equal(novel.status, 'paused');
+  assert.equal(novel.targetChapterCount, 100);
+  assert.equal(novel.chapters.at(-1).chapterNumber, 99);
+  assert.equal(novel.foreshadowingLedger.find(hook => hook.id === 'stamp').status, 'pending');
+});
+
+test('普通章拒绝把调查进展或道具细节记成回收和新伏笔，正文仍可保存', async () => {
+  const hook = { id: 'room-status', content: '林见夏的隔间为什么被标为空置', setChapter: 1, targetChapter: 0, status: 'pending' };
+  const falseClue = '屏幕跳出一行：该编号无登记记录。不是';
+  const sound = '水管发出一阵细碎的敲击声，像有人碰了两下铁栏。';
+  const payoff = '管理员当场确认系统误删了租住登记，档案改回在册并补上了林见夏的名字。';
+  const second = makeChapter('林见夏调出旧版租赁文件查证', '户籍终端') + `\n\n${falseClue}空置，也不是在住。\n\n${sound}`;
+  const third = makeChapter('管理员核对租约后更正了记录', '街西管理所') + '\n\n' + payoff;
+  const novel = await seedNovel({ status: 'paused', targetChapterCount: 4, targetWordCount: 3000,
+    outline: '林见夏调查租住登记并拿回被误删的记录。',
+    chapters: [{ chapterNumber: 1, content: makeChapter('房东说隔间被标成空置', '旧街门口'), wordCount: 500 }],
+    chapterPlanData: { chapters: ['收到空置消息', '检查租约', '更正登记', '收束故事'].map((coreEvent, index) => ({
+      chapterNumber: index + 1, coreEvent, wordTarget: 750,
+    })) },
+    foreshadowingLedger: [hook],
+  });
+  state.chapterQueue = [second, third];
+  state.aiHandler = call => {
+    if (call.kind !== 'hookAudit') return defaultAiHandler(call);
+    const resolved = call.userPrompt.includes(payoff);
+    return emitText(JSON.stringify({ hooksResolved: [{ id: hook.id, evidence: resolved ? payoff : falseClue }],
+      hooksSet: resolved ? [] : [{ content: '是否有人在水管附近跟踪林见夏', evidence: sound }] }), null, call.signal);
+  };
+  let confirmations = 0;
+  state.endingHookConfirmHandler = call => {
+    assert.equal(call.options?.taskType, 'chapter_hook_audit_confirm');
+    confirmations++;
+    if (call.userPrompt.includes(payoff)) return emitText('H1=YES', null, call.signal);
+    assert.match(call.userPrompt, /不是空置，也不是在住/);
+    assert.match(call.userPrompt, /新伏笔：是否有人在水管附近跟踪林见夏/);
+    return emitText('H1=NO\nH2=NO', null, call.signal);
+  };
+  const response = await postSse(`/continue/${novel._id}`, { mode: 'chapter' });
+  assert.ok(response.events.some(event => event.type === 'chapter_end' && event.chapterNumber === 2), response.raw);
+  assert.equal(novel.foreshadowingLedger.length, 1);
+  assert.equal(novel.foreshadowingLedger[0].status, 'pending');
+  const resumed = await postSse(`/continue/${novel._id}`, { mode: 'chapter' });
+  assert.ok(resumed.events.some(event => event.type === 'chapter_end' && event.chapterNumber === 3), resumed.raw);
+  assert.equal(novel.foreshadowingLedger[0].resolutionEvidence, payoff);
+  assert.ok(novel.foreshadowingLedger[0].resolutionVerificationKey);
+  assert.equal(confirmations, 2);
+});
+
+test('终章回收修订即使有伏笔答案，也不能撤回已保存的权限交接', async () => {
+  const hook = { id: 'ledger-paper', content: '失踪账纸的去向', setChapter: 1, targetChapter: 2, status: 'pending' };
+  const first = makeChapter('钟离鹤签署了权限交接文件', '调度室桌面')
+    + '\n\n钟离鹤签署了权限交接文件，把盖章的原件交到接任者手里。';
+  const conclusionEvidence = '新来的调度员把电车恢复到普通的时刻表。';
+  const settledStateEvidence = '孩子们背着书包上了去学校的第一班电车。';
+  const draft = makeChapter('人们回到恢复运营的站台', '周一清晨') + '\n\n' + conclusionEvidence + '\n\n' + settledStateEvidence;
+  const payoff = '收发员从盖章原件的封套里抽出账纸，把它交还给会计。';
+  const valid = draft.replace(conclusionEvidence, payoff + '\n\n' + conclusionEvidence);
+  const conflicting = valid.replace(payoff, payoff + '\n\n权限没交。钟离鹤说，还得再等四天。');
+  const novel = await seedNovel({ status: 'paused', targetChapterCount: 2, targetWordCount: 1600,
+    outline: '查清账纸下落，完成权限交接，恢复电车运营。',
+    chapters: [{ chapterNumber: 1, content: first, wordCount: first.length }],
+    chapterPlanData: { chapters: [{ chapterNumber: 1, coreEvent: '交接权限', wordTarget: 800 },
+      { chapterNumber: 2, coreEvent: '归还账纸后恢复正常运营', wordTarget: 800 }] },
+    foreshadowingLedger: [hook],
+  });
+  let retry = false;
+  state.chapterQueue = [draft];
+  state.aiHandler = call => {
+    if (call.options?.taskType === 'ending_hook_repair') return emitText(retry ? valid : conflicting, null, call.signal);
+    if (call.kind === 'hookAudit') return emitText(JSON.stringify({
+      hooksResolved: call.userPrompt.includes(payoff) ? [{ id: hook.id, evidence: payoff }] : [],
+      ending: { conclusionEvidence, settledStateEvidence },
+    }), null, call.signal);
+    return defaultAiHandler(call);
+  };
+  const firstTry = await postSse(`/continue/${novel._id}`, { mode: 'book' });
+  assert.match(firstTry.events.find(event => event.type === 'error')?.message || '', /权限没交/);
+  const job = [...state.jobs.values()].find(item => item.novelId === novel._id);
+  assert.equal(job.draft, draft);
+  assert.equal(novel.chapters.length, 1);
+  assert.equal(novel.foreshadowingLedger[0].status, 'pending');
+  retry = true;
+  const resumed = await postSse(`/continue/${novel._id}`, { mode: 'book' });
+  assert.ok(resumed.events.some(event => event.type === 'completed'), resumed.raw);
+  assert.equal(novel.chapters.at(-1).content, valid);
+  assert.equal(novel.foreshadowingLedger[0].resolutionEvidence, payoff);
+});
+
+test('跨章回收用早期实际来源解释终章动作，无需让终章复述调查', async () => {
+  const hookName = '裴远舟哼错的旋律';
+  const outline = ['裴远舟认出旧录音，居民在新站台唱回旧歌。', '【伏笔与回收表】', `伏笔1：${hookName}`,
+    '埋设章：第1章（裴远舟唱错）', '真实含义：残留自东段集市被改过的户籍录音',
+    '回收章：第2章（确认户籍录音来源），第3章（居民唱和）'].join('\n');
+  const origin = '温小满播放东段集市户籍录音，裴远舟听出里面的四句和自己哼的是同一首。';
+  const end = '站务员按下普通电车的发车按钮，站台恢复通行。';
+  const settled = '居民拿着新登记凭单，坐上了回东段的早班车。';
+  const payoff = '裴远舟唱准了最后一句，等车的居民抬头，跟着他把后半段唱完。';
+  const draft = makeChapter('站务员带着登记凭单打开站台', '早班车的木门') + '\n\n' + payoff + '\n\n' + end + '\n\n' + settled;
+  const novel = await seedNovel({ status: 'paused', targetChapterCount: 3, targetWordCount: 2100, outline,
+    chapters: [
+      { chapterNumber: 1, content: makeChapter('裴远舟哼歌时唱错了一句', '工厂外'), wordCount: 500 },
+      { chapterNumber: 2, content: makeChapter('温小满打开被改过的原始录音', '旧档案间') + '\n\n' + origin, wordCount: 550 },
+    ],
+    chapterPlanData: { chapters: ['裴远舟哼错歌', '认出录音来源', '恢复电车后居民唱和'].map((coreEvent, index) => ({
+      chapterNumber: index + 1, coreEvent, wordTarget: 700,
+    })) },
+  });
+  state.chapterQueue = [draft];
+  state.aiHandler = call => {
+    if (call.kind !== 'hookAudit') return defaultAiHandler(call);
+    const hook = novel.foreshadowingLedger.find(item => item.content === hookName);
+    return emitText(JSON.stringify({ hooksResolved: [{ id: hook.id, evidence: payoff }],
+      ending: { conclusionEvidence: end, settledStateEvidence: settled } }), null, call.signal);
+  };
+  let verified = false;
+  state.endingHookConfirmHandler = call => {
+    assert.ok(call.userPrompt.includes('第2章前置进展原文'));
+    assert.ok(call.userPrompt.includes(origin));
+    assert.ok(call.userPrompt.includes(`第3章所引原文：${payoff}`));
+    verified = true;
+    return emitText('H1=YES', null, call.signal);
+  };
+  const response = await postSse(`/continue/${novel._id}`, { mode: 'book' });
+  assert.ok(response.events.some(event => event.type === 'completed'), response.raw);
+  assert.equal(verified, true);
+  assert.ok(!novel.chapters.at(-1).content.includes(origin));
+});
+
+test('终章引用只复述未解问题时，独立复核阻止提交，直到正文写出答案', async () => {
+  const hook = { id: 'witness-statement', content: '证人是否当庭指认打开地下暗门的人',
+    setChapter: 1, targetChapter: 2, status: 'pending' };
+  const first = makeChapter('周宁找到愿意出庭的证人', '地下通道的接头记号');
+  const conclusionEvidence = '法庭依照交接记录撤销原判，责令归还周家的房产。';
+  const settledStateEvidence = '周宁拿到新钥匙，带母亲走进重新归还的老宅。';
+  const unresolved = '书记员翻开记录簿，证人尚未指认是谁打开了地下暗门。';
+  const payoff = '证人当庭指认，是保管员沈康亲手打开了地下暗门，书记员将证词录入卷宗。';
+  const draft = makeChapter('法官请证人走到证人席', '庭审开始前的木槌') + '\n\n'
+    + unresolved + '\n\n' + conclusionEvidence + '\n\n' + settledStateEvidence;
+  const revised = draft.replace(unresolved, payoff);
+  const novel = await seedNovel({ status: 'paused', targetChapterCount: 2, targetWordCount: 1400,
+    outline: '周宁追查地下暗门，找到可以说明责任的证人，让法院归还老宅。',
+    chapters: [{ chapterNumber: 1, content: first, wordCount: first.length }],
+    chapterPlanData: { chapters: [{ chapterNumber: 1, coreEvent: '找到出庭证人', wordTarget: 700 },
+      { chapterNumber: 2, coreEvent: '证人当庭指认，法院撤销原判并归还房产', wordTarget: 700 }] },
+    foreshadowingLedger: [hook],
+  });
+  state.chapterQueue = [draft];
+  const calls = [];
+  state.endingHookConfirmHandler = call => {
+    assert.ok(call.userPrompt.includes(hook.content));
+    const hasAnswer = call.userPrompt.includes(payoff);
+    assert.ok(call.userPrompt.includes(`所引原文：${hasAnswer ? payoff : unresolved}`));
+    calls.push(hasAnswer ? 'accept' : 'reject');
+    return emitText(hasAnswer ? 'H1=YES' : 'H1=NO', null, call.signal);
+  };
+  state.aiHandler = call => {
+    if (call.kind === 'hookAudit' && call.userPrompt.includes('这是全书最后一章')) {
+      const evidence = call.userPrompt.includes(payoff) ? payoff : unresolved;
+      assert.ok(call.userPrompt.includes(evidence), 'the first audit selects an exact quote from the draft');
+      calls.push(evidence === payoff ? 'cite-payoff' : 'cite-unresolved');
+      return emitText(JSON.stringify({ hooksResolved: [{ id: hook.id, evidence }],
+        ending: { conclusionEvidence, settledStateEvidence } }), null, call.signal);
+    }
+    if (call.options?.taskType === 'ending_hook_repair') {
+      assert.equal(novel.chapters.length, 1, 'the unverified terminal draft must not be committed');
+      assert.equal(novel.foreshadowingLedger[0].status, 'pending');
+      assert.ok(call.userPrompt.includes(hook.content));
+      calls.push('repair');
+      return emitText(revised, null, call.signal);
+    }
+    return defaultAiHandler(call);
+  };
+
+  const { events, raw } = await postSse(`/continue/${novel._id}`, { mode: 'book' });
+  assert.ok(events.some(event => event.type === 'completed'), raw);
+  assert.deepEqual(calls, ['cite-unresolved', 'reject', 'repair', 'cite-payoff', 'accept']);
+  assert.equal(novel.status, 'completed');
+  assert.equal(novel.chapters.length, 2);
+  assert.equal(novel.chapters[1].content, revised);
+  assert.equal(novel.foreshadowingLedger[0].status, 'resolved');
+  assert.equal(novel.foreshadowingLedger[0].resolutionEvidence, payoff);
+});
+
+test('收束修订较长的跑题草稿时，以新稿正文证据验收', async () => {
+  const hook = { id: 'stamp', content: '伪签名的出处', setChapter: 1, targetChapter: 2, status: 'pending' };
+  const guide = '核对证物并交代伪签名从何而来';
+  const first = makeChapter('周宁得到未经盖章的档案', '库管办公室');
+  const draft = makeChapter('周宁到院子里等待', '后院观察') + '\n'
+    + Array.from({ length: 45 }, (_, index) => `周宁等到第${index + 1}次整点报时，仍没有人把证物送到院子里。\n`).join('');
+  const payoff = '验印师比较纸上的残缺线条，证明伪签名是从旧借阅登记簿拓下来的。';
+  const conclusionEvidence = '法庭依据新鉴定，当天撤销了针对周宁的原判。';
+  const settledStateEvidence = '在街坊见证下，周宁将归还的房门钥匙交给父亲。';
+  const revised = makeChapter('证物送到了法院书记员手中', '法院门前交接') + '\n' + payoff + conclusionEvidence + settledStateEvidence;
+  assert.ok(revised.length < draft.length * 0.8);
+  const novel = await seedNovel({ status: 'paused', targetChapterCount: 2, targetWordCount: 1400, chapterWordTarget: 700,
+    outline: '周宁找出档案伪证来源，取回房门钥匙。',
+    chapters: [{ chapterNumber: 1, content: first, wordCount: first.length }],
+    chapterPlanData: { chapters: [{ chapterNumber: 1, coreEvent: '寻找伪证', wordTarget: 700 },
+      { chapterNumber: 2, coreEvent: guide, wordTarget: 700 }] },
+    foreshadowingLedger: [hook],
+  });
+  state.chapterQueue = [draft];
+  state.aiHandler = call => {
+    if (call.options?.taskType === 'ending_hook_repair') {
+      assert.ok(call.userPrompt.includes(guide));
+      assert.equal(call.options.requireTerminal, true);
+      return emitText(revised, null, call.signal);
+    }
+    if (call.kind === 'hookAudit') {
+      const audit = call.userPrompt.includes(payoff)
+        ? { hooksResolved: [{ id: hook.id, evidence: payoff }], ending: { conclusionEvidence, settledStateEvidence } }
+        : { hooksResolved: [], ending: null };
+      if (call.userPrompt.includes('只写编号')) return emitText('NONE\nE=NONE', null, call.signal);
+      return emitText(JSON.stringify(audit), null, call.signal);
+    }
+    return defaultAiHandler(call);
+  };
+  const { events, raw } = await postSse(`/continue/${novel._id}`, { mode: 'book' });
+  assert.ok(events.some(event => event.type === 'completed'), raw);
+  assert.equal(novel.chapters[1].content, revised);
+  assert.equal(novel.foreshadowingLedger[0].resolutionEvidence, payoff);
+});
+
+test('终章复核：部分批次返回无效 JSON 时按原文编号重试，合并每批有效证据', async () => {
+  const first = makeChapter('姜妍整理积压卷宗并保管交接单', '库房清点实物');
+  const evidence = Array.from({ length: 13 }, (_, index) => `姜妍公开第${index + 1}号卷宗，证实相应伪签名出自同一台印章机。`);
+  const conclusionEvidence = '审判长当场撤销了所有伪签名涉及的处分。';
+  const settledStateEvidence = '档案室恢复了公众查阅，原保管人凭签字收回保管凭证。';
+  const final = makeChapter('审判长请当事人进入庭审大厅', '庭审现场记录') + '\n\n'
+    + evidence.join('\n') + '\n' + conclusionEvidence + '\n' + settledStateEvidence;
+  const ledger = evidence.map((_, index) => ({ id: `archive-${index + 1}`, content: `第${index + 1}号卷宗是谁伪签的`,
+    setChapter: 1, targetChapter: 2, status: 'pending' }));
+  const novel = await seedNovel({ status: 'paused', targetChapterCount: 2, targetWordCount: 1200,
+    outline: '姜妍查清伪签案，让受影响的人收回保管凭证。',
+    chapters: [{ chapterNumber: 1, content: first, wordCount: first.length }],
+    chapterPlanData: { chapters: [{ chapterNumber: 1, coreEvent: '清点卷宗', wordTarget: 600 },
+      { chapterNumber: 2, coreEvent: '公开签名鉴定结果', wordTarget: 600 }] },
+    foreshadowingLedger: ledger,
+  });
+  state.chapterQueue = [final];
+  const firstBatch = ledger.slice(0, 12).map((hook, index) => ({ id: hook.id, evidence: evidence[index] }));
+  let compactReviews = 0;
+  let useValidIndex = false;
+  state.aiHandler = call => {
+    assert.notEqual(call.options?.taskType, 'ending_hook_repair', 'audit failure alone must not cause a rewrite');
+    if (call.kind !== 'hookAudit') return defaultAiHandler(call);
+    if (call.userPrompt.includes('只写编号')) {
+      compactReviews++;
+      assert.equal(call.options.jsonMode, false);
+      assert.ok(call.userPrompt.includes(ledger[12].content));
+      assert.ok(!call.userPrompt.includes(ledger[0].content));
+      const sourceNumber = quote => {
+        const excerpt = call.userPrompt.split('\n').find(line => line.endsWith(quote));
+        assert.ok(excerpt);
+        return excerpt.match(/^\[(\d+)\]/)[1];
+      };
+      const ending = call.userPrompt.includes('另写一行 E=')
+        ? `\nE=${sourceNumber(conclusionEvidence)}|${sourceNumber(settledStateEvidence)}` : '';
+      return emitText(useValidIndex ? `H1=${sourceNumber(evidence[12])}${ending}` : 'H1=9999', null, call.signal);
+    }
+    if (call.userPrompt.includes('id:archive-13')) return emitText('{"hooksResolved":[', null, call.signal);
+    return emitText(JSON.stringify({ hooksResolved: firstBatch, ending: { conclusionEvidence, settledStateEvidence } }), null, call.signal);
+  };
+  const failed = await postSse(`/continue/${novel._id}`, { mode: 'book' });
+  assert.match(failed.events.find(event => event.type === 'error')?.message || '', /复核未返回有效结果/);
+  assert.equal(novel.chapters.length, 1);
+  assert.ok(novel.foreshadowingLedger.every(hook => hook.status === 'pending'));
+  useValidIndex = true;
+  const resumed = await postSse(`/continue/${novel._id}`, { mode: 'book' });
+  assert.ok(resumed.events.some(event => event.type === 'completed'), resumed.raw);
+  assert.equal(compactReviews, 2);
+  assert.equal(state.aiCalls.filter(call => call.kind === 'chapter').length, 1);
+  assert.equal(novel.chapters.at(-1).content, final);
+  assert.deepEqual(novel.chapters.at(-1).qualityReport.endingVerification, { conclusionEvidence, settledStateEvidence });
+  assert.deepEqual(novel.foreshadowingLedger.map(hook => hook.resolutionEvidence), evidence);
+});
+
+test('终章分场景补写可断点续跑，保留已有结尾及原有引文', async () => {
+  const ledger = Array.from({ length: 25 }, (_, index) => ({
+    id: `seal-${index + 1}`, content: `档案编号${index + 1}的签发人`, setChapter: 1, targetChapter: 2, status: 'pending',
+  }));
+  const proofs = ledger.map((_, index) => `记录员出示档案编号${index + 1}的签名底稿，确认这份原件由该班的值勤官签发。`);
+  const first = makeChapter('周宁保存工厂的盖章清单', '退役仓库的北门');
+  const conclusionEvidence = '仲裁庭撤销了克扣职工补偿金的决议。';
+  const settledStateEvidence = '周宁把补偿金打进邻居们的账户，大家结伴走回家。';
+  const closing = settledStateEvidence + '\n\n村口早餐店刚开门，店主端出一笼热包子。';
+  const draft = makeChapter('周宁将证据交给仲裁庭', '肃静的仲裁大厅') + '\n\n'
+    + proofs.slice(0, 20).join('\n') + '\n' + conclusionEvidence + '\n\n' + closing;
+  const novel = await seedNovel({ status: 'paused', targetChapterCount: 2, targetWordCount: 1800,
+    outline: '周宁核实签发记录，工友们拿回补偿金。',
+    chapters: [{ chapterNumber: 1, content: first, wordCount: first.length }],
+    chapterPlanData: { chapters: [{ chapterNumber: 1, coreEvent: '保存档案', wordTarget: 900 },
+      { chapterNumber: 2, coreEvent: '执行仲裁裁决并退回补偿款', wordTarget: 900 }] },
+    foreshadowingLedger: ledger,
+  });
+  let patches = 0;
+  let endingOnlyReviews = 0;
+  let resume = false;
+  state.postProcessChapter = text => text.replaceAll('\n\n', '\n\n　　');
+  state.chapterQueue = [draft];
+  state.aiHandler = call => {
+    assert.notEqual(call.options?.taskType, 'ending_hook_repair');
+    if (call.options?.taskType === 'ending_scene_repair') {
+      patches++;
+      assert.ok(call.userPrompt.includes(closing));
+      const selected = ledger.flatMap((hook, index) => call.userPrompt.includes(`：${hook.content}`) ? [proofs[index]] : []);
+      assert.equal(selected.length, 4);
+      const citations = resume ? selected : selected.slice(0, 1);
+      const action = resume ? '拿到最后四份签收的人各自拆开信封。柜台压着他们按过手印的单子，归档前逐份对照。\n'
+        : '记录员打开一个收好的铁文件箱，原件整齐地码在里面。他请工作人员扫描以后将原件分别归还，每个信封的位置都必须登记。\n';
+      return emitText(action + citations.join('\n'), null, call.signal);
+    }
+    if (call.kind === 'hookAudit') {
+      if (!resume && call.userPrompt.includes(ledger[24].content)) return emitText('{"hooksResolved":[', null, call.signal);
+      if (resume) assert.doesNotMatch(call.userPrompt, /id:seal-21 内容/);
+      if (call.userPrompt.includes('终局目标与前文场景') && !call.userPrompt.includes('id:seal-')) endingOnlyReviews++;
+      const hooksResolved = ledger.flatMap((hook, index) => call.userPrompt.includes(`id:${hook.id} 内容`) && call.userPrompt.includes(proofs[index])
+        ? [{ id: hook.id, evidence: proofs[index] }] : []);
+      return emitText(JSON.stringify({ hooksResolved, ending: { conclusionEvidence, settledStateEvidence } }), null, call.signal);
+    }
+    return defaultAiHandler(call);
+  };
+  const firstAttempt = await postSse(`/continue/${novel._id}`, { mode: 'book' });
+  assert.match(firstAttempt.events.find(event => event.type === 'error')?.message || '', /尚未核实回收 4 条伏笔/);
+  assert.equal(novel.chapters.length, 1);
+  assert.ok(novel.foreshadowingLedger.every(hook => hook.status === 'pending'));
+  const pausedJob = [...state.jobs.values()].find(job => job.novelId === novel._id);
+  const checkpointed = pausedJob?.draft || '';
+  assert.ok(checkpointed.includes(proofs[20]));
+  assert.ok(!checkpointed.includes(proofs[21]));
+  assert.ok(checkpointed.endsWith(closing));
+  assert.ok(pausedJob.draftReview.evidence.some(item => item.id === ledger[20].id && item.evidence === proofs[20]));
+  resume = true;
+  const { events, raw } = await postSse(`/continue/${novel._id}`, { mode: 'book' });
+  assert.ok(events.some(event => event.type === 'completed'), raw);
+  assert.equal(patches, 2);
+  assert.equal(endingOnlyReviews, 4);
+  assert.equal(novel.chapters.length, 2);
+  assert.equal(novel.chapters[1].content.endsWith(state.postProcessChapter(closing)), true);
+  assert.equal(novel.chapters[1].content.startsWith(state.postProcessChapter(draft.slice(0, draft.indexOf(closing) - 2))), true);
+  assert.deepEqual(novel.foreshadowingLedger.map(hook => hook.resolutionEvidence), proofs);
+});
+
+test('终局冲突按段落修订，保留已核实的回收原文', async () => {
+  const ledger = Array.from({ length: 13 }, (_, index) => ({
+    id: `valve-${index + 1}`, content: `阀门${index + 1}的去向`, setChapter: 1, targetChapter: 2, status: 'pending',
+  }));
+  const proofs = ledger.map((_, index) => `库管员从待交还的清单里找到阀门${index + 1}，给负责人看了签收位置。`);
+  const first = makeChapter('周宁在库房核对零件台账', '维修队的仓库');
+  const conflict = '这场供水危机才刚刚进入最危险的阶段。';
+  const conclusionEvidence = '按响启动铃后，工人亲眼看见主泵重新接通全镇管网。';
+  const settledStateEvidence = '周宁走出机房，邻居正接满回家煮饭用的第一桶水。';
+  const draft = makeChapter('周宁推开泵房大门', '水务站正式交接') + '\n\n'
+    + proofs.join('\n') + '\n\n' + conflict + '\n\n' + settledStateEvidence;
+  const novel = await seedNovel({ status: 'paused', targetChapterCount: 2, targetWordCount: 1900,
+    outline: '周宁归还备用阀门，维修水泵，恢复镇里的水源。',
+    chapters: [{ chapterNumber: 1, content: first, wordCount: first.length }],
+    chapterPlanData: { chapters: [{ chapterNumber: 1, coreEvent: '核对阀门台账', wordTarget: 950 },
+      { chapterNumber: 2, coreEvent: '重启主水泵并恢复供水', wordTarget: 950 }] },
+    foreshadowingLedger: ledger,
+  });
+  state.chapterQueue = [draft];
+  let repairs = 0;
+  let acceptRepairedEnding = false;
+  state.aiHandler = call => {
+    assert.notEqual(call.options?.taskType, 'ending_hook_repair');
+    if (call.options?.taskType === 'ending_paragraph_repair') {
+      repairs++;
+      const paragraph = call.userPrompt.split('\n').find(line => line.endsWith(conflict))?.match(/^\[(\d+)\]/)[1];
+      assert.ok(paragraph);
+      return emitText(JSON.stringify({ changes: [{ paragraph: Number(paragraph), text: conclusionEvidence }] }), null, call.signal);
+    }
+    if (call.kind === 'hookAudit') {
+      const hooksResolved = ledger.flatMap((hook, index) => call.userPrompt.includes(`id:${hook.id} 内容`)
+        ? [{ id: hook.id, evidence: proofs[index] }] : []);
+      const repaired = call.userPrompt.includes(conclusionEvidence);
+      const ending = repaired && !acceptRepairedEnding ? null : {
+        conclusionEvidence: repaired ? conclusionEvidence : conflict, settledStateEvidence,
+      };
+      return emitText(JSON.stringify({ hooksResolved, ending, endingIssue: ending ? '' : '需要确认供水已经恢复' }), null, call.signal);
+    }
+    return defaultAiHandler(call);
+  };
+  const pending = await postSse(`/continue/${novel._id}`, { mode: 'book' });
+  assert.match(pending.events.find(event => event.type === 'error')?.message || '', /需要确认供水已经恢复/);
+  assert.equal(novel.chapters.length, 1);
+  assert.equal([...state.jobs.values()].find(job => job.novelId === novel._id)?.draft, draft.replace(conflict, conclusionEvidence));
+  acceptRepairedEnding = true;
+  const { events, raw } = await postSse(`/continue/${novel._id}`, { mode: 'book' });
+  assert.ok(events.some(event => event.type === 'completed'), raw);
+  assert.equal(repairs, 1);
+  assert.equal(novel.chapters[1].content, draft.replace(conflict, conclusionEvidence));
+  assert.deepEqual(novel.foreshadowingLedger.map(hook => hook.resolutionEvidence), proofs);
+});
+
+test('章末复核优先检查正文相关的旧伏笔，避免被近期条目挤出', async () => {
+  const chapters = Array.from({ length: 14 }, (_, index) => ({
+    chapterNumber: index + 1, content: `配给记录第${index + 1}页已归档。`, wordCount: 16,
+  }));
+  const hook = { id: 'old', content: '海浪标志的黄铜钥匙', setChapter: 1, status: 'pending' };
+  const recentHooks = Array.from({ length: 12 }, (_, index) => ({
+    id: `recent-${index}`, content: `第${index}号车载扬声器的故障原因`, setChapter: 13, status: 'pending',
+  }));
+  const evidence = '海浪标志的黄铜钥匙打开了墙后的铁柜，失踪的回单就放在里面。';
+  const next = makeChapter('周宁独自上楼检查铁柜', '柜门里的隔层') + '\n' + evidence;
+  const novel = await seedNovel({ status: 'paused', targetChapterCount: 18, targetWordCount: 18000, chapters,
+    outline: '周宁用找到的线索查清回单的去向。',
+    chapterPlanData: { chapters: [...chapters.map(chapter => ({ chapterNumber: chapter.chapterNumber, coreEvent: chapter.content })),
+      { chapterNumber: 15, coreEvent: '打开铁柜找到失踪的回单', wordTarget: 600, title: '铁柜回单' }] },
+    foreshadowingLedger: [hook, ...recentHooks],
+  });
+  state.chapterQueue = [next];
+  state.aiHandler = call => {
+    if (call.kind === 'hookAudit') {
+      assert.match(call.userPrompt, /id:old/);
+      assert.equal([...call.userPrompt.matchAll(/id:recent-\d+ 内容/g)].length, 11);
+      return emitText(JSON.stringify({ hooksResolved: [{ id: hook.id, evidence }] }), null, call.signal);
+    }
+    return defaultAiHandler(call);
+  };
+  const { events, raw } = await postSse(`/continue/${novel._id}`, { mode: 'chapter' });
+  assert.ok(events.some(event => event.type === 'chapter_end'), raw);
+  assert.equal(novel.foreshadowingLedger[0].resolvedChapter, 15);
+  assert.equal(novel.foreshadowingLedger[0].resolutionEvidence, evidence);
+});
+
+test('终章先核对已保存的回收证据，拒绝借用其他伏笔的原文编号', async () => {
+  const setupKey = '周宁捡到刻有海浪标志的黄铜钥匙，暂时没有找到对应的锁。';
+  const setupEnvelope = '另有一封用蓝蜡封好的信，寄件人故意没有署名。';
+  const keyEvidence = '黄铜钥匙的海浪标志和证物柜门相同，他用这把钥匙打开了证物柜。';
+  const envelopeMention = '那封蓝蜡封好的信仍在周宁口袋里，封口完好。';
+  const envelopeEvidence = '周宁当众打开那封蓝蜡封好的信，认出寄件人就是公开道歉的关队长。';
+  const conclusionEvidence = '法庭当场公布了最终裁定，将房屋归还周家。';
+  const settledStateEvidence = '周宁和母亲搬回老宅，一起给邻居送上新烤的面包。';
+  const first = makeChapter('周宁收拾工坊台面', '潮湿的工坊石阶') + '\n' + setupKey + setupEnvelope;
+  const second = makeChapter('同伴走进旧档案馆', '档案馆的走廊') + '\n' + keyEvidence + envelopeMention;
+  const final = makeChapter('法官展开最终裁定', '审判大厅的回声') + '\n' + envelopeEvidence + conclusionEvidence + settledStateEvidence;
+  const novel = await seedNovel({ status: 'paused', targetChapterCount: 3, targetWordCount: 1800,
+    outline: '周宁找到房产权证，让家人搬回旧宅。',
+    chapters: [{ chapterNumber: 1, content: first, wordCount: first.length }, { chapterNumber: 2, content: second, wordCount: second.length }],
+    chapterPlanData: { chapters: [{ chapterNumber: 1, coreEvent: '找到钥匙和信', wordTarget: 600 },
+      { chapterNumber: 2, coreEvent: '打开证物柜取得产权证', wordTarget: 600 },
+      { chapterNumber: 3, coreEvent: '公布信件来源与最终裁定', wordTarget: 600 }] },
+    foreshadowingLedger: [
+      { id: 'key', content: '海浪标志的黄铜钥匙能打开什么', setChapter: 1, setupEvidence: setupKey, status: 'pending' },
+      { id: 'envelope', content: '蓝蜡封好的信是谁寄的', setChapter: 1, setupEvidence: setupEnvelope, status: 'pending' },
+    ],
+  });
+  state.chapterQueue = [final];
+  let archiveReviews = 0;
+  state.aiHandler = call => {
+    if (call.options?.taskType === 'historical_hook_audit') {
+      archiveReviews++;
+      const keyEntry = call.userPrompt.split(/\nH2（/)[0];
+      const number = keyEntry.split('\n').find(line => line.endsWith(keyEvidence))?.match(/^\[(\d+)\]/)?.[1];
+      const mentionNumber = call.userPrompt.split(/\nH2（/)[1].split('\n')
+        .find(line => line.endsWith(envelopeMention))?.match(/^\[(\d+)\]/)?.[1];
+      assert.ok(number, '历史章节中的答案应作为可选证据');
+      assert.ok(mentionNumber);
+      return emitText(`H1=${number}\nH2=${number}\nH2=${mentionNumber}`, null, call.signal);
+    }
+    if (call.options?.taskType === 'historical_hook_audit_confirm') {
+      assert.ok(call.userPrompt.includes(keyEvidence));
+      assert.ok(call.userPrompt.includes(envelopeMention));
+      assert.equal(call.userPrompt.split('所引原文：').length, 3);
+      return emitText('H1=YES\nH2=NO', null, call.signal);
+    }
+    if (call.kind === 'hookAudit') {
+      assert.match(call.userPrompt, /id:envelope/);
+      assert.doesNotMatch(call.userPrompt, /id:key/);
+      return emitText(JSON.stringify({ hooksResolved: [{ id: 'envelope', evidence: envelopeEvidence }],
+        ending: { conclusionEvidence, settledStateEvidence } }), null, call.signal);
+    }
+    return defaultAiHandler(call);
+  };
+  const { events, raw } = await postSse(`/continue/${novel._id}`, { mode: 'book' });
+  assert.ok(events.some(event => event.type === 'completed'), raw);
+  assert.equal(archiveReviews, 1);
+  assert.deepEqual(novel.chapters.map(chapter => chapter.content), [first, second, final]);
+  assert.deepEqual(novel.foreshadowingLedger.map(hook => [hook.resolvedChapter, hook.resolutionEvidence]),
+    [[2, keyEvidence], [3, envelopeEvidence]]);
+  const update = content => fetch(`${baseUrl}/${novel._id}/chapter/2`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content }),
+  });
+  assert.equal((await update(second + '周宁把档案袋放回桌上。')).status, 200);
+  assert.equal(novel.status, 'completed');
+  assert.equal((await update(second.replace(keyEvidence, '周宁把刻有海浪标志的黄铜钥匙放回包里，只远远看了一眼证物柜。'))).status, 200);
+  assert.equal(novel.status, 'paused');
+  assert.equal(novel.foreshadowingLedger[0].status, 'pending');
+  assert.equal(novel.foreshadowingLedger[0].resolutionEvidence, '');
+  assert.equal(novel.foreshadowingLedger[1].status, 'resolved');
+  state.aiHandler = call => {
+    if (call.options?.taskType === 'historical_hook_audit') {
+      archiveReviews++;
+      assert.equal(call.signal.aborted, false);
+      throw abortError();
+    }
+    if (call.options?.taskType === 'ending_hook_repair') return emitText(final, null, call.signal);
+    if (call.kind === 'hookAudit') {
+      if (call.userPrompt.includes('只写编号')) return emitText('NONE', null, call.signal);
+      return emitText(JSON.stringify({ hooksResolved: [{ id: 'envelope', evidence: envelopeEvidence }],
+        ending: { conclusionEvidence, settledStateEvidence } }), null, call.signal);
+    }
+    return defaultAiHandler(call);
+  };
+  const afterEdit = await postSse(`/continue/${novel._id}`, { mode: 'book' });
+  assert.equal(archiveReviews, 2);
+  assert.match(afterEdit.events.find(event => event.type === 'error')?.message || '', /终章尚未核实回收 1 条伏笔/);
+  assert.equal(novel.foreshadowingLedger[0].status, 'pending');
+  assert.equal(novel.chapters.length, 3);
+});
+
+test('旧版已写满固定章数：在原终章补回收，保留已核实的结局引文', async () => {
+  const first = makeChapter('周宁在仓库找到了旧钥匙', '清晨的铁窗');
+  const payoff = '那把钥匙打开了证物柜，柜里存着前任所长藏起来的回执。';
+  const conclusionEvidence = '法庭根据新证物撤销了原判，当场宣布周宁无罪。';
+  const settledStateEvidence = '周宁吃完家里的热饭，告诉母亲明天陪她去买菜。';
+  const draft = makeChapter('法庭宣布当日宣判', '沉默的旁听席');
+  const original = draft + '\n\n' + conclusionEvidence + settledStateEvidence;
+  const revised = draft + '\n\n' + payoff + conclusionEvidence + settledStateEvidence;
+  const novel = await seedNovel({ status: 'completed', targetWordCount: 10000, outline: '周宁用仓库钥匙取得证据并为自己翻案。',
+    generationInput: { mode: 'book', storyBlueprint: { blueprintLevel: 3, phases: [{ startChapter: 1, endChapter: 2 }] } },
+    chapters: [{ chapterNumber: 1, content: first, wordCount: first.length }, { chapterNumber: 2, content: original, wordCount: original.length }],
+    foreshadowingLedger: [{ id: 'key', content: '旧钥匙的用途', setChapter: 1, targetChapter: 2, resolvedChapter: 2, status: 'resolved' }],
+  });
+  state.aiHandler = call => {
+    if (call.options?.taskType === 'ending_hook_repair') return emitText(revised, null, call.signal);
+    assert.equal(call.kind, 'hookAudit');
+    assert.match(call.userPrompt, /旧钥匙的用途/);
+    const hasPayoff = call.userPrompt.includes(payoff);
+    return emitText(JSON.stringify(hasPayoff ? {
+      hooksResolved: [{ id: 'key', evidence: payoff }], ending: { conclusionEvidence: '引文没有出现在正文里会被拒绝。', settledStateEvidence },
+    } : { hooksResolved: [], ending: { conclusionEvidence, settledStateEvidence } }), null, call.signal);
+  };
+  const { events, raw } = await postSse(`/continue/${novel._id}`, { mode: 'book' });
+  assert.equal(novel.status, 'completed', raw);
+  assert.equal(novel.targetChapterCount, 2);
+  assert.deepEqual(novel.chapters.map(chapter => chapter.content), [first, revised]);
+  assert.equal(novel.foreshadowingLedger[0].resolutionEvidence, payoff);
+  assert.equal(novel.chapters.at(-1).qualityReport.endingVerification.conclusionEvidence, conclusionEvidence);
+  assert.ok(events.some(event => event.type === 'completed'));
+  assert.equal(state.memoryCalls.length, 0, '结局修订使用已保存的正文，无需等待记忆整理');
+});
+
 test('新书整本：已确认蓝图但计划为空时使用兜底计划直接开始正文', async () => {
   state.planContent = '';
   state.chapterQueue = [makeChapter('林舟在雨夜进入废弃邮局，决定沿着旧案线索继续追查', '兜底计划首章')];
@@ -1346,14 +2077,16 @@ test('续写单章：每次只追加连续一章，并保持作品可再次续�
   const third = makeChapter('林舟拒绝交出值班表并带苏晚离开码头', '码头撤离');
   const planData = JSON.parse(makePlan([
     { chapterNumber: 1, wordTarget: 600, coreEvent: '收到匿名来信' },
-    { chapterNumber: 2, wordTarget: 600, coreEvent: '调查旧码头值班表' },
-    { chapterNumber: 3, wordTarget: 600, coreEvent: '带走值班表并撤离' },
+    { chapterNumber: 2, wordTarget: 600, coreEvent: '调查旧码头值班表', characters: ['林舟', '苏晚'] },
+    { chapterNumber: 3, wordTarget: 600, coreEvent: '带走值班表并撤离', characters: ['林舟', '苏晚'] },
   ]));
   const novel = await seedNovel({
     _id: 'continue-single',
     status: 'paused',
     targetWordCount: 4000,
     protagonistName: '林舟',
+    generationContext: '旧版声线：林舟说话直接，苏晚说话有分寸。',
+    outline: '【人物声音表】\n林舟：\n句长：先问要紧的事，话短。\n苏晚：\n常用词汇：行吧行吧行吧。\n称呼习惯：对陌生人客气，和林舟会开玩笑。\n【剧情阶段】',
     chapters: [{ chapterNumber: 1, title: '第1章', content: first, wordCount: first.length }],
     chapterPlan: JSON.stringify(planData),
     chapterPlanData: planData,
@@ -1362,6 +2095,9 @@ test('续写单章：每次只追加连续一章，并保持作品可再次续�
 
   const firstRun = await postSse(`/continue/${novel._id}`, { mode: 'chapter' });
   assert.equal(firstRun.response.status, 200);
+  const firstWritingCall = state.aiCalls.find((call) => call.kind === 'chapter');
+  assert.match(firstWritingCall.systemPrompt, /旧版声线：林舟说话直接，苏晚说话有分寸。/);
+  assert.match(firstWritingCall.systemPrompt, /像平时说话那样/);
   assert.ok(eventIndex(firstRun.events, 'continue_start') < eventIndex(firstRun.events, 'chapter_start'));
   assert.ok(eventIndex(firstRun.events, 'chapter_end') < eventIndex(firstRun.events, 'completed'));
   assert.deepEqual(novel.chapters.map((chapter) => chapter.chapterNumber), [1, 2]);
@@ -1373,6 +2109,12 @@ test('续写单章：每次只追加连续一章，并保持作品可再次续�
   assert.equal(novel.status, 'paused');
   assert.equal(novel.currentChapterIndex, 3);
   assert.equal(new Set(novel.chapters.map((chapter) => chapter.chapterNumber)).size, 3);
+  const writes = state.aiCalls.filter(call => call.kind === 'chapter');
+  assert.equal(writes.length, 2);
+  for (const { userPrompt } of writes) {
+    assert.match(userPrompt, /林舟：[^\n]+句长：先问要紧的事，话短/);
+    assert.match(userPrompt, /苏晚：[^\n]+称呼习惯：对陌生人客气，和林舟会开玩笑/);
+  }
 });
 
 test('书架继续生成：用户报告的日报结尾被定点修订，专家模式关闭时仍生效', async () => {
@@ -1987,7 +2729,10 @@ test('记忆整理失败不打断跨章生成，下一章自动补齐且不重�
   const first = makeChapter('林舟取得原始签收单并交给苏晚保管', '语义记忆断点');
   state.chapterQueue = [first, makeChapter('林舟核对签名并找到责任人', '恢复记忆后第二章')];
   state.memoryHandler = async call => {
-    if (state.memoryCalls.length <= 2) return emitText('{"summary":"无证据的错误输出"}', null, call.signal);
+    if (state.memoryCalls.length === 1) {
+      assert.equal(call.signal.aborted, false);
+      throw abortError();
+    }
     state.memoryHandler = null;
     const source = call.userPrompt.split('【正文开始】\n')[1].split('\n【正文结束】')[0];
     return emitText(JSON.stringify({ summary: '本章实际发生事件及结果：' + source.slice(0, 100),
@@ -2000,7 +2745,7 @@ test('记忆整理失败不打断跨章生成，下一章自动补齐且不重�
   assert.equal(book.chapters.length, 2);
   assert.ok(events.some(event => event.type === 'status' && /记忆整理暂不可用/.test(event.message)));
   assert.equal(state.aiCalls.filter(call => call.kind === 'chapter').length, 2);
-  assert.equal(state.memoryCalls.length, 4);
+  assert.equal(state.memoryCalls.length, 3);
   assert.equal(book.chapters[0].content, first);
   assert.ok(book.chapters.every(chapter => chapter.memorySummary?.sourceHash));
   const secondCall = state.aiCalls.filter(call => call.kind === 'chapter')[1];

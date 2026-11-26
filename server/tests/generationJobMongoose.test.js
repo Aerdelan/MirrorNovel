@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const mongoose = require('mongoose');
 const GenerationJob = require('../models/GenerationJob');
-const { createGenerationJob } = require('../services/generationJob');
+const { checkpointGenerationJob, createGenerationJob } = require('../services/generationJob');
 
 test('real Mongoose upsert has no timestamp path conflict and keeps retries unchanged', async () => {
   // Run the real query middleware, replacing only the driver operation. The
@@ -34,6 +34,34 @@ test('real Mongoose upsert has no timestamp path conflict and keeps retries unch
     assert.equal(retry.updatedAt.getTime(), firstDate.getTime());
     assert.equal(updates.length, 2);
     assert.ok(updates.every((update) => !update.$set));
+  } finally {
+    await connection.close();
+  }
+});
+
+test('real Mongoose checkpoints persist and clear draft review with the draft', async () => {
+  const connection = mongoose.createConnection();
+  const Model = connection.model('GenerationJob', GenerationJob.schema.clone());
+  const stored = { jobId: 'review-job' };
+  Model.collection.findOneAndUpdate = async (_filter, update) => {
+    if (stored.draftSeq === update.$set.draftSeq) return null;
+    Object.assign(stored, update.$set);
+    return structuredClone(stored);
+  };
+  Model.collection.findOne = async () => structuredClone(stored);
+  try {
+    const options = { GenerationJobModel: Model, now: new Date('2026-01-01T00:00:00Z') };
+    const auth = { jobId: stored.jobId, fencingToken: 1, leaseOwner: 'worker-a' };
+    const draftReview = { sourceHash: 'draft-hash', receipts: [{ hookId: 'hook-1', quote: 'Evidence' }] };
+    const checkpoint = { ...auth, draftSeq: 1, draft: 'Partial chapter', draftReview };
+    const reviewed = await checkpointGenerationJob(checkpoint, options);
+    assert.deepEqual(stored.draftReview, draftReview);
+    assert.deepEqual(reviewed.draftReview, draftReview);
+    const retry = await checkpointGenerationJob(checkpoint, options);
+    assert.deepEqual(retry.draftReview, draftReview);
+    const committed = await checkpointGenerationJob({ ...auth, draftSeq: 2, draft: '' }, options);
+    assert.equal(stored.draftReview, null);
+    assert.equal(committed.draftReview, null);
   } finally {
     await connection.close();
   }

@@ -1,7 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { buildFallbackChapterPlan, buildChapterContract } = require('../services/storyState');
-const { planningWindow, validateDetailedPlan, ensureDetailedLongFormPlan } = require('../services/longFormPlanning');
+const { constrainChapterPlan, planningWindow, validateDetailedPlan, ensureDetailedLongFormPlan } = require('../services/longFormPlanning');
+const { VERSION, hash } = require('../services/semanticMemory');
 
 function fixture() {
   const novel = {
@@ -24,6 +25,68 @@ function result(numbers) {
     title: `签收疑点${number}`, coreEvent: `刘海柱核对编号${number}的签收单，找到对应责任人并取得口供。`,
   })) }) };
 }
+
+test('a fixed plan fills internal gaps and ends exactly at the requested chapter', () => {
+  const { novel, planData } = fixture();
+  const authored = { chapterNumber: 37, title: '原始账本', coreEvent: '刘海柱读到被隐瞒的交接时间' };
+  const earlyDraft = { chapterNumber: 100, setHooks: ['以后再解答的悬念'], resolveHooks: ['缺页账本'] };
+  planData.chapters = [...planData.chapters.slice(0, 20), authored, { chapterNumber: 101 }, { chapterNumber: 30.5 }, { ...authored }, earlyDraft];
+  const fixed = constrainChapterPlan(novel, planData, 100);
+  assert.deepEqual(fixed.chapters.map(chapter => chapter.chapterNumber), Array.from({ length: 100 }, (_, i) => i + 1));
+  assert.deepEqual(fixed.chapters.slice(0, 20), planData.chapters.slice(0, 20));
+  assert.equal(fixed.chapters[36], authored);
+  assert.equal(fixed.chapters[20].raw, '本地兜底计划');
+  assert.deepEqual(fixed.chapters.at(-1), { chapterNumber: 100, chapterRole: '收束', setHooks: [], resolveHooks: ['缺页账本'] });
+  assert.deepEqual(earlyDraft.setHooks, ['以后再解答的悬念']);
+  const single = constrainChapterPlan({ outline: '旧案解决', chapterWordTarget: 2000 }, { chapters: [] }, 1);
+  assert.equal(single.chapters.length, 1);
+  assert.equal(single.chapters[0].chapterRole, '收束');
+});
+
+test('the last fixed planning window hands remaining hooks and closing scenes to the planner', async () => {
+  const { novel, planData } = fixture();
+  Object.assign(novel, { targetWordCount: 99000, targetChapterCount: 100,
+    foreshadowingLedger: [{ id: 'case', content: '签收页背面的日期', setChapter: 19, targetChapter: 96, status: 'pending' }] });
+  await ensureDetailedLongFormPlan({ novel, planData, chapterNumber: 96, totalChapters: 100,
+    requestPlan: async prompt => {
+      assert.match(prompt, /第86至100章是终局/);
+      assert.match(prompt, /签收页背面的日期（原定第96章）/);
+      assert.match(prompt, /在第100章明确全书结局/);
+      const plan = JSON.parse(result([96, 97, 98, 99, 100]).content);
+      plan.chapters[0].setHooks = ['全新的谜题'];
+      return { content: JSON.stringify(plan) };
+    },
+  });
+  assert.deepEqual(planData.chapters[95].setHooks, []);
+  assert.equal(planData.chapters[99].chapterRole, '收束');
+});
+
+test('an early planning batch preserves confirmed payoff chapters when the planner omits or moves them', async () => {
+  const { novel, planData } = fixture();
+  novel.storyBlueprint.phases = [{ startChapter: 21, endChapter: 25, exitCondition: '仓库签收责任已查清' }];
+  novel.foreshadowingLedger = [
+    { id: 'receipt', content: '签收联上的改签痕迹', setChapter: 19, targetChapter: 22, payoffPlan: '拿原始联对照笔迹', status: 'pending' },
+    { id: 'amended', content: '外包修改过的账目', setChapter: 20, targetChapter: 23, status: 'pending' },
+    { id: 'later', content: '等候查验的货损档案', setChapter: 36, targetChapter: 40, status: 'planned' },
+    { id: 'proposal', content: '模型猜测的丢失印章', setChapter: 20, targetChapter: 24, status: 'planned', setupStatus: 'unconfirmed' },
+  ];
+  const savedEarlier = structuredClone(planData.chapters.slice(0, 20));
+  await ensureDetailedLongFormPlan({ novel, planData, chapterNumber: 21, totalChapters: 180,
+    requestPlan: async prompt => {
+      assert.match(prompt, /签收联上的改签痕迹（原定第22章）：拿原始联对照笔迹/);
+      assert.match(prompt, /外包修改过的账目（原定第23章）/);
+      assert.match(prompt, /离开条件：仓库签收责任已查清/);
+      assert.doesNotMatch(prompt, /等候查验的货损档案|模型猜测的丢失印章/);
+      const plan = JSON.parse(result([21, 22, 23, 24, 25]).content);
+      plan.chapters[0].resolveHooks = ['签收联上的 改签痕迹', '等候查验的货损档案'];
+      return { content: JSON.stringify(plan) };
+    },
+  });
+  assert.deepEqual(planData.chapters.slice(0, 20), savedEarlier);
+  assert.deepEqual(planData.chapters[20].resolveHooks, []);
+  assert.deepEqual(planData.chapters[21].resolveHooks, ['签收联上的改签痕迹']);
+  assert.deepEqual(planData.chapters[22].resolveHooks, ['外包修改过的账目']);
+});
 
 test('detailed plans are requested at exhaustion, not at a fixed written word count', () => {
   const { novel, planData } = fixture();
@@ -119,6 +182,33 @@ test('planning a resumed chapter is constrained by its existing draft', async ()
       return result([21]);
     },
   });
+});
+
+test('rolling refinement receives bounded raw event and handoff evidence from valid recent chapter memory', async () => {
+  const { novel, planData } = fixture();
+  const saved = novel.chapters[18];
+  const recovered = '操作手鞋舌里滑出B-7铁门钥匙。';
+  const custody = '贺兰青将钥匙揣进自己的口袋。';
+  saved.content = `走廊铺着地砖。\n${recovered}\n\n${custody}\n\n${'众人离开走廊。'.repeat(160)}`;
+  saved.memorySummary = { version: VERSION, chapterNumber: 19, sourceHash: hash(saved.content), summary: '交接',
+    events: [{ text: '正文里没有的供词。', evidence: '正文里没有的证词。' }, { text: '发现钥匙', evidence: recovered }] };
+  const edited = novel.chapters[19];
+  const stale = '作废的旧记录表明钥匙已经归还。';
+  edited.content = `${stale}\n${'开庭前屋里很安静。'.repeat(120)}`;
+  edited.memorySummary = { version: VERSION, chapterNumber: 20, sourceHash: hash('编辑前正文'), summary: '过期的交接',
+    events: [{ text: '过期的交接', evidence: stale }] };
+  let calls = 0;
+  await ensureDetailedLongFormPlan({ novel, planData, chapterNumber: 21, totalChapters: 21,
+    requestPlan: async prompt => {
+      calls++;
+      const section = prompt.split('【已完成章节的关键动作原文】\n')[1].split('【阶段记忆】')[0];
+      assert.ok(section.includes(`${recovered}\n\n${custody}`));
+      assert.doesNotMatch(section, /作废的旧记录|正文里没有/);
+      assert.ok(section.length <= 420);
+      return result([21]);
+    },
+  });
+  assert.equal(calls, 1);
 });
 
 test('approved concrete cards are reused without spending a planning call or rewriting the blueprint', async () => {

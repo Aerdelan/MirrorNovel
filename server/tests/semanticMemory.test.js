@@ -16,6 +16,7 @@ test('single-chapter continuation without a semantic cache retains the saved end
   assert.match(prompt, /章末唯一事实：林舟已经离开邮局，把铜钥匙交给了苏晚/);
   assert.match(prompt, /已保存正文摘录/);
   assert.doesNotMatch(prompt, /过期记忆不应注入/);
+  assert.doesNotMatch(prompt, /标注【未完待续】/);
 });
 
 function novel(count = 6) {
@@ -101,8 +102,99 @@ test('a fake evidence quote is rejected twice and cannot replace the previous su
     facts: [{ text: '证人已经死亡', evidence: '书中从未出现的死亡现场' }],
   })) }), error => error.code === 'SEMANTIC_MEMORY_REQUIRED');
   assert.equal(calls.length, 2);
+  assert.doesNotMatch(calls[1].prompt, /原文证据编号表/);
   assert.deepEqual(book.chapters[0].memorySummary, before);
   assert.equal(book.contextMemory.checkpointSummary, '旧记忆');
+});
+
+test('a deferred chapter retries after more chapters are saved without blocking later summaries or skipping a stage gap', async () => {
+  const book = novel(6);
+  const earlierCheckpoint = structuredClone(book.contextMemory);
+  const calls = [];
+  const progress = [];
+  let failFirst = true;
+  const request = model(calls, (task, prompt) => {
+    if (failFirst && task === 'chapter_memory' && prompt.includes('【章节号】1【')) {
+      return chapterResponse(prompt, { events: [{ text: '未经证实的行动', evidence: '这段证据从未出现在小说中' }] });
+    }
+  });
+  const ensure = () => ensureSemanticMemory({ novel: book, request, retryInvalidAfterChapters: 6, onProgress: event => progress.push(event) });
+
+  await ensure();
+  assert.equal(calls.length, 7);
+  assert.match(calls[1].prompt, /1–3 条关键已发生事件/);
+  assert.match(progress.find(event => event.includes('待补齐')), /记忆证据不在本段正文中/);
+  assert.deepEqual(book.contextMemory, earlierCheckpoint);
+  assert.equal(validChapterMemory(book.chapters[0]), null);
+  assert.ok(book.chapters.slice(1).every(validChapterMemory));
+  assert.deepEqual(book.chapters[0].memorySummary.validationRetry, { sourceHash: hash(book.chapters[0].content), afterChapter: 12 });
+  assert.deepEqual(buildSemanticContext({ chapters: book.chapters, contextMemory: book.contextMemory }).pendingChapterNumbers, [1]);
+
+  // Simulate reloading the book from storage before new chapters arrive.
+  book.chapters = structuredClone(book.chapters);
+  failFirst = false;
+  book.chapters.push(...novel(11).chapters.slice(6));
+  calls.length = 0;
+  await ensure();
+  assert.equal(calls.length, 5);
+  assert.ok(calls.every(call => call.task === 'chapter_memory' && !call.prompt.includes('【章节号】1【')));
+  assert.deepEqual(book.contextMemory, earlierCheckpoint);
+
+  book.chapters.push(novel(12).chapters[11]);
+  calls.length = 0;
+  await ensure();
+  assert.deepEqual(calls.map(call => call.task), ['chapter_memory', 'chapter_memory', 'stage_memory', 'stage_memory']);
+  assert.equal(book.contextMemory.checkpointChapter, 12);
+  assert.ok(validChapterMemory(book.chapters[0]));
+  assert.equal(book.chapters[0].memorySummary.validationRetry, undefined);
+});
+
+test('chapter memory cooldown propagates cancellation and save errors', async () => {
+  const book = novel(1);
+  const cancel = Object.assign(new Error('cancelled'), { name: 'AbortError' });
+  const saveError = new Error('unable to save validation retry');
+  const run = (request, persist) => ensureSemanticMemory({ novel: book, request, persist, retryInvalidAfterChapters: 6 });
+  await assert.rejects(run(async () => { throw cancel; }), error => error === cancel);
+  assert.equal(book.chapters[0].memorySummary, undefined);
+  await assert.rejects(run(async () => ({ content: '{}' }), async () => { throw saveError; }), error => error === saveError);
+});
+
+test('long-book chapter retries can select numbered verbatim evidence; out-of-range IDs are rejected', async (t) => {
+  for (const validSelection of [true, false]) {
+    await t.test(validSelection ? 'expands a valid selection alongside verbatim evidence' : 'defers after an invalid selection', async () => {
+      const book = novel(1);
+      const source = book.chapters[0].content + Array.from({ length: 45 }, (_, index) => `林舟检查了第${index + 1}间档案室。`).join('');
+      book.chapters[0].content = source;
+      const calls = [];
+      const progress = [];
+      let selected;
+      await ensureSemanticMemory({ novel: book, retryInvalidAfterChapters: 6, onProgress: event => progress.push(event),
+        request: model(calls, (_task, prompt) => {
+          const table = prompt.split('【原文证据编号表】\n')[1];
+          if (!table) return chapterResponse(prompt, { events: [{ text: '错误证据', evidence: '书中不存在的内容' }] });
+          const snippets = JSON.parse(table);
+          assert.equal(snippets.length, 24);
+          assert.ok(snippets.every((snippet, index) => snippet.evidenceId === index + 1 && source.includes(snippet.text)));
+          assert.match(snippets.at(-1).text, /第45间档案室/);
+          selected = snippets.at(-1);
+          return chapterResponse(prompt, { events: [
+            { text: '林舟检查了档案室', evidenceId: validSelection ? selected.evidenceId : selected.evidenceId + 1 },
+            { text: '林舟拿到铜钥匙', evidence: snippets[0].text },
+          ] });
+        }),
+      });
+      assert.equal(calls.length, 2);
+      const memory = validChapterMemory(book.chapters[0]);
+      if (validSelection) {
+        assert.equal(memory.events[0].evidence, selected.text);
+        assert.match(memory.events[1].evidence, /铜钥匙/);
+        assert.equal(memory.events[0].evidenceId, undefined);
+      } else {
+        assert.equal(memory, null);
+        assert.match(progress.at(-1), /正文证据编号无效/);
+      }
+    });
+  }
 });
 
 test('a single markdown JSON wrapper and omitted optional records do not block valid chapter memory', async () => {

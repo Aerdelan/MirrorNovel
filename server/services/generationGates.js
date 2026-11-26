@@ -16,7 +16,7 @@
  */
 
 const { qualityScore } = require('./chapterToolchain');
-const { openStoryHooks } = require('./storyState');
+const { openStoryHooks, unconfirmedStoryHooks } = require('./storyState');
 
 const DEFAULT_EXPERT_GATE_THRESHOLD = 70;
 // 低于此长度的章节本身审稿成本很低，且短章更容易存在结构问题，不做门控。
@@ -93,8 +93,14 @@ function shouldAuditChapterHooks({ novel, contract, content } = {}) {
   try {
     if (!hookAuditGateEnabled()) return { audit: true, reason: '门控已关闭' };
 
-    const pending = openStoryHooks(novel?.foreshadowingLedger, Number(contract?.chapterNumber) || 0);
-    if (pending.length) return { audit: true, reason: `存在 ${pending.length} 条待回收伏笔` };
+    const chapterNumber = Number(contract?.chapterNumber) || 0;
+    const ledger = novel?.foreshadowingLedger;
+    const currentProposals = unconfirmedStoryHooks(ledger, chapterNumber);
+    if (currentProposals.length) return { audit: true, reason: `本章有 ${currentProposals.length} 条候选伏笔需要正文证据` };
+
+    const pending = openStoryHooks(ledger, chapterNumber);
+    const reviewable = pending.filter(hook => !hook.payoffPlan || Number(hook.targetChapter) <= Number(contract?.chapterNumber));
+    if (reviewable.length) return { audit: true, reason: `存在 ${reviewable.length} 条待回收伏笔` };
 
     if ((contract?.resolveHooks || []).length) return { audit: true, reason: '本章契约要求回收伏笔' };
 

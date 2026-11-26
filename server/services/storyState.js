@@ -4,6 +4,13 @@
  */
 
 const { TONES, ELEMENTS, CHARACTERS, CP_RELATIONS, CATEGORY_TREE } = require('../config/novelTypeSku');
+const { readOutlineForeshadowing } = require('./outlineForeshadowing');
+const { readOutlineCharacterVoices, stripOutlineCharacterVoices } = require('./outlineCharacterVoices');
+const { getFixedChapterCount } = require('./bookChapterCount');
+const { hash } = require('./semanticMemory');
+const { findRepeatedEndingScene, findEndingContinuityConflict } = require('./endingGuard');
+
+const MODEL_ROLLING_PLAN = '模型分批细化计划';
 
 function toArray(value) {
   return Array.isArray(value) ? value : [];
@@ -31,6 +38,7 @@ function normalizePlanChapter(chapter) {
     title: normalizeChapterTitle(chapter.title || chapter.chapterTitle || chapter.shortTitle || ''),
     coreEvent: String(chapter.coreEvent || chapter.event || chapter.theme || '').trim(),
     setHooks: splitItems(chapter.setHooks || chapter.foreshadowing || chapter.plantHooks),
+    ...(Array.isArray(chapter.modelHookProposals) ? { modelHookProposals: splitItems(chapter.modelHookProposals) } : {}),
     resolveHooks: splitItems(chapter.resolveHooks || chapter.revealHooks || chapter.collectHooks),
     characters: splitItems(chapter.characters || chapter.keyCharacters),
     chapterRole: String(chapter.chapterRole || '').trim(),
@@ -189,8 +197,11 @@ function buildFallbackChapterPlan(novel, options = {}) {
   const startChapter = Math.max(1, Number(options.startChapter || 1));
   // 每章字数随作品设定（用户在生成页选择的每章字数，福尔摩斯式大章可到 1 万+）。
   const chapterWords = Math.max(1200, Math.min(20000, Number(options.chapterWordTarget || novel?.chapterWordTarget || 3000)));
-  const totalChapters = Math.max(startChapter, Math.ceil(targetWords / chapterWords));
-  const outline = String(novel?.outline || '').replace(/\s+/g, ' ').trim();
+  const requestedTotal = Number(options.totalChapters);
+  const totalChapters = Number.isSafeInteger(requestedTotal) && requestedTotal > 0
+    ? requestedTotal
+    : Math.max(startChapter, Math.ceil(targetWords / chapterWords));
+  const outline = stripOutlineCharacterVoices(String(novel?.outline || '')).replace(/\s+/g, ' ').trim();
   const phases = [
     { until: 0.18, name: '开端', goal: '建立人物处境、核心目标与第一个明确阻力' },
     { until: 0.48, name: '发展', goal: '沿主线调查、行动或关系推进，逐步扩大代价' },
@@ -225,7 +236,7 @@ function buildFallbackChapterPlan(novel, options = {}) {
       chapterRole: finalChapter ? '收束' : (breathing ? '喘息推进' : '主线推进'),
       tension: finalChapter ? 8 : (breathing ? 4 : (ratio > 0.72 ? 8 : 6)),
       tagCommitments: fallbackTags,
-      characterBeat: blueprint.characterBeats.join('；') || '沿用人物声音表：不同角色必须保留各自目标、盲点、句式、礼貌程度与失控反应',
+      characterBeat: blueprint.characterBeats.map(renderCharacterBeat).filter(Boolean).join('；') || '沿用人物声音表：不同角色必须保留各自目标、盲点、句式、礼貌程度与失控反应',
       requiredScenes: blueprint.requiredScenes,
       forbiddenDrift: uniqueDriftRules([
         ...blueprint.forbiddenDrift,
@@ -293,12 +304,12 @@ function normalizeCharacterProfile(raw) {
     fears: list(raw.fears || raw.shame || raw.avoidances, 8),
     values: list(raw.values || raw.valueOrder || raw.principles, 8),
     biases: list(raw.biases || raw.cognitiveBiases, 8),
-    conflictStyle: shortText(raw.conflictStyle || raw.conflictResponse, 240),
+    conflictStyle: shortText(raw.conflictStyle || raw.conflictResponse || raw.conflict, 240),
     stressResponse: shortText(raw.stressResponse || raw.stress, 240),
     publicPersona: shortText(raw.publicPersona || raw.publicFace, 240),
     privatePersona: shortText(raw.privatePersona || raw.privateFace, 240),
-    voiceRules: list(raw.voiceRules || raw.voice || raw.speechPattern, 10),
-    arcMilestones: list(raw.arcMilestones || raw.arc || raw.beats, 10),
+    voiceRules: list(raw.voiceRules || raw.voice || raw.speechPattern || (raw.voiceGuard ? [raw.voiceGuard] : []), 10),
+    arcMilestones: list(raw.arcMilestones || raw.arc || raw.beats || (raw.change ? [raw.change] : []), 10),
     currentGoal: shortText(raw.currentGoal || raw.goal, 240),
     relationships: list(raw.relationships, 12),
     knownFacts: list(raw.knownFacts, 12),
@@ -306,27 +317,24 @@ function normalizeCharacterProfile(raw) {
   };
 }
 
-function parseCharacterBeatText(value) {
+// A free-text writing direction belongs in the prompt, not in the cast list.
+function parsePlanCharacterBeats(value) {
   const text = String(value || '').trim();
-  if (!text) return null;
-  const match = text.match(/^([^\[：:]+)(?:\[([^\]]+)\])?/);
-  if (!match) return normalizeCharacterProfile({ name: text });
-  const fields = {};
-  for (const part of String(match[2] || '').split(/[；;]/)) {
-    const [key, ...rest] = part.split(/[=＝:：]/);
-    const valuePart = rest.join(':').trim();
-    if (!valuePart) continue;
-    if (/目标/.test(key)) fields.goal = valuePart;
-    else if (/冲突/.test(key)) fields.conflictStyle = valuePart;
-    else if (/变化/.test(key)) fields.arcMilestones = [valuePart];
-    else if (/声线|语言|说话/.test(key)) fields.voiceRules = [valuePart];
-  }
-  return normalizeCharacterProfile({ name: match[1].trim(), ...fields });
+  const fieldNames = { 目标: 'goal', 冲突: 'conflict', 变化: 'change', 声线: 'voiceGuard', 语言: 'voiceGuard', 说话: 'voiceGuard' };
+  return [...text.matchAll(/(?:^|[；;\r\n])\s*([^\[\]；;：:=\r\n]+)\[([^\]]+)\]/g)].flatMap(([, name, detail]) => {
+    const fields = [...detail.matchAll(/(?:^|[；;，,])\s*(目标|冲突|变化|声线|语言|说话)\s*[=＝:：]\s*/g)];
+    if (!fields.length) return [];
+    const beat = { character: name.trim() };
+    fields.forEach((field, index) => {
+      beat[fieldNames[field[1]]] = detail.slice(field.index + field[0].length, fields[index + 1]?.index).trim();
+    });
+    return [normalizeCharacterBeat(beat)];
+  });
 }
 
 function upsertCharacterProfile(novel, raw, chapterNumber = 0) {
   ensureCreativeState(novel);
-  const profile = normalizeCharacterProfile(typeof raw === 'string' ? parseCharacterBeatText(raw) : raw);
+  const profile = normalizeCharacterProfile(typeof raw === 'string' ? parsePlanCharacterBeats(raw)[0] : raw);
   if (!profile.name) return null;
   let bible = novel.characterBible.find((item) => String(item?.name || '') === profile.name);
   if (!bible) {
@@ -361,12 +369,27 @@ function upsertCharacterProfile(novel, raw, chapterNumber = 0) {
   return bible;
 }
 
+function voiceRulesForPrompt(voiceRules) {
+  return voiceRules.flatMap(rule => {
+    const label = /^([^：:]+)[：:]/.exec(rule)?.[1];
+    if (!label || /称呼/.test(label)) return [rule];
+    if (/^(?:常用)?词汇(?:范围)?$/.test(label)) return [];
+    // Retain the speaking habit around example quotes. Reusing the example
+    // itself in every prompt can turn it into a recurring catchphrase.
+    const description = rule.replace(/"[^"\r\n]*"|“[^”\r\n]*”|「[^」\r\n]*」/g, '')
+      .replace(/[（(]\s*[）)]/g, '').replace(/([，、；])[，、；]+/g, '$1');
+    const value = description.slice(label.length + 1);
+    return /[\p{L}\p{N}]/u.test(value) ? [description] : [];
+  }).slice(0, 6);
+}
+
 function buildCharacterContinuity(novel, names = []) {
   ensureCreativeState(novel);
   const wanted = uniqueText(names, 12);
   return wanted.map((name) => {
     const bible = novel.characterBible.find((item) => String(item?.name || '') === name) || {};
     const state = novel.characterStates.find((item) => String(item?.name || '') === name) || {};
+    const voice = voiceRulesForPrompt(toArray(bible.voiceRules).length ? bible.voiceRules : toArray(state.voiceRules));
     const pieces = [
       bible.background ? `经历=${bible.background}` : (state.background ? `经历=${state.background}` : ''),
       bible.currentGoal || state.goal ? `当前目标=${bible.currentGoal || state.goal}` : '',
@@ -374,7 +397,7 @@ function buildCharacterContinuity(novel, names = []) {
       (bible.unknownFacts || state.unknownFacts || []).length ? `明确不知道=${(bible.unknownFacts || state.unknownFacts).join('、')}` : '',
       bible.conflictStyle ? `冲突方式=${bible.conflictStyle}` : '',
       bible.stressResponse || state.stressResponse ? `压力反应=${bible.stressResponse || state.stressResponse}` : '',
-      (bible.voiceRules || state.voiceRules || []).length ? `声线=${(bible.voiceRules || state.voiceRules).join('、')}` : '',
+      voice.length ? `说话方式=${voice.join('；')}` : '',
       state.location ? `上一章位置=${state.location}` : '',
       state.emotionalState ? `上一章情绪=${state.emotionalState}` : '',
     ].filter(Boolean);
@@ -458,9 +481,13 @@ function auditChapterForCommit(content, contract) {
 
 function initializeCreativeState(novel) {
   ensureCreativeState(novel);
-  if (!novel.storyBible.theme) novel.storyBible.theme = String(novel.outline || '').slice(0, 160);
+  if (!novel.storyBible.theme) novel.storyBible.theme = stripOutlineCharacterVoices(String(novel.outline || '')).trim().slice(0, 160);
   if (!novel.storyBible.tone) novel.storyBible.tone = novel.novelTypeName || '由故事场景自然决定';
   if (!novel.storyBible.narrativeView) novel.storyBible.narrativeView = '与主角贴近的有限视角';
+  for (const voice of readOutlineCharacterVoices(novel.outline)) {
+    const profile = upsertCharacterProfile(novel, voice);
+    profile.voiceRules = [...new Set([...voice.voiceRules, ...profile.voiceRules])].slice(0, 16);
+  }
   // 迁移旧作品的浅层 characterStates，逐步形成可持续的人物圣经。
   for (const state of novel.characterStates) {
     if (!state?.name) continue;
@@ -741,13 +768,12 @@ function ensureRollingPlanCoverage(novel, currentChapter = 1, totalChapters, cha
     if (current) { cards.push(current); continue; }
     const requirements = collectBlueprintChapterRequirements(novel, chapterNumber);
     const planChapter = planByNumber.get(chapterNumber) || {};
-    const characters = requirements.characterBeats.map((item) => parseCharacterBeatText(item)).filter(Boolean);
     cards.push(normalizeRollingChapter({
       chapterNumber,
       title: planChapter.title || (requirements.stageTitle ? `${requirements.stageTitle}·第${chapterNumber}章` : `第${chapterNumber}章执行卡`),
       purpose: planChapter.coreEvent || requirements.purpose || requirements.stageGoal || '承接上一章结果并造成可验证的状态变化',
       tagCommitments: uniqueText([...requirements.tagCommitments, ...toArray(planChapter.tagCommitments)], 8),
-      characterBeats: characters,
+      characterBeats: requirements.characterBeats,
       requiredScenes: uniqueText([...requirements.requiredScenes, ...toArray(planChapter.requiredScenes)], 8),
       relationshipChange: planChapter.relationshipBeat || requirements.relationshipChange,
       foreshadowingActions: uniqueText([
@@ -809,6 +835,7 @@ function validateStoryBlueprint(blueprint, totalChapters, options = {}) {
     for (const [field, name] of [['tagCommitments', '标签兑现'], ['characterBeats', '人物推进'], ['requiredScenes', '必备场景'], ['forbiddenDrift', '禁止漂移'], ['foreshadowing', '伏笔计划'], ['unresolvedQuestions', '未决问题'], ['subphases', '篇章级小阶段']]) {
       if (prose && field !== 'subphases') continue;
       if (field === 'tagCommitments' && !tagsRequired) continue;
+      if (field === 'unresolvedQuestions' && index === phases.length - 1 && Number(phase.endChapter) === total) continue;
       if (!Array.isArray(phase[field]) || !phase[field].length) errors.push(`${label}缺少${name}`);
     }
     if (!prose && !phase.entryCondition) errors.push(`${label}缺少进入条件`);
@@ -825,7 +852,7 @@ function validateStoryBlueprint(blueprint, totalChapters, options = {}) {
       if (!subphase.requiredScenes?.length) errors.push(`${subLabel}缺少必备场景`);
       if (!subphase.forbiddenDrift?.length) errors.push(`${subLabel}缺少禁止漂移`);
       if (!subphase.foreshadowing?.length) errors.push(`${subLabel}缺少伏笔计划`);
-      if (!subphase.unresolvedQuestions?.length) errors.push(`${subLabel}缺少未决问题`);
+      if (Number(subphase.endChapter) !== total && !subphase.unresolvedQuestions?.length) errors.push(`${subLabel}缺少未决问题`);
       if (!subphase.entryCondition || !subphase.exitCondition) errors.push(`${subLabel}缺少进入/离开条件`);
     });
   });
@@ -870,7 +897,10 @@ function ensureStoryBlueprint(novel, totalChapters) {
   const total = Math.max(1, Number(totalChapters || Math.ceil(Number(novel.targetWordCount || 50000) / 3000)));
   blueprint.blueprintLevel = 3;
   if (!blueprint.version) blueprint.version = 1;
-  if (!blueprint.mainArc) blueprint.mainArc = String(novel.outline || novel.storyBible.theme || '按既定主线推进').slice(0, 1200);
+  if (!blueprint.mainArc) {
+    const outline = stripOutlineCharacterVoices(String(novel.outline || '')).trim();
+    blueprint.mainArc = String(outline || novel.storyBible.theme || '按既定主线推进').slice(0, 1200);
+  }
   if (!Array.isArray(blueprint.lockedFacts)) blueprint.lockedFacts = [];
   if (!Array.isArray(blueprint.tagChecklist)) blueprint.tagChecklist = [];
   if (!blueprint.lockedFacts.length) {
@@ -920,6 +950,7 @@ function normalizeProposedBlueprint(rawBlueprint, novel, totalChapters) {
     blueprintLevel: 3,
     version: Number(current.version || 1) + 1,
     mainArc: String(rawBlueprint.mainArc || current.mainArc || '').trim().slice(0, 1200),
+    outlineForeshadowingImported: Boolean(rawBlueprint.outlineForeshadowingImported || current.outlineForeshadowingImported),
     lockedFacts,
     tagChecklist: textList(rawBlueprint.tagChecklist?.length ? rawBlueprint.tagChecklist : current.tagChecklist, 24),
     phases: phases.length ? phases : current.phases,
@@ -928,6 +959,27 @@ function normalizeProposedBlueprint(rawBlueprint, novel, totalChapters) {
     emailReminderEnabled: current.emailReminderEnabled !== false,
     lastReviewedChapter: Number(current.lastReviewedChapter || 0),
   };
+}
+
+function importOutlineForeshadowing(blueprint, outline, totalChapters) {
+  if (blueprint.outlineForeshadowingImported || !String(outline || '').trim()) return false;
+  const phases = toArray(blueprint.phases);
+  const stages = phases.flatMap(phase => [phase, ...toArray(phase.subphases)]);
+  for (const hook of readOutlineForeshadowing(outline, totalChapters)) {
+    const key = hookContentKey(hook.name);
+    const phase = phases.find(item => hook.setupChapter >= Number(item.startChapter) && hook.setupChapter <= Number(item.endChapter));
+    if (!phase) continue;
+    for (const stage of stages) {
+      if (!Array.isArray(stage.foreshadowing)) continue;
+      stage.foreshadowing = stage.foreshadowing.filter(item => {
+        const { name, setupChapter } = normalizeForeshadowing(item);
+        return hookContentKey(name) !== key || (setupChapter > 0 && setupChapter !== hook.setupChapter);
+      });
+    }
+    phase.foreshadowing = [...toArray(phase.foreshadowing), normalizeForeshadowing(hook)];
+  }
+  blueprint.outlineForeshadowingImported = true;
+  return true;
 }
 
 function applyStoryBlueprint(novel, rawBlueprint, totalChapters) {
@@ -959,6 +1011,7 @@ function applyStoryBlueprint(novel, rawBlueprint, totalChapters) {
 function renderStoryBlueprintForContext(novel, chapterNumber, totalChapters) {
   const blueprint = ensureStoryBlueprint(novel, totalChapters);
   const chapter = Math.max(1, Number(chapterNumber || 1));
+  const closing = chapter === Number(totalChapters);
   const relevantPhases = blueprint.phases
     .filter((phase) => Number(phase.endChapter || 0) >= chapter)
     .slice(0, 2);
@@ -975,7 +1028,7 @@ function renderStoryBlueprintForContext(novel, chapterNumber, totalChapters) {
     phase.requiredScenes?.length ? `必备场景：${phase.requiredScenes.join('、')}` : '',
     phase.forbiddenDrift?.length ? `禁止漂移：${phase.forbiddenDrift.join('、')}` : '',
     phase.foreshadowing?.length ? `伏笔：${phase.foreshadowing.map((item) => `${item.name || '未命名'}(埋设${item.setupChapter || '?'}→回收${item.payoffChapter || '?'})`).join('、')}` : '',
-    phase.unresolvedQuestions?.length ? `阶段后保留问题：${phase.unresolvedQuestions.join('、')}` : '',
+    !closing && phase.unresolvedQuestions?.length ? `阶段后保留问题：${phase.unresolvedQuestions.join('、')}` : '',
     phase.threads?.length ? `关联线：${phase.threads.join('、')}` : '',
   ].filter(Boolean).join('；');
   const phaseText = relevantPhases.map((phase) => {
@@ -984,12 +1037,15 @@ function renderStoryBlueprintForContext(novel, chapterNumber, totalChapters) {
   }).join('\n');
   const rolling = blueprint.rollingPlan || {};
   const rollingChapter = toArray(rolling.chapters).find((item) => Number(item.chapterNumber) === chapter);
+  const chapterCard = closing && rollingChapter
+    ? { ...normalizeRollingChapter(rollingChapter, chapter), exitHook: '给出本书既有冲突的后果和最终局面，避免新增需要后续章节解释的问题' }
+    : rollingChapter;
   const rollingText = chapter >= Number(rolling.startChapter || 0) && chapter <= Number(rolling.endChapter || 0)
     ? [
       `滚动执行窗口：第${rolling.startChapter}-${rolling.endChapter}章；目标：${rolling.objective || '落实当前小阶段'}`,
       rolling.tagCommitments?.length ? `窗口标签：${rolling.tagCommitments.join('、')}` : '',
       rolling.forbiddenDrift?.length ? `窗口禁止漂移：${rolling.forbiddenDrift.join('、')}` : '',
-      rollingChapter ? `本章执行卡：${JSON.stringify(rollingChapter)}` : '',
+      chapterCard ? `本章执行卡：${JSON.stringify(chapterCard)}` : '',
     ].filter(Boolean).join('\n')
     : '';
   return [
@@ -1041,6 +1097,16 @@ function skuSignalText(novel) {
 
 function uniqueText(items, limit = 24) {
   return Array.from(new Set(toArray(items).flatMap((item) => splitItems(item)).map((item) => String(item || '').trim()).filter(Boolean))).slice(0, limit);
+}
+
+function uniqueHookText(items) {
+  const labels = new Map();
+  for (const item of items) {
+    const label = String(item || '').trim();
+    const key = hookContentKey(label);
+    if (key && !labels.has(key)) labels.set(key, label);
+  }
+  return [...labels.values()];
 }
 
 /** Exact selected SKU tags, split into always-on identity and rotating plot/persona commitments. */
@@ -1105,6 +1171,7 @@ function collectBlueprintChapterRequirements(novel, chapterNumber) {
   };
   const stage = subphase || phase || null;
   return {
+    phase,
     // tagChecklist is a book-level commitment and must remain visible even
     // when the active stage forgot to repeat a tag.
     planText: [...new Set([phase?.planText, subphase?.planText, rollingChapter?.planText].filter(Boolean))].join('\n\n'),
@@ -1112,7 +1179,7 @@ function collectBlueprintChapterRequirements(novel, chapterNumber) {
       ...toArray(blueprint.tagChecklist),
       ...stages.flatMap((item) => toArray(item.tagCommitments)),
     ], 24),
-    characterBeats: uniqueText(stages.flatMap((item) => toArray(item.characterBeats).map(renderCharacterBeat)), 20),
+    characterBeats: mergeCharacterBeats(stages.flatMap((item) => toArray(item.characterBeats)), 20),
     requiredScenes: uniqueText(stages.flatMap((item) => toArray(item.requiredScenes)), 16),
     forbiddenDrift: uniqueDriftRules(stages.flatMap((item) => toArray(item.forbiddenDrift)), 16),
     stageTitle: String(stage?.title || '').trim(),
@@ -1128,6 +1195,7 @@ function collectBlueprintChapterRequirements(novel, chapterNumber) {
     ], 20),
     unresolvedQuestions: uniqueText(stages.flatMap((item) => toArray(item.unresolvedQuestions)), 16),
     purpose: String(rollingChapter?.purpose || '').trim(),
+    chapterPlanText: String(rollingChapter?.planText || '').trim(),
     chapterTitle: normalizeChapterTitle(rollingChapter?.title),
     relationshipChange: String(rollingChapter?.relationshipChange || '').trim(),
     exitHook: String(rollingChapter?.exitHook || '').trim(),
@@ -1225,31 +1293,74 @@ function getChapterOutputTokenLimit(wordTarget) {
 function openStoryHooks(ledger, throughChapter) {
   return toArray(ledger).filter(hook => {
     if (!hook) return false;
+    if (hook.setupStatus === 'unconfirmed') return false;
     if (['resolved', 'paid_off', 'abandoned'].includes(hook.status) || hook.stage === 'paid_off') return false;
     return hook.status !== 'planned' || Number(hook.setChapter || 0) < throughChapter;
   });
 }
 
+function unconfirmedStoryHooks(ledger, chapterNumber) {
+  return toArray(ledger).filter(hook => hook?.setupStatus === 'unconfirmed'
+    && Number(hook.setChapter) === Number(chapterNumber)
+    && !['resolved', 'paid_off', 'abandoned'].includes(hook.status) && hook.stage !== 'paid_off');
+}
+
+function getClosingWindowStart(totalChapters) {
+  const total = Math.max(1, Number(totalChapters) || 1);
+  return Math.max(1, total - Math.min(20, Math.ceil(total * 0.15)) + 1);
+}
+
+function endingReopenExcerpt(content) {
+  const text = String(content || '');
+  const marker = /(?:^|\n)\s*[【（(「“]?未完待续[】）)」”。…]*\s*(?=\n|$)/m.exec(text);
+  if (marker) return marker[0].trim();
+  const suspense = /[^。！？!?\r\n]{0,24}这场[^。！？!?\r\n]{0,24}(?:危机|博弈|冲突|争斗|战斗|战争)[^。！？!?\r\n]{0,15}才刚(?:刚)?(?:开始|进入最危险的阶段)[^。！？!?\r\n]{0,18}[。！？!?]?/g;
+  for (const match of text.matchAll(suspense)) {
+    if (!/(?:回想|回忆|当时|那时|曾经|过去|旧档案)/.test(match[0])) return match[0].trim();
+  }
+  return '';
+}
+
 /** Return the concrete blockers that prevent a planned long-form work ending. */
-function assessStoryCompletion(novel, planData, targetWords) {
+function assessStoryCompletion(novel, planData, targetWords, options = {}) {
   const plan = planData && planData.chapters ? planData : parseChapterPlan(planData || novel.chapterPlan || '');
-  const plannedNumbers = plan.chapters.map((chapter) => Number(chapter.chapterNumber)).filter(Boolean);
-  const writtenNumbers = new Set(toArray(novel.chapters).map((chapter) => Number(chapter.chapterNumber)).filter(Boolean));
+  const fixedCount = Number(options.fixedChapterCount || 0);
+  const fixed = Number.isSafeInteger(fixedCount) && fixedCount > 0;
+  const plannedNumbers = fixed ? Array.from({ length: fixedCount }, (_, index) => index + 1)
+    : plan.chapters.map((chapter) => Number(chapter.chapterNumber)).filter(Boolean);
+  const chapters = toArray(novel.chapters);
+  const writtenNumbers = new Set();
+  const unexpectedChapters = new Set();
+  for (const chapter of chapters) {
+    const number = Number(chapter.chapterNumber);
+    if (fixed && (number < 1 || number > fixedCount || !Number.isInteger(number) || writtenNumbers.has(number))) {
+      unexpectedChapters.add(number);
+    }
+    writtenNumbers.add(number);
+  }
   const missingChapters = plannedNumbers.filter((number) => !writtenNumbers.has(number));
-  const finalPlannedChapter = plannedNumbers.length ? Math.max(...plannedNumbers) : 0;
-  const unresolvedHooks = openStoryHooks(novel.foreshadowingLedger, finalPlannedChapter)
+  const finalPlannedChapter = fixed ? fixedCount : plannedNumbers.reduce((max, number) => Math.max(max, number), 0);
+  const unresolvedHooks = openStoryHooks(novel.foreshadowingLedger, finalPlannedChapter + (fixed ? 1 : 0))
     .map((hook) => String(hook.content || hook.id || '未命名伏笔'));
-  const currentWords = toArray(novel.chapters).reduce((sum, chapter) => sum + Number(chapter.wordCount || 0), 0);
+  const finalChapter = chapters.find(chapter => Number(chapter.chapterNumber) === finalPlannedChapter);
+  const endingVerified = !endingReopenExcerpt(finalChapter?.content)
+    && Boolean(matchStoryEndingEvidence(finalChapter?.content, finalChapter?.qualityReport?.endingVerification))
+    && (!options.requireEndingVerification || (!findRepeatedEndingScene(finalChapter.content)
+      && !findEndingContinuityConflict(finalChapter.content, chapters.filter(chapter => Number(chapter.chapterNumber) < finalPlannedChapter))));
+  const currentWords = chapters.reduce((sum, chapter) => sum + Number(chapter.wordCount || 0), 0);
   const wordTarget = Math.max(1, Number(targetWords || novel.targetWordCount || 50000));
   const wordTargetReached = currentWords >= wordTarget;
 
   return {
-    complete: Boolean(plannedNumbers.length) && missingChapters.length === 0 && wordTargetReached && unresolvedHooks.length === 0,
+    complete: Boolean(plannedNumbers.length) && missingChapters.length === 0 && unexpectedChapters.size === 0
+      && (fixed || wordTargetReached) && unresolvedHooks.length === 0 && (!options.requireEndingVerification || endingVerified),
     currentWords,
     wordTarget,
     wordTargetReached,
     missingChapters,
+    unexpectedChapters: [...unexpectedChapters],
     unresolvedHooks,
+    endingVerified,
   };
 }
 
@@ -1329,6 +1440,25 @@ function collectRecentEndings(novel, count = 3) {
     .filter((item) => item.ending.length >= 20);
 }
 
+function selectPayoffSuggestions({ novel, openHooks, chapterNumber, remainingChapters, nearEnding, dueNow, context }) {
+  const saved = new Set(toArray(novel.chapters).map(chapter => Number(chapter.chapterNumber)));
+  const candidates = openHooks.filter(hook => {
+    const target = Number(hook.targetChapter || 0);
+    if (target) return target < chapterNumber || (nearEnding && !hook.payoffPlan
+      && target === chapterNumber + remainingChapters - 1);
+    if (nearEnding) return Number(hook.setChapter || 0) < chapterNumber;
+    const setup = Number(hook.setChapter);
+    return setup >= 1 && setup <= chapterNumber - 3 && saved.has(setup)
+      && Boolean(hook.setupEvidence || hook.setupStatus === 'confirmed');
+  }).map(hook => ({ hook, match: hookMatchScore(hook.content, context) }));
+  const cap = nearEnding ? 4 : 2;
+  const count = Math.max(0, Math.min(cap, Math.ceil(candidates.length / Math.max(1, remainingChapters - 1))) - dueNow.length);
+  return candidates.sort((a, b) => b.match - a.match
+    || Number(b.hook.stage === 'reinforced') - Number(a.hook.stage === 'reinforced')
+    || Number(a.hook.setChapter || 0) - Number(b.hook.setChapter || 0))
+    .slice(0, count).map(({ hook }) => hook);
+}
+
 function buildChapterContract(options) {
   options = options || {};
   const novel = initializeCreativeState(options.novel || {});
@@ -1339,12 +1469,20 @@ function buildChapterContract(options) {
   const blueprintRequirements = collectBlueprintChapterRequirements(novel, chapterNumber);
   const skuCommitments = collectSkuCommitments(novel, chapterNumber);
   const plannedTags = uniqueText([...toArray(planChapter.tagCommitments), ...blueprintRequirements.tagCommitments], 20);
-  const characterBeats = uniqueText([planChapter.characterBeat, ...blueprintRequirements.characterBeats], 20);
+  const plannedBeatText = planChapter.raw === '本地兜底计划' && blueprintRequirements.characterBeats.length
+    ? '' : planChapter.characterBeat;
+  const characterBeats = mergeCharacterBeats([...blueprintRequirements.characterBeats, ...parsePlanCharacterBeats(plannedBeatText)], 20);
   characterBeats.forEach((beat) => upsertCharacterProfile(novel, beat, chapterNumber - 1));
-  const characterNames = uniqueText([
+  const plannedCharacters = uniqueText([
     ...toArray(planChapter.characters),
-    ...characterBeats.map((beat) => parseCharacterBeatText(beat)?.name || ''),
+    ...characterBeats.map(beat => beat.character),
   ], 12);
+  const chapterContext = [planChapter.coreEvent, blueprintRequirements.purpose, blueprintRequirements.chapterPlanText,
+    ...toArray(planChapter.requiredScenes), String(options.previousChapter?.content || '').slice(-1500)].filter(Boolean).join('\n');
+  const knownVoices = novel.characterBible.filter(profile => profile?.name && toArray(profile.voiceRules).length).map(profile => profile.name);
+  const presentVoices = knownVoices.filter(name => chapterContext.includes(name));
+  const fallbackVoices = plannedCharacters.length || presentVoices.length ? [] : knownVoices.slice(0, 4);
+  const characterNames = uniqueText([...plannedCharacters, ...presentVoices, novel.protagonistName, ...fallbackVoices], 12);
   const rotatingSkuTag = skuCommitments.rotating.length
     ? skuCommitments.rotating[(chapterNumber - 1) % skuCommitments.rotating.length]
     : '';
@@ -1353,13 +1491,25 @@ function buildChapterContract(options) {
   // Do not show future planned hooks as if they were already present in the
   // narrative. The current chapter receives its own setHooks separately.
   const closing = options.closingBook === true && chapterNumber === totalChapters;
-  const nearEnding = options.closingBook === true && chapterNumber >= totalChapters - 2;
-  const openHooks = openStoryHooks(novel.foreshadowingLedger, chapterNumber);
+  const strictBookEnding = options.closingBook === true && options.requireEndingVerification === true;
+  const nearEnding = options.closingBook === true && chapterNumber >= (strictBookEnding
+    ? getClosingWindowStart(totalChapters) : totalChapters - 2);
+  const openHooks = openStoryHooks(novel.foreshadowingLedger, chapterNumber + (closing && strictBookEnding ? 1 : 0));
   const dueHooks = openHooks.filter(item => Number(item.targetChapter) > 0 && Number(item.targetChapter) <= chapterNumber);
   const pendingHooks = [...new Set([...dueHooks, ...openHooks])].slice(0, 8);
-  const scheduledHooks = nearEnding
+  const scheduledHooks = nearEnding && !strictBookEnding
     ? openHooks.filter(item => !Number(item.targetChapter) || Number(item.targetChapter) <= chapterNumber).slice(0, 4)
     : dueHooks.slice(0, 4);
+  const remainingChapters = Math.max(1, totalChapters - chapterNumber + 1);
+  const dueNow = dueHooks.filter(item => Number(item.targetChapter) === chapterNumber);
+  const mandatoryResolutionHooks = closing ? openHooks : strictBookEnding ? dueNow : [];
+  const suggestedResolutionHooks = strictBookEnding && !closing ? selectPayoffSuggestions({ novel, openHooks,
+    chapterNumber, remainingChapters, nearEnding, dueNow, context: chapterContext }) : [];
+  const futurePayoffKeys = new Set(strictBookEnding ? novel.foreshadowingLedger
+    .filter(item => item.payoffPlan && Number(item.targetChapter) > chapterNumber)
+    .map(item => hookContentKey(item.content)) : []);
+  const plannedResolutions = toArray(planChapter.resolveHooks).filter(item => !futurePayoffKeys.has(hookContentKey(item)));
+  const setups = novel.foreshadowingLedger.filter(item => item.status === 'planned' && Number(item.setChapter) === chapterNumber);
   const mustAdvance = novel.plotThreads.filter((item) => ['active', 'planned'].includes(item.status) && item.nextMilestone).slice(0, 3);
   const mustNot = ['不要复述上一章已经完成的核心事件'];
   if (nearEnding) mustNot.push('避免新增需要后文解释的悬念，优先兑现已经铺设的线索');
@@ -1372,7 +1522,31 @@ function buildChapterContract(options) {
   if (recentEndings.length) mustNot.push('已有收尾只供核对，本章不得复用该句式或同构套路');
   const endingStyle = closing
     ? { label: '终局收束', hint: '兑现旧伏笔，写明人物选择造成的结果与新的稳定局面，避免留下需要后续章节回答的新悬念' }
-    : pickEndingStyle(chapterNumber, emotion.tension, emotion.isBreath);
+    : strictBookEnding && nearEnding
+      ? { label: '兑现阶段后果', hint: '给出本章已揭晓的答案和人物选择造成的具体后果，只承接尚未收束的既有冲突' }
+      : pickEndingStyle(chapterNumber, emotion.tension, emotion.isBreath);
+  const plannedOutcome = String(planChapter.coreEvent || '');
+  const activePhase = blueprintRequirements.phase;
+  const phaseEnd = Number(activePhase?.endChapter || totalChapters);
+  const explicitExit = String(activePhase?.exitCondition || '').trim();
+  const phasePlan = (/^(?:暂无|无|待补充|待定|未填写|None)?[。.\s]*$/i.test(explicitExit)
+    ? String(activePhase?.planText || '').trim() : explicitExit).slice(0, 2400);
+  const hasConcretePlan = phasePlan && planChapter.raw !== '本地兜底计划';
+  const chapterGoal = (planChapter.raw === MODEL_ROLLING_PLAN ? plannedOutcome
+    : blueprintRequirements.chapterPlanText || (hasConcretePlan ? plannedOutcome : '')).slice(0, 900);
+  const phaseGoal = chapterNumber === phaseEnd ? phasePlan : '';
+  const progressCheckpoint = strictBookEnding && !closing && (chapterGoal || phaseGoal) ? {
+    title: activePhase?.title || '',
+    startChapter: Number(activePhase?.startChapter || chapterNumber),
+    endChapter: phaseEnd,
+    chapterGoal,
+    phaseGoal,
+  } : null;
+  // Once the last chapter has a detailed plan, earlier beats from the
+  // containing phase are context. They must not become final-chapter tasks.
+  const hasDetailedEnding = closing && planChapter.raw === MODEL_ROLLING_PLAN && Boolean(plannedOutcome);
+  const finalState = hasDetailedEnding ? plannedOutcome
+    : blueprintRequirements.exitCondition || blueprintRequirements.planText.slice(-1200);
   const wordTarget = Number(options.wordTarget) || getAdaptiveChapterWordTarget({
     planData: plan,
     chapterNumber,
@@ -1401,13 +1575,13 @@ function buildChapterContract(options) {
     blueprintStageObstacle: blueprintRequirements.stageObstacle,
     blueprintStageReversal: blueprintRequirements.stageReversal,
     blueprintEntryCondition: blueprintRequirements.entryCondition,
-    blueprintExitCondition: blueprintRequirements.exitCondition,
+    blueprintExitCondition: hasDetailedEnding ? '' : blueprintRequirements.exitCondition,
     blueprintThreads: blueprintRequirements.threads,
     blueprintPurpose: blueprintRequirements.purpose,
     blueprintRelationshipChange: blueprintRequirements.relationshipChange,
     blueprintForeshadowing: blueprintRequirements.foreshadowing,
-    blueprintUnresolvedQuestions: blueprintRequirements.unresolvedQuestions,
-    blueprintExitHook: blueprintRequirements.exitHook,
+    blueprintUnresolvedQuestions: closing ? [] : blueprintRequirements.unresolvedQuestions,
+    blueprintExitHook: closing ? finalState : blueprintRequirements.exitHook,
     rollingObjective: blueprintRequirements.rollingObjective,
     lockedFacts: blueprintRequirements.lockedFacts,
     styleCommitments: skuCommitments.all,
@@ -1416,7 +1590,8 @@ function buildChapterContract(options) {
       ...(plannedTags.length ? [] : skuCommitments.persistent),
       ...(plannedTags.length || !rotatingSkuTag ? [] : [rotatingSkuTag]),
     ], 20),
-    characterBeat: characterBeats.join('；'),
+    characterBeats,
+    characterBeat: [...new Set([plannedBeatText, ...blueprintRequirements.characterBeats.map(renderCharacterBeat)].filter(Boolean))].join('；'),
     requiredScenes: uniqueText([...toArray(planChapter.requiredScenes), ...blueprintRequirements.requiredScenes], 16),
     forbiddenDrift: uniqueDriftRules([
       ...toArray(planChapter.forbiddenDrift),
@@ -1424,9 +1599,20 @@ function buildChapterContract(options) {
       ...blueprintRequirements.rollingForbiddenDrift,
       skuCommitments.all.length ? `禁止把所选标签“${skuCommitments.all.join('、')}”稀释成通用网文套路` : '',
     ], 16),
-    setHooks: closing ? [] : planChapter.setHooks || [],
-    resolveHooks: uniqueText([...toArray(planChapter.resolveHooks), ...(closing ? openHooks : scheduledHooks).map(item => item.content)], closing ? Infinity : 16),
+    setHooks: closing ? [] : uniqueHookText([...setups.map(item => item.content), ...toArray(planChapter.setHooks)]),
+    resolveHooks: uniqueHookText([...mandatoryResolutionHooks.map(item => item.content), ...plannedResolutions,
+      ...suggestedResolutionHooks.map(item => item.content), ...scheduledHooks.map(item => item.content)]),
+    mandatoryResolutionHooks,
+    suggestedResolutionHooks,
+    progressCheckpoint,
     closing,
+    closingWindow: nearEnding,
+    requireEndingVerification: closing && strictBookEnding,
+    endingRequirements: closing ? {
+      mainConflict: String(novel.storyBlueprint?.mainArc || novel.storyBible.theme || ''),
+      plannedOutcome: hasDetailedEnding ? undefined : plannedOutcome,
+      finalState,
+    } : null,
     verifyHookResolution: options.closingBook === true,
     pendingHooks,
     mustAdvance,
@@ -1445,6 +1631,8 @@ function renderChapterContract(contract) {
   const list = (items) => items && items.length ? items.join('；') : '无';
   const pending = (contract.pendingHooks || []).map((item) => (item.id || '伏笔') + '：' + item.content).join('；') || '无';
   const advance = (contract.mustAdvance || []).map((item) => (item.title || item.id) + ' → ' + item.nextMilestone).join('；') || '至少推进一条主线或关系线';
+  const suggestions = toArray(contract.suggestedResolutionHooks).map(item => item.content);
+  const optionalKeys = new Set(suggestions.map(hookContentKey));
   return [
     '【本章契约｜第' + contract.chapterNumber + '章】',
     '章节短标题：' + (contract.title || '故事未尽') + '（仅用于目录，不要输出到正文）',
@@ -1456,18 +1644,20 @@ function renderChapterContract(contract) {
     '必须推进的剧情线：' + advance,
     '本章角色：' + list(contract.characters),
     contract.characterContinuity?.length
-      ? '人物圣经与知识边界（只允许人物知道自己已知的事实）：' + contract.characterContinuity.join('；')
+      ? '人物档案（只在本人出场时参考。沿用各自的说话习惯，并随听者和处境变化；引句只供辨认语气。人物只知道自己已知的事实）：\n' + contract.characterContinuity.join('\n')
       : '人物圣经与知识边界：暂无结构化档案；先保持角色目标、认知范围和说话方式彼此不同',
     '本章支线焦点：' + (contract.subplotFocus || '无；若有已建立关系线，选择一条自然带入'),
     '本章关系变化：' + (contract.relationshipBeat || '由场景中的选择和反应自然体现'),
     '本章缓冲功能：' + (contract.breathingPurpose || '无；不要为了凑字数插入无关日常'),
     contract.blueprintStageTitle ? '当前蓝图阶段：' + contract.blueprintStageTitle : '',
-    contract.blueprintPlanText ? '已确认的剧情规划（必须落实人物选择、因果与章末局面）：\n' + contract.blueprintPlanText : '',
+    contract.blueprintPlanText ? '已确认的篇章方向（按本章执行范围取材）：\n' + contract.blueprintPlanText : '',
     contract.blueprintStageGoal ? '阶段目标：' + contract.blueprintStageGoal : '',
     contract.blueprintStageObstacle ? '阶段阻力：' + contract.blueprintStageObstacle : '',
     contract.blueprintStageReversal ? '阶段反转：' + contract.blueprintStageReversal : '',
     contract.blueprintEntryCondition ? '阶段进入条件：' + contract.blueprintEntryCondition : '',
     contract.blueprintExitCondition ? '阶段离开条件：' + contract.blueprintExitCondition : '',
+    contract.progressCheckpoint?.chapterGoal ? '本章提交前将核实实际发生的剧情变化：' + contract.progressCheckpoint.chapterGoal : '',
+    contract.progressCheckpoint?.phaseGoal ? '本篇章到本章结束。补齐尚未落地的篇章结果；前文已经发生的行动只承接其后果。' : '',
     contract.blueprintThreads?.length ? '阶段关联线：' + list(contract.blueprintThreads) : '',
     contract.rollingObjective ? '滚动窗口目标：' + contract.rollingObjective : '',
     contract.blueprintPurpose ? '本章执行卡目的：' + contract.blueprintPurpose : '',
@@ -1481,7 +1671,11 @@ function renderChapterContract(contract) {
     '本章人物推进与声线：' + (contract.characterBeat || '依据人物声音表保持差异，不得全员冷静、完整、讲逻辑'),
     '本章必备场景：' + list(contract.requiredScenes),
     '本章埋设伏笔：' + list(contract.setHooks),
-    '本章应回收伏笔：' + list(contract.resolveHooks),
+    '本章应回收伏笔：' + list(toArray(contract.resolveHooks).filter(item => !optionalKeys.has(hookContentKey(item)))),
+    contract.mandatoryResolutionHooks?.length ? '提交前必须逐条核实正文回收：' + list(contract.mandatoryResolutionHooks.map(item => item.payoffPlan ? `${item.content}（${item.payoffPlan}）` : item.content)) : '',
+    suggestions.length ? '本章若有自然衔接的场景，可顺势回收：' + list(suggestions) : '',
+    contract.endingRequirements?.mainConflict ? '全书主线：' + contract.endingRequirements.mainConflict : '',
+    contract.endingRequirements?.finalState ? '终局须落到的局面：' + contract.endingRequirements.finalState : '',
     '已存在的待回收伏笔：' + pending,
     '明确禁止：' + [...contract.mustNot, ...(contract.forbiddenDrift || [])].join('；'),
     '本章目标字数：约' + contract.wordTarget + '字；全书进度：' + contract.progress,
@@ -1560,9 +1754,9 @@ function updateCreativeState(novel, chapterNumber, content, contract, continuity
   const addHook = (hook) => {
     const value = String(hook || '').trim();
     if (!value) return;
-    const id = 'FH_' + chapterNumber + '_' + value.slice(0, 18).replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '');
-    const existing = novel.foreshadowingLedger.find((item) => item.id === id || (item.content && item.content.slice(0, 12) === value.slice(0, 12)));
+    const existing = novel.foreshadowingLedger.find(item => hookContentKey(item.content) === hookContentKey(value));
     if (existing) {
+      if (existing.setupStatus === 'unconfirmed') return;
       // A hook planned from the outline becomes pending only when its setup chapter is written.
       if (existing.status === 'planned' && Number(existing.setChapter) === Number(chapterNumber)) {
         existing.status = 'pending';
@@ -1570,16 +1764,18 @@ function updateCreativeState(novel, chapterNumber, content, contract, continuity
         existing.setupEvidence = extractEventSignature(content).slice(0, 160);
       }
     } else {
+      const id = unusedHookId(novel.foreshadowingLedger, 'FH', chapterNumber, value);
       novel.foreshadowingLedger.push({ id, content: value, setChapter: chapterNumber, targetChapter: 0, status: 'pending', stage: 'seeded', setupEvidence: extractEventSignature(content).slice(0, 160), progressEvidence: [] });
     }
   };
   ((contract && contract.setHooks) || []).forEach(addHook);
-  for (const beat of (contract?.characterBeat ? String(contract.characterBeat).split('；') : [])) {
+  for (const beat of (contract?.characterBeats || parsePlanCharacterBeats(contract?.characterBeat))) {
     upsertCharacterProfile(novel, beat, chapterNumber);
   }
   const compact = String(content || '').replace(/\s/g, '');
   const resolvedByContract = ((contract && contract.resolveHooks) || []).map((item) => String(item || '').replace(/\s/g, '')).filter(Boolean);
   novel.foreshadowingLedger.forEach((hook) => {
+    if (hook.setupStatus === 'unconfirmed') return;
     if (!['pending', 'planned', 'seeded', 'reinforced', 'due'].includes(hook.status)) return;
     const targetChapter = Number(hook.targetChapter || 0);
     if (targetChapter > 0 && Number(chapterNumber) < targetChapter) return;
@@ -1597,6 +1793,7 @@ function updateCreativeState(novel, chapterNumber, content, contract, continuity
       hook.resolvedChapter = chapterNumber;
       hook.resolution = extractEventSignature(content).slice(0, 120);
       hook.resolutionEvidence = hook.resolution;
+      hook.resolutionVerificationKey = undefined;
     } else if (chapterNumber > Number(hook.setChapter || 0) && coverage >= 0.18) {
       hook.stage = 'reinforced';
       hook.status = hook.status === 'planned' ? 'pending' : hook.status;
@@ -1617,9 +1814,9 @@ function matchHookResolutionEvidence(sourceContent, evidence) {
   if (quote.length > 300 || quote.replace(/[\s。！？!?]/g, '').length < 10) return '';
   if (comparable.includes(quote.replace(/\s/g, ''))) return quote;
 
-  // An answer may span dialogue interrupted by narration. Each quoted fragment
-  // still has to appear verbatim and in the same order in the manuscript.
-  const excerpts = quote.split(/[。！？!?]+/)
+  // Revalidate the stored excerpt separator as well as the original sentence
+  // punctuation. Each fragment must occur verbatim and in manuscript order.
+  const excerpts = quote.split(/[。！？!?]+| … /)
     .map(part => part.trim().replace(/^[“”"「」]+|[“”"「」]+$/g, '').trim()).filter(Boolean);
   if (excerpts.length < 2 || excerpts.length > 4) return '';
   let offset = 0;
@@ -1632,6 +1829,20 @@ function matchHookResolutionEvidence(sourceContent, evidence) {
   return excerpts.join(' … ');
 }
 
+function matchStoryEndingEvidence(content, audit) {
+  const { conclusionEvidence, settledStateEvidence } = audit || {};
+  if (!matchHookResolutionEvidence(content, conclusionEvidence) || !matchHookResolutionEvidence(content, settledStateEvidence)) return null;
+  return { conclusionEvidence: conclusionEvidence.trim(), settledStateEvidence: settledStateEvidence.trim() };
+}
+
+function hookResolutionVerificationKey(hook, chapterNumber, evidence, source) {
+  const chapter = Number(chapterNumber);
+  const quote = matchHookResolutionEvidence(source, evidence);
+  if (!hook?.id || !Number.isSafeInteger(chapter) || chapter < 1 || !quote) return '';
+  return hash(JSON.stringify([hook.id, hookContentKey(hook.content), Number(hook.setChapter || 0),
+    Number(hook.targetChapter || 0), String(hook.payoffPlan || ''), chapter, quote, hash(source)]));
+}
+
 /**
  * 把模型章末自评（结构化 JSON）回填到账本与角色状态。
  * 自评失败时调用方直接跳过，本章保留启发式判定结果——这里只做"修正与补漏"：
@@ -1640,7 +1851,7 @@ function matchHookResolutionEvidence(sourceContent, evidence) {
  * - hooksSet：模型发现本章实际埋了但契约没计划的伏笔 → 补录 pending。
  * - characterUpdates：按名字 upsert 角色状态（位置/情绪/目标），供下一章契约与记忆检查点使用。
  */
-function applyHookAudit(novel, chapterNumber, audit, sourceContent = '') {
+function applyHookAudit(novel, chapterNumber, audit, sourceContent = '', { verified = false } = {}) {
   if (!novel || !audit || typeof audit !== 'object') return { resolved: 0, added: 0, characters: 0 };
   initializeCreativeState(novel);
   let resolvedCount = 0;
@@ -1650,19 +1861,24 @@ function applyHookAudit(novel, chapterNumber, audit, sourceContent = '') {
   const findHook = (raw) => {
     const id = String(raw && raw.id || '').trim();
     if (id) return novel.foreshadowingLedger.find(item => item.id === id);
-    const text = String(raw && (raw.content || raw.text || raw) || '').replace(/\s/g, '');
-    return novel.foreshadowingLedger.find((item) => {
-      const content = String(item.content || '').replace(/\s/g, '');
-      if (!text || !content) return false;
+    const text = hookContentKey(raw && (raw.content || raw.text || raw));
+    if (!text) return undefined;
+    const exact = novel.foreshadowingLedger.filter(item => hookContentKey(item.content) === text);
+    if (exact.length) return exact.length === 1 ? exact[0] : undefined;
+    const similar = novel.foreshadowingLedger.filter((item) => {
+      const content = hookContentKey(item.content);
+      if (!content) return false;
       return text.includes(content.slice(0, 8)) || content.includes(text.slice(0, 8));
     });
+    return similar.length === 1 ? similar[0] : undefined;
   };
 
   for (const raw of (Array.isArray(audit.hooksResolved) ? audit.hooksResolved : [])) {
     const hook = findHook(raw);
     const openStage = hook && ['planned', 'seeded', 'reinforced', 'due'].includes(hook.stage);
-    if (!hook || ['resolved', 'paid_off', 'abandoned'].includes(hook.status)
+    if (!hook || hook.setupStatus === 'unconfirmed' || ['resolved', 'paid_off', 'abandoned'].includes(hook.status)
       || (!['pending', 'planned', 'seeded', 'reinforced', 'due'].includes(hook.status) && !openStage)) continue;
+    if (hook.payoffPlan && getFixedChapterCount(novel) && Number(hook.targetChapter) > Number(chapterNumber)) continue;
     const evidence = sourceContent ? matchHookResolutionEvidence(sourceContent, raw?.evidence) : '';
     if (sourceContent && !evidence) continue;
     hook.status = 'resolved';
@@ -1670,19 +1886,38 @@ function applyHookAudit(novel, chapterNumber, audit, sourceContent = '') {
     hook.resolvedChapter = Number(chapterNumber) || hook.resolvedChapter;
     hook.resolution = (evidence || compactAuditText(raw?.evidence || raw?.reason || hook.content)).slice(0, 120);
     hook.resolutionEvidence = evidence || hook.resolution;
+    hook.resolutionVerificationKey = verified
+      ? hookResolutionVerificationKey(hook, chapterNumber, evidence, sourceContent) || undefined : undefined;
     resolvedCount++;
   }
 
   for (const raw of (Array.isArray(audit.hooksSet) ? audit.hooksSet : [])) {
     const value = compactAuditText(typeof raw === 'string' ? raw : (raw && (raw.content || raw.text) || ''));
     if (!value) continue;
+    const setupEvidence = sourceContent && getFixedChapterCount(novel) ? matchHookResolutionEvidence(sourceContent, raw?.evidence) : value;
+    if (!setupEvidence) continue;
+    const proposal = novel.foreshadowingLedger.find(item => item.setupStatus === 'unconfirmed'
+      && Number(item.setChapter) <= Number(chapterNumber)
+      && (raw?.id ? item.id === raw.id : hookContentKey(item.content) === hookContentKey(value)));
+    if (proposal) {
+      if (!sourceContent || ['resolved', 'paid_off', 'abandoned'].includes(proposal.status) || proposal.stage === 'paid_off') continue;
+      proposal.setupStatus = 'confirmed';
+      proposal.setupEvidence = setupEvidence;
+      proposal.setChapter = Number(chapterNumber);
+      proposal.status = 'pending';
+      proposal.stage = 'seeded';
+      addedCount++;
+      continue;
+    }
     const existing = novel.foreshadowingLedger.find((item) => {
-      const content = String(item.content || '').replace(/\s/g, '');
-      return content && (value.includes(content.slice(0, 8)) || content.includes(value.slice(0, 8)));
+      if (item.setupStatus === 'unconfirmed') return false;
+      const content = hookContentKey(item.content);
+      const key = hookContentKey(value);
+      return content && key && (key.includes(content.slice(0, 8)) || content.includes(key.slice(0, 8)));
     });
     if (existing) continue;
-    const id = 'FH_' + chapterNumber + '_' + value.slice(0, 18).replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '');
-    novel.foreshadowingLedger.push({ id, content: value, setChapter: Number(chapterNumber) || 0, targetChapter: 0, status: 'pending', stage: 'seeded', setupEvidence: value, progressEvidence: [] });
+    const id = unusedHookId(novel.foreshadowingLedger, 'FH', chapterNumber, value);
+    novel.foreshadowingLedger.push({ id, content: value, setChapter: Number(chapterNumber) || 0, targetChapter: 0, status: 'pending', stage: 'seeded', setupEvidence, progressEvidence: [] });
     addedCount++;
   }
 
@@ -1737,27 +1972,185 @@ function compactAuditText(value, maxLength = 200) {
   return String(value == null ? '' : value).replace(/\s+/g, ' ').trim().slice(0, maxLength);
 }
 
-function seedPlannedHooks(novel, planData) {  initializeCreativeState(novel);
+function hookContentKey(text) {
+  return String(text || '').replace(/[\s“”"‘’'「」『』＂＇]/g, '');
+}
+
+function unusedHookId(ledger, prefix, chapterNumber, name) {
+  const base = `${prefix}_${chapterNumber}_${name.slice(0, 18).replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '')}`;
+  let id = base;
+  for (let suffix = 2; ledger.some(item => item.id === id); suffix++) id = `${base}_${suffix}`;
+  return id;
+}
+
+function isPaidHook(hook) {
+  return ['resolved', 'paid_off'].includes(hook.status) || hook.stage === 'paid_off';
+}
+
+function reconcilePlannedHook(novel, hook, matching, written, fixedCount) {
+  const sameSetup = matching.filter(item => Number(item.setChapter) === hook.setChapter);
+  const canonical = sameSetup.find(item => item.payoffPlan && Number(item.targetChapter) === hook.targetChapter);
+  const existing = canonical || sameSetup.find(item => item.payoffPlan)
+    || sameSetup.find(item => item.content === hook.content) || sameSetup[0] || matching.at(-1);
+  if (!existing) return existing;
+
+  const aliases = sameSetup.filter(item => item !== existing);
+  for (const alias of aliases) {
+    if (alias.setupEvidence && (!existing.setupEvidence
+      || (existing.setupStatus === 'unconfirmed' && alias.setupStatus === 'confirmed'))) {
+      existing.setupEvidence = alias.setupEvidence;
+      existing.setupStatus = alias.setupStatus;
+    }
+    existing.progressEvidence = [...new Set([...toArray(alias.progressEvidence), ...toArray(existing.progressEvidence)])].slice(-6);
+    if (hook.payoffPlan && alias.payoffPlan && Number(alias.targetChapter) === hook.targetChapter
+      && !isPaidHook(existing) && isPaidHook(alias) && Number(alias.resolvedChapter) >= hook.targetChapter
+      && matchHookResolutionEvidence(written.get(Number(alias.resolvedChapter))?.content, alias.resolutionEvidence)) {
+      for (const field of ['status', 'stage', 'resolvedChapter', 'resolution', 'resolutionEvidence']) existing[field] = alias[field];
+      existing.resolutionVerificationKey = undefined;
+    }
+    const index = novel.foreshadowingLedger.indexOf(alias);
+    if (index >= 0) novel.foreshadowingLedger.splice(index, 1);
+  }
+
+  if (aliases.length && existing.status === 'planned' && written.has(Number(existing.setChapter)) && existing.setupEvidence) {
+    existing.status = 'pending';
+    existing.stage = existing.progressEvidence.length ? 'reinforced' : 'seeded';
+  }
+
+  if (fixedCount && hook.payoffPlan && hook.targetChapter > 0 && isPaidHook(existing)
+    && (!existing.payoffPlan || Number(existing.targetChapter) !== hook.targetChapter
+      || Number(existing.resolvedChapter) < hook.targetChapter)) {
+    // A generic legacy label could be credited for a mention before the
+    // approved payoff existed. Preserve its setup, then require the real payoff.
+    const planted = Boolean(existing.setupEvidence || written.has(Number(existing.setChapter)));
+    Object.assign(existing, { status: planted ? 'pending' : 'planned', stage: planted ? 'seeded' : 'planned',
+      resolvedChapter: 0, resolution: '', resolutionEvidence: '', resolutionVerificationKey: undefined });
+  }
+  if (hook.payoffPlan) existing.content = hook.content;
+  return existing;
+}
+
+function seedPlannedHooks(novel, planData) {
+  initializeCreativeState(novel);
   const chapters = planData && Array.isArray(planData.chapters) ? planData.chapters : [];
+  const fixedCount = getFixedChapterCount(novel);
+  const written = new Map(toArray(novel.chapters).map(chapter => [Number(chapter.chapterNumber), chapter]));
+  const setupSignatures = new Map();
+  const setupSignature = chapterNumber => {
+    if (!setupSignatures.has(chapterNumber)) {
+      setupSignatures.set(chapterNumber, extractEventSignature(written.get(chapterNumber)?.content || '').slice(0, 160));
+    }
+    return setupSignatures.get(chapterNumber);
+  };
+  const resolutionsByHook = new Map();
+  for (const chapter of chapters) {
+    const chapterNumber = Number(chapter.chapterNumber);
+    for (const resolution of toArray(chapter.resolveHooks)) {
+      const key = hookContentKey(resolution);
+      if (!resolutionsByHook.has(key)) resolutionsByHook.set(key, []);
+      resolutionsByHook.get(key).push(chapterNumber);
+    }
+  }
+  const planned = new Map();
   for (const plan of chapters) {
-    for (const hook of plan.setHooks || []) {
-      const value = String(hook || '').trim();
-      if (!value) continue;
-      const id = 'PLAN_' + plan.chapterNumber + '_' + value.slice(0, 18).replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '');
-      const laterResolution = chapters.find((candidate) => Number(candidate.chapterNumber) > Number(plan.chapterNumber) && (candidate.resolveHooks || []).some((item) => {
-        const resolved = String(item || '').replace(/\s/g, '');
-        const hook = value.replace(/\s/g, '');
-        return resolved && (resolved.includes(hook.slice(0, 8)) || hook.includes(resolved.slice(0, 8)));
-      }));
-      if (!novel.foreshadowingLedger.some((item) => item.id === id || (item.content && item.content.slice(0, 12) === value.slice(0, 12)))) {
-        novel.foreshadowingLedger.push({ id, content: value, setChapter: plan.chapterNumber, targetChapter: laterResolution ? laterResolution.chapterNumber : 0, status: 'planned', stage: 'planned', progressEvidence: [] });
+    const setChapter = Number(plan.chapterNumber);
+    if (!Number.isSafeInteger(setChapter) || setChapter < 1) continue;
+    const modelProposals = Array.isArray(plan.modelHookProposals)
+      ? new Set(plan.modelHookProposals.map(hookContentKey)) : null;
+    for (const hook of toArray(plan.setHooks)) {
+      const content = String(hook || '').trim();
+      const key = hookContentKey(content);
+      if (!key) continue;
+      const targetChapter = (resolutionsByHook.get(key) || []).reduce((first, number) => (
+        number > setChapter && (!first || number < first) ? number : first
+      ), 0);
+      const rollingCandidate = Boolean(fixedCount && plan.raw === MODEL_ROLLING_PLAN && !targetChapter
+        && (!modelProposals || modelProposals.has(key)));
+      const prior = planned.get(key);
+      if (prior && (!prior.rollingCandidate || rollingCandidate)) continue;
+      planned.set(key, { content, setChapter, targetChapter, rollingCandidate });
+    }
+  }
+  const phases = toArray(novel.storyBlueprint?.phases);
+  const blueprintHooks = new Map();
+  for (const stage of phases.flatMap(phase => [phase, ...toArray(phase.subphases)])) {
+    for (const raw of toArray(stage.foreshadowing)) {
+      const { name: content, setupChapter: setChapter, payoffChapter, plan: payoffPlan } = normalizeForeshadowing(raw);
+      if (!content || !Number.isSafeInteger(setChapter) || setChapter < 1) continue;
+      const key = hookContentKey(content);
+      const targetChapter = Number.isSafeInteger(payoffChapter) && payoffChapter >= setChapter ? payoffChapter : 0;
+      const explicit = blueprintHooks.get(key);
+      if (!explicit || (payoffPlan && !explicit.payoffPlan)
+        || (Boolean(payoffPlan) === Boolean(explicit.payoffPlan) && targetChapter > explicit.targetChapter)) {
+        blueprintHooks.set(key, { content, setChapter, targetChapter, payoffPlan });
       }
+    }
+  }
+  if (fixedCount) for (const hook of readOutlineForeshadowing(novel.outline, fixedCount)) {
+    const { name: content, setupChapter: setChapter, payoffChapter: targetChapter, plan: payoffPlan } = normalizeForeshadowing(hook);
+    blueprintHooks.set(hookContentKey(content), { content, setChapter, targetChapter, payoffPlan });
+  }
+  for (const [key, hook] of blueprintHooks) {
+    const chapterPlanHook = planned.get(key);
+    planned.set(key, { ...hook, targetChapter: hook.targetChapter || chapterPlanHook?.targetChapter || 0 });
+  }
+  const ledgerByHook = new Map();
+  for (const item of novel.foreshadowingLedger) {
+    const key = hookContentKey(item.content);
+    if (!ledgerByHook.has(key)) ledgerByHook.set(key, []);
+    ledgerByHook.get(key).push(item);
+  }
+  for (const [key, { rollingCandidate, ...hook }] of planned) {
+    const existing = reconcilePlannedHook(novel, hook, ledgerByHook.get(key) || [], written, fixedCount);
+    if (!existing) {
+      const id = unusedHookId(novel.foreshadowingLedger, 'PLAN', hook.setChapter, hook.content);
+      novel.foreshadowingLedger.push({ id, ...hook, ...(rollingCandidate ? { setupStatus: 'unconfirmed' } : {}), status: 'planned', stage: 'planned', progressEvidence: [] });
+    } else if (!['resolved', 'paid_off', 'abandoned'].includes(existing.status) && existing.stage !== 'paid_off') {
+      if (rollingCandidate && (existing.payoffPlan || Number(existing.targetChapter) > 0)) continue;
+      if (existing.status === 'planned' && !written.has(Number(existing.setChapter))) {
+        existing.setChapter = hook.setChapter;
+      }
+      existing.targetChapter = hook.targetChapter;
+      if (hook.payoffPlan) existing.payoffPlan = hook.payoffPlan;
+      if (!rollingCandidate && existing.setupStatus === 'unconfirmed') existing.setupStatus = undefined;
+      if (rollingCandidate && !existing.setupStatus && String(existing.id || '').startsWith('PLAN_')) {
+        // Older rolling plans copied the chapter signature onto every setup.
+        // Keep the entry visible for review until it has its own source quote.
+        if (!existing.setupEvidence || existing.setupEvidence === setupSignature(Number(existing.setChapter))) {
+          existing.setupStatus = 'unconfirmed';
+        }
+      }
+    }
+  }
+
+  if (fixedCount) {
+    const fragmentsByChapter = new Map();
+    for (const plan of chapters) {
+      if (plan.raw !== MODEL_ROLLING_PLAN) continue;
+      const fragments = new Set();
+      const proposals = Array.isArray(plan.modelHookProposals) ? plan.modelHookProposals : toArray(plan.setHooks);
+      for (const proposal of proposals) {
+        for (const fragment of splitItems(proposal)) {
+          if (fragment !== proposal && !planned.has(hookContentKey(fragment))) fragments.add(fragment);
+        }
+      }
+      if (fragments.size) fragmentsByChapter.set(Number(plan.chapterNumber), fragments);
+    }
+    // Older contracts split intact rolling-plan labels at commas. Keep such
+    // fragments for review when their only setup was the synthetic signature.
+    for (const hook of novel.foreshadowingLedger) {
+      if (hook.setupStatus || hook.payoffPlan || Number(hook.targetChapter) > 0 || !String(hook.id || '').startsWith('FH_')
+        || ['resolved', 'paid_off', 'abandoned'].includes(hook.status) || hook.stage === 'paid_off') continue;
+      const chapterNumber = Number(hook.setChapter);
+      if (fragmentsByChapter.get(chapterNumber)?.has(hook.content) && hook.setupEvidence
+        && hook.setupEvidence === setupSignature(chapterNumber)) hook.setupStatus = 'unconfirmed';
     }
   }
   return novel;
 }
 
 module.exports = {
+  MODEL_ROLLING_PLAN,
   normalizePlanChapter,
   normalizeChapterTitle,
   deriveChapterTitle,
@@ -1773,13 +2166,17 @@ module.exports = {
   blueprintRequirements,
   validateStoryBlueprint,
   normalizeProposedBlueprint,
+  importOutlineForeshadowing,
   applyStoryBlueprint,
   renderStoryBlueprintForContext,
   buildEmotionPlan,
   getAdaptiveChapterWordTarget,
   getChapterOutputTokenLimit,
+  getClosingWindowStart,
   assessStoryCompletion,
+  endingReopenExcerpt,
   openStoryHooks,
+  unconfirmedStoryHooks,
   closeUnresolvedHooksAtEnding,
   buildChapterContract,
   renderChapterContract,
@@ -1791,6 +2188,8 @@ module.exports = {
   hookMatchScore,
   applyHookAudit,
   matchHookResolutionEvidence,
+  hookResolutionVerificationKey,
+  matchStoryEndingEvidence,
   normalizeCharacterProfile,
   upsertCharacterProfile,
   buildCharacterContinuity,

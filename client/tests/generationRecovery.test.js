@@ -102,11 +102,12 @@ test('reload recovery keeps initial inputs account scoped and handles unavailabl
 test('light-novel attempts retain their original form and legacy attempts infer their tab from type', () => {
  const data = new Map()
  const storage = { getItem: k => data.get(k), setItem: (k,v) => data.set(k,v), removeItem: k => data.delete(k) }
- const input = { novelTypeId: 'lightnovel_school', protagonistName: '悠真（冷酷）', worldSetting: '默认世界', mode: 'book' }
+ const input = { novelTypeId: 'lightnovel_school', protagonistName: '悠真（冷酷）', worldSetting: '默认世界', mode: 'book', targetChapterCount: 100 }
  const attempt = { requestId: 'lightnovel-request-123', input, uiMode: 'lightnovel', uiForm: { charName: '悠真', charTrait: '冷酷', worldSetting: '' } }
  saveGenerationAttempt('u1', attempt, storage)
  const saved = readGenerationAttempt('u1', storage)
  assert.equal(generationAttemptUiMode(saved), 'lightnovel')
+ assert.equal(saved.input.targetChapterCount, 100)
  assert.deepEqual(saved.uiForm, attempt.uiForm, 'empty raw fields and separate traits survive; rendered API inputs are not used to reconstruct them')
  assert.equal(generationAttemptUiMode({ input }), 'lightnovel', 'version-1 records without UI metadata remain usable')
  assert.equal(generationAttemptUiMode({ input: { novelTypeId: 'urban' } }), 'generate')

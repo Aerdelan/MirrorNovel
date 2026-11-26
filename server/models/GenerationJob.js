@@ -54,6 +54,8 @@ const generationJobSchema = new mongoose.Schema({
   // lease therefore cannot turn a complete draft back into a writing draft.
   draftPhase: { type: String, default: 'queued' },
   draft: { type: String, default: '' },
+  // Verified review evidence belongs to the durable draft and stays server-side.
+  draftReview: { type: mongoose.Schema.Types.Mixed, default: null },
   draftSeq: { type: Number, default: 0, min: 0 },
   // Used to make a retried append/replace checkpoint idempotent.
   draftCheckpointHash: { type: String, default: '' },

@@ -165,6 +165,7 @@ test('类型元数据贯穿：大纲/章节计划/单章提示都带上关键词
   const initial = buildInitialPrompt(r.name, '苍太', '日系校园', 50000, 'chapter', '大纲正文', null, type);
   assert.match(initial, /请创作一部二次元·日系校园小说/);
   assert.match(initial, /写作关键词：.*部活/);
+  assert.doesNotMatch(initial, /标注【未完待续】/);
 });
 
 test('未传类型时旧行为不变（策划提示不因新参数而崩或串味）', () => {

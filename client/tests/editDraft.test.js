@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { editDraftKey, readEditDraft, writeEditDraft, removeEditDraft } from '../src/utils/editDraft.js'
-import { normalizeChapterWordTargetInput } from '../src/utils/chapterWordTarget.js'
+import { normalizeChapterWordTargetInput, parseTargetChapterCount } from '../src/utils/chapterWordTarget.js'
 import { createSceneEditValue } from '../src/utils/sceneEditValue.js'
 
 function memoryStorage() {
@@ -35,6 +35,12 @@ test('chapter length preserves valid requests and clamps only when explicitly va
  assert.equal(normalizeChapterWordTargetInput(1), 2000)
  assert.equal(normalizeChapterWordTargetInput(99999), 20000)
  assert.equal(normalizeChapterWordTargetInput('12345'), 12345)
+})
+test('fixed chapter count keeps the requested ending or reports invalid input instead of changing it', () => {
+ for (const value of ['', null, undefined]) assert.equal(parseTargetChapterCount(value), undefined)
+ assert.equal(parseTargetChapterCount(100), 100)
+ assert.equal(parseTargetChapterCount(' 5000 '), 5000)
+ for (const value of [0, 5001, 2.5, true, '1e2', 'invalid']) assert.equal(parseTargetChapterCount(value), null)
 })
 test('scene edit forms preserve text and dialogue metadata without mutating the displayed scene', () => {
  const scene = { sceneNumber: 7, action: '  她愣住了。\n', objective: '目标', imagePlan: { prompt: '画面' }, dialogue: [{ character: '甲', line: ' 保留原句 ', subtext: '隐瞒', position: '门边' }] }

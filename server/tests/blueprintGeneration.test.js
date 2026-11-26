@@ -27,6 +27,22 @@ function phaseRepairs(blueprint) {
   }))) };
 }
 
+test('蓝图为终局预留篇幅并允许最后一个篇章和小阶段收清问题', async () => {
+  const s = scenario((call, normal) => {
+    assert.match(call.prompt, /第52至60章处理终局/);
+    if (!call.name.startsWith('篇章')) return normal;
+    const payload = JSON.parse(normal).data.result;
+    payload.phases.at(-1).unresolvedQuestions = [];
+    payload.phases.at(-1).subphases.at(-1).unresolvedQuestions = [];
+    return JSON.stringify(payload);
+  });
+  const result = await s.run();
+  assert.equal(s.calls.length, 3);
+  assert.deepEqual(result.phases.at(-1).unresolvedQuestions, []);
+  assert.deepEqual(result.phases.at(-1).subphases.at(-1).unresolvedQuestions, []);
+  assert.equal(validateStoryBlueprint(result, 60, { requiredTags: ['职场'] }).valid, true);
+});
+
 test('分块蓝图：概览事实格式错误且篇章不足时分项补齐，严格组装完整蓝图', async () => {
   const s = scenario((call, normal) => call.name === '全书概览'
     ? JSON.stringify({ mainArc: '保留原先主线', lockedFacts: { invalid: '不能当作事实' }, phases: [] }) : normal);

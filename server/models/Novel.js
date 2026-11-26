@@ -58,6 +58,7 @@ const novelSchema = new mongoose.Schema({
     type: Number,
     default: 50000,
   },
+  targetChapterCount: { type: Number, default: null },
   // 每章目标字数（整本模式可选）。旧作品/未设置时按 3000 处理，
   // 大章模式（如长篇悬疑每章 1 万+ 字）会传入更大值。
   chapterWordTarget: {
@@ -185,6 +186,7 @@ const novelSchema = new mongoose.Schema({
     blueprintLevel: { type: Number, default: 3 },
     version: { type: Number, default: 1 },
     mainArc: { type: String, default: '' },
+    outlineForeshadowingImported: { type: Boolean, default: false },
     lockedFacts: { type: [String], default: [] },
     tagChecklist: { type: [String], default: [] },
     phases: [{
@@ -258,14 +260,18 @@ const novelSchema = new mongoose.Schema({
   foreshadowingLedger: [{
     id: { type: String, default: '' },
     content: { type: String, default: '' },
+    historicalReviewKey: String,
     setChapter: { type: Number, default: 0 },
     targetChapter: { type: Number, default: 0 },
+    payoffPlan: { type: String, default: '' },
+    setupStatus: { type: String, enum: ['unconfirmed', 'confirmed'] },
     // status 保留旧值 resolved/abandoned 以兼容已有作品；stage 是新的可审计生命周期。
     status: { type: String, enum: ['planned', 'pending', 'seeded', 'reinforced', 'due', 'paid_off', 'resolved', 'abandoned'], default: 'pending' },
     stage: { type: String, enum: ['planned', 'seeded', 'reinforced', 'due', 'paid_off'], default: 'planned' },
     setupEvidence: { type: String, default: '' },
     progressEvidence: { type: [String], default: [] },
     resolutionEvidence: { type: String, default: '' },
+    resolutionVerificationKey: String,
     resolvedChapter: { type: Number, default: 0 },
     resolution: { type: String, default: '' },
   }],

@@ -1,0 +1,17 @@
+{
+  "chapterNumber": 3,
+  "responses": [
+    {
+      "output": "CHAPTER=3，8,9,10,11,15,22",
+      "finish": "stop",
+      "evidenceCount": 35
+    },
+    {
+      "output": "CHAPTER=3, [5],[9],[11],[15],[22],[24]",
+      "finish": "stop",
+      "evidenceCount": 35
+    }
+  ],
+  "passed": false,
+  "invalid": true
+}

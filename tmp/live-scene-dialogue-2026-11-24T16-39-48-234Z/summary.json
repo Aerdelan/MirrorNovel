@@ -1,0 +1,7 @@
+{
+  "model": "qwen3.8-flash",
+  "finishReason": "stop",
+  "chars": 673,
+  "originalParagraphs": 21,
+  "storedParagraphs": 21
+}

@@ -330,7 +330,8 @@ function fixPunctuation(text) {
   if (!text) return text
   let result = text
   result = result.replace(/'([^']+)'/g, '「$1」')
-  result = result.replace(/\s{2,}/g, ' ')
+  // Normalize repeated spaces inside a line while preserving paragraph breaks and indentation.
+  result = result.replace(/(^[^\S\r\n\u2028\u2029]+)|[^\S\r\n\u2028\u2029]{2,}/gm, (_, indentation) => indentation || ' ')
   result = result.replace(/([\u4e00-\u9fff]),(\s*[\u4e00-\u9fff])/g, '$1，$2')
   result = result.replace(/！{2,}/g, '！')
   result = result.replace(/？{2,}/g, '？')

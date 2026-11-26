@@ -1,0 +1,254 @@
+[
+  {
+    "directory": "D:\\MirrorNovel\\tmp\\live-book-100",
+    "stage": "book",
+    "status": "paused",
+    "target": 100,
+    "saved": 100,
+    "savedOrder": true,
+    "completedEvent": true,
+    "chapterEndEvents": 101,
+    "uniqueChapterEndEvents": 100,
+    "endsCoverInOrder": true,
+    "pass": false,
+    "completedAt": "2026-11-24T06:09:02.269Z",
+    "lastEvent": {
+      "type": "error",
+      "message": "终章尚未核实回收 2 条伏笔（苏棠判定'数据不能替代人'，持灯者本人陈述是证据链唯一缺口——第50章若纪鸢到场后仍沉默，所有数据将被钟离鹤以协议第七条驳回、对质材料已装订完成但缺持灯者陈述这一环，林见夏已发出调度室通知——第50章会面必须发生才能补全证据链）。草稿已保留，继续生成时会重新核对。"
+    },
+    "activeJobs": [
+      {
+        "status": "paused",
+        "phase": "ending_review",
+        "next": 100,
+        "lastCommittedChapter": 100,
+        "draftChars": 16420
+      }
+    ],
+    "modelRequests": {
+      "global_outline": 1,
+      "blueprint_initial": 3,
+      "rolling_plan": 20,
+      "chapter_write": 100,
+      "chapter_memory": 410,
+      "hook_audit": 444,
+      "stage_memory": 8,
+      "targeted_repair": 5,
+      "ending_hook_repair": 28,
+      "historical_hook_audit": 81,
+      "historical_hook_audit_confirm": 7,
+      "ending_scene_repair": 44,
+      "ending_paragraph_repair": 8,
+      "ending_hook_audit_confirm": 5
+    },
+    "resumes": 62,
+    "assistedEvents": [
+      "historical_claims_reopened",
+      "restored_reviewed_draft",
+      "restored_distinct_ending_draft",
+      "testimony_claims_reopened",
+      "testimony_payoff_plan_confirmed_in_fixture"
+    ],
+    "completion": {
+      "complete": false,
+      "currentWords": 168760,
+      "wordTarget": 150000,
+      "wordTargetReached": true,
+      "missingChapters": [],
+      "unexpectedChapters": [],
+      "unresolvedHooks": [
+        "苏棠判定'数据不能替代人'，持灯者本人陈述是证据链唯一缺口——第50章若纪鸢到场后仍沉默，所有数据将被钟离鹤以协议第七条驳回",
+        "对质材料已装订完成但缺持灯者陈述这一环，林见夏已发出调度室通知——第50章会面必须发生才能补全证据链"
+      ],
+      "endingVerified": true
+    },
+    "ledger": {
+      "entries": 312,
+      "resolved": 108,
+      "matchingProofs": 108,
+      "invalidPayoffs": [],
+      "unconfirmed": 202,
+      "abandoned": 0,
+      "resolvedInTerminal": 38
+    },
+    "progress": {
+      "auditedChapters": 0,
+      "phaseEnds": [
+        10,
+        20,
+        30,
+        40,
+        50,
+        60,
+        70,
+        80,
+        90
+      ],
+      "phaseEndsMissingAudit": [
+        10,
+        20,
+        30,
+        40,
+        50,
+        60,
+        70,
+        80,
+        90
+      ],
+      "invalidProgressReferences": []
+    },
+    "repeatedBodies": [],
+    "checkedRepeatedEdges": true,
+    "repeatedEdges": [],
+    "terminal": {
+      "proof": {
+        "conclusionEvidence": "现在连接断了。你换了镇流器，物理回路正常了，记忆回路也就废了。",
+        "settledStateEvidence": "黎明从站台尽头漫过来。不是借来的，也不是换来的。光线穿过玻璃罩，落在地砖上，一格一格，金黄而真实。",
+        "conclusion": -1,
+        "settledState": 10277,
+        "settledStateFollowsConclusion": false
+      },
+      "chars": 16420,
+      "closingParagraph": "　　他看了它一眼，转身往配电科方向走。 走了七八步，鞋底蹭过水泥地面，发出干燥的摩擦声。身后，有什么东西亮了。 不是那盏灯。是更远的地方，灯环东段，某一段本该在黎明后才亮起的管路，提前亮了。 身后，路灯亮着。"
+    },
+    "tail": [
+      {
+        "number": 96,
+        "title": "第96章 干干净净的背面",
+        "chars": 1585
+      },
+      {
+        "number": 97,
+        "title": "第97章 接收端在线",
+        "chars": 551
+      },
+      {
+        "number": 98,
+        "title": "第98章 没人接话",
+        "chars": 646
+      },
+      {
+        "number": 99,
+        "title": "第99章 不再转了",
+        "chars": 2253
+      },
+      {
+        "number": 100,
+        "title": "第100章 自己的黎明",
+        "chars": 16420
+      }
+    ]
+  },
+  {
+    "directory": "D:\\MirrorNovel\\tmp\\live-book-100-assisted",
+    "stage": "completed",
+    "status": "completed",
+    "target": 100,
+    "saved": 100,
+    "savedOrder": true,
+    "completedEvent": true,
+    "chapterEndEvents": 1,
+    "uniqueChapterEndEvents": 1,
+    "endsCoverInOrder": false,
+    "pass": false,
+    "completedAt": "2026-11-24T06:12:56.427Z",
+    "lastEvent": {
+      "type": "completed"
+    },
+    "activeJobs": [],
+    "modelRequests": {
+      "hook_audit": 3,
+      "ending_hook_audit_confirm": 1
+    },
+    "resumes": 0,
+    "assistedEvents": [
+      "author_inserted_cloud_scene"
+    ],
+    "completion": {
+      "complete": true,
+      "currentWords": 169188,
+      "wordTarget": 150000,
+      "wordTargetReached": true,
+      "missingChapters": [],
+      "unexpectedChapters": [],
+      "unresolvedHooks": [],
+      "endingVerified": true
+    },
+    "ledger": {
+      "entries": 312,
+      "resolved": 110,
+      "matchingProofs": 110,
+      "invalidPayoffs": [],
+      "unconfirmed": 202,
+      "abandoned": 0,
+      "resolvedInTerminal": 40
+    },
+    "progress": {
+      "auditedChapters": 0,
+      "phaseEnds": [
+        10,
+        20,
+        30,
+        40,
+        50,
+        60,
+        70,
+        80,
+        90
+      ],
+      "phaseEndsMissingAudit": [
+        10,
+        20,
+        30,
+        40,
+        50,
+        60,
+        70,
+        80,
+        90
+      ],
+      "invalidProgressReferences": []
+    },
+    "repeatedBodies": [],
+    "checkedRepeatedEdges": true,
+    "repeatedEdges": [],
+    "terminal": {
+      "proof": {
+        "conclusionEvidence": "裴远舟重新开口，这一次，调子平稳上升，不再有任何转折或卡顿。第四十七行，“温如故”，状态一栏写着“已恢复”。调度室的椅子已经被推正，权限移交完毕，他不再是那个为了维持秩序而窃取记忆的独裁者，只是一个旁观者。\"卷宗封存。",
+        "settledStateEvidence": "不是借来的，也不是换来的。纪鸢没有出现在持灯室，她不在任何需要她牺牲记忆的地方。也许她在某个角落休息，也许她已经离开了这个系统，但此刻，这里不需要她点亮任何东西。身后，路灯亮着。",
+        "conclusion": -1,
+        "settledState": -1,
+        "settledStateFollowsConclusion": false
+      },
+      "chars": 16848,
+      "closingParagraph": "　　她没有说话，温小满也没有问。两个人并肩往灯环外走，身后的庭门合上了。 他看了它一眼，转身往配电科方向走。 走了七八步，鞋底蹭过水泥地面，发出干燥的摩擦声。身后，有什么东西亮了。 不是那盏灯。是更远的地方，灯环东段，某一段本该在黎明后才亮起的管路，提前亮了。 身后，路灯亮着。"
+    },
+    "tail": [
+      {
+        "number": 96,
+        "title": "第96章 干干净净的背面",
+        "chars": 1585
+      },
+      {
+        "number": 97,
+        "title": "第97章 接收端在线",
+        "chars": 551
+      },
+      {
+        "number": 98,
+        "title": "第98章 没人接话",
+        "chars": 646
+      },
+      {
+        "number": 99,
+        "title": "第99章 不再转了",
+        "chars": 2253
+      },
+      {
+        "number": 100,
+        "title": "第100章 自己的黎明",
+        "chars": 16848
+      }
+    ]
+  }
+]

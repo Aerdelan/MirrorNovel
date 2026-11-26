@@ -1,4 +1,5 @@
 const { validChapterMemory, buildSemanticContext, renderSemanticContext } = require('./semanticMemory');
+const { stripOutlineCharacterVoices } = require('./outlineCharacterVoices');
 
 /**
  * Novel Context Service — RAG 风格上下文构建器
@@ -263,12 +264,12 @@ function softCutTail(text, maxChars) {
 
 /**
  * 按写作进度渲染分层大纲。
- * - 短大纲（<= 6000 字）原样返回，不值得分层；
+ * - 已整理到人物档案的声音表单独注入，其余短大纲直接返回；
  * - 长大纲按进度桶保留“开头 + 结尾”，中段用固定说明替换；
  * - 同一桶内返回值完全一致（前缀缓存命中条件）。
  */
 function renderOutlineForContext(outline, currentChapter, totalChapters) {
-  const text = String(outline || '').trim();
+  const text = stripOutlineCharacterVoices(String(outline || '')).trim();
   if (!text || text.length <= OUTLINE_FULL_PASS_LIMIT) return text;
 
   const total = Math.max(1, Number(totalChapters) || 1);

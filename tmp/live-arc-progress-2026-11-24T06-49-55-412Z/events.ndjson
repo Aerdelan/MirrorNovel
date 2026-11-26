@@ -1,0 +1,38 @@
+{"kind":"request","endpoint":"/generate"}
+{"kind":"model_start","role":"reasoning","task":"rolling_plan","inputChars":6809,"startTime":"2026-11-24T06:49:56.043Z"}
+{"kind":"event","type":"novel_created"}
+{"kind":"event","type":"generation_job"}
+{"kind":"event","type":"status","message":"正在制定章节计划表..."}
+{"kind":"model_result","role":"reasoning","task":"rolling_plan","inputChars":6809,"startTime":"2026-11-24T06:49:56.043Z","ms":33516,"finishReason":"stop","outputChars":926,"usage":{"prompt_tokens":3204,"completion_tokens":2296,"reasoning_tokens":1703,"prompt_cache_hit_tokens":0,"estimated_attempts":0,"total_tokens":5500,"estimated":false}}
+{"kind":"model_start","role":"writing","task":"chapter_write","inputChars":4471,"startTime":"2026-11-24T06:50:29.573Z"}
+{"kind":"event","type":"status","message":"全书锁定 4 章，逐批细化剧情并按计划生成"}
+{"kind":"event","type":"chapter_start","chapterNumber":1}
+{"kind":"model_result","role":"writing","task":"chapter_write","inputChars":4471,"startTime":"2026-11-24T06:50:29.573Z","ms":31379,"finishReason":"stop","outputChars":830,"usage":{"prompt_tokens":4379,"completion_tokens":1044,"reasoning_tokens":427,"prompt_cache_hit_tokens":0,"estimated_attempts":0,"total_tokens":5423,"estimated":false}}
+{"kind":"model_start","role":"reasoning","task":"chapter_progress_review","inputChars":1297,"goals":["CHAPTER","PHASE","CHAPTER"],"chapter":1,"startTime":"2026-11-24T06:51:00.960Z"}
+{"kind":"event","type":"status","message":"正在核对第1章（灯座漏电收尾）的剧情进度..."}
+{"kind":"model_result","role":"reasoning","task":"chapter_progress_review","inputChars":1297,"goals":["CHAPTER","PHASE","CHAPTER"],"chapter":1,"startTime":"2026-11-24T06:51:00.960Z","ms":6724,"finishReason":"stop","outputChars":25,"usage":{"prompt_tokens":979,"completion_tokens":432,"reasoning_tokens":413,"prompt_cache_hit_tokens":0,"estimated_attempts":0,"total_tokens":1411,"estimated":false}}
+{"kind":"model_start","role":"reasoning","task":"hook_audit","inputChars":1592,"startTime":"2026-11-24T06:51:07.689Z"}
+{"kind":"model_result","role":"reasoning","task":"hook_audit","inputChars":1592,"startTime":"2026-11-24T06:51:07.689Z","ms":11888,"finishReason":"stop","outputChars":782,"usage":{"prompt_tokens":1054,"completion_tokens":1222,"reasoning_tokens":845,"prompt_cache_hit_tokens":0,"estimated_attempts":0,"total_tokens":2276,"estimated":false}}
+{"kind":"model_start","role":"reasoning","task":"chapter_memory","inputChars":1549,"startTime":"2026-11-24T06:51:19.581Z"}
+{"kind":"event","type":"chapter_end","chapterNumber":1}
+{"kind":"request","endpoint":"/pause/novel-1"}
+{"kind":"event","type":"status","message":"正在总结第1章的剧情事实（1/1）..."}
+{"kind":"model_error","role":"reasoning","task":"chapter_memory","inputChars":1549,"startTime":"2026-11-24T06:51:19.581Z","ms":10,"message":"AI API 请求已取消","usage":{"prompt_tokens":1836,"completion_tokens":0,"reasoning_tokens":0,"prompt_cache_hit_tokens":0,"estimated_attempts":1,"total_tokens":1836,"estimated":true}}
+{"kind":"event","type":"paused","message":"生成已暂停"}
+{"kind":"pause","status":200,"result":"paused"}
+{"kind":"request","endpoint":"/continue/novel-1"}
+{"kind":"model_start","role":"reasoning","task":"chapter_memory","inputChars":1549,"startTime":"2026-11-24T06:51:19.604Z"}
+{"kind":"event","type":"continue_start"}
+{"kind":"event","type":"generation_job"}
+{"kind":"event","type":"status","message":"正在总结第1章的剧情事实（1/1）..."}
+{"kind":"model_result","role":"reasoning","task":"chapter_memory","inputChars":1549,"startTime":"2026-11-24T06:51:19.604Z","ms":13056,"finishReason":"stop","outputChars":2180,"usage":{"prompt_tokens":1042,"completion_tokens":1537,"reasoning_tokens":211,"prompt_cache_hit_tokens":0,"estimated_attempts":0,"total_tokens":2579,"estimated":false}}
+{"kind":"model_start","role":"reasoning","task":"chapter_memory","inputChars":1648,"startTime":"2026-11-24T06:51:32.663Z"}
+{"kind":"model_result","role":"reasoning","task":"chapter_memory","inputChars":1648,"startTime":"2026-11-24T06:51:32.663Z","ms":30205,"finishReason":"stop","outputChars":1144,"usage":{"prompt_tokens":1104,"completion_tokens":1458,"reasoning_tokens":796,"prompt_cache_hit_tokens":1024,"estimated_attempts":0,"total_tokens":2562,"estimated":false}}
+{"kind":"model_start","role":"writing","task":"chapter_write","inputChars":4361,"startTime":"2026-11-24T06:52:02.876Z"}
+{"kind":"event","type":"status","message":"剧情记忆整理暂不可用，已保留正文和已验证记忆；将结合已保存正文继续创作，并在下一章自动重试整理。"}
+{"kind":"event","type":"chapter_start","chapterNumber":2}
+{"kind":"model_result","role":"writing","task":"chapter_write","inputChars":4361,"startTime":"2026-11-24T06:52:02.876Z","ms":11036,"finishReason":"stop","outputChars":687,"usage":{"prompt_tokens":4487,"completion_tokens":1231,"reasoning_tokens":713,"prompt_cache_hit_tokens":1024,"estimated_attempts":0,"total_tokens":5718,"estimated":false}}
+{"kind":"model_start","role":"reasoning","task":"chapter_progress_review","inputChars":1164,"goals":["CHAPTER","PHASE","CHAPTER"],"chapter":2,"startTime":"2026-11-24T06:52:13.915Z"}
+{"kind":"event","type":"status","message":"正在核对第2章（隔绝旧支线收尾）的剧情进度..."}
+{"kind":"model_result","role":"reasoning","task":"chapter_progress_review","inputChars":1164,"goals":["CHAPTER","PHASE","CHAPTER"],"chapter":2,"startTime":"2026-11-24T06:52:13.915Z","ms":11826,"finishReason":"stop","outputChars":45,"usage":{"prompt_tokens":885,"completion_tokens":1077,"reasoning_tokens":1052,"prompt_cache_hit_tokens":0,"estimated_attempts":0,"total_tokens":1962,"estimated":false}}
+{"kind":"event","type":"error","message":"第2章（隔绝旧支线收尾）剧情进度校验未通过。篇章复核没有返回可定位的正文证据 草稿已保留，可继续生成重试。"}

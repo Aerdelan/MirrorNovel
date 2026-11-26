@@ -1,0 +1,69 @@
+{
+  "out": "D:\\MirrorNovel\\tmp\\live-arc-progress-2026-11-24T06-49-55-412Z",
+  "saved": [
+    1
+  ],
+  "status": "paused",
+  "reviews": [
+    {
+      "number": 1,
+      "passed": true,
+      "evidence": [
+        {
+          "chapterNumber": 1,
+          "excerpt": "\"断。\"顾岚说。 \"现在？\" \"现在。\" 罗实先咬了咬牙，把闸柄往下扳。铜触头分离时发出一声闷响，像远处闷雷被压进了墙里。整栋灯塔的嗡鸣骤然消失，耳膜里只剩风从百叶窗缝隙挤进来的嘶嘶声。 顾岚没有立刻动。他站在闸前，等了几息，确认没有任何残余电流的嗡颤从线缆里传出来，才转身往接线盒的方向走。",
+          "located": true
+        },
+        {
+          "chapterNumber": 1,
+          "excerpt": "接线端子排上积着一层灰绿色的铜锈，三根导线的绝缘皮在根部发软发黏，有一处铜芯已经裸露出来，搭在铸铁盒壁上。雨水从墙体的裂缝渗进来，沿着暗管一路淌到盒底，积了浅浅一层。 顾岚用指甲掐了掐裸露的铜芯，没有弹性。氧化了。 \"漏电点在这里。\"他的声音很平，像在报一个已经预料到的结论。",
+          "located": true
+        },
+        {
+          "chapterNumber": 1,
+          "excerpt": "\"铜芯搭壁，接地电阻不够，总闸跳了。\" 罗实先凑过来看了一眼，又退开半步。\"那……修好了？\" \"没有。\"顾岚把盒盖重新扣上，从工具包里摸出一块红漆木牌，用铁丝穿过顶端的孔，拧在接线盒的螺栓上。牌子上印着白字：**已隔离，禁止合闸**。 \"先隔离。",
+          "located": true
+        }
+      ]
+    }
+  ],
+  "calls": [
+    {
+      "kind": "model_start",
+      "role": "reasoning",
+      "task": "chapter_progress_review",
+      "inputChars": 1297,
+      "goals": [
+        "CHAPTER",
+        "PHASE",
+        "CHAPTER"
+      ],
+      "chapter": 1,
+      "startTime": "2026-11-24T06:51:00.960Z"
+    },
+    {
+      "kind": "model_start",
+      "role": "reasoning",
+      "task": "chapter_progress_review",
+      "inputChars": 1164,
+      "goals": [
+        "CHAPTER",
+        "PHASE",
+        "CHAPTER"
+      ],
+      "chapter": 2,
+      "startTime": "2026-11-24T06:52:13.915Z"
+    }
+  ],
+  "resumed": true,
+  "initial": "paused",
+  "continuation": "error",
+  "errors": [
+    {
+      "kind": "event",
+      "type": "error",
+      "message": "第2章（隔绝旧支线收尾）剧情进度校验未通过。篇章复核没有返回可定位的正文证据 草稿已保留，可继续生成重试。"
+    }
+  ],
+  "modelCalls": 9
+}

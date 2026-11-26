@@ -317,6 +317,41 @@ test('replace and append checkpoints are monotonic and retry-safe', async () => 
   );
 });
 
+test('draft review follows the durable draft across retries and clears with the draft', async () => {
+  const options = baseOptions(new Date('2026-09-26T02:30:00.000Z'));
+  await createGenerationJob({
+    novelId: 'novel-1', idempotencyKey: 'key-1', kind: 'continue', jobId: 'job-1',
+  }, options);
+  let lease = await acquireGenerationJob({
+    jobId: 'job-1', novelId: 'novel-1', leaseOwner: 'worker-a',
+  }, options);
+  const review = { sourceHash: 'draft-hash', receipts: [{ hookId: 'hook-1', quote: 'Evidence' }] };
+  const checkpoint = { jobId: lease.jobId, fencingToken: lease.fencingToken, leaseOwner: lease.leaseOwner,
+    draftSeq: 1, draft: 'Partial chapter', draftReview: review };
+
+  assert.deepEqual((await checkpointGenerationJob(checkpoint, options)).draftReview, review);
+  assert.deepEqual((await checkpointGenerationJob(checkpoint, options)).draftReview, review);
+  await assert.rejects(
+    () => checkpointGenerationJob({ ...checkpoint, draftReview: null }, options),
+    StaleLeaseError,
+  );
+  await finalizeGenerationJob({ ...checkpoint, draft: undefined, status: 'failed' }, options);
+  lease = await resumeGenerationJob({ novelId: 'novel-1', kind: 'continue', leaseOwner: 'worker-b' }, options);
+  assert.deepEqual(lease.draftReview, review);
+
+  const resumed = { jobId: lease.jobId, fencingToken: lease.fencingToken, leaseOwner: lease.leaseOwner };
+  const continued = await checkpointGenerationJob({ ...resumed, draftSeq: 2, draft: 'Edited chapter' }, options);
+  assert.deepEqual(continued.draftReview, review, 'an omitted review preserves the stored value for hash validation');
+  const cleared = await checkpointGenerationJob({ ...resumed, draftSeq: 3, draft: 'Edited chapter', draftReview: null }, options);
+  assert.equal(cleared.draftReview, null);
+  await checkpointGenerationJob({ ...resumed, draftSeq: 4, draft: 'Partial chapter', draftReview: review }, options);
+  const committed = await checkpointGenerationJob({ ...resumed, draftSeq: 5, draft: '', lastCommittedChapter: 1 }, options);
+  assert.equal(committed.draftReview, null);
+  await checkpointGenerationJob({ ...resumed, draftSeq: 6, draft: 'Another draft', draftReview: review }, options);
+  const finalized = await finalizeGenerationJob({ ...resumed, draft: '', status: 'completed' }, options);
+  assert.equal(finalized.draftReview, null);
+});
+
 test('expired leases are recoverable and stale workers cannot write afterward', async () => {
   const started = new Date('2026-09-26T03:00:00.000Z');
   await createGenerationJob({
@@ -407,7 +442,7 @@ test('reconnect events are sequenced, bounded and never retain generated prose f
     await appendGenerationEvent({
       jobId: 'job-1',
       type: 'progress',
-      payload: { chapter: index, percent: index / 205, content: `正文-${index}`, nested: { draft: 'secret' } },
+      payload: { chapter: index, percent: index / 205, content: `正文-${index}`, nested: { draft: 'secret', draftReview: { quote: 'secret' } } },
     }, baseOptions(new Date(now.getTime() + index)));
   }
 
@@ -417,6 +452,7 @@ test('reconnect events are sequenced, bounded and never retain generated prose f
   assert.equal(allRetained.at(-1).seq, 205);
   assert.equal(allRetained.at(-1).payload.content, undefined);
   assert.equal(allRetained.at(-1).payload.nested.draft, undefined);
+  assert.equal(allRetained.at(-1).payload.nested.draftReview, undefined);
 
   const after = await readGenerationEvents('job-1', 202, baseOptions(now));
   assert.deepEqual(after.map((event) => event.seq), [203, 204, 205]);

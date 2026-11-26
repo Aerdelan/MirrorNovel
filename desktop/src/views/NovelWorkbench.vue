@@ -25,7 +25,7 @@
       </div>
       <template v-else>
         <p v-if="generationState.unavailable" class="generation-progress" role="status">{{ $t('novelDetail.generationUnavailable') }}</p>
-        <button class="btn-primary-block" :disabled="generationState.blocked || !novel" @click="goContinue">{{ $t('desktop.workbench.nextChapter') }}</button>
+        <button v-if="!generationState.chapterLimitReached" class="btn-primary-block" :disabled="generationState.blocked || !novel" @click="goContinue">{{ $t(generationState.needsEndingReview ? 'novelDetail.recheckEnding' : 'desktop.workbench.nextChapter') }}</button>
       </template>
     </template>
 
@@ -40,7 +40,7 @@
           <h4>{{ $t('desktop.workbench.novelStatus') }}</h4>
           <div class="row"><span>{{ $t('desktop.workbench.status') }}</span><span>{{ statusLabel }}</span></div>
           <div class="row"><span>{{ $t('desktop.workbench.progress') }}</span><span>{{ formatCount(novel?.currentWordCount) }} / {{ formatCount(novel?.targetWordCount) }}</span></div>
-          <div class="row"><span>{{ $t('desktop.workbench.chapters') }}</span><span>{{ $t('desktop.workbench.chapterUnit', { n: chapters.length }) }}</span></div>
+          <div class="row"><span>{{ $t('desktop.workbench.chapters') }}</span><span>{{ novel?.targetChapterCount ? $t('novelDetail.chapterProgress', { current: chapters.length, target: novel.targetChapterCount }) : $t('desktop.workbench.chapterUnit', { n: chapters.length }) }}</span></div>
         </section>
 
         <section class="block">
@@ -146,7 +146,7 @@ const statusLabel = computed(() => {
 })
 
 const openHooks = computed(() => (novel.value?.foreshadowingLedger || [])
-  .filter((hook) => ['pending', 'planned'].includes(hook.status))
+  .filter((hook) => hook.setupStatus !== 'unconfirmed' && ['pending', 'planned'].includes(hook.status))
   .slice(0, 12))
 
 const recentCharacters = computed(() => (novel.value?.characterStates || [])
@@ -201,7 +201,7 @@ function focusChapter(chapter) {
 }
 
 function goContinue() {
-  if (generationState.value.blocked || !novel.value || novel.value.status === 'generating') return
+  if (generationState.value.blocked || generationState.value.chapterLimitReached || !novel.value || novel.value.status === 'generating') return
   detailPage.value?.continueNextChapter()
 }
 

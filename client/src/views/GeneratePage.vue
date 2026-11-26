@@ -145,9 +145,9 @@
   <div class="section-title"> {{ $t('generate.blueprintTitle') }}</div>
   <div class="blueprint-setup-desc">{{ $t('generate.blueprintDesc') }}</div>
   <div class="blueprint-setup-actions">
-   <button class="btn btn-secondary btn-sm" :disabled="generating || blueprintGenerating || !outline.trim()" :aria-busy="blueprintGenerating" @click="generateInitialBlueprint">{{ blueprintGenerating ? ' ' + $t('generate.blueprintPlanning') : (initialBlueprint ? ' ' + $t('generate.blueprintRegenerate') : ' ' + $t('generate.blueprintGenerate')) }}</button>
+   <button class="btn btn-secondary btn-sm" :disabled="generationBusy || requestedChapterCount === null || !outline.trim()" :aria-busy="blueprintGenerating" @click="generateInitialBlueprint">{{ blueprintGenerating ? ' ' + $t('generate.blueprintPlanning') : (initialBlueprint ? ' ' + $t('generate.blueprintRegenerate') : ' ' + $t('generate.blueprintGenerate')) }}</button>
    <button v-if="blueprintGenerating" class="btn btn-outline btn-sm" @click="cancelBlueprint">{{ $t('generate.stopGeneration') }}</button>
-   <span v-if="initialBlueprintConfirmed" class="blueprint-confirmed"> {{ $t('generate.blueprintConfirmed') }}</span>
+   <span v-if="initialBlueprintConfirmed && !blueprintCountMismatch" class="blueprint-confirmed"> {{ $t('generate.blueprintConfirmed') }}</span>
   </div>
   <div v-if="blueprintGenerating && blueprintOutputChars > 0" class="thinking-hint">{{ $t('generate.blueprintReceiving', { n: blueprintOutputChars }) }}</div>
   <div v-else-if="blueprintGenerating" class="thinking-hint">
@@ -164,6 +164,7 @@
   </div>
   <div v-if="blueprintWarning" class="blueprint-setup-hint">{{ blueprintWarning }}</div>
   <div v-if="blueprintTokenUsage" class="blueprint-setup-hint">{{ tokenUsageText(blueprintTokenUsage) }}</div>
+  <div v-if="blueprintCountMismatch" class="blueprint-setup-error" role="status">{{ $t('generate.blueprintChapterCountMismatch', { planned: blueprintChapterCount, target: requestedChapterCount }) }}</div>
   <div v-if="blueprintSetupError" class="blueprint-setup-error">{{ blueprintSetupError }}</div>
  </div>
 
@@ -198,7 +199,14 @@
  <div class="word-count-presets">
  <span v-for="p in chapterWordPresets" :key="p.value" class="preset-btn" :class="{ active: chapterWordTarget === p.value, locked: generationBusy }" @click="!generationBusy && (chapterWordTarget = p.value)">{{ p.label }}</span>
  </div>
- <div class="chapter-words-hint">{{ $t('generate.estimatedChapters', { n: estimatedChapters }) }}{{ chapterWordTarget >= 6000 ? $t('generate.bigChapterHint') : '' }}</div>
+ <div v-if="chapterWordTarget >= 6000" class="chapter-words-hint">{{ $t('generate.bigChapterHint') }}</div>
+ </div>
+ <div v-if="genMode === 'book'" class="chapter-words-input">
+ <label class="chapter-words-label">
+ <span class="chapter-words-title">{{ $t('generate.targetChapterCount') }}</span>
+ <input v-model.number="targetChapterCount" class="input" :disabled="generationBusy" type="number" min="1" :max="MAX_TARGET_CHAPTER_COUNT" step="1" :placeholder="$t('generate.automaticChapterCount')" :aria-invalid="requestedChapterCount === null" aria-describedby="book-chapter-count-hint" />
+ </label>
+ <div id="book-chapter-count-hint" class="chapter-words-hint" :class="{ 'blueprint-setup-error': requestedChapterCount === null }">{{ chapterCountHint(requestedChapterCount, blueprintChapterCount, estimatedChapters) }}</div>
  </div>
  <label class="expert-mode-toggle">
  <input type="checkbox" v-model="expertMode" :disabled="generationBusy" />
@@ -214,7 +222,7 @@
  </div>
  </div>
 
- <button class="btn btn-primary btn-block btn-lg" :disabled="generationBusy || blueprintGenerating || pendingAttempt || recoveryChecking || !selectedType" :aria-busy="generationBusy" @click="startGen">
+ <button class="btn btn-primary btn-block btn-lg" :disabled="generationBusy || pendingAttempt || recoveryChecking || !selectedType || (genMode === 'book' && (requestedChapterCount === null || blueprintCountMismatch))" :aria-busy="generationBusy" @click="startGen">
  {{ generationBusy ? $t('generate.btnGenerating') : $t('generate.btnGenerate') }}
  </button>
  <div v-if="generationBusy || pendingAttempt || blueprintGenerating" class="recovery-near-submit">
@@ -317,7 +325,7 @@
  <div class="card">
  <div class="section-title">① {{ $t('generate.lnStepType') }}</div>
  <div class="type-grid ln-grid">
- <div v-for="t in lnTypes" :key="t.id" class="type-card" :class="{ selected: lnSelectedType === t.id }" @click="lnSelectedType = t.id">
+ <div v-for="t in lnTypes" :key="t.id" class="type-card" :class="{ selected: lnSelectedType === t.id }" @click="!lightNovelBusy && (lnSelectedType = t.id)">
  <span class="type-icon">{{ t.icon }}</span>
  <span class="type-name">{{ $tn(t.name) }}</span>
  </div>
@@ -326,48 +334,55 @@
  </div>
 
  <div class="card">
- <ReferenceSelector v-model:reference-ids="selectedReferenceIds" v-model:structure-pattern="structurePattern" v-model:use-examples="referenceExamplesEnabled" show-examples-option :disabled="lnGenerating" @persona-created="useReferencePersona" />
+ <ReferenceSelector v-model:reference-ids="selectedReferenceIds" v-model:structure-pattern="structurePattern" v-model:use-examples="referenceExamplesEnabled" show-examples-option :disabled="lightNovelBusy" @persona-created="useReferencePersona" />
  <div class="section-title">② {{ $t('generate.lnStepChar') }}</div>
- <input v-model="lnCharName" class="input" :placeholder="$t('generate.lnPlaceholderName')" maxlength="20" />
+ <input v-model="lnCharName" class="input" :disabled="lightNovelBusy" :placeholder="$t('generate.lnPlaceholderName')" maxlength="20" />
  <div class="ln-trait-section" style="margin-top:10px;">
  <div class="label-sm">{{ $t('generate.lnCharTrait') }}</div>
  <div class="ln-traits">
- <span v-for="trait in lnTraits" :key="trait" class="preset-btn" :class="{ active: lnCharTrait === trait }" @click="lnCharTrait = (lnCharTrait === trait ? '' : trait)">{{ $tt(trait) }}</span>
+ <span v-for="trait in lnTraits" :key="trait" class="preset-btn" :class="{ active: lnCharTrait === trait, locked: lightNovelBusy }" @click="!lightNovelBusy && (lnCharTrait = lnCharTrait === trait ? '' : trait)">{{ $tt(trait) }}</span>
  </div>
  </div>
  </div>
 
  <div class="card">
  <div class="section-title">③ {{ $t('generate.lnStepWorld') }}</div>
- <textarea v-model="lnWorldSetting" class="textarea" rows="4" :placeholder="$t('generate.lnPlaceholderWorld')"></textarea>
+ <textarea v-model="lnWorldSetting" class="textarea" :disabled="lightNovelBusy" rows="4" :placeholder="$t('generate.lnPlaceholderWorld')"></textarea>
  </div>
 
  <div class="card">
  <div class="section-title">④ {{ $t('generate.lnStepMode') }}</div>
  <div class="mode-radio-group">
  <label class="mode-radio" :class="{ active: lnGenMode === 'book' }">
- <input type="radio" v-model="lnGenMode" value="book" />
+ <input type="radio" v-model="lnGenMode" :disabled="lightNovelBusy" value="book" />
  <span>{{ $t('generate.modeBook') }}</span>
  </label>
  <label class="mode-radio" :class="{ active: lnGenMode === 'chapter' }">
- <input type="radio" v-model="lnGenMode" value="chapter" />
+ <input type="radio" v-model="lnGenMode" :disabled="lightNovelBusy" value="chapter" />
  <span>{{ $t('generate.modeChapter') }}</span>
  </label>
  </div>
  <div class="word-count-input" style="margin-top:12px;">
- <input v-model.number="lnTargetWordCount" class="input" type="number" :min="lnGenMode==='chapter'?500:1000" :max="lnGenMode==='chapter'?20000:10000000" step="500" />
+ <input v-model.number="lnTargetWordCount" class="input" :disabled="lightNovelBusy" type="number" :min="lnGenMode==='chapter'?500:1000" :max="lnGenMode==='chapter'?20000:10000000" step="500" />
  <span class="unit">{{ $t('generate.wordShort') }}</span>
  </div>
  <div class="word-count-presets">
- <span v-for="p in lnActivePresets" :key="p.value" class="preset-btn" :class="{ active: lnTargetWordCount === p.value }" @click="lnTargetWordCount = p.value">{{ p.label }}</span>
+ <span v-for="p in lnActivePresets" :key="p.value" class="preset-btn" :class="{ active: lnTargetWordCount === p.value, locked: lightNovelBusy }" @click="!lightNovelBusy && (lnTargetWordCount = p.value)">{{ p.label }}</span>
+ </div>
+ <div v-if="lnGenMode === 'book'" class="chapter-words-input">
+ <label class="chapter-words-label">
+ <span class="chapter-words-title">{{ $t('generate.targetChapterCount') }}</span>
+ <input v-model.number="lnTargetChapterCount" class="input" :disabled="lightNovelBusy" type="number" min="1" :max="MAX_TARGET_CHAPTER_COUNT" step="1" :placeholder="$t('generate.automaticChapterCount')" :aria-invalid="lnRequestedChapterCount === null" aria-describedby="light-novel-chapter-count-hint" />
+ </label>
+ <div id="light-novel-chapter-count-hint" class="chapter-words-hint" :class="{ 'blueprint-setup-error': lnRequestedChapterCount === null }">{{ chapterCountHint(lnRequestedChapterCount, null, Math.max(1, Math.ceil(lnTargetWordCount / 3000))) }}</div>
  </div>
  <label class="expert-mode-toggle">
- <input type="checkbox" v-model="lnExpertMode" />
+ <input type="checkbox" v-model="lnExpertMode" :disabled="lightNovelBusy" />
  <span><strong>{{ $t('generate.expertMode') }}</strong><small>{{ $t('generate.expertModeDesc') }}</small></span>
  </label>
  </div>
 
- <button class="btn btn-primary btn-block btn-lg" :disabled="lnGenerating || pendingAttempt || recoveryChecking || restoringInput || !lnSelectedType" @click="startLNGen">
+ <button class="btn btn-primary btn-block btn-lg" :disabled="lightNovelBusy || pendingAttempt || recoveryChecking || !lnSelectedType || (lnGenMode === 'book' && lnRequestedChapterCount === null)" @click="startLNGen">
  {{ lnGenerating ? $t('generate.btnGenerating') : $t('generate.lnBtnGenerate') }}
  </button>
 
@@ -521,7 +536,7 @@ import { notifyModelError } from '../utils/notify'
 import { useSSE } from '../composables/useSSE'
 import { useI18n } from '../composables/useI18n'
 import { formatBlueprintText, parseBlueprintText } from '../utils/blueprintText'
-import { normalizeChapterWordTargetInput } from '../utils/chapterWordTarget'
+import { MAX_TARGET_CHAPTER_COUNT, normalizeChapterWordTargetInput, parseTargetChapterCount } from '../utils/chapterWordTarget'
 import api from '../api'
 import ReferenceSelector from '../components/ReferenceSelector.vue'
 import { GENERATION_IDLE_MS, backendGenerationActive, createGenerationRecoveryMonitor, createGenerationSnapshotReader, generationAttemptUiMode, generationErrorMessage, readGenerationAttempt, saveGenerationAttempt } from '../utils/generationRecovery'
@@ -614,6 +629,8 @@ const worldSetting = ref('')
 const outline = ref('')
 const genMode = ref('book')
 const targetWordCount = ref(50000)
+const targetChapterCount = ref('')
+const requestedChapterCount = computed(() => parseTargetChapterCount(targetChapterCount.value))
 // 每章字数（整本模式）：影响大纲规模、章节计划与每章输出预算。
 const chapterWordTarget = ref(3000)
 const expertMode = ref(false)
@@ -622,6 +639,8 @@ const enableResearch = ref(true)
 const researchLinksText = ref('')
 const researchHint = ref('')
 const initialBlueprint = ref(null)
+const blueprintChapterCount = computed(() => Math.max(0, ...(initialBlueprint.value?.phases || []).map(phase => Number(phase.endChapter) || 0)))
+const blueprintCountMismatch = computed(() => requestedChapterCount.value > 0 && blueprintChapterCount.value > 0 && requestedChapterCount.value !== blueprintChapterCount.value)
 const initialBlueprintText = ref('')
 const initialBlueprintConfirmed = ref(false)
 const blueprintGenerating = ref(false)
@@ -811,7 +830,7 @@ async function aiGeneratePersona() {
 
 const generating = ref(false)
 const preparingGeneration = ref(false)
-const generationBusy = computed(() => generating.value || preparingGeneration.value || restoringInput.value)
+const generationBusy = computed(() => generating.value || preparingGeneration.value || restoringInput.value || blueprintGenerating.value)
 const genStatus = ref('')
 const genOk = ref(false)
 const streamingText = ref('')
@@ -992,6 +1011,7 @@ async function applyInitialInput(input, attempt = { input }) {
   lnWorldSetting.value = typeof attempt.uiForm?.worldSetting === 'string' ? attempt.uiForm.worldSetting : input.worldSetting || ''
   lnGenMode.value = input.mode === 'chapter' ? 'chapter' : 'book'
   lnTargetWordCount.value = input.targetWordCount || 50000
+  lnTargetChapterCount.value = input.targetChapterCount ?? ''
   lnExpertMode.value = input.expertMode === true
   selectedPersonaId.value = input.personaId || ''
   selectedReferenceIds.value = [...(input.referenceIds || [])]
@@ -1010,6 +1030,7 @@ async function applyInitialInput(input, attempt = { input }) {
  protagonistName.value = input.protagonistName || ''; worldSetting.value = input.worldSetting || ''
  genMode.value = input.mode === 'chapter' ? 'chapter' : 'book'
  targetWordCount.value = input.targetWordCount || 50000; chapterWordTarget.value = input.chapterWordTarget || 3000
+ targetChapterCount.value = input.targetChapterCount ?? ''
  expertMode.value = input.expertMode === true; outline.value = input.outline || ''
  selectedPersonaId.value = input.personaId || ''
  selectedReferenceIds.value = [...(input.referenceIds || [])]; referenceExamplesEnabled.value = input.referenceExamplesEnabled === true
@@ -1177,7 +1198,7 @@ function tokenUsageText(usage) {
 
 // 大纲生成改为 SSE 流式：弹窗立即打开，实时展示思考/正文内容并自动滚动到最新位置，
 // 不再等待整个响应（思考模型耗时可达数十分钟，XHR 无超时限制）。
-function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, perChapterWords) {
+function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, perChapterWords, chapterCount) {
  lastGenerationActivity = Date.now()
  return new Promise((resolve) => {
  outlineModalText.value = ''
@@ -1195,11 +1216,12 @@ function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, per
 
  const payload = {
  novelTypeId: selectedTypeId,
- typeSku: buildTypeSku(),
+ typeSku: activeTab.value === 'generate' ? buildTypeSku() : undefined,
  protagonistName: charName,
  worldSetting: worldSetting,
  targetWordCount: wordCount,
  chapterWordTarget: perChapterWords || undefined,
+ targetChapterCount: chapterCount,
  personaId: selectedPersonaId.value || undefined,
  referenceIds: selectedReferenceIds.value,
  referenceExamplesEnabled: referenceExamplesEnabled.value,
@@ -1282,6 +1304,7 @@ function showOutlineModal(selectedTypeId, charName, worldSetting, wordCount, per
 function generateInitialBlueprint() {
  lastGenerationActivity = Date.now()
  validateChapterWordTarget()
+ if (requestedChapterCount.value === null) return
  if (!selectedType.value || !outline.value.trim()) {
   blueprintSetupError.value = $t('generate.errNeedTypeOutline')
   return
@@ -1309,6 +1332,7 @@ function generateInitialBlueprint() {
   worldSetting: worldSetting.value,
   targetWordCount: targetWordCount.value,
   chapterWordTarget: chapterWordTarget.value,
+  targetChapterCount: requestedChapterCount.value,
   outline: outline.value,
   personaId: selectedPersonaId.value || undefined,
  referenceIds: selectedReferenceIds.value,
@@ -1411,6 +1435,12 @@ const estimatedChapters = computed(() => {
  return Math.max(1, Math.ceil(total / per))
 })
 
+function chapterCountHint(requested, planned, estimate) {
+ if (requested === null) return $t('generate.invalidTargetChapterCount', { max: MAX_TARGET_CHAPTER_COUNT })
+ if (requested || planned) return $t('generate.plannedChapterCount', { n: requested || planned })
+ return $t('generate.estimatedChapters', { n: estimate })
+}
+
 const activePresets = computed(() => {
  const isBook = genMode.value === 'book'
  const values = isBook ? [50000, 100000, 300000, 500000] : [1000, 2000, 3000, 5000]
@@ -1419,6 +1449,7 @@ const activePresets = computed(() => {
 
 async function startGen() {
  if (!selectedType.value || generationBusy.value || pendingAttempt.value || recoveryChecking.value) return
+ if (genMode.value === 'book' && (requestedChapterCount.value === null || blueprintCountMismatch.value)) return
  lastGenerationActivity = Date.now()
  generatedNovelId.value = ''
  recoveryMessage.value = ''; recoveryActive.value = false; recoveryUnknown.value = false
@@ -1427,7 +1458,7 @@ async function startGen() {
 
  // 如果没有填写大纲且是整本模式，先生成大纲让用户确认
  if (!outline.value.trim() && genMode.value === 'book') {
- const confirmedOutline = await showOutlineModal(selectedType.value, protagonistName.value, worldSetting.value, targetWordCount.value, chapterWordTarget.value)
+ const confirmedOutline = await showOutlineModal(selectedType.value, protagonistName.value, worldSetting.value, targetWordCount.value, chapterWordTarget.value, requestedChapterCount.value)
  if (!confirmedOutline) { preparingGeneration.value = false; return }
  outline.value = confirmedOutline
  }
@@ -1462,6 +1493,7 @@ async function startGen() {
  worldSetting: worldSetting.value,
  targetWordCount: targetWordCount.value,
  chapterWordTarget: genMode.value === 'book' ? chapterWordTarget.value : undefined,
+ targetChapterCount: genMode.value === 'book' ? requestedChapterCount.value : undefined,
  mode: genMode.value,
  expertMode: expertMode.value,
  outline: outline.value,
@@ -1740,8 +1772,11 @@ const lnCharTrait = ref('')
 const lnWorldSetting = ref('')
 const lnGenMode = ref('book')
 const lnTargetWordCount = ref(50000)
+const lnTargetChapterCount = ref('')
+const lnRequestedChapterCount = computed(() => parseTargetChapterCount(lnTargetChapterCount.value))
 const lnExpertMode = ref(false)
 const lnGenerating = ref(false)
+const lightNovelBusy = computed(() => lnGenerating.value || preparingGeneration.value || restoringInput.value)
 const lnStatus = ref('')
 const lnOk = ref(false)
 const lnStreamingText = ref('')
@@ -1757,19 +1792,22 @@ const lnActivePresets = computed(() => {
 })
 
 async function startLNGen() {
- if (lnGenerating.value || pendingAttempt.value || restoringInput.value || recoveryChecking.value) return
+ if (lightNovelBusy.value || pendingAttempt.value || recoveryChecking.value) return
+ if (lnGenMode.value === 'book' && lnRequestedChapterCount.value === null) return
  lastGenerationActivity = Date.now()
  generatedNovelId.value = ''
  if (!lnSelectedType.value) return alert($t('generate.errNeedLNType'))
 
  // 轻小说整本模式：先生成大纲
  let lnOutline = ''
+ const lnType = lnTypes.value.find(t => t.id === lnSelectedType.value)
+ const traitDesc = lnCharTrait.value ? $t('generate.lnTraitSuffix', { trait: $tt(lnCharTrait.value) }) : ''
+ const lnChar = (lnCharName.value + traitDesc).trim() || $t('generate.untitled')
+ const lnWorld = lnWorldSetting.value || (lnType ? $t('generate.lnWorldByGenre', { genre: $tn(lnType.name) }) : $t('generate.lnWorldFallback'))
  if (lnGenMode.value === 'book') {
- const lnTypeObj = lnTypes.find(t => t.id === lnSelectedType.value)
- const lnName = lnTypeObj?.name || ''
- const lnChar = (lnCharName.value + (lnCharTrait.value ? $t('generate.lnTraitSuffix', { trait: $tt(lnCharTrait.value) }) : '')).trim() || $t('generate.untitled')
- const lnWorld = lnWorldSetting.value || $t('generate.lnWorldByGenre', { genre: $tn(lnName) })
- const confirmedOutline = await showOutlineModal(lnSelectedType.value, lnChar, lnWorld, lnTargetWordCount.value)
+ preparingGeneration.value = true
+ const confirmedOutline = await showOutlineModal(lnSelectedType.value, lnChar, lnWorld, lnTargetWordCount.value, undefined, lnRequestedChapterCount.value)
+  .finally(() => { preparingGeneration.value = false })
  if (!confirmedOutline) return
  lnOutline = confirmedOutline
  }
@@ -1777,15 +1815,12 @@ async function startLNGen() {
  lnGenerating.value = true; lnStatus.value = ''; lnOk.value = false
  lnStreamingText.value = ''
 
- const traitDesc = lnCharTrait.value ? $t('generate.lnTraitSuffix', { trait: $tt(lnCharTrait.value) }) : ''
  const params = {
  novelTypeId: lnSelectedType.value,
- protagonistName: (lnCharName.value + traitDesc).trim() || $t('generate.untitled'),
- worldSetting: lnWorldSetting.value || (() => {
- const type = lnTypes.find(t => t.id === lnSelectedType.value)
- return type ? $t('generate.lnWorldByGenre', { genre: $tn(type.name) }) : $t('generate.lnWorldFallback')
- })(),
+ protagonistName: lnChar,
+ worldSetting: lnWorld,
  targetWordCount: lnTargetWordCount.value,
+ targetChapterCount: lnGenMode.value === 'book' ? lnRequestedChapterCount.value : undefined,
  mode: lnGenMode.value,
  expertMode: lnExpertMode.value,
  outline: lnOutline,

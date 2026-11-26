@@ -10,7 +10,7 @@ function prosePrompt({ context, instruction, name, field, failure, requiredTags 
   const formats = {
     mainArc: '【故事主线】\n用自然语言说明主线因果与终局。\n【已定事实】\n逐行摘取用户已明确的事实；没有则写“无”。\n【篇章｜第1-6章｜具体标题】\n一段具体剧情规划。按本次任务要求列齐所有篇章、写清各自范围，示例章号不是固定值。',
     lockedFacts: '【已定事实】\n逐行摘取用户已明确的事实；没有则写“无”。',
-    phase: '【篇章｜第1-6章｜具体标题】\n写本次要求的一个篇章，示例章号需替换为本次实际范围。',
+    phase: '【篇章｜第1-6章｜具体标题】\n写本次要求的一个篇章，示例章号需替换为本次实际范围。篇章只覆盖一章时，用【篇章｜第1章｜具体标题】。',
     phases: '【篇章｜第1-6章｜具体标题】\n写该篇章的剧情规划。每个要求的篇章另起一个同类标题，不能合并或漏掉，示例章号需替换为本次实际范围。',
     chapters: '【第1章｜具体标题】\n写本章新发生的事件、人物选择、关系变化与章末局面。按本次要求逐章列齐，不合并章节。',
   };
@@ -38,10 +38,12 @@ function parseBlueprintProse(text, field, requiredTags = []) {
     const title = heading(line);
     if (/^(?:故事主线|全书主线|主线)[：:]?$/.test(title)) { section = 'mainArc'; target = null; result.mainArc = ''; continue; }
     if (/^(?:已定事实|不可改写的设定|不可改写事实|固定事实)[：:]?$/.test(title)) { section = 'lockedFacts'; target = null; result.lockedFacts = []; continue; }
-    const range = title.match(/^(?:篇章|大篇章|小阶段)(?:\s*\d+(?:\.\d+)?)?\s*[｜|：:]?\s*第?\s*(\d+)\s*[-—–~～至到]\s*(\d+)\s*章\s*[｜|：:]?\s*(.*)$/);
+    const range = title.match(/^(?:篇章|大篇章|小阶段)(?:\s*\d+(?:\.\d+)?)?\s*[｜|：:]?\s*第?\s*(\d+)(?:\s*[-—–~～至到]\s*(\d+))?\s*章\s*[｜|：:]?\s*(.*)$/);
     const chapter = title.match(/^(?:执行章\s*|第\s*)(\d+)\s*章?\s*[｜|：:]\s*(.+)$/);
-    if (range) {
-      target = { title: range[3].trim(), startChapter: Number(range[1]), endChapter: Number(range[2]), planText: '' };
+    const singleChapterPhase = field === 'phase' && chapter && /^第/.test(title);
+    if (range || singleChapterPhase) {
+      const startChapter = Number(range?.[1] ?? chapter[1]);
+      target = { title: (range?.[3] ?? chapter[2]).trim(), startChapter, endChapter: Number(range?.[2] ?? startChapter), planText: '' };
       if (/^小阶段/.test(title) && result.phases.length) (result.phases.at(-1).subphases ||= []).push(target);
       else result.phases.push(target);
       section = 'stage'; continue;
